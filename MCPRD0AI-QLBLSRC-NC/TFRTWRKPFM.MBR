@@ -1,0 +1,576 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TFRTWRKPFM.
+       AUTHOR.               KALMAN.
+       DATE-WRITTEN.         MAY 1993.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D*     THIS PROGRAM WILL TAKE IN THE FREIGHT FILE FROM
+      *D*     TIS AND CREATE A PFM IN FILE FRTDATAFL.
+      *D*
+      *C* CHANGES.
+      *C
+      *C  01/07/00    CA YODER
+      *C    ADDED LOGIC TO CHECK THE FIRST DIGIT OF THE YEAR IN THE
+      *C    DATE FIELD IN HEADER LINE.  WHEN YEAR BEGINS WITH "0",
+      *C    AN INVALID CHARACTER IS SENT FROM THE MAINFRAME IN THE
+      *C    FIRST POSITION OF THE YEAR.  IF IT'S NOT NUMERIC, REPLACE
+      *C    THE CHARACTER WITH "0".
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+      ******************************************************************
+       INPUT-OUTPUT SECTION.
+      ******************************************************************
+       FILE-CONTROL.
+           SELECT TISDATA-I
+                  ASSIGN TO DATABASE-TISDATAFL.
+           SELECT NEWPFM-O
+                  ASSIGN TO DATABASE-FRTDATAFL
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+           SELECT FREIGHT-T
+                  ASSIGN TO DATABASE-FREIGHT
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MACCOUNT-INFO-O
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+      ******************************************************************
+       DATA DIVISION.
+      ******************************************************************
+
+       FILE SECTION.
+
+       FD  TISDATA-I
+           DATA RECORD IS TISDATA-REC-I
+           RECORD CONTAINS 133 CHARACTERS
+           LABEL RECORDS ARE STANDARD.
+       01  TISDATA-REC-I              PIC X(133).
+
+       FD  NEWPFM-O.
+       01  NEWPFM-REC-O               PIC X(133).
+
+       FD  FREIGHT-T
+           DATA RECORD IS FREIGHT-REC-T
+           RECORD CONTAINS 133 CHARACTERS
+           LABEL RECORDS ARE STANDARD.
+       01  FREIGHT-REC-T              PIC X(133).
+
+       FD  MACCOUNT-INFO-O
+           LABEL RECORDS ARE STANDARD.
+       01  MACCOUNT-INFO-REC-O.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+      ******************************************************************
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+
+      *-----------------------------------------------------------------
+      *  A R G U M E N T S
+      *-----------------------------------------------------------------
+
+       01  MACCT-ARG                PIC X(4).
+
+      *-----------------------------------------------------------------
+      *  I N D E X E S
+      *-----------------------------------------------------------------
+
+       01  TBL-IX                   PIC 9(2).
+
+      *-----------------------------------------------------------------
+      *  F L A G S   A N D   S W I T C H E S
+      *-----------------------------------------------------------------
+
+       01  FREIGHT-EOF              PIC X.
+       01  TISDATA-EOF              PIC X.
+       01  RTN-CODE                 PIC X.
+       01  JOB-DESC-FOUND           PIC X.
+
+      *-----------------------------------------------------------------
+      *  A C C U M U L A T O R S
+      *-----------------------------------------------------------------
+
+       01  ACTUAL-RCD-CNT                 PIC S9(12)  VALUE 0.
+       01  EXPECTED-RCD-CNT               PIC S9(12)  VALUE 0.
+
+      *-----------------------------------------------------------------
+      *  S A V E   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  SAVE-SEQ                      PIC X(4).
+       01  SAVE-DATE                     PIC X(9).
+       01  SAVE-TIME                     PIC X(11).
+       01  SAVE-JNUM                     PIC X(5).
+       01  SAVE-PLT-CODE                 PIC X(3).
+       01  SAVE-PAY-CARR                 PIC X(4).
+
+      *-----------------------------------------------------------------
+      *  T A B L E S
+      *-----------------------------------------------------------------
+
+       01  DATE-TABLE.
+           05  DATE-TABLE-ENTRY     OCCURS 50 TIMES.
+               10  TBL-SEQ          PIC 9(4).
+               10  TBL-LO-DATE.
+                   15  TBL-LO-YYYY  PIC X(4).
+                   15  TBL-LO-MM    PIC X(2).
+                   15  TBL-LO-DD    PIC X(2).
+               10  TBL-HI-DATE.
+                   15  TBL-HI-YYYY  PIC X(4).
+                   15  TBL-HI-MM    PIC X(2).
+                   15  TBL-HI-DD    PIC X(2).
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   A N D   F I L E   B U F F E R S
+      *-----------------------------------------------------------------
+
+       COPY FREIGHT  OF COPYLIB.
+
+       01  BUF-JOB-DESC  REDEFINES BUF-FREIGHT.
+           05                      PIC X(1).
+           05  JOB-REC-TYPE        PIC X(8).
+           05                      PIC X(7).
+           05  JOB-NUM             PIC X(5).
+           05                      PIC X(61).
+           05  JOB-TIME            PIC X(11).
+           05                      PIC X(1).
+           05  JOB-DATE            PIC X(9).
+           05                      PIC X(30).
+
+       COPY MACTINFO OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       COPY DBCSACCT OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY CCRTFILE IN COPYLIB.
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY TDATECHK OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  Q C O M E X E C   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  OVRDBF-TIS-CMD.
+           05  PIC X(23) VALUE "OVRDBF FILE(TISDATAFL) ".
+           05  PIC X(36) VALUE "TOFILE(*LIBL/FRTDATAFL) MBR(TISDATA)".
+
+       01  OVRDBF-TIS-LEN                 PIC S9(10)V9(5) COMP-3
+                                                    VALUE 59.
+      *-----------------------------------------------------------------
+
+       01  OVRDBF-FRT-CMD.
+           05  PIC X(23) VALUE "OVRDBF FILE(FRTDATAFL) ".
+           05  PIC X(31) VALUE "TOFILE(*LIBL/FRTDATAFL) MBR(FRT".
+
+           05  OVRDBF-SEQ                 PIC X(4).
+
+           05  PIC X(1)  VALUE ")".
+
+       01  OVRDBF-FRT-LEN                 PIC S9(10)V9(5) COMP-3
+                                                    VALUE 59.
+      *-----------------------------------------------------------------
+
+       01  CHGPFM-CMD.
+           05                 PIC X(30) VALUE
+                              "CHGPFM FILE(FRTDATAFL) MBR(FRT".
+           05  CHGPFM-SEQ     PIC X(4).
+           05                 PIC X(8)  VALUE ") TEXT('".
+           05  CHGPFM-DATE    PIC X(9).
+           05                 PIC X(1)  VALUE " ".
+           05  CHGPFM-TIME    PIC X(11).
+           05                 PIC X(2)  VALUE " J".
+           05  CHGPFM-JNUM    PIC X(5).
+           05                 PIC X(2)  VALUE "')".
+
+       01  CHGPFM-LEN         PIC S9(10)V9(5) COMP-3
+                                        VALUE 72.
+
+      *-----------------------------------------------------------------
+
+       01  RNMM-CMD.
+           05                 PIC X(28) VALUE
+                              "RNMM FILE(FRTDATAFL) MBR(FRT".
+           05  RNMM-SEQ1      PIC X(4).
+           05                 PIC X(12)  VALUE ") NEWMBR(FRT".
+           05  RNMM-SEQ2      PIC X(4).
+           05                 PIC X(2)  VALUE "X)".
+
+       01  RNMM-LEN           PIC S9(10)V9(5) COMP-3
+                                        VALUE 50.
+
+      ******************************************************************
+       PROCEDURE DIVISION.
+      ******************************************************************
+
+      *-----------------------------------------------------------------
+      *  MAIN SECTION.
+      *-----------------------------------------------------------------
+
+       0-CONTROL.
+
+           PERFORM 1-HSK.
+
+           PERFORM 61-CHECK-FOR-TRANS-ERRORS.
+
+           READ FREIGHT-T INTO BUF-JOB-DESC
+              NOT AT END PERFORM 62-CREATE-NEW-PFM THRU 62-EXIT.
+
+           PERFORM 2-EOJ.
+
+           GOBACK.
+
+       1-HSK.
+           INITIALIZE DATE-TABLE, TBL-IX.
+
+      *----PREPARE TISDATA-I WITH CORRECT MEMBER.
+      *----OVRDBF FILE(FRTDATAFL) TOFILE(*LIBL/FRTDATAFL) MBR(TISDATA).
+
+           CALL "QCMDEXC" USING  OVRDBF-TIS-CMD  OVRDBF-TIS-LEN.
+
+           OPEN INPUT      TISDATA-I.
+           OPEN I-O         MACCOUNT-INFO-O.
+
+           MOVE "PLT" TO MACCT-ARG.
+           PERFORM 9999-READ-MACCOUNT-INFO-O.
+           MOVE MACCT-PLT-CODE TO SAVE-PLT-CODE.
+           PERFORM 9999-RESET-MACCOUNT-INFO-O.
+
+      *----CREATE TEMPORARY FILE TO HOLD ONLY DATA RECORDS
+      *----FROM TIS.  WILL EXCLUDE BANNER AND EMPTY LINES.
+
+           INITIALIZE          CCRTFILE-PARMS.
+           MOVE "QTEMP"     TO CCRTFILE-LIBRARY.
+           MOVE "FREIGHT"   TO CCRTFILE-FILE.
+           MOVE "0133"      TO CCRTFILE-RECORD-LENGTH.
+           MOVE "01000"     TO CCRTFILE-NO-RECORDS.
+           MOVE "00500"     TO CCRTFILE-INCREMENT-AMT.
+           MOVE  04         TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+              MOVE "CCRTFILE FREIGHT FAILED*6-MAIN" TO BU-DISPLAY-MSG
+              GO TO 9999-BLOWUP.
+
+           OPEN OUTPUT     FREIGHT-T.
+
+       2-EOJ.
+
+           CLOSE        TISDATA-I  FREIGHT-T.
+
+       61-CHECK-FOR-TRANS-ERRORS.
+
+           READ TISDATA-I INTO BUF-FREIGHT
+              AT END MOVE "Y" TO TISDATA-EOF.
+
+           PERFORM UNTIL TISDATA-EOF = "Y"
+              IF FREIGHT-TRAN-CODE > SPACES
+                 WRITE FREIGHT-REC-T FROM BUF-FREIGHT
+                 IF FREIGHT-TRAN-CODE IS NOT = "*N"
+                    ADD 1 TO ACTUAL-RCD-CNT
+
+                    IF FREIGHT-TRAN-CODE = "99"
+                       ADD FREIGHT-RCD-CNT TO EXPECTED-RCD-CNT
+                    END-IF
+
+                    IF FREIGHT-TRAN-CODE = "01"
+                       IF FREIGHT-COMPANY NOT = SAVE-PLT-CODE
+                          MOVE "INVALID PLANT CODE" TO BU-DISPLAY-MSG
+                          MOVE "EXPECTING"      TO BU-DISPLAY-FLD (1)
+                          MOVE SAVE-PLT-CODE    TO BU-DISPLAY-FLD (2)
+                          MOVE "FOUND"          TO BU-DISPLAY-FLD (3)
+                          MOVE FREIGHT-COMPANY  TO BU-DISPLAY-FLD (4)
+                          MOVE FREIGHT-SEQ-NUM  TO BU-DISPLAY-FLD (5)
+                          PERFORM 9999-BLOWUP
+                       ELSE
+                          ADD 1 TO TBL-IX
+                          MOVE FREIGHT-SEQ-NUM TO TBL-SEQ (TBL-IX)
+                       END-IF
+                    END-IF
+
+                    IF FREIGHT-TRAN-CODE = "02" OR "03"
+                       IF FREIGHT-REC-TYPE = "P"
+9403CK*                  IF FREIGHT-CHARGES >= 0
+  .   *                   IF TBL-LO-DATE (TBL-IX) = SPACES
+  .   *                      MOVE FREIGHT-PAID-DATE
+  .   *                           TO TBL-LO-DATE (TBL-IX)
+  .   *                   END-IF
+  .   *                   IF FREIGHT-PAID-DATE
+  .   *                                    < TBL-LO-DATE (TBL-IX)
+  .   *                      MOVE FREIGHT-PAID-DATE
+  .   *                           TO TBL-LO-DATE (TBL-IX)
+9403CK*                   END-IF
+                          IF TBL-HI-DATE (TBL-IX) = SPACES
+                             MOVE FREIGHT-PAID-DATE
+                                  TO TBL-HI-DATE (TBL-IX)
+                          END-IF
+                          IF FREIGHT-PAID-DATE
+                                           > TBL-HI-DATE (TBL-IX)
+                             MOVE FREIGHT-PAID-DATE
+                                  TO TBL-HI-DATE (TBL-IX)
+                          END-IF
+9403CK*                  END-IF
+                       END-IF
+                    END-IF
+
+                 END-IF
+              END-IF
+
+              READ TISDATA-I INTO BUF-FREIGHT
+                 AT END MOVE "Y" TO TISDATA-EOF
+              END-READ
+
+           END-PERFORM.
+
+           DISPLAY "ACTUAL = " ACTUAL-RCD-CNT " EXPECTED = "
+              EXPECTED-RCD-CNT.
+
+           IF ACTUAL-RCD-CNT = EXPECTED-RCD-CNT
+              CLOSE FREIGHT-T
+              OPEN INPUT FREIGHT-T
+           ELSE
+              MOVE "ERROR IN FRTDATAFL/TISDATA" TO BU-DISPLAY-MSG
+              MOVE "ACTUAL RCD CNT" TO BU-DISPLAY-FLD (1)
+              MOVE ACTUAL-RCD-CNT   TO BU-DISPLAY-FLD (2)
+              MOVE "EXPECT RCD CNT" TO BU-DISPLAY-FLD (3)
+              MOVE EXPECTED-RCD-CNT TO BU-DISPLAY-FLD (4)
+              PERFORM 9999-BLOWUP.
+
+9403CK*----BLOW UP IF FILES CONTAIN MORE THAN ONE DAY OF PAYMENTS.
+  .   *
+  .   *    MOVE 1 TO TBL-IX.
+  .   *    PERFORM UNTIL TBL-SEQ (TBL-IX) = 0
+  .   *       IF TBL-LO-YYYY (TBL-IX)  = TBL-HI-YYYY (TBL-IX)
+  .   *          AND TBL-LO-MM (TBL-IX)  = TBL-HI-MM (TBL-IX)
+  .   *          CONTINUE
+  .   *       ELSE
+  .   *          MOVE "FRT FILE PAYMENTS COVER MORE THAN ONE MONTH"
+  .   *               TO BU-DISPLAY-MSG
+  .   *          MOVE TBL-SEQ (TBL-IX) TO BU-DISPLAY-FLD (1)
+  .   *          MOVE TBL-LO-DATE (TBL-IX) TO BU-DISPLAY-FLD (2)
+  .   *          MOVE TBL-HI-DATE (TBL-IX) TO BU-DISPLAY-FLD (3)
+  .   *          GO TO 9999-BLOWUP
+  .   *       END-IF
+  .   *       ADD 1 TO TBL-IX
+9403CK*    END-PERFORM.
+
+       62-CREATE-NEW-PFM.
+
+           INITIALIZE  JOB-DESC-FOUND  SAVE-SEQ   SAVE-DATE
+                       FREIGHT-EOF     SAVE-JNUM  SAVE-TIME
+9403CK                 TISDATA-EOF.
+
+      *----CHECK IF THE FIRST LINE IS THE JOB DESC OR HEADER RECORD.
+
+           IF JOB-REC-TYPE = "*N START"
+              MOVE "Y" TO JOB-DESC-FOUND
+              MOVE JOB-NUM TO SAVE-JNUM
+              MOVE JOB-TIME TO SAVE-TIME
+              MOVE JOB-DATE TO SAVE-DATE
+              IF JOB-DATE (8:1) NOT NUMERIC
+                 MOVE "0"   TO JOB-DATE (8:1)
+                               SAVE-DATE (8:1).
+
+           IF FREIGHT-TRAN-CODE = "01"
+              MOVE "N" TO JOB-DESC-FOUND
+              MOVE "NO DESCR" TO SAVE-DATE
+              MOVE "AVAILABLE" TO SAVE-TIME.
+
+
+      *----IF FIRST LINE WAS JOB DESC, GET HEADER RECORD FOR SEQUENCE.
+
+           IF JOB-DESC-FOUND = "Y"
+              READ FREIGHT-T INTO BUF-FREIGHT
+                 AT END GO TO 62-EXIT.
+
+           MOVE FREIGHT-SEQ-ALPHA TO SAVE-SEQ.
+
+      *----USE SEQUENCE AND JOB DESC TO CREATE A NEW MEMBER IN FRTDATAFL.
+      *----ADDPFM FILE(*LIBL/FRTDATAFL) MBR(FRTXXXX) TEXT('DATE TIME JOB').
+
+           INITIALIZE RTN-CODE.
+
+           CALL "FRTADDPFM" USING  SAVE-SEQ,   SAVE-DATE,
+                                   SAVE-TIME,  SAVE-JNUM,  RTN-CODE.
+
+           IF RTN-CODE NOT = ZERO
+
+              IF RTN-CODE = "1"
+                 MOVE SAVE-SEQ TO RNMM-SEQ1 RNMM-SEQ2
+                 CALL "QCMDEXC" USING RNMM-CMD RNMM-LEN
+                 MOVE "FOUND DUP MBR IN FRTDATAFL*62-CNP" TO
+                    BU-DISPLAY-MSG
+                 MOVE "FOR SEQ NUM" TO BU-DISPLAY-FLD (1)
+                 MOVE SAVE-SEQ      TO BU-DISPLAY-FLD (2)
+                 GO TO 9999-BLOWUP
+              END-IF
+
+              IF RTN-CODE = "9"
+                 MOVE "AUTHORITY PROBLEM FOR FRTDATAFL*62-CNP"
+                    TO BU-DISPLAY-MSG
+                 GO TO 9999-BLOWUP
+              END-IF
+           END-IF
+
+      *----PREPARE NEWPFM-O WITH NEWLY CREATED MEMBER.
+      *----OVRDBF FILE(FRTDATAFL) TOFILE(*LIBL/FRTDATAFL) MBR(FRTXXXX).
+
+           MOVE SAVE-SEQ TO OVRDBF-SEQ.
+
+           CALL "QCMDEXC" USING  OVRDBF-FRT-CMD  OVRDBF-FRT-LEN.
+
+           OPEN OUTPUT     NEWPFM-O.
+
+      *----FIND DATE OF FREIGHT PAYMENTS IN TABLE AND ADD TO HDR.
+
+           MOVE 1 TO TBL-IX.
+           PERFORM UNTIL FREIGHT-SEQ-NUM = TBL-SEQ (TBL-IX)
+              ADD 1 TO TBL-IX
+           END-PERFORM.
+           MOVE TBL-HI-DATE (TBL-IX) TO FREIGHT-PAYMENT-DATE.
+
+      *----WRITE TIS FREIGHT RECORDS TO NEW MEMBER.
+
+           WRITE NEWPFM-REC-O FROM BUF-FREIGHT.
+
+           PERFORM UNTIL FREIGHT-TRAN-CODE = "99"
+
+              READ FREIGHT-T INTO BUF-FREIGHT
+                 AT END MOVE "Y" TO TISDATA-EOF
+              END-READ
+
+      *-------IF A PAYMENT COMES THRU WITH A PREVIOUS DATE THAN THE REST
+      *-------OF THE RECORDS AND WITH A PO, MOST LIKELY THE PLANT HAS ALREADY
+      *-------RECEIVED A MANUAL REC FOR THIS PAYMENT.  TURN THIS PAYMENT
+      *-------INTO A RATED RECORD SO IT WILL MATCH TO THE MANUAL RECORD
+      *-------AND APPLY. USE "Z" INSTEAD OF "R" FOR RATED TO INDICATE
+      *-------THAT THIS RECORD REALLY CAME DOWN AS A PAYMENT BUT WAS
+      *-------CHANGED BY THIS PROGRAM. IN CASE THE PAID & RATED CARRIERS
+      *-------ARE DIFFERENT, SWITCH THEM AROUND SO THE NEW "RATED" REC IS
+      *-------SURE TO MATCH TO THE PREVIOUS MANUAL.
+      *-------IF THIS PAYMENT RECORD IS FOR A NEGATIVE AMOUNT, DON'T CHANGE
+      *-------IT TO A RATED.
+
+              IF FREIGHT-TRAN-CODE = "02" OR "03"
+                 IF FREIGHT-PAID-DATE < TBL-HI-DATE (TBL-IX)
+                   AND FREIGHT-REC-TYPE = "P"
+                    IF FREIGHT-PO-13 > SPACES
+                       IF FREIGHT-CHARGES >= 0
+                          MOVE "Z"               TO FREIGHT-REC-TYPE
+                          MOVE FREIGHT-PAY-CARR  TO SAVE-PAY-CARR
+                          MOVE FREIGHT-DELV-CARR TO FREIGHT-PAY-CARR
+                          MOVE SAVE-PAY-CARR     TO FREIGHT-DELV-CARR
+                       END-IF
+                    END-IF
+                 END-IF
+              END-IF
+              WRITE NEWPFM-REC-O FROM BUF-FREIGHT
+
+           END-PERFORM.
+
+      *----UPDATE LAST SEQ NUMBER CREATED IN MACCOUNT-INFO.
+
+           MOVE "FRT" TO MACCT-ARG.
+           PERFORM 9999-READ-MACCOUNT-INFO-O.
+           IF SAVE-SEQ > MACCT-FRT-LAST-FILE-CREATED
+              MOVE SAVE-SEQ TO MACCT-FRT-LAST-FILE-CREATED
+              PERFORM 9999-REWRITE-MACCOUNT-INFO-O
+           ELSE
+              PERFORM 9999-RESET-MACCOUNT-INFO-O.
+
+      *----CHECK IF THERE'S MORE DATA FOR ANOTHER PFM.
+
+           PERFORM UNTIL FREIGHT-EOF = "Y"
+
+              READ FREIGHT-T INTO BUF-FREIGHT
+                 AT END GO TO 62-EXIT
+              END-READ
+
+      *-------IF JOB DESC WASN'T FOUND AT BEGINNING, CHECK AT END.
+      *-------USE IT TO UPDATE NEW PFM'S TEXT DESCRIPTION.
+
+              IF JOB-DESC-FOUND = "N"
+                 IF JOB-REC-TYPE = "*N  END"
+                    MOVE SAVE-SEQ  TO CHGPFM-SEQ
+                    MOVE JOB-DATE  TO CHGPFM-DATE
+                    MOVE JOB-TIME  TO CHGPFM-TIME
+                    MOVE JOB-NUM   TO CHGPFM-JNUM
+                    DISPLAY CHGPFM-CMD
+                    CALL "QCMDEXC" USING   CHGPFM-CMD   CHGPFM-LEN
+                 END-IF
+              END-IF
+
+              IF FREIGHT-TRAN-CODE = "01"
+                 OR JOB-REC-TYPE = "*N START"
+                 CLOSE NEWPFM-O
+                 GO TO 62-CREATE-NEW-PFM
+              END-IF
+
+           END-PERFORM.
+
+       62-EXIT.
+           EXIT.
+
+
+       9999-BLOWUP.
+           MOVE "TFRTWRKPFM" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+      *---------------------------------
+      * MACCOUNT-INFO
+      *---------------------------------
+
+       9999-READ-MACCOUNT-INFO-O.
+           MOVE MACCT-ARG TO INFOKEY OF MACCOUNT-INFO-REC-O.
+           READ MACCOUNT-INFO-O INTO BUF-MACCT-INFO
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ MACCOUNT-INFO*9999-RMIO" TO BU-DISPLAY-MSG
+              MOVE MACCT-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+
+       9999-RESET-MACCOUNT-INFO-O.
+           MOVE HIGH-VALUES TO INFOKEY OF MACCOUNT-INFO-REC-O.
+           START MACCOUNT-INFO-O KEY > INFOKEY OF MACCOUNT-INFO-REC-O
+              INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-REWRITE-MACCOUNT-INFO-O.
+           REWRITE MACCOUNT-INFO-REC-O FROM BUF-MACCT-INFO
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "REWRITE MACCOUNT-INFO*9999-RMIO" TO BU-DISPLAY-MSG
+              MOVE MACCT-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+

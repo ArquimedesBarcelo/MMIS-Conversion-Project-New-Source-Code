@@ -1,0 +1,253 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SRELVEND.
+       AUTHOR.        CA YODER.
+       DATE-WRITTEN.  JANUARY 1996.
+       INSTALLATION.  THE GOODYEAR TIRE & RUBBER CO.
+
+      ****************************************************************
+      *                                                              *
+      *   S R E L V E N D                                            *
+      *                                                              *
+      *   THIS SUBROUTINE FINDS THE LOWEST COST VENDOR.  IF THE      *
+      *   LOWEST COST VENDOR IS NOT CHOSEN IN SRELEASE OR TRELBATC,  *
+      *   (WHEN A SHIPPING RELEASE IS CREATED), AN AUDIT RECORD IS   *
+      *   WRITTEN.                                                   *
+      *                                                              *
+      ****************************************************************
+
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRELTRAK-O
+                  ASSIGN TO DATABASE-MCFLCS6101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1001.
+
+       FD  DRELTRAK-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRELTRAK-REC-O.
+           COPY DD-MCRPCS6100    OF MCFLCS6101.
+
+       WORKING-STORAGE SECTION.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+      **************************************************************
+      **      S W I T C H E S  &  H O L D   A R E A S             **
+      **************************************************************
+
+       01  DPOITEM-EOF-SW            PIC X    VALUE "N".
+       01  MORE-CODES                PIC X    VALUE "Y".
+       01  FOUND-LOWER               PIC X    VALUE "N".
+
+       01  DATES-AND-TIMES.
+           05  CUR-DATE.
+               10  CUR-CC            PIC XX.
+               10  CUR-DATE-YMD.
+                   15  CUR-YY        PIC XX.
+                   15  CUR-MM        PIC XX.
+                   15  CUR-DD        PIC XX.
+
+       01  HOLD-PRICES.
+           05  LOWEST-PRICE          PIC S9(11)V9(4)  COMP-3.
+
+       01  HOLD-PO-NUM.
+           05  PO-FIRST-4            PIC X(4).
+           05  FILLER                PIC X(3).
+
+      **************************************************************
+      **          D A T A B A S E   B U F F E R S                 **
+      **************************************************************
+
+       COPY DPOITEM IN COPYLIB.
+
+       COPY DPORECD IN COPYLIB.
+
+       COPY DRELTRAK IN COPYLIB.
+
+       01  WHO-VARIABLES.
+           COPY WHOPARMS IN COPYLIB.
+
+      **************************************************************
+      **          D A T A S E T   N A M E S                       **
+      **************************************************************
+
+       01  ARG-VALUES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+
+
+       LINKAGE SECTION.
+
+       01  PASSED-PARAMETERS       PIC X(60).
+
+      *********************************************************
+      **         P R O C E D U R E   D I V I S I O N         **
+      *********************************************************
+
+       PROCEDURE DIVISION USING  PASSED-PARAMETERS.
+
+       0-BEGIN.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THROUGH 6-MAIN-X.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+      *------- DON'T RUN PROGRAM IF NON-CODED ITEM.
+           IF TREL-CODE = "NON-STR"
+               GOBACK.
+
+           OPEN INPUT DPORECD-I
+                      DPOITEM-I.
+
+           ACCEPT CUR-DATE-YMD FROM DATE.
+           IF CUR-YY > "70"
+               MOVE "19"            TO  CUR-CC
+           ELSE
+               MOVE "20"            TO  CUR-CC.
+           INITIALIZE BUF-DRELTRAK
+                      HOLD-PRICES.
+           MOVE "N"                 TO  DPOITEM-EOF-SW
+                                        FOUND-LOWER.
+           MOVE "Y"                 TO  MORE-CODES.
+           MOVE PASSED-PARAMETERS   TO  TREL-RELEASE-DATA.
+           MOVE TREL-PO             TO  TREL-LOW-PO-NUM.
+           MOVE TREL-ITEM-NUM       TO  TREL-LOW-ITEM-NUM.
+           MOVE TREL-PRICE          TO  TREL-LOW-PRICE.
+           MOVE TREL-PRICE-UM       TO  TREL-LOW-UM.
+           MOVE TREL-VENDOR         TO  TREL-LOW-VENDOR.
+           MOVE TREL-PRICE          TO  LOWEST-PRICE.
+
+           MOVE TREL-CODE           TO  CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF DPOITEM-REC-I.
+           PERFORM 999-START-DPOITEM.
+           IF MORE-CODES = "Y"
+               PERFORM 999-READ-NEXT-DPOITEM.
+
+       2-EOJ.
+           CLOSE      DPORECD-I
+                      DPOITEM-I.
+
+       6-MAIN.
+           IF (DPOITEM-EOF-SW = "Y" OR MORE-CODES = "N") AND
+                                    FOUND-LOWER = "Y"
+               PERFORM 62-WRITE-AUDIT-RECORD
+               GO TO 6-MAIN-X.
+
+           IF (DPOITEM-EOF-SW = "Y" OR MORE-CODES = "N") AND
+                                    FOUND-LOWER = "N"
+               GO TO 6-MAIN-X.
+
+      *----------- DON'T INCLUDE INTERNAL TRANSFERS IN SEARCHING FOR
+      *----------- LOWEST.  (DEFINED AS FIRST 4 CHARACTERS = "ITOV")
+           MOVE ITM-PO-NO       TO  HOLD-PO-NUM.
+           IF PO-FIRST-4 NOT = "ITOV"
+               IF ITM-PO-RCVR  =  "000"
+                   IF ITM-PO-REL  =  "999"
+                       IF ITM-UNIT-PRICE < LOWEST-PRICE
+                           PERFORM 999-READ-DPORECD
+                           IF PO-EXPECT-DATE-CN > CUR-DATE
+                               PERFORM 61-MOVE-LOWEST.
+
+           PERFORM 999-READ-NEXT-DPOITEM.
+           GO TO 6-MAIN.
+
+       6-MAIN-X.
+           EXIT.
+
+       61-MOVE-LOWEST.
+           MOVE ITM-PO-NO           TO  TREL-LOW-PO-NUM.
+           MOVE ITM-NUMBER          TO  TREL-LOW-ITEM-NUM.
+           MOVE ITM-UNIT-PRICE      TO  TREL-LOW-PRICE
+                                        LOWEST-PRICE.
+           MOVE ITM-UM              TO  TREL-LOW-UM.
+           MOVE PO-VEN-CODE         TO  TREL-LOW-VENDOR.
+           MOVE "Y"                 TO  FOUND-LOWER.
+
+       62-WRITE-AUDIT-RECORD.
+           MOVE CUR-DATE            TO  TREL-DATE-STAMP.
+           ACCEPT TREL-TIME-STAMP FROM TIME.
+
+           CALL "WHO"               USING  MOD       CAP
+                                           LATTR     USERNAME
+                                           GRPNAME   ACCTNAME
+                                           HOMEGRP   TERMNUM.
+           MOVE USERNAME            TO  TREL-USER-NAME.
+           MOVE GRPNAME             TO  TREL-USER-GROUP.
+           MOVE ACCTNAME            TO  TREL-USER-ACCOUNT.
+           MOVE HOMEGRP             TO  TREL-USER-HOME.
+           MOVE TERMNUM             TO  TREL-USER-TERM.
+
+           OPEN I-O                 DRELTRAK-O.
+           WRITE DRELTRAK-REC-O     FROM  BUF-DRELTRAK
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               DISPLAY "FAIL OF DRELTRAK WRITE:  " FILE-STATUS.
+               CLOSE                DRELTRAK-O.
+
+      ************************************************************
+      **                 F I L E   R E A D S                    **
+      ************************************************************
+
+       999-START-DPOITEM.
+           START DPOITEM-I KEY = CORPCDE OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+                   MOVE "N"         TO  MORE-CODES.
+
+       999-READ-NEXT-DPOITEM.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE "Y"      TO  DPOITEM-EOF-SW.
+           IF DPOITEM-EOF-SW = "N"
+               IF CORPCDE OF DPOITEM-REC-I NOT = CODE-ARG
+                   MOVE "N"         TO  MORE-CODES.
+
+       999-READ-DPORECD.
+           MOVE ITM-PO-RCV-NO       TO  PO-ARG.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               DISPLAY "*** COULDN'T FIND DPORECD:  " PO-ARG
+               GO TO 6-MAIN-X.

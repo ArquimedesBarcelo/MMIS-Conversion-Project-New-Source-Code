@@ -1,0 +1,497 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TBEGMTH.
+       AUTHOR.               MK MADDEN.
+       INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+       DATE-WRITTEN.         FEB 5, 1986.
+
+      *REMARKS.              THIS PROGRAM WILL RESET THE ABSTFILE
+      *                      AND MANIFEST SEQUENCE NUMBERS BEFORE
+      *                      PROCESSING NEW MONTH'S TRANSACTIONS.
+      *                      THIS PROGRAM WILL ALSO DELETE COMPLETED
+      *                      TRANSACTIONS FROM THE TRANSACTION DETAIL
+      *                      DATA SET AND SET REMAINING TRANSACTIONS
+      *                      TO A PROCESSED STATE (DOCUMENT # = PROC).
+      *
+      *  15JUL1993           DAVE PLUM
+      *  REVISED THE DELETION LOGIC FOR DAPPLFRT RECORDS DUE TO THE
+      *  NEW FORMAT OF THIS FILE.  (CSAS FREIGHT OVERHAUL OF 1993).
+      *
+      *  05NOV1993           DAVE PLUM
+      *  ADDED LOGIC TO UPDATE SEVERAL FIELDS OF THE "FRT" RECORD OF
+      *  MACCOUNT-INFO (MCFPCA0100).  THE FIRST AND LAST DATE AND TIME
+      *  PROCESSED FIELDS WILL ALL BE SET TO THE CURRENT SYSTEM DATE
+      *  TIME.  THIS WILL SET THINGS UP FOR TFRTSTAT TO RUN AS PART OF
+      *  JOB BHOLDTRN AND PRODUCE THE FIRST FREIGHT STATUS REPORT OF THE
+      *  NEW MONTH (PRIOR TO PROCESSING ANY HELD FREIGHT DATA).  WITH THE
+      *  FIRST AND LAST DATE/TIME PROCESSED FIELDS SET IN THIS WAY, THE
+      *  FREIGHT STATUS REPORT WILL SHOW ZERO DOLLARS APPLIED FOR THE NEW
+      *  MONTH (WHICH IS THE CASE SINCE NO DATA FOR THE NEW MONTH HAS BEEN
+      *  PROCESSED YET).
+      *
+      *C   07FEB1994    DAVE PLUM
+      *C     ADDED CALL TO THE COBOL ERROR HANDLER - MCXCBLERR.
+      *C
+      *C   04APR1995    CA ZUBEK    REQ. #95-014
+      *C     ADDED LOGIC TO WRITE DTRANS RECORDS TO DTRANS2 BEFORE
+      *C     DELETING THEM IN ORDER TO BE ABLE TO SHOW WEEKLY ACCTG.
+      *C     DATA.
+      *C
+      *C   12SEP1996    DAVE PLUM
+      *C     REVISED FOR CENTURY DATABASE CHANGES.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      IBM-AS400.
+       OBJECT-COMPUTER.      IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MACTINFO-O
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-O
+                  ASSIGN TO DATABASE-MCFLCA0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DAPPLFRT-O
+                  ASSIGN TO DATABASE-MCFLCA1101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS2-O
+                  ASSIGN TO DATABASE-MCFLCA1201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MACTINFO-O
+           LABEL RECORDS ARE STANDARD.
+       01  MACTINFO-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCA0101.
+
+       FD  DTRANS-O
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCA0701.
+
+       FD  DAPPLFRT-O
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCA1101.
+
+       FD  DTRANS2-O
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS2-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCA1201.
+
+       WORKING-STORAGE SECTION.
+       77  MCXCBLERR-SCOPE               PIC X(1)  VALUE "C".
+       01  FILE-STATUS.
+           05  FILE-STATUS-1  PIC X(1) VALUE SPACES.
+           05  FILE-STATUS-2  PIC X(1) VALUE SPACES.
+
+      ************************************************************
+      **                                                        **
+      **           D A T A B A S E   B U F F E R S              **
+      **                                                        **
+      ************************************************************
+
+      *********************
+      **  MACCOUNT-INFO  **
+      *********************
+
+       COPY MACTINFO IN COPYLIB.
+
+      ******************
+      *   DTRANS       *
+      ******************
+
+       COPY DTRANS   IN COPYLIB.
+
+      ******************
+      *   DAPPLFRT     *
+      ******************
+
+       COPY DAPPLFRT IN COPYLIB.
+
+      **********************************************************
+      *              D A T A    B A S E                        *
+      **********************************************************
+
+       COPY DBCSACCT IN COPYLIB.
+
+       COPY DBMODES  IN COPYLIB.
+
+       COPY DBSTAT   IN COPYLIB.
+
+       01  IMAGE-ARGS.
+           05  MACCT-KEY        PIC X(4)   VALUE SPACES.
+           05  MMATL-CODE-ARG   PIC X(8)   VALUE SPACES.
+           05  PO-ARG           PIC X(10)  VALUE SPACES.
+
+      ***********************************************************
+      **   DATE AREA
+      ***********************************************************
+
+       01  CURRENT-DATE.
+           05  CD-CC                    PIC X(2)  VALUE SPACES.
+           05  CD-YYMMDD.
+               10  CD-YY                PIC X(2)  VALUE SPACES.
+               10  CD-MM                PIC X(2)  VALUE SPACES.
+               10  CD-DD                PIC X(2)  VALUE SPACES.
+
+       01  DELETE-DATE.
+           05  DELETE-DATE-CCYY.
+               10  DELETE-DATE-CC       PIC 9(2)  VALUE ZEROES.
+               10  DELETE-DATE-YY       PIC 9(2)  VALUE ZEROES.
+           05  DELETE-DATE-CCYY-9 REDEFINES DELETE-DATE-CCYY
+                                        PIC 9(4).
+           05  DELETE-DATE-MM           PIC 9(2)  VALUE ZEROES.
+           05  DELETE-DATE-DD           PIC 9(2)  VALUE ZEROES.
+
+       01  TIME-OF-DAY                  PIC X(6)  VALUE SPACES.
+
+      *******************************************************
+      *   PARAMETERS USED IN 'TBLOWUP' ROUTINE (PRINTS      *
+      *   ERRORS AND ABORTS PROGRAM.  RUN XBLPRT.OBJECT TO  *
+      *   READ ERRORS).                                     *
+      *******************************************************
+
+       COPY TBLOWUP IN COPYLIB.
+
+       PROCEDURE DIVISION.
+
+       001-BEGIN SECTION.
+
+       010-MAINLINE.
+           PERFORM 100-BEGIN.
+           PERFORM 200-UPDATE-SEQ.
+
+           ACCEPT TIME-OF-DAY FROM TIME.
+           DISPLAY "START DELETING CLOSED DTRANS ENTRIES ",
+               TIME-OF-DAY.
+           PERFORM 400-START-DTRANS.
+           PERFORM 400-GET-DTRANS.
+           PERFORM 300-PROCESS-DTRANS
+              UNTIL END-OF-FILE.
+           ACCEPT TIME-OF-DAY FROM TIME.
+           DISPLAY "FINISHED DELETING DTRANS ENTRIES ", TIME-OF-DAY.
+
+           ACCEPT TIME-OF-DAY FROM TIME.
+           DISPLAY
+            "START DELETING CANCELLED AND COMPLETED DAPPLFRT ENTRIES ",
+              TIME-OF-DAY.
+           PERFORM 400-START-DAPPLFRT.
+           PERFORM 400-GET-DAPPLFRT.
+           PERFORM 350-PROCESS-DAPPLFRT
+               UNTIL END-OF-FILE.
+           ACCEPT TIME-OF-DAY FROM TIME.
+           DISPLAY "FINISHED DELETING DAPPLFRT ENTRIES ", TIME-OF-DAY.
+
+           PERFORM 1000-CLOSE-FILES.
+           GOBACK.
+
+       100-BEGIN.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+           OPEN I-O MACTINFO-O, DTRANS-O, DAPPLFRT-O, DTRANS2-O.
+
+      *********************************************************
+      **   CALCULATE THE DELETE DATE FOR DELETING APPLIED
+      **   FREIGHT BILLS.  2 MONTHS IS USED FOR THE AGING
+      **   FACTOR.
+      *********************************************************
+
+           ACCEPT CD-YYMMDD FROM DATE.
+
+           IF CD-YY > "70"
+               MOVE "19" TO CD-CC
+           ELSE
+               MOVE "20" TO CD-CC.
+
+           DISPLAY "APPLIED FREIGHT CURRENT DATE= ", CURRENT-DATE.
+
+           MOVE CD-CC                   TO DELETE-DATE-CC.
+           MOVE CD-YY                   TO DELETE-DATE-YY.
+           MOVE CD-MM                   TO DELETE-DATE-MM.
+           MOVE ZEROS                   TO DELETE-DATE-DD.
+
+           IF DELETE-DATE-MM > 02
+               NEXT SENTENCE
+           ELSE
+               SUBTRACT 1               FROM DELETE-DATE-CCYY-9
+               ADD 12                   TO DELETE-DATE-MM.
+
+           SUBTRACT 2                   FROM DELETE-DATE-MM.
+           DISPLAY "APPLIED FREIGHT DELETE DATE = ", DELETE-DATE.
+
+       200-UPDATE-SEQ.
+           MOVE "SEQ"                   TO MACCT-KEY.
+           MOVE MACCT-KEY TO INFOKEY OF MACTINFO-REC-O.
+           READ MACTINFO-O INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET MACCOUNT-INFO - SEQ * 200-US"
+                     TO BU-DISPLAY-MSG
+               MOVE MACCT-KEY           TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           IF MACCT-MNFST-SAVE = ZEROS
+               NEXT SENTENCE
+           ELSE
+               MOVE MACCT-MNFST-SAVE    TO MACCT-MNFST-SEQ
+               MOVE ZEROS               TO MACCT-MNFST-SAVE.
+
+           PERFORM 400-UPDATE-MACCT.
+
+           MOVE "MY" TO MACCT-KEY.
+           MOVE MACCT-KEY TO INFOKEY OF MACTINFO-REC-O.
+           READ MACTINFO-O INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET MACCOUNT-INFO - MY * 200-US"
+                      TO BU-DISPLAY-MSG
+               MOVE MACCT-KEY TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           IF MACCT-MONTH = 12
+               MOVE 01 TO MACCT-MONTH
+               ADD 1 TO MACCT-YEAR
+           ELSE
+               ADD 1 TO MACCT-MONTH.
+
+           PERFORM 400-UPDATE-MACCT.
+
+      *----- GET THE CURRENT SYSTEM DATE AND TIME
+           ACCEPT CD-YYMMDD FROM DATE.
+
+           IF CD-YY > "70"
+               MOVE "19" TO CD-CC
+           ELSE
+               MOVE "20" TO CD-CC.
+
+           ACCEPT TIME-OF-DAY FROM TIME.
+
+      *----- SET THE DATE AND TIME PROCESSED FIELDS OF THE "FRT" RECORD
+      *----- TO THE CURRENT DATE/TIME (IF THE "FRT" RECORD EXISTS).
+           MOVE "FRT" TO MACCT-KEY.
+           MOVE MACCT-KEY TO INFOKEY OF MACTINFO-REC-O.
+           READ MACTINFO-O INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           IF FILE-STATUS NOT = "00"
+             IF FILE-STATUS = "23"
+               DISPLAY "*** CSAS FRT ACCTG IS NOT ACTIVE IN THIS PLANT,"
+               DISPLAY "*** KEY=FRT DOES NOT EXIST IN MACCOUNT-INFO."
+             ELSE
+               MOVE "DBGET MACCOUNT-INFO - FRT * 200-US"
+                      TO BU-DISPLAY-MSG
+               MOVE MACCT-KEY TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP
+           ELSE
+               MOVE CURRENT-DATE TO MACCT-FRT-FIRST-DATE-PROCESSED
+                                    MACCT-FRT-LAST-DATE-PROCESSED
+               MOVE TIME-OF-DAY  TO MACCT-FRT-FIRST-TIME-PROCESSED
+                                    MACCT-FRT-LAST-TIME-PROCESSED
+               PERFORM 400-UPDATE-MACCT.
+
+       300-PROCESS-DTRANS.
+
+           IF TRANS-BALANCE-QTY = 0
+               PERFORM 310-DELETE-DTRANS
+           ELSE
+               PERFORM 320-UPDATE-PROC.
+           PERFORM 400-GET-DTRANS.
+
+       310-DELETE-DTRANS.
+      *--- BEFORE DELETING DTRANS RECORDS, WRITE THEM TO DTRANS2.
+           WRITE DTRANS2-REC-O FROM BUF-DTRANS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE DTRANS2 * 310-DELETE" TO BU-DISPLAY-MSG
+               MOVE TRANS-STORES-CODE TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+           DELETE DTRANS-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DELETE DTRANS * 310-DELETE" TO BU-DISPLAY-MSG
+               MOVE TRANS-STORES-CODE TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+       320-UPDATE-PROC.
+           MOVE "PROC" TO TRANS-DOCUMENT-NUM.
+
+           REWRITE DTRANS-REC-O FROM BUF-DTRANS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBUPDATE DTRANS * 320-UPDATE" TO BU-DISPLAY-MSG
+               MOVE TRANS-STORES-CODE TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+       350-PROCESS-DAPPLFRT.
+      *################################################################
+      *### 15JUL1993 - REPLACED THIS ENTIRE PARAGRAPH IN ORDER TO
+      *### HANDLE THE NEW RECORD LAYOUT OF DAPPLFRT, AND THE NEW
+      *### "PROCESSING RULES" FOR DAPPLFRT RECORDS.
+      *### (CSAS FREIGHT OVERHAUL OF 1993)
+      *################################################################
+      ******* 11NOV91 ADDED "AND DAPPL-ITEM-NUM NOT =..." TO THE
+      *******  FOLLOWING IF STMT TO PREVENT THE DELETION OF MANL
+      *******  ENTRIES WHICH HAVE NOT BEEN CANCELLED.  MANLS
+      *******  SHOULD REMAIN IN THE DATABASE AND STAY ON THE
+      *******  FRT STATUS REPORT UNTIL THEY ARE CANCELLED.
+      *******  --- DAVE PLUM
+      *
+      *    IF DAPPL-CANCEL-FLAG-1 = "X"
+      *        IF (DAPPL-CANCEL-DATE < DELETE-DATE
+      *         AND DAPPL-PAID-DATE < DELETE-DATE)
+      *            PERFORM 360-DELETE-DAPPLFRT
+      *        END-IF
+      *    ELSE
+      *        IF (DAPPL-PAID-AMT NOT = 0
+      *         AND DAPPL-ITEM-NUM NOT = "MANL"
+      *         AND DAPPL-PAID-DATE < DELETE-DATE)
+      *            PERFORM 360-DELETE-DAPPLFRT.
+
+      **********************************************************************
+      * THE FOLLOWING TYPES OF DAPPLFRT RECORDS CAN BE DELETED IF THEY
+      * ARE OLD ENOUGH:
+      *   1) CANCELLED RECORDS
+      *        - DELETED IF THE STATUS DATE (CANCEL DATE) IS LESS THAN
+      *          THE "DELETE DATE"
+      *        - (THE ONLY RECORDS WHICH CAN BE CANCELLED ARE "MANLS", WHERE
+      *           "MANLS" ARE PAID FREIGHT BILLS THAT CANNOT BE APPLIED
+      *           SINCE THEY DO NOT HAVE A PO NUMBER)
+      *   2) COMPLETED RECORDS
+      *        - DELETED IF THE PAID APPLIED DATE IS LESS THAN THE "DELETE
+      *          DATE" (AND NOT EQUAL TO SPACES)
+      *        - (A RECORD IS CONSIDERED TO BE COMPLETE WHEN THE PAID
+      *           APPLIED DATE AND TIME HAVE BEEN FILLED IN)
+      **********************************************************************
+
+           IF (DAPPL-STAT-IS-CANCELLED   AND
+               DAPPL-STATUS-DATE  <  DELETE-DATE)
+            OR
+              (DAPPL-PAID-APPL-DATE  >  SPACES   AND
+               DAPPL-PAID-APPL-DATE  <  DELETE-DATE)
+                  PERFORM 360-DELETE-DAPPLFRT.
+
+           PERFORM 400-GET-DAPPLFRT.
+
+       360-DELETE-DAPPLFRT.
+      * DISPLAY STATEMENTS FOR TESTING ONLY
+      *    DISPLAY "**************************************************".
+      *    DISPLAY "DAPPL-STATUS & DATE    = " DAPPL-STATUS " "
+      *      DAPPL-STATUS-DATE.
+      *    DISPLAY "DAPPL-PAID-APPL-DATE   = " DAPPL-PAID-APPL-DATE.
+      *    DISPLAY "DAPPL-PO-14            = " DAPPL-PO-14.
+      *    DISPLAY "DAPPL-RATED CARR & PRO = " DAPPL-RATED-CARRIER " "
+      *      DAPPL-RATED-PRO-NO.
+      *    DISPLAY "DAPPL-PAID CARR & PRO  = " DAPPL-PAID-CARRIER " "
+      *      DAPPL-PAID-PRO-NO.
+
+           DELETE DAPPLFRT-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBDELETE DAPPLFRT * 360-DELETE" TO BU-DISPLAY-MSG
+               MOVE DAPPL-PO-NUM      TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+       400-UPDATE-MACCT.
+           REWRITE MACTINFO-REC-O FROM BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBUPDATE MACCT * 400-UA" TO BU-DISPLAY-MSG
+               MOVE MACCT-KEY           TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+       400-GET-DTRANS.
+           MOVE 0 TO COND-WORD.
+           READ DTRANS-O NEXT INTO BUF-DTRANS
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 11 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF END-OF-FILE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET DTRANS * 400-GD" TO BU-DISPLAY-MSG
+                   MOVE TRANS-STORES-CODE TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP.
+
+       400-START-DTRANS.
+           MOVE SPACES TO MATLCODE OF DTRANS-REC-O.
+           START DTRANS-O KEY >= MATLCODE OF DTRANS-REC-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "START ERROR DTRANS " TO BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+
+       400-GET-DAPPLFRT.
+           MOVE 0 TO COND-WORD.
+           READ DAPPLFRT-O NEXT INTO BUF-DAPPLFRT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 11 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF END-OF-FILE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE DAPPL-PO-14         TO BU-DISPLAY-FLD (1)
+                   MOVE DAPPL-TIS-PAID-DATE TO BU-DISPLAY-FLD (2)
+                   MOVE DAPPL-TIS-SHIP-DATE TO BU-DISPLAY-FLD (3)
+                   MOVE DAPPL-RAIL-CAR      TO BU-DISPLAY-FLD (4)
+                   MOVE "DBGET DAPPLFRT * 400-GD" TO BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+
+       400-START-DAPPLFRT.
+           MOVE SPACES TO PORCVNO OF DAPPLFRT-REC-O.
+           START DAPPLFRT-O KEY >= PORCVNO OF DAPPLFRT-REC-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "START ERROR DTRANS " TO BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+
+       900-ERROR SECTION.
+
+       990-BLOWUP.
+           MOVE "TBEGMTH"               TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING ACCTG-BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+       1000-CLOSE-FILES.
+           CLOSE MACTINFO-O, DTRANS-O, DAPPLFRT-O, DTRANS2-O.

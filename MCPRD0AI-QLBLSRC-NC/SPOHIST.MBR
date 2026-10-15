@@ -1,0 +1,2029 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.  SPOHIST.
+       AUTHOR.      KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+
+      *D* * * * * * * * * * * * * * * * * * * * * * * * * *
+      *D*                                                 *
+      *D* S P O H I S T                                   *
+      *D*                                                 *
+      *D* THIS SUB PROGRAM LOADS PURCHASE ORDERS,         *
+      *D* RECEIVING SLIPS, INVOICES FROM THE STORES       *
+      *D* DATA BASE INTO THE HISTORY DATA BASE 'STHIST'   *
+      *D* THIS SUBROUTINE IS CALLED JUST BEFORE THE       *
+      *D* PURCHASE ORDER INFORMATION IS DELETED FROM THE  *
+      *D* STORES DATA BASE.                               *
+      *D*                                                 *
+      *P* NOTE THIS SUBROUTINE IS CALLED BY: TAPODELT     *
+      *D* * * * * * * * * * * * * * * * * * * * * * * * * *
+      *C* CHANGES
+      *C*
+      *C* JUNE 23, 1992   CR KALMAN
+      *C* TWO INDICATORS FOR THE PAY UPON RECEIPT PROJECT
+      *C* NEEDED TO BE MOVED TO PO HISTORY DATABASE ALONG
+      *C* WITH THE PO. THEY ARE THE PO-INVOICELESS-IND AND
+      *C* THE PO-NO-CHECK-INDIC.
+      *
+      *C  02/21/94  JEFF BUNGO #6449
+      *C    ADDED NEW FIELDS TO THE HISTORY DATABASE FILES TO
+      *C    MATCH THE LIVE DATABASE FILES.  USE THESE ADDITIONAL
+      *C    FIELDS IN THE MOVE TO HISTORY.
+      *C
+      *C  10FEB1995  DAVE PLUM
+      *C    REVISED LOGIC DEALING WITH LITERAL VALUES SUCH AS:
+      *C    "BELOW", "AS REL", "ASAP", OR "RUSH" THAT MAY APPEAR
+      *C    IN THE PO SHIP DATE FIELD IN THE LIVE DATABASE.  IN THE
+      *C    HISTORY DATABASE THIS FIELD IS A NUMERIC FIELD SO WE
+      *C    MUST MOVE ZEROS INSTEAD OF THE LITERAL VALUE.
+      *C
+      *C  SEPTEMBER 1996 JE COFFMAN  REQ# 6619
+      *C    EXPANDED DATE FIELDS TO COMPLY TO YEAR 2000.
+      *C
+      *C  11/22/96  JEFF BUNGO
+      *C    ADDED LOGIC TO MOVE QS9000 TRACKING INFORMATION TO
+      *C    HISTORY (DRCVTRAK).
+      *C
+      *C  05/06/97  CA YODER
+      *C    CORRECTED PARAGRAPH 631-GET-FREIGHT-LOOP.  THE PROGRAM
+      *C    WAS BLOWING UP ON A DATA DECIMAL ERROR BECAUSE THE
+      *C    FRT-BILL-DATE-CN WAS BEING MOVED TO FORMAT-DATE AS
+      *C    "20      ".  ADDED LOGIC TO MAKE SURE THAT THE REST
+      *C    OF THE DATE IS NUMERIC BEFORE FORMATTING IT.
+      *C
+      *C  10/31/97  CA YODER
+      *C    SHIP DATE WAS NOT BEING PROPERLY MOVED INTO HISTORY IF
+      *C    IT WAS = 0.  ADDED CHECK TO SEE IF ALL ZEROS, THEN MOVE
+      *C    "00" TO CENTURY.
+      *C
+      *C  08/13/98  CA YODER
+      *C    PAD12 FIELDS WERE NOT BEING MOVED TO HISTORY.  ADDED
+      *C    THEM TO COPYLIB MEMBER DPORECDH AND ADDED LOGIC IN THIS
+      *C    PROGRAM TO MOVE THE FIELDS TO HISTORY.
+      *C
+      ***--------------------------------------------------------------
+DCR01 *  06/17/2003   DAN RAUCH    DCR01
+DCR01 *    ADDED LOGIC FOR PO LOGGING
+      *C
+      *C  10/16/2003  CA YODER
+      *C    THE QS9000 ITEM FLAG WAS NOT BEING MOVED TO HISTORY.
+      *C    THIS CAUSED THE QS9000 TO NOT SHOW UP ON THE PO INQUIRY
+      *C    SCREEN.  EEC FIELDS AND NOTIFY USER-ID WERE ALSO MISSING.
+      *C    CORRECTED PROGRAM.
+      *C
+      ***********************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+DCR01      SELECT MPLTINFO-FILE
+DCR01             ASSIGN TO DATABASE-MCFLCS0501
+DCR01             ORGANIZATION IS INDEXED
+DCR01             ACCESS MODE IS DYNAMIC
+DCR01             RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+DCR01             FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECDH-O
+                  ASSIGN TO DATABASE-MCFLST0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPORCV-O
+                  ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEMH-O
+                  ASSIGN TO DATABASE-MCFLST0401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-I
+                  ASSIGN TO DATABASE-MCFLCS1101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODESCH-O
+                  ASSIGN TO DATABASE-MCFLST0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQD-I
+                  ASSIGN TO DATABASE-MCFLCS2102
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDORH-O
+                  ASSIGN TO DATABASE-MCFLST0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOFREIGHT-I
+                  ASSIGN TO DATABASE-MCFLCS2401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOFREIGHTH-O
+                  ASSIGN TO DATABASE-MCFLST0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVITEMH-O
+                  ASSIGN TO DATABASE-MCFLST0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2502
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCDH-O
+                  ASSIGN TO DATABASE-MCFLST0802
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVITM-I
+                  ASSIGN TO DATABASE-MCFLCS2601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVITMH-O
+                  ASSIGN TO DATABASE-MCFLST0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVACCT-I
+                  ASSIGN TO DATABASE-MCFLCS2701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVACCTH-O
+                  ASSIGN TO DATABASE-MCFLST1001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVCORR-I
+                  ASSIGN TO DATABASE-MCFLCS5401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVCORRH-O
+                  ASSIGN TO DATABASE-MCFLST5401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVTRAK-I
+                  ASSIGN TO DATABASE-MCFLCS6401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVTRAK-O
+                  ASSIGN TO DATABASE-MCFLST6401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+DCR01  FD  MPLTINFO-FILE
+DCR01      LABEL RECORDS ARE STANDARD.
+DCR01  01  MPLTINFO-REC.
+DCR01      COPY DDS-MCRPCS0500  OF MCFLCS0501.
+DCR01
+
+       FD  DPORECDH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECDH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST0301.
+
+       FD  MPORCV-O
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  DPOITEMH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEMH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST0401.
+
+       FD  DPODATAITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+       FD  DPODESCH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPODESCH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST0501.
+
+       FD  DREQD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2102.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0701.
+
+       FD  DVENDORH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDORH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST0201.
+
+       FD  DPOFREIGHT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHT-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2401.
+
+       FD  DPOFREIGHTH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHTH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST0701.
+
+       FD  DRCVITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1201.
+
+       FD  DRCVITEMH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEMH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST0601.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS2502.
+
+       FD  DINVRCDH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCDH-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLST0802.
+
+       FD  DINVITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS2601.
+
+       FD  DINVITMH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITMH-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLST0901.
+
+       FD  DINVACCT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVACCT-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS2701.
+
+       FD  DINVACCTH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVACCTH-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLST1001.
+
+       FD  DRCVCORR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVCORR-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS5401.
+
+       FD  DRCVCORRH-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVCORRH-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST5401.
+
+       FD  DRCVTRAK-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVTRAK-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS6401.
+
+       FD  DRCVTRAK-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVTRAK-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLST6401.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       77  SUB                        PIC S9(4) COMP-4 VALUE ZEROS.
+
+      **************************
+      *                        *
+      *  SWITCHES              *
+      *                        *
+      **************************
+
+       01  SWITCH-AREA.
+           05  DUP-PO-SW              PIC X   VALUE SPACES.
+
+       01  BUILD-PO-NUMBER.
+           05  BUILD-PO-RLSE.
+               10  BUILD-PO-NUM       PIC X(7)  VALUE SPACES.
+               10  BUILD-PO-REL       PIC X(3)  VALUE SPACES.
+           05  BUILD-PO-RCVR          PIC X(3)  VALUE SPACES.
+           05  BUILD-PO-DUP-ID        PIC 9     VALUE ZEROS.
+
+       01  BUILD-RCVR-NUMBER.
+           05  BUILD-RCVR-PO-REL      PIC X(10) VALUE SPACES.
+           05  BUILD-RCVR-NO          PIC X(3)  VALUE SPACES.
+           05  BUILD-RCVR-DUP-ID      PIC X.
+
+
+DCR01  COPY POLOGSUBWS IN COPYLIB.
+DCR01  COPY CPOLOGPRM  IN COPYLIB.
+
+
+       01  WORK-AREA.
+           05  SAVE-LAST-RCVR         PIC 9(3)  VALUE ZEROS.
+           05  FORMAT-DATE            PIC 9(8)  VALUE ZEROS.
+           05  WORK-DATE.
+               10  WD-CC              PIC X(2).
+               10  WD-DATE.
+                   15  WD-DATE-YY     PIC X(2).
+                   15  FILLER         PIC X(4).
+           05  WORK-DATE-9 REDEFINES WORK-DATE  PIC 9(8).
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       COPY MPORCV IN COPYLIB.
+
+       COPY DPOITEM IN COPYLIB.
+
+       COPY DPODATA IN COPYLIB.
+
+       COPY DFREIGHT IN COPYLIB.
+
+       COPY DRCVITEM IN COPYLIB.
+
+       COPY DVENDOR IN COPYLIB.
+
+       COPY DREQD IN COPYLIB.
+
+       COPY DREQITM IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY DINVRCD IN COPYLIB.
+
+       COPY DINVITM IN COPYLIB.
+
+       COPY DINVACCT IN COPYLIB.
+
+       COPY DRCVCORR IN COPYLIB.
+
+       COPY DRCVTRAK IN COPYLIB.
+
+
+      ************************************************
+      *                                              *
+      *   I/O BUFFERS FOR STORES HISTORY DATA BASE   *
+      *                                              *
+      ************************************************
+
+       COPY DPORECDH IN COPYLIB.
+
+       COPY DPOITEMH IN COPYLIB.
+
+       COPY DPODESCH IN COPYLIB.
+
+       COPY DRCVITMH IN COPYLIB.
+
+       COPY DPOFRTH IN COPYLIB.
+
+       COPY DINVRCDH IN COPYLIB.
+
+       COPY DINVITMH IN COPYLIB.
+
+       COPY DINVACTH IN COPYLIB.
+
+       COPY DVENDORH IN COPYLIB.
+
+       COPY DRCVCORH IN COPYLIB.
+
+       COPY DRCVTRAKH IN COPYLIB.
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16)  VALUE SPACES.
+           05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+           05  DSET-MPORCV            PIC X(16)  VALUE "MPORCV;".
+           05  DSET-DREQD             PIC X(16)  VALUE "DREQD;".
+           05  DSET-DREQITM           PIC X(16)  VALUE "DREQITM;".
+           05  DSET-DPOITEM           PIC X(16)  VALUE "DPOITEM;".
+           05  DSET-DPODATAITM        PIC X(16)  VALUE "DPODATAITM;".
+           05  DSET-DRCVITEM          PIC X(16)  VALUE "DRCVITEM;".
+           05  DSET-DPOFREIGHT        PIC X(16)  VALUE "DPOFREIGHT;".
+           05  DSET-DINVRCD           PIC X(16)  VALUE "DINVRCD;".
+           05  DSET-DINVITM           PIC X(16)  VALUE "DINVITM;".
+           05  DSET-DINVACCT          PIC X(16)  VALUE "DINVACCT;".
+           05  DSET-DVENDOR           PIC X(16)  VALUE "DVENDOR;".
+           05  DSET-MSTORERM          PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-DRCVCORR          PIC X(16)  VALUE "DRCVCORR;".
+
+      ********* DSET NAMES FOR STORES HISTORY 'STHIST'
+
+           05  DSET-DPODESC-H         PIC X(16)  VALUE "DPODESC;".
+           05  DSET-DRCVITEM-H        PIC X(16)  VALUE "DRCVITEM;".
+
+       COPY DBSTAT IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+           05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+           05  REQ-SEARCH             PIC X(12) VALUE "REQ-NUMBER;".
+           05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+           05  VEN-SEARCH             PIC X(10) VALUE "VEN-CODE;".
+           05  REG-SEARCH             PIC X(16)
+                                      VALUE "REGISTER-NUMBER;".
+
+       01  ARG-VALUES.
+           05  REQ-ARG                PIC X(12) VALUE SPACES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+           05  VEN-ARG                PIC X(10) VALUE SPACES.
+           05  REGISTER-ARG           PIC X(6)  VALUE SPACES.
+           05  RCVR-ARG.
+               10  RCVR-PO-PREFIX     PIC X     VALUE SPACES.
+               10  RCVR-PO-NUM        PIC X(7)  VALUE SPACES.
+               10  RCVR-PO-REL        PIC X(3)  VALUE SPACES.
+               10  RCVR-PO-RCVR       PIC 9(3)  VALUE ZEROS.
+
+       COPY TDATECHK IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+       LINKAGE SECTION.
+
+       01  BASE             PIC X(10).
+
+       01  BASE-STHIST      PIC X(10).
+
+       COPY DPORECD IN COPYLIB.
+
+       01  PO-ARG           PIC X(14).
+
+
+
+       PROCEDURE DIVISION USING  BASE,
+                                 BASE-STHIST,
+                                 BUF-DPORECD,
+                                 PO-ARG.
+
+
+
+       PO-HISTORY-UPDATE SECTION 10.
+       BEGIN-HERE.
+           OPEN INPUT DPOITEM-I, MSTORERM-I, DPODATAITM-I, DREQD-I,
+                      DVENDOR-I, DPOFREIGHT-I, DRCVITEM-I, DINVRCD-I,
+                      DINVITM-I, DINVACCT-I, DRCVCORR-I DRCVTRAK-I
+DCR01                 MPLTINFO-FILE.
+           OPEN I-O MPORCV-O, DPOITEMH-O, DPODESCH-O, DVENDORH-O,
+                    DPOFREIGHTH-O, DRCVITEMH-O, DINVRCDH-O,
+                    DINVITMH-O, DINVACCTH-O, DPORECDH-O,
+                    DRCVCORRH-O DRCVTRAK-O.
+
+           PERFORM 6-MAIN  THRU  6-MAIN-X.
+
+           CLOSE DPOITEM-I, MSTORERM-I, DPODATAITM-I, DREQD-I,
+                 DVENDOR-I, DPOFREIGHT-I, DRCVITEM-I, DINVRCD-I,
+                 DINVITM-I, DINVACCT-I, DRCVCORR-I, DRCVTRAK-I,
+                 MPORCV-O, DPOITEMH-O, DPODESCH-O, DVENDORH-O,
+                 DPOFREIGHTH-O, DRCVITEMH-O, DINVRCDH-O,
+                 DINVITMH-O, DINVACCTH-O, DPORECDH-O, DRCVCORRH-O
+DCR01            MPLTINFO-FILE
+                 DRCVTRAK-O.
+           GOBACK.
+
+
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "SPOHIST"  TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+
+
+       6-MAIN.
+
+DCR01      PERFORM Z000-PGM-SETUP     THRU Z000-PS-EXIT.
+
+
+           MOVE PO-ARG                TO  BU-DISPLAY-FLD (1).
+
+           PERFORM 61-CHECK-FOR-DUPLICATE-PO  THRU  61-CFDP-X.
+           IF DUP-PO-SW = "Y"
+               GO TO 6-MAIN-X.
+           MOVE PO-RCV-NO               TO PO-ARG.
+           MOVE BUILD-PO-NUMBER         TO BU-DISPLAY-FLD (2).
+
+           PERFORM 62-LOAD-PO-HISTORY  THRU  62-LPH-X.
+
+           PERFORM 63-LOAD-RECEIVING-HISTORY  THRU  63-LRH-X.
+
+           PERFORM 64-LOAD-INVOICING-HISTORY  THRU  64-LIH-X.
+
+       6-SET-UPDATE-STATUS.
+           PERFORM 65-UPDATE-MPORCV-STATUS  THRU  65-UMS-X.
+
+       6-MAIN-X.
+           EXIT.
+
+
+
+       61-CHECK-FOR-DUPLICATE-PO.
+           MOVE SPACES                TO  BUILD-PO-NUMBER.
+           MOVE PO-PO-NO              TO  BUILD-PO-NUM.
+           MOVE PO-RLS-NO             TO  BUILD-PO-REL.
+           MOVE PO-RCVR               TO  BUILD-PO-RCVR.
+           MOVE ZEROS                 TO  SUB.
+           MOVE SPACES                TO  DUP-PO-SW.
+
+       61-FIND-DPORECD-H.
+           MOVE BUILD-PO-NUMBER       TO  PO-ARG.
+           MOVE PO-ARG TO PORCVNO OF DPORECDH-REC-O.
+           START DPORECDH-O KEY = PORCVNO OF DPORECDH-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 61-CFDP-X
+               ELSE
+                   MOVE "START DPORECDH *61-FDH" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               IF SUB = 9
+                   DISPLAY "DUPLICATE PO ", PO-PO-NO, PO-RLS-NO
+                   MOVE "Y"  TO  DUP-PO-SW
+               ELSE
+                   ADD 1  TO  SUB
+                   MOVE SUB  TO  BUILD-PO-DUP-ID
+                   GO TO 61-FIND-DPORECD-H.
+
+       61-CFDP-X.
+           EXIT.
+
+
+       62-LOAD-PO-HISTORY.
+
+DCR01      MOVE PO-ARG            TO  WS-Z000-PORCVNO.
+
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+           ELSE
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+               MOVE HIGH-VALUES TO PORCVNO OF MPORCV-REC-O
+               START MPORCV-O KEY > PORCVNO OF MPORCV-REC-O
+                   INVALID KEY MOVE "00" TO FILE-STATUS.
+      *A   CALL "DBGET" USING BASE, DSET-MPORCV, MODE7,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-MPORCV, PO-ARG.
+           IF COND-WORD NOT = 0
+               MOVE "GET MPORCV*62-LPH" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DPORECD-H.
+           MOVE BUILD-PO-NUMBER       TO  POH-RCV-NO.
+           MOVE PO-REQ-NUMBER         TO  POH-REQ-NUMBER.
+           MOVE PO-RCV-DEPT           TO  POH-RCV-DEPT.
+           MOVE PO-FOR-DEPT           TO  POH-FOR-DEPT.
+           IF PO-DATE-CC = "19" OR "20"
+               NEXT SENTENCE
+           ELSE
+           IF PO-DATE-YY > "70"
+               MOVE "19"              TO  PO-DATE-CC
+           ELSE
+           MOVE "20"                  TO  PO-DATE-CC.
+           MOVE PO-DATE-CN            TO  FORMAT-DATE.
+           MOVE FORMAT-DATE           TO  POH-DATE.
+
+DP0295******** 10FEB1995 - REVISED THE FOLLOWING 2 IF STATEMENTS
+DP0295********  TO COVER MORE SITUATIONS
+DP0295*****IF PO-SHIP-DATE = SPACES OR "BELOW " OR " BELOW"
+DP0295*****        OR "AS REL"
+DP0295     IF PO-SHIP-DATE-CN NOT NUMERIC
+               MOVE ZEROS             TO  POH-SHIP-DATE
+           ELSE
+           IF PO-SHIP-DATE-CN < "00000000"
+               MOVE ZEROS             TO  POH-SHIP-DATE
+           ELSE
+           IF PO-SHIP-DATE-CN = "00000000"
+               MOVE ZEROS             TO  POH-SHIP-DATE
+           ELSE
+           IF PO-SHIP-DATE-CC = "19" OR "20"
+               MOVE PO-SHIP-DATE-CN   TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  POH-SHIP-DATE
+           ELSE
+           IF PO-SHIP-YY > "70"
+               MOVE "19"              TO  PO-SHIP-DATE-CC
+               MOVE PO-SHIP-DATE-CN   TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  POH-SHIP-DATE
+           ELSE
+           MOVE "20"                  TO  PO-SHIP-DATE-CC
+           MOVE PO-SHIP-DATE-CN       TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  POH-SHIP-DATE.
+
+DP0295*****IF PO-EXPECT-DATE = SPACES
+DP0295     IF PO-EXPECT-DATE-CN NOT NUMERIC
+               MOVE ZEROS             TO  POH-EXPECT-DATE
+           ELSE
+           IF PO-EXPECT-DATE-CN = ZEROS
+               MOVE ZEROS             TO  POH-EXPECT-DATE
+           ELSE
+           IF PO-EXPECT-DATE-CC = "19" OR "20"
+               MOVE PO-EXPECT-DATE-CN TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  POH-EXPECT-DATE
+           ELSE
+           IF PO-EXPECT-YY > "70"
+               MOVE "19"              TO  PO-EXPECT-DATE-CC
+               MOVE PO-EXPECT-DATE-CN TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  POH-EXPECT-DATE
+           ELSE
+           MOVE "20"                  TO  PO-EXPECT-DATE-CC
+           MOVE PO-EXPECT-DATE-CN     TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  POH-EXPECT-DATE.
+
+           MOVE PO-PLT                TO  POH-PLT.
+           MOVE PO-BLDG               TO  POH-BLDG.
+           MOVE PO-CO                 TO  POH-CO.
+           MOVE PO-PRIME              TO  POH-PRIME.
+           MOVE PO-SUB                TO  POH-SUB.
+           MOVE PO-SUB-DET            TO  POH-SUB-DET.
+           MOVE PO-ADDL-DATA          TO  POH-ADDL-DATA.
+9206CK     MOVE PO-NO-CHECK-INDIC     TO  POH-NO-CHECK-INDIC.
+           MOVE PO-EEC-PO-INDIC       TO  POH-EEC-PO-INDIC.
+           MOVE PO-BUDGET-NUMBER      TO  POH-BUDGET-NUMBER.
+           MOVE PO-BUDGET-AMT         TO  POH-BUDGET-AMT.
+           MOVE PO-FREIGHT-TERMS      TO  POH-FREIGHT-TERMS.
+           MOVE PO-EDI-FLAG           TO  POH-EDI-FLAG.
+           MOVE PO-TERMS              TO  POH-TERMS.
+           MOVE PO-BUYER-TYP          TO  POH-BUYER-TYP.
+           MOVE PO-ADDL-INFO          TO  POH-ADDL-INFO.
+           MOVE PO-VIA                TO  POH-VIA.
+           MOVE PO-FOB                TO  POH-FOB.
+           MOVE PO-VEN-CODE           TO  POH-VEN-CODE.
+           MOVE PO-BUYER-CODE         TO  POH-BUYER-CODE.
+           MOVE PO-TYPE               TO  POH-TYPE.
+           MOVE PO-BLANKET-INDIC      TO  POH-BLANKET-INDIC.
+           MOVE PO-ALT-REMIT-INDIC    TO  POH-ALT-REMIT-INDIC.
+           MOVE PO-MULTI-ZBILL        TO  POH-MULTI-ZBILL.
+           MOVE PO-NON-RCV-INDIC      TO  POH-NON-RCV-INDIC.
+           MOVE PO-INTERNAL-ORDER-INDIC TO  POH-INTERNAL-ORD-INDIC.
+           IF PO-LAST-PAYMENT-CN = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF PO-LAST-PAYMENT-CC = "19" OR "20"
+               MOVE PO-LAST-PAYMENT-CN    TO  POH-LAST-PAYMENT-CN
+           ELSE
+           IF PO-LAST-PAYMENT-YEAR > "70"
+               MOVE "19"              TO  PO-LAST-PAYMENT-CC
+               MOVE PO-LAST-PAYMENT-CN    TO  POH-LAST-PAYMENT-CN
+           ELSE
+           MOVE "20"                  TO  PO-LAST-PAYMENT-CC
+           MOVE PO-LAST-PAYMENT-CN    TO  POH-LAST-PAYMENT-CN.
+           MOVE PO-CURRENCY-CODE      TO  POH-CURRENCY-CODE.
+           MOVE PO-ZBILL              TO  POH-ZBILL.
+           IF PO-FOLLOWUP-DATE-CN = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF PO-FOLLOWUP-DATE-CC = "19" OR "20"
+               MOVE PO-FOLLOWUP-DATE-CN   TO  POH-FOLLOWUP-DATE-CN
+           ELSE
+           IF PO-FOLLOWUP-YY > "70"
+               MOVE "19"              TO  PO-FOLLOWUP-DATE-CC
+               MOVE PO-FOLLOWUP-DATE-CN   TO  POH-FOLLOWUP-DATE-CN
+           ELSE
+           MOVE "20"                  TO  PO-FOLLOWUP-DATE-CC
+           MOVE PO-FOLLOWUP-DATE-CN   TO  POH-FOLLOWUP-DATE-CN.
+           MOVE PO-FOLLOWUP-COUNT     TO  POH-FOLLOWUP-COUNT.
+           MOVE PO-CREATE-TYPE        TO  POH-CREATE-TYPE.
+9206CK     MOVE PO-INVOICELESS-IND    TO  POH-INVOICELESS-INDIC.
+           MOVE PO-TRANSPORT-MODE     TO  POH-TRANSPORT-MODE.
+           MOVE PO-TRANSPORT-CHGPAY   TO  POH-TRANSPORT-CHGPAY.
+           MOVE PO-TRANSPORT-TERMS-OF-DEL TO POH-TRANSPORT-TERMS-OF-DEL.
+      *--------- MOVE PAD12 FIELDS.
+           MOVE PO-EEC-NATURE-TRANS   TO  POH-EEC-NATURE-TRANS.
+           MOVE PO-EEC-PORT-AIRPORT   TO  POH-EEC-PORT-AIRPORT.
+           MOVE PO-PRFAX-DATE         TO  POH-PRFAX-DATE.
+           MOVE PO-NONPAY-IND         TO  POH-NONPAY-IND.
+           MOVE 1                     TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT          TO  WD-DATE.
+           IF WD-DATE-YY > "70"
+               MOVE "19"              TO  WD-CC
+               MOVE WORK-DATE-9       TO  POH-DELETION-DATE
+           ELSE
+           MOVE "20"                  TO  WD-CC
+           MOVE WORK-DATE-9           TO  POH-DELETION-DATE.
+           IF M-PO-RCV-NO-9-11 = "999"
+               MOVE M-PO-LAST-RLSE    TO  POH-LAST-RCVR,
+                                          SAVE-LAST-RCVR
+           ELSE
+           IF M-PO-LAST-RCVR-X NUMERIC
+               MOVE M-PO-LAST-RCVR    TO  POH-LAST-RCVR,
+                                          SAVE-LAST-RCVR
+           ELSE
+           MOVE ZEROES                TO  POH-LAST-RCVR,
+                                          SAVE-LAST-RCVR.
+
+      *------ WRITE HEADER
+           WRITE DPORECDH-REC-O FROM BUF-DPORECD-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DPORECD-H*62-PH" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           END-IF.
+
+
+DCR01 *-------------------------------------------------------------
+DCR01 *--  LOG PO AS HISTORY(9) TRANSACTION - FROM LIVE ==> HISTORY
+DCR01 *-------------------------------------------------------------
+DCR01      IF  Z000-POLG-ACTIVE-YES
+DCR01          PERFORM L000-LOG-HST9  THRU L000-HST9-EXIT
+DCR01      END-IF.
+DCR01 *-------------------------------------------------------------
+
+
+           PERFORM 621-LOAD-ITEMS  THRU  621-LI-X.
+
+           MOVE PO-VEN-CODE     TO  VEN-ARG.
+           PERFORM 623-LOAD-VENDOR-NAME  THRU  623-LVN-X.
+
+       62-LPH-X.
+           EXIT.
+
+
+       621-LOAD-ITEMS.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 621-FIND-DPODATAITM
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, PO-ARG.
+           IF COND-WORD NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "FIND DPOITEM * 621-LI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       621-GET-DPOITEM.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, PO-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 621-FIND-DPODATAITM
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DPOITEM*621-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DPOITEM-H.
+           MOVE BUILD-PO-NUMBER       TO  ITMH-PO-RCV-NO.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE SPACES            TO  ITMH-CORP-CODE
+           ELSE
+               MOVE ITM-CORP-CODE     TO  ITMH-CORP-CODE,
+                                          CODE-ARG.
+           MOVE ITM-NUMBER            TO  ITMH-NUMBER.
+           MOVE ITM-UM                TO  ITMH-QTY-UM.
+           MOVE ITM-QTY-ORD           TO  ITMH-QTY-ORD.
+           MOVE ITM-QTY-DLVR          TO  ITMH-QTY-DLVR.
+           MOVE ITM-QTY-STORED        TO  ITMH-QTY-STORED.
+           MOVE ITM-PRICE-UM          TO  ITMH-PRICE-UM.
+           MOVE ITM-UNIT-PRICE        TO  ITMH-UNIT-PRICE.
+           MOVE ITM-QTY-PAID          TO  ITMH-QTY-PAID.
+
+           MOVE ITM-CLASS             TO  ITMH-SUB.
+           IF ITM-CORP-CODE = "NON-STR"
+               NEXT SENTENCE
+           ELSE
+               IF ITMH-SUB = SPACES
+                   MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I
+                   READ MSTORERM-I INTO BUF-MSTORERM
+                       INVALID KEY MOVE "2" TO FILE-STATUS-1 END-READ
+                   IF FILE-STATUS-1 = "2"
+                       NEXT SENTENCE
+                   ELSE
+                   IF FILE-STATUS NOT = "00"
+                       PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                       MOVE "GET MSTORERM*621-GD" TO BU-DISPLAY-MSG
+                       GO TO 2-BLOWUP
+                   ELSE
+                       MOVE STR-CLASS  TO  ITMH-SUB.
+
+           MOVE ITM-SUB-DETL          TO  ITMH-SUB-DETL.
+           MOVE ITM-ADDL-DATA         TO  ITMH-ADDL-DATA.
+           IF ITM-DATE-RCVD-CN NOT NUMERIC
+               MOVE ZEROS             TO  ITMH-DATE-RCVD
+           ELSE
+           IF ITM-DATE-RCVD-CN = ZERO
+               MOVE ZEROS             TO  ITMH-DATE-RCVD
+           ELSE
+           IF CC-RCVD = "19" OR "20"
+               MOVE ITM-DATE-RCVD-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  ITMH-DATE-RCVD
+           ELSE
+           IF YY-RCVD > "70"
+               MOVE "19"              TO  CC-RCVD
+               MOVE ITM-DATE-RCVD-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  ITMH-DATE-RCVD
+           ELSE
+           MOVE "20"                  TO  CC-RCVD
+           MOVE ITM-DATE-RCVD-CN      TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  ITMH-DATE-RCVD.
+           IF ITM-DATE-STORED-CN NOT NUMERIC
+               MOVE ZEROS             TO  ITMH-DATE-RCVD
+           ELSE
+           IF ITM-DATE-STORED-CN = "    DD  "
+               MOVE ITM-DATE-STORED-CN    TO  ITMH-DATE-STORED-CN
+           ELSE
+           IF CC-STORED = "19" OR "20"
+               MOVE ITM-DATE-STORED-CN    TO  ITMH-DATE-STORED-CN
+           ELSE
+           IF YY-STORED > "70"
+               MOVE "19"              TO  CC-STORED
+               MOVE ITM-DATE-STORED-CN    TO  ITMH-DATE-STORED-CN
+           ELSE
+           MOVE "20"                  TO  CC-STORED
+           MOVE ITM-DATE-STORED-CN    TO  ITMH-DATE-STORED-CN.
+           MOVE ITM-COMPANY           TO  ITMH-COMPANY.
+           MOVE ITM-PRIME             TO  ITMH-PRIME.
+           MOVE ITM-WT                TO  ITMH-WT.
+           IF ITM-SHIP-DATE-CN NOT NUMERIC
+               MOVE ZEROES            TO  ITMH-SHIP-DATE
+           ELSE
+           IF ITM-SHIP-DATE-CN = ZEROS
+               MOVE ZEROES            TO  ITMH-SHIP-DATE
+           ELSE
+           IF ITM-SHIP-DATE-CC = "19" OR "20"
+               MOVE ITM-SHIP-DATE-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  ITMH-SHIP-DATE
+           ELSE
+           IF ITM-SHIP-YY > "70"
+               MOVE "19"              TO  ITM-SHIP-DATE-CC
+               MOVE ITM-SHIP-DATE-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  ITMH-SHIP-DATE
+           ELSE
+           MOVE "20"                  TO  ITM-SHIP-DATE-CC
+           MOVE ITM-SHIP-DATE-CN      TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  ITMH-SHIP-DATE.
+           IF ITM-EXPECT-DATE-CN NOT NUMERIC
+               MOVE ZEROES            TO  ITMH-EXPECT-DATE
+           ELSE
+           IF ITM-EXPECT-DATE-CN = ZERO
+               MOVE ZEROES            TO  ITMH-EXPECT-DATE
+           ELSE
+           IF ITM-EXPECT-DATE-CC = "19" OR "20"
+               MOVE ITM-EXPECT-DATE-CN    TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  ITMH-EXPECT-DATE
+           ELSE
+           IF ITM-EXPECT-YY > "70"
+               MOVE "19"              TO  ITM-EXPECT-DATE-CC
+               MOVE ITM-EXPECT-DATE-CN    TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  ITMH-EXPECT-DATE
+           ELSE
+           MOVE "20"                  TO  ITM-EXPECT-DATE-CC
+           MOVE ITM-EXPECT-DATE-CN    TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  ITMH-EXPECT-DATE.
+           MOVE ITM-TERMS             TO  ITMH-TERMS.
+           MOVE ITM-FOB               TO  ITMH-FOB.
+           MOVE ITM-STD-INST          TO  ITMH-STD-INST.
+           MOVE ITM-COMPLETE-FLAG     TO  ITMH-COMPLETE-FLAG.
+           MOVE ITM-CONTAINER         TO  ITMH-CONTAINER.
+           MOVE ITM-SECOND-DESC-INDIC TO  ITMH-SECOND-DESC-INDIC.
+           MOVE ITM-TAX-CODE          TO  ITMH-TAX-CODE.
+           IF ITM-KELLY-PO-QTY NOT NUMERIC
+               MOVE ZERO              TO  ITMH-KELLY-PO-QTY
+           ELSE
+               MOVE ITM-KELLY-PO-QTY  TO  ITMH-KELLY-PO-QTY.
+           MOVE ITM-KELLY-PO-UM       TO  ITMH-KELLY-PO-UM.
+           MOVE ITM-ZBILL-VALUE       TO  ITMH-ZBILL-VALUE.
+           MOVE ITM-MASTER-STOCK      TO  ITMH-MASTER-STOCK.
+           MOVE ITM-CHAT-NO           TO  ITMH-CHAT-NO.
+           MOVE ITM-QS9000-TRACK      TO  ITMH-QS9000-TRACK.
+           MOVE ITM-NOTIFY-USERID     TO  ITMH-NOTIFY-USERID.
+           MOVE ITM-EEC-ORIGIN-COUNTRY    TO  ITMH-EEC-ORIGIN-COUNTRY.
+           MOVE ITM-EEC-COMM-CODE         TO  ITMH-EEC-COMM-CODE.
+           PERFORM 6211-CHECK-FOR-REQ  THRU  6211-CFR-X.
+
+      *-------WRITE ITEM.
+           WRITE DPOITEMH-REC-O FROM BUF-DPOITEM-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DPOITEM*621-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 621-GET-DPOITEM.
+
+       621-FIND-DPODATAITM.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPODATAITM-REC-I.
+           START DPODATAITM-I KEY = PORCVNO OF DPODATAITM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 621-LI-X
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DPODATAITM, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, PO-ARG.
+           IF COND-WORD NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "FIND DPODATAITM*621-FD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       621-GET-DPODATAITM.
+           MOVE 0 TO COND-WORD.
+           READ DPODATAITM-I NEXT INTO BUF-DPODATAITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPODATAITM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DPODATAITM, MODE5,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-DPODATAITM, PO-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 621-FIND-DRCVTRAK
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DPODATAITM*621-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+      *-----WRITE PO DESC.
+           MOVE SPACES                TO  BUF-DPODESC-H.
+           MOVE BUILD-PO-NUMBER       TO  PODESCH-PO-RCV-NO.
+           MOVE DATAITM-INFO          TO  PODESCH-DESC.
+           MOVE DATAITM-LINE          TO  PODESCH-SEQ.
+           WRITE DPODESCH-REC-O FROM BUF-DPODESC-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DPODESC*621-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 621-GET-DPODATAITM.
+
+       621-FIND-DRCVTRAK.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DRCVTRAK-REC-I.
+           START DRCVTRAK-I KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 621-LI-X
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "FIND DRCVTRAK*621-FD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       621-GET-DRCVTRAK.
+           MOVE 0 TO COND-WORD.
+           READ DRCVTRAK-I NEXT INTO BUF-DRCVTRAK
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DRCVTRAK-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 621-LI-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DRCVTRAK*621-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+      *-----WRITE QS900 TRACKING.
+           MOVE SPACES                TO  BUF-DRCVTRAKH.
+           MOVE BUILD-PO-NUMBER       TO  RCVTRAKH-PO-RCV-NO.
+           MOVE RCVTRAK-ITEM-NUMBER   TO  RCVTRAKH-ITEM-NUMBER.
+           MOVE RCVTRAK-SEQNO         TO  RCVTRAKH-SEQNO.
+           MOVE RCVTRAK-VEN-CODE      TO  RCVTRAKH-VEN-CODE.
+           MOVE RCVTRAK-CORP-CODE     TO  RCVTRAKH-CORP-CODE.
+           MOVE RCVTRAK-EXPECT-QTY    TO  RCVTRAKH-EXPECT-QTY.
+           MOVE RCVTRAK-EXPECT-DATE   TO  FORMAT-DATE.
+           MOVE FORMAT-DATE           TO  RCVTRAKH-EXPECT-DATE.
+           MOVE RCVTRAK-EARLY-DAYS    TO  RCVTRAKH-EARLY-DAYS.
+           MOVE RCVTRAK-LATE-DAYS     TO  RCVTRAKH-LATE-DAYS.
+           MOVE RCVTRAK-RCV-SLIP      TO  RCVTRAKH-RCV-SLIP.
+           MOVE RCVTRAK-CARRIER       TO  RCVTRAKH-CARRIER.
+           MOVE RCVTRAK-DLVR-QTY      TO  RCVTRAKH-DLVR-QTY.
+           MOVE RCVTRAK-DLVR-DATE     TO  RCVTRAKH-DLVR-DATE.
+           MOVE RCVTRAK-CORRECTIVE-ACTION TO RCVTRAKH-CORRECTIVE-ACTION.
+           MOVE RCVTRAK-ALREADY-REPORTED TO RCVTRAKH-ALREADY-REPORTED.
+           WRITE DRCVTRAK-REC-O FROM BUF-DRCVTRAKH
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DRCVTRAKH*621-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 621-GET-DRCVTRAK.
+       621-LI-X.
+           EXIT.
+
+
+      **********************************************
+      *                                            *
+      *  THIS ROUTINES SEARCHES FOR A REQ BY USING *
+      *  DREQD CHECKS TO SEE IF THE ITEM NUMBER    *
+      *  IS A MATCH                                *
+      *                                            *
+      **********************************************
+
+
+       6211-CHECK-FOR-REQ.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DREQD-REC-I.
+           START DREQD-I KEY = PORCVNO OF DREQD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 6211-CFR-X
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DREQD, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, PO-ARG.
+           IF COND-WORD  NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "FIND DREQD * 6211-CFR" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       6211-GET-DREQD.
+           MOVE 0 TO COND-WORD.
+           READ DREQD-I NEXT INTO BUF-DREQD
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DREQD-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DREQD, MODE5,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-DREQD, PO-ARG.
+           IF COND-WORD  NOT = 0
+               IF COND-WORD = 15
+                   GO TO 6211-CFR-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DREQD * 6211-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF DREQD-PO-ITM-NO  =  ITM-NUMBER
+               MOVE DREQD-REQ-NUMBER  TO  ITMH-REQ-NUMBER
+           ELSE
+               GO TO 6211-GET-DREQD.
+
+       6211-CFR-X.
+           EXIT.
+
+
+       623-LOAD-VENDOR-NAME.
+           MOVE VEN-ARG TO VENCDE OF DVENDORH-REC-O.
+           START DVENDORH-O KEY = VENCDE OF DVENDORH-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 623-FIND-VENDOR-NAME
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DVENDOR STHIST*623-LVN"
+                       TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               GO TO 623-LVN-X.
+
+       623-FIND-VENDOR-NAME.
+           MOVE 0 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-I.
+           START DVENDOR-I KEY = VENCDE OF DVENDOR-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 623-LVN-X
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DVENDOR, MODE1,
+      *A       STATUS-AREA, VEN-SEARCH, VEN-ARG.
+           IF COND-WORD NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "FIND DVENDOR * 623-FVN" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       623-GET-DVENDOR.
+           MOVE 0 TO COND-WORD.
+           READ DVENDOR-I NEXT INTO BUF-DVENDOR
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF VENCDE OF DVENDOR-REC-I NOT = VEN-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DVENDOR, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DVENDOR, VEN-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 623-LVN-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DVENDOR*623-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF VEN-ITM-NO = ZEROS
+               NEXT SENTENCE
+           ELSE
+               GO TO 623-LVN-X.
+           MOVE SPACES                TO  BUF-DVENDOR-H.
+           MOVE VEN-ARG               TO  VENH-VEN-CODE.
+           MOVE VEN-ITM-NO            TO  VENH-ITM-NO.
+           MOVE VEN-NAME              TO  VENH-NAME.
+
+      *------- WRITE VENDOR NAME
+           WRITE DVENDORH-REC-O FROM BUF-DVENDOR-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DVENDOR*623-PUN" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       623-LVN-X.
+           EXIT.
+
+
+
+
+       63-LOAD-RECEIVING-HISTORY.
+           MOVE PO-ARG                TO  RCVR-ARG.
+           MOVE BUILD-PO-NUMBER       TO  BUILD-RCVR-NUMBER.
+
+      ****** LOAD ALL FREIGHT BILLS FOUND UNDER THE PO NUMBER KEY
+      ****** SINCE THESE FREIGHT BILLS CAN BE PUT OUT BY THE INVOICE
+      ****** PROCESSING PROGRAM.
+
+           PERFORM 631-LOAD-FREIGHT-INFO  THRU  631-LFI-X.
+
+       63-LOAD-RCVR-LOOP.
+           IF SAVE-LAST-RCVR = RCVR-PO-RCVR
+               GO TO 63-LRH-X.
+           ADD 1  TO  RCVR-PO-RCVR.
+           MOVE RCVR-PO-RCVR          TO  BUILD-RCVR-NO.
+           PERFORM 631-LOAD-FREIGHT-INFO  THRU  631-LFI-X.
+
+      ******** LOAD RECEIVING SLIP ITEMS
+
+           PERFORM 632-GET-RCV-SLIP  THRU  632-GRS-X.
+
+           GO TO 63-LOAD-RCVR-LOOP.
+
+       63-LRH-X.
+           EXIT.
+
+       631-LOAD-FREIGHT-INFO.
+           MOVE 0 TO COND-WORD.
+           MOVE RCVR-ARG TO PORCVNO OF DPOFREIGHT-REC-I.
+           START DPOFREIGHT-I KEY = PORCVNO OF DPOFREIGHT-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DPOFREIGHT, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 631-LFI-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DPOFREIGHT * 631-LFI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       631-GET-FREIGHT-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOFREIGHT-I NEXT INTO BUF-DPOFREIGHT
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOFREIGHT-REC-I NOT = RCVR-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DPOFREIGHT, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DPOFREIGHT, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 631-LFI-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DPOFREIGHT*631-GFL" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DPOFREIGHT-H.
+           MOVE BUILD-RCVR-NUMBER     TO  FRTH-PO-RCV-NO.
+           MOVE FRT-TYPE              TO  FRTH-TYPE.
+           MOVE FRT-PAID-FLAG         TO  FRTH-PAID-FLAG.
+           MOVE FRT-EMPL              TO  FRTH-EMPL.
+           MOVE FRT-PACK-SLIP         TO  FRTH-PACK-SLIP.
+           MOVE FRT-CARRIER           TO  FRTH-CARRIER.
+           MOVE FRT-BILL-NO           TO  FRTH-BILL-NO.
+           IF FRT-CHARGES-9 NUMERIC
+               MOVE FRT-CHARGES-9     TO  FRTH-CHARGES
+           ELSE
+               MOVE ZEROS             TO  FRTH-CHARGES.
+      *--------- CHECK TO SEE IF THE DATE IS NUMERIC INSTEAD
+      *--------- OF EQUAL TO SPACES.  THIS WAY, IT WILL CATCH
+      *--------- DATES OF "20      " INSTEAD OF BLOWING UP.
+      *    IF FRT-BILL-DATE-CN = SPACES
+           IF FRT-BILL-DATE-CN NOT NUMERIC
+               MOVE ZEROES            TO  FRTH-BILL-DATE
+           ELSE
+           IF FRT-BILL-DATE-CN = ZEROS
+               MOVE ZEROES            TO  FRTH-BILL-DATE
+           ELSE
+           IF FRT-CC = "19" OR "20"
+               MOVE FRT-BILL-DATE-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  FRTH-BILL-DATE
+           ELSE
+           IF FRT-YY > "70"
+               MOVE "19"              TO  FRT-CC
+               MOVE FRT-BILL-DATE-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  FRTH-BILL-DATE
+           ELSE
+           MOVE "20"                  TO  FRT-CC
+           MOVE FRT-BILL-DATE-CN      TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  FRTH-BILL-DATE.
+           IF FRT-DATE-RCVD-CN = SPACES
+               MOVE ZEROES            TO  FRTH-DATE-RCVD
+           ELSE
+           IF FRT-DATE-RCVD-CC = "19" OR "20"
+               MOVE FRT-DATE-RCVD-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  FRTH-DATE-RCVD
+           ELSE
+           IF FRT-DATE-RCVD-YY > "70"
+               MOVE "19"              TO  FRT-DATE-RCVD-CC
+               MOVE FRT-DATE-RCVD-CN  TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  FRTH-DATE-RCVD
+           ELSE
+           MOVE "20"                  TO  FRT-DATE-RCVD-CC
+           MOVE FRT-DATE-RCVD-CN      TO  FORMAT-DATE
+           MOVE FORMAT-DATE           TO  FRTH-DATE-RCVD.
+           IF FRT-DATE-ARRIVAL NUMERIC
+               MOVE FRT-DATE-ARRIVAL  TO  FRTH-DATE-ARRIVAL
+           ELSE
+               MOVE ZEROS             TO  FRTH-DATE-ARRIVAL.
+           MOVE FRT-SPLC              TO  FRTH-SPLC.
+           MOVE FRT-CARRIER-WT        TO  FRTH-CARRIER-WT.
+           MOVE FRT-OUR-WT            TO  FRTH-OUR-WT.
+           MOVE FRT-RAIL-CAR          TO  FRTH-RAIL-CAR.
+           MOVE FRT-LOT               TO  FRTH-LOT.
+           MOVE FRT-SEALS             TO  FRTH-SEALS.
+           MOVE FRT-OSD               TO  FRTH-OSD.
+           MOVE FRT-REFERBACK         TO  FRTH-REFERBACK.
+           MOVE FRT-OSD-CLAIM         TO  FRTH-OSD-CLAIM.
+           MOVE FRT-REG-NO            TO  FRTH-REG-NO.
+           PERFORM  6311-GET-RCVR-SEQ-NO  THRU  6311-GRSN-X.
+
+      *------- WRITE FREIGHT
+           WRITE DPOFREIGHTH-REC-O FROM BUF-DPOFREIGHT-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DPOFREIGHT*631-PF" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 631-GET-FREIGHT-LOOP.
+
+       631-LFI-X.
+           EXIT.
+
+       6311-GET-RCVR-SEQ-NO.
+           IF BUILD-RCVR-NO = "000"
+               GO TO 6311-GRSN-X.
+           MOVE 0 TO COND-WORD.
+           MOVE RCVR-ARG TO PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-MPORCV, MODE7,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-MPORCV, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 6311-GRSN-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET MPORCV*6311-GRSN" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               MOVE M-PO-RCV-SEQ      TO  FRTH-RCVR-SEQ-NO.
+
+       6311-GRSN-X.
+           EXIT.
+
+
+       632-GET-RCV-SLIP.
+           MOVE 0 TO COND-WORD.
+           MOVE RCVR-ARG TO PORCVNO OF DRCVITEM-REC-I.
+           START DRCVITEM-I KEY = PORCVNO OF DRCVITEM-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DRCVITEM, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 632-GRS-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DRCVITEM * 632-GRS" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       632-GET-RCVR-ITEM-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DRCVITEM-I NEXT INTO BUF-DRCVITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DRCVITEM-REC-I NOT = RCVR-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DRCVITEM, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DRCVITEM, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 632-GET-RCV-DESC
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DRCVITEM*633-GRIL" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DRCVITEM-H.
+           MOVE BUILD-RCVR-NUMBER     TO  RCVH-PO-RCV-NO.
+           MOVE RCV-ITEM-NUMBER       TO  RCVH-ITEM-NUMBER.
+           IF RCV-CORP-CODE = "NON-STR"
+               MOVE SPACES            TO  RCVH-CORP-CODE
+           ELSE
+               MOVE RCV-CORP-CODE     TO  RCVH-CORP-CODE.
+           MOVE RCV-QTY-DLVR          TO  RCVH-ITM-QTY-DLVR.
+           IF RCV-DATE-RCVD-CN = SPACES
+               MOVE RCV-DATE-RCVD-CN  TO  RCVH-DATE-RCVD-CN
+           ELSE
+           IF RCV-CC-RCVD = "19" OR "20"
+               MOVE RCV-DATE-RCVD-CN  TO  RCVH-DATE-RCVD-CN
+           ELSE
+           IF RCV-YY-RCVD > "70"
+               MOVE "19"              TO  RCV-CC-RCVD
+               MOVE RCV-DATE-RCVD-CN  TO  RCVH-DATE-RCVD-CN
+           ELSE
+           MOVE "20"                  TO  RCV-CC-RCVD
+           MOVE RCV-DATE-RCVD-CN      TO  RCVH-DATE-RCVD-CN.
+           MOVE RCV-QTY-STORED        TO  RCVH-QTY-STORED.
+           IF RCV-DATE-STORED-CN = "    DD  "
+               MOVE RCV-DATE-STORED-CN    TO  RCVH-DATE-STORED-CN
+           ELSE
+           IF RCV-CC-STORED = "19" OR "20"
+               MOVE RCV-DATE-STORED-CN    TO  RCVH-DATE-STORED-CN
+           ELSE
+           IF RCV-YY-STORED > "70"
+               MOVE "19"              TO  RCV-CC-STORED
+               MOVE RCV-DATE-STORED-CN    TO  RCVH-DATE-STORED-CN
+           ELSE
+           MOVE "20"                  TO  RCV-CC-STORED
+           MOVE RCV-DATE-STORED-CN    TO  RCVH-DATE-STORED-CN.
+           MOVE RCV-FLAGS             TO  RCVH-FLAGS.
+           IF RCV-KELLY-PO-QTY NOT NUMERIC
+               MOVE ZERO              TO  RCVH-KELLY-PO-QTY
+           ELSE
+               MOVE RCV-KELLY-PO-QTY  TO  RCVH-KELLY-PO-QTY.
+           MOVE RCV-KELLY-PO-UM       TO  RCVH-KELLY-PO-UM.
+           MOVE RCV-ITEM-UM           TO  RCVH-ITEM-UM.
+           MOVE RCV-COMMENT           TO  RCVH-COMMENT.
+           MOVE RCV-LOT               TO  RCVH-LOT.
+           MOVE RCV-TALLY             TO  RCVH-TALLY.
+           MOVE RCV-CHATNO            TO  RCVH-CHATNO.
+           IF RCV-EEC-NET-MASS-X = "        "
+               MOVE ZEROES            TO  RCVH-EEC-NET-MASS
+           ELSE
+           MOVE RCV-EEC-NET-MASS      TO  RCVH-EEC-NET-MASS.
+           IF RCV-EEC-SUPPL-UNITS-X = "        "
+               MOVE ZEROES            TO  RCVH-EEC-SUPPL-UNITS
+           ELSE
+           MOVE RCV-EEC-SUPPL-UNITS   TO  RCVH-EEC-SUPPL-UNITS.
+
+      *------- WRITE RECEIVING ITEM
+           WRITE DRCVITEMH-REC-O FROM BUF-DRCVITEM-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DRCVITEM*632-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 632-GET-RCVR-ITEM-LOOP.
+
+       632-GET-RCV-DESC.
+           MOVE 0 TO COND-WORD.
+           MOVE RCVR-ARG TO PORCVNO OF DPODATAITM-REC-I.
+           START DPODATAITM-I KEY = PORCVNO OF DPODATAITM-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DPODATAITM, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 632-GET-RCVR-CORRECTIONS
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DDPODATA * 632-GRD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       632-GET-RCVR-DESC-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPODATAITM-I NEXT INTO BUF-DPODATAITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPODATAITM-REC-I NOT = RCVR-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DPODATAITM, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DPODATAITM, RCVR-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 632-GET-RCVR-CORRECTIONS
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DPODATA*632-GRDL" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DPODESC-H.
+           MOVE BUILD-RCVR-NUMBER     TO  PODESCH-PO-RCV-NO.
+           MOVE DATAITM-LINE          TO  PODESCH-SEQ.
+           MOVE DATAITM-INFO          TO  PODESCH-DESC.
+           WRITE DPODESCH-REC-O FROM BUF-DPODESC-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DRCVITEM*632-GRDL" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 632-GET-RCVR-DESC-LOOP.
+
+       632-GET-RCVR-CORRECTIONS.
+           MOVE 0 TO COND-WORD.
+           MOVE RCVR-ARG TO PORCVNO OF DRCVCORR-REC-I.
+           START DRCVCORR-I KEY = PORCVNO OF DRCVCORR-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 632-GRS-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DRCVCORR * 632-GRC" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       632-GET-RCVR-CORR-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DRCVCORR-I NEXT INTO BUF-DRCVCORR
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DRCVCORR-REC-I NOT = RCVR-ARG
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 632-GRS-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DRCVCORR*632-GRCL" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DRCVCORR-H.
+           MOVE BUILD-RCVR-NUMBER     TO  CORR-PO-NUMBER-H.
+           MOVE CORR-ITEM             TO  CORR-ITEM-H.
+           MOVE CORR-CORP-CODE        TO  CORR-CORP-CODE-H.
+           IF CORR-DATE-CN = SPACES
+               MOVE CORR-DATE-CN      TO  CORR-DATE-H-CN
+           ELSE
+           IF CORR-DATE-CC = "19" OR "20"
+               MOVE CORR-DATE-CN      TO  CORR-DATE-H-CN
+           ELSE
+           IF CORR-DATE-YY > "70"
+               MOVE "19"              TO  CORR-DATE-CC
+               MOVE CORR-DATE-CN      TO  CORR-DATE-H-CN
+           ELSE
+           MOVE "20"                  TO  CORR-DATE-CC
+           MOVE CORR-DATE-CN          TO  CORR-DATE-H-CN.
+           MOVE CORR-REASON           TO  CORR-REASON-H.
+           WRITE DRCVCORRH-REC-O FROM BUF-DRCVCORR-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DRCVCORR*632-GRCL" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 632-GET-RCVR-CORR-LOOP.
+
+       632-GRS-X.
+           EXIT.
+
+
+
+       64-LOAD-INVOICING-HISTORY.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 64-LIH-X
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DINVRCD, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, PO-ARG.
+           IF COND-WORD NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "FIND DINVRCD * 64-LIH" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       64-GET-DINVRCD.
+           MOVE 0 TO COND-WORD.
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DINVRCD, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DINVRCD, PO-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 64-LIH-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DINVRCD*64-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DINVRCD-H.
+           MOVE BUILD-PO-NUMBER       TO  INVH-PO-RCV-NO.
+           MOVE INV-REG-NO            TO  INVH-REG-NO.
+           MOVE INV-MFEST-NO          TO  INVH-MFEST-NO.
+           MOVE INV-MFEST-YY          TO  INVH-MFEST-YY.
+           MOVE INV-STATUS            TO  INVH-STATUS.
+           MOVE INV-VEN-CODE          TO  INVH-VEN-CODE.
+           MOVE INV-NO                TO  INVH-NO.
+           IF INV-DATE-CN NUMERIC
+               MOVE INV-DATE-CN       TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  INVH-DATE
+           ELSE
+               MOVE ZEROS             TO  INVH-DATE.
+           IF INV-ENTRY-CN NUMERIC
+               MOVE INV-ENTRY-CN      TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  INVH-ENTRY-DATE
+           ELSE
+               MOVE ZEROS             TO  INVH-ENTRY-DATE.
+           IF INV-DUE-CN NUMERIC
+               MOVE INV-DUE-CN        TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  INVH-DUE-DATE
+           ELSE
+               MOVE ZEROS             TO  INVH-DUE-DATE.
+           IF INV-MOD-CN NUMERIC
+               MOVE INV-MOD-CN        TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  INVH-MOD-DATE
+           ELSE
+               MOVE ZEROS             TO  INVH-MOD-DATE.
+           IF INV-CHECK-CN NUMERIC
+               MOVE INV-CHECK-CN      TO  FORMAT-DATE
+               MOVE FORMAT-DATE       TO  INVH-CHECK-DATE
+           ELSE
+               MOVE ZEROS             TO  INVH-CHECK-DATE.
+           MOVE INV-CHECK-NO          TO  INVH-CHECK-NO.
+           MOVE INV-TERMS             TO  INVH-TERMS.
+           MOVE INV-I-MATL-EXT        TO  INVH-I-MATL-EXT.
+           MOVE INV-P-MATL-EXT        TO  INVH-P-MATL-EXT.
+           MOVE INV-PAYMENT-IND       TO  INVH-PAYMENT-IND.
+           MOVE INV-ADD-VFRT          TO  INVH-ADD-VFRT.
+           MOVE INV-ADD-TAX           TO  INVH-ADD-TAX.
+           MOVE INV-ADD-CTNRS         TO  INVH-ADD-CTNRS.
+           MOVE INV-ADD-INS           TO  INVH-ADD-INS.
+           MOVE INV-ADD-OTHER         TO  INVH-ADD-OTHER.
+           MOVE INV-TAX-CODE          TO  INVH-TAX-CODE.
+           PERFORM 641-MOVE-CE-LIST THRU 641-MCL-X
+               VARYING SUB FROM 1 BY 1
+                   UNTIL SUB > 10.
+           MOVE INV-CPW-CODE          TO  INVH-CPW-CODE.
+           MOVE INV-NET-DUE-VENDOR    TO  INVH-NET-DUE-VENDOR.
+           MOVE INV-TOTAL-CFRT        TO  INVH-TOTAL-CFRT.
+           MOVE INV-ADJ-ATAX (1)      TO  INVH-ADJ-ATAX (1).
+           MOVE INV-ADJ-ATAX (2)      TO  INVH-ADJ-ATAX (2).
+           MOVE INV-ADJ-ATAX (3)      TO  INVH-ADJ-ATAX (3).
+           MOVE INV-ADJ-ATAX (4)      TO  INVH-ADJ-ATAX (4).
+           MOVE INV-ADJ-OTHER         TO  INVH-ADJ-OTHER.
+           MOVE INV-DIST-COST         TO  INVH-DIST-COST.
+           MOVE INV-ADD-CLERK         TO  INVH-ADD-CLERK.
+           MOVE INV-MOD-CLERK         TO  INVH-MOD-CLERK.
+           MOVE INV-NO-CHECK-INDIC    TO  INVH-NO-CHECK-INDIC.
+           MOVE INV-TAX-ON-FRT        TO  INVH-TAX-ON-FRT.
+           MOVE INV-FREE-VERB         TO  INVH-FREE-VERB.
+           MOVE INV-RCVR-NO           TO  INVH-RCVR-NO.
+
+      *------ WRITE INVOICE HEADER
+           WRITE DINVRCDH-REC-O FROM BUF-DINVRCD-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DINVRCD*64-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           MOVE INV-REG-NO            TO  REGISTER-ARG.
+           PERFORM 641-LOAD-ITEMS-INFO  THRU  641-LII-X.
+
+           PERFORM 642-LOAD-ITEM-ACCT-INFO  THRU  642-LIAI-X.
+
+           IF INV-VEN-CODE  NOT =  PO-VEN-CODE
+               MOVE INV-VEN-CODE      TO  VEN-ARG
+               PERFORM 623-LOAD-VENDOR-NAME  THRU  623-LVN-X.
+
+           GO TO 64-GET-DINVRCD.
+
+       64-LIH-X.
+           EXIT.
+
+       641-MOVE-CE-LIST.
+           MOVE CE-CODE (SUB)           TO  CEH-CODE (SUB).
+           MOVE CE-VALUE (SUB)          TO  CEH-VALUE (SUB).
+           MOVE CE-ACCTG-DATA (SUB)     TO  CEH-ACCTG-DATA (SUB).
+
+       641-MCL-X.
+           EXIT.
+
+       641-LOAD-ITEMS-INFO.
+           MOVE 0 TO COND-WORD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVITM-REC-I.
+           START DINVITM-I KEY = REGISTERNO OF DINVITM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DINVITM, MODE1,
+      *A       STATUS-AREA, REG-SEARCH, REGISTER-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 641-LII-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DINVITM * 641-LII" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       641-GET-DINVITM.
+           MOVE 0 TO COND-WORD.
+           READ DINVITM-I NEXT INTO BUF-DINVITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF REGISTERNO OF DINVITM-REC-I NOT = REGISTER-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DINVITM, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DINVITM, REGISTER-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 641-LII-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DINVITM*641-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DINVITM-H.
+           MOVE INVITM-REG-NO         TO  INVITMH-REG-NO.
+           MOVE INVITM-CORPCODE       TO  INVITMH-CORPCODE.
+           MOVE INVITM-PO-QTY-PD      TO  INVITMH-PO-QTY-PD.
+           MOVE INVITM-PO-UM          TO  INVITMH-PO-UM.
+           MOVE INVITM-PO-UPRICE      TO  INVITMH-PO-UPRICE.
+           MOVE INVITM-INV-QTY-PD     TO  INVITMH-INV-QTY-PD.
+           MOVE INVITM-INV-UPRICE     TO  INVITMH-INV-UPRICE.
+           MOVE INVITM-ITEM-NO        TO  INVITMH-ITEM-NO.
+           MOVE INVITM-MEMO-INDIC     TO  INVITMH-MEMO-INDIC.
+           MOVE INVITM-TAX-CODE       TO  INVITMH-TAX-CODE.
+           MOVE BUILD-PO-RLSE         TO  INVITMH-PO-NUM.
+
+      *------ WRITE INVOICE ITEM
+           WRITE DINVITMH-REC-O FROM BUF-DINVITM-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DINVITM*641-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 641-GET-DINVITM.
+
+       641-LII-X.
+           EXIT.
+
+       642-LOAD-ITEM-ACCT-INFO.
+           MOVE 0 TO COND-WORD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVACCT-REC-I.
+           START DINVACCT-I KEY = REGISTERNO OF DINVACCT-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DINVACCT, MODE1,
+      *A       STATUS-AREA, REG-SEARCH, REGISTER-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 642-LIAI-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "FIND DINVACCT * 642-LIAI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       642-GET-DINVACCT.
+           MOVE 0 TO COND-WORD.
+           READ DINVACCT-I NEXT INTO BUF-DINVACCT
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF REGISTERNO OF DINVACCT-REC-I NOT = REGISTER-ARG
+               MOVE 15 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DINVACCT, MODE5,
+      *A         STATUS-AREA, ALL-ITEMS, BUF-DINVACCT, REGISTER-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 642-LIAI-X
+               ELSE
+                   PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+                   MOVE "GET DINVACCT*642-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE SPACES                TO  BUF-DINVACCT-H.
+           MOVE INVACCT-REG-NO        TO  INVACCTH-REG-NO.
+           MOVE INVACCT-DATA          TO  INVACCTH-DATA.
+           MOVE INVACCT-PCT           TO  INVACCTH-PCT.
+           MOVE INVACCT-ITEM          TO  INVACCTH-ITEM.
+           MOVE INVACCT-LINE          TO  INVACCTH-LINE.
+           MOVE BUILD-PO-RLSE         TO  INVACCTH-PO-NUM.
+
+      *------ WRITE INVOICE ACCTG ITEM
+           WRITE DINVACCTH-REC-O FROM BUF-DINVACCT-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "PUT DINVACCT*642-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 642-GET-DINVACCT.
+
+       642-LIAI-X.
+           EXIT.
+
+       65-UPDATE-MPORCV-STATUS.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-MPORCV, MODE7,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-MPORCV, PO-ARG.
+           IF COND-WORD NOT = 0
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "GET MPORCV*65-UMS" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           MOVE "HISTOK"  TO  M-PO-RCV-SEQ.
+           REWRITE MPORCV-REC-O FROM BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               PERFORM 70-BACKOUT-ROUTINE  THRU  70-BR-X
+               MOVE "UPDATE MPORCV*65-UMS" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       65-UMS-X.
+           EXIT.
+
+       70-BACKOUT-ROUTINE.
+           DISPLAY "BUILD-PO-NUMBER:  " BUILD-PO-NUMBER.
+           CALL "SPOHTDL" USING BASE-STHIST,
+                                BUILD-PO-NUMBER.
+
+       70-BR-X.
+           EXIT.
+
+DCR01  Z000-PGM-SETUP.
+DCR01 *****************************************************
+DCR01 *   MAKE SURE PO LOGGING IS ACTIVE FOR THIS PLANT
+DCR01 *****************************************************
+DCR01      SET  Z000-POLG-ACTIVE-NO TO TRUE.
+DCR01
+DCR01      INITIALIZE  MPLTINFO-REC.
+DCR01      MOVE WS-Z000-POLG-KEY  TO  PLTINFOKEY.
+DCR01
+DCR01      READ MPLTINFO-FILE
+DCR01      END-READ.
+DCR01      IF FILE-STATUS = "00"
+DCR01         IF  PLTINFODTA(1:1) = "Y"
+DCR01             SET  Z000-POLG-ACTIVE-YES TO TRUE
+DCR01         END-IF
+DCR01      END-IF.
+DCR01
+DCR01      IF   Z000-POLG-ACTIVE-NO
+DCR01           GO TO Z000-PS-EXIT
+DCR01      END-IF.
+DCR01
+DCR01 ******************************************************************
+DCR01 * GET PLANT CODE                                                 *
+DCR01 ******************************************************************
+DCR01      INITIALIZE  MPLTINFO-REC.
+DCR01      MOVE  WS-Z000-CMPNY-KEY  TO PLTINFOKEY.
+DCR01
+DCR01      READ MPLTINFO-FILE
+DCR01      END-READ.
+
+DCR01      MOVE PLTINFODTA(1:3)  TO WS-Z000-PLANT-CODE.
+
+DCR01  Z000-PS-EXIT.
+DCR01      EXIT.
+
+DCR01  COPY POLOGSUBR2 IN COPYLIB.

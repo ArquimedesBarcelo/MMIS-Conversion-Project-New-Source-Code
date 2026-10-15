@@ -1,0 +1,873 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SQTPOS.
+       AUTHOR.        BARBARA WINTER.
+      *DATE-WRITTEN.  APRIL 1988.
+      *INSTALLATION.  GOODYEAR TIRE AND RUBBER CO.
+
+      *REMARKS.
+      *D SCREEN PROGRAM TO CREATE PO FROM QUOTE
+      *C  8/23/94   MARVIN MITCHELL -- CHESS REQUIREMENTS
+      *C   ADDED LOGIC TO FORCE USERS TO SELECT A VALID
+      *C   CHAT NUMBER THAT WILL BE LINKED TO EACH QUOTE
+      *C   ITEM/CORP CODE AND PASSED TO TLOADPO PROGRAM.
+      *C
+      *C 10/03/96   WL  MCINTYRE
+      *C  ADDED LOGIC TO REQUIRE ENTRY OF PO NUMBER ON
+      *C  PO DEFAULT OVERRIDE SCREEN.
+      *C
+      *C  06/07/99   CA YODER   (DECATUR REQUEST)
+      *C    RE-COMPILED TO PICK UP MTAX DATABASE CHANGE TO
+      *C    EXPAND TAX RATE PERCENTAGE FROM 2 DECIMAL PLACES TO 4.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    HP-3000.
+       OBJECT-COMPUTER.    HP-3000.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZQTPO-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS RELATIVE-RECNO
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+            SELECT MBUYER-I
+              ASSIGN TO DATABASE-MCFLCS0601
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+              FILE STATUS IS FILE-STATUS.
+            SELECT DVENDOR-I
+              ASSIGN TO DATABASE-MCFLCS0701
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+              FILE STATUS IS FILE-STATUS.
+            SELECT DVENDITM3
+              ASSIGN TO DATABASE-MCFLCS0803
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+              FILE STATUS IS FILE-STATUS.
+            SELECT MPLTINFO-I
+              ASSIGN TO DATABASE-MCFLCS0501
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+              FILE STATUS IS FILE-STATUS.
+            SELECT DCHATNO
+              ASSIGN TO DATABASE-MCFLCS5501
+              ORGANIZATION IS INDEXED
+              ACCESS MODE  IS DYNAMIC
+              RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+              FILE STATUS IS FILE-STATUS.
+            SELECT MTAX
+                ASSIGN TO DATABASE-MCFLCS3701
+                ORGANIZATION IS INDEXED
+                ACCESS IS DYNAMIC
+                RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                FILE STATUS IS FILE-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC          PIC X(2000).
+
+       FD  MBUYER-I
+           LABEL RECORDS ARE STANDARD.
+       01  MBUYER-REC-I.
+           COPY DDS-MCRPCS0600  OF MCFLCS0601.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-MCRPCS0700  OF MCFLCS0701.
+
+       FD  DVENDITM3
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDITM-REC3.
+           COPY DDS-MCRPCS0800  OF MCFLCS0803.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MTAX
+           LABEL RECORDS ARE STANDARD.
+       01  MTAX-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS3701.
+
+       FD  DCHATNO
+           LABEL RECORDS ARE STANDARD.
+       01  DCHATNO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS5501.
+
+       WORKING-STORAGE SECTION.
+       01  NO-NEXT                PIC 9.
+       01  NO-PREV                PIC 9.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1      PIC X.
+           05  FILE-STATUS-2      PIC X.
+       01  RELATIVE-RECNO         PIC 9(9).
+
+      *------ WS CONTROL AREA
+       01  MAJOR-MINOR                 PIC XXXX.
+       01  WS-CONTROL.
+           02  FUNCTION-NUM            PIC XX.
+                   88  EXIT-KEY-F8-USED                     VALUE "08". LVW000LS
+                   88  REFRESH-KEY-F4-USED                  VALUE "04". LVW000LS
+                   88  ENTER-KEY-USED                       VALUE "00". LVW000LS
+                   88  F1-KEY-USED                          VALUE "01". LVW000LS
+                   88  F2-KEY-USED                          VALUE "02". LVW000LS
+                   88  F3-KEY-USED                          VALUE "03". LVW000LS
+                   88  F4-KEY-USED                          VALUE "04". LVW000LS
+                   88  F5-KEY-USED                          VALUE "05". LVW000LS
+                   88  F6-KEY-USED                          VALUE "06". LVW000LS
+                   88  F7-KEY-USED                          VALUE "07". LVW000LS
+                   88  F8-KEY-USED                          VALUE "08". LVW000LS
+           02 FUN-KEY REDEFINES FUNCTION-NUM PIC XX.
+           02 TERMINAL-ID PIC X(10).
+           02 FORMAT-NAME PIC X(10).
+
+       01  DISPLAY-STATUS              PIC X(2).
+
+       COPY DCHATNO OF COPYLIB.
+       01  SCHATREF-SW                 PIC X VALUE "N".
+       01  CHAT-SW                     PIC X VALUE "N".
+       01  EOF-SW                      PIC X VALUE "N".
+       01  PASS-CORP-CODE              PIC X(7).
+       01  RETURN-CHAT-NO              PIC X(6).
+
+       COPY IOFEEDBACK OF COPYLIB.
+
+       01  RELATIVE-KEY             PIC 9(9).
+       01  LASTREC-READ             PIC 9(4).
+       01  FOPEN-FILE                 PIC X(9)   VALUE "DQTPOERR ".
+       01  FNUM                          PIC S9(4) COMP-4.
+       01  FCHECK-MSG-LENGTH             PIC S9(4) COMP-4.
+       01  FCHECK-ERROR-NUM              PIC S9(4) COMP-4.
+       01  FCHECK-MSG                    PIC X(72) VALUE SPACES.
+
+       01  PASSED-PO-PRINT-NUM        PIC S9(2) VALUE ZEROES COMP-4.
+       01  SAVE-DATE1                 PIC X(6)   VALUE SPACES.
+       01  SAVE-DATE2                 PIC X(6)   VALUE SPACES.
+
+      *---------- VSETERROR AND VPUTWINDOW
+       01  MESSAGE-BUFFER           PIC X(76)    VALUE SPACES.
+       01  MESSAGE-BUFFER-RD REDEFINES MESSAGE-BUFFER.
+           05  MSG-BUFFER           PIC X(68).
+           05  MSG-VALUE            PIC X(8).
+       01  MESSAGE-BUFLEN           PIC S9(4) VALUE 76  COMP-4.
+       01  MESSAGE-ACTLEN           PIC S9(4) VALUE 0   COMP-4.
+       01  FIELD-NUMBER             PIC S9(4) VALUE 1   COMP-4.
+
+      *---------- VPRINTFORM
+       01  SCREEN-PRINT-PARMS.
+           05  PRINT-CTL            PIC S9(4)    VALUE 1 COMP-4.
+           05  PAGE-CTL             PIC S9(4)    VALUE 49 COMP-4.
+           05  SPOOL-FIL-OPEN-SW    PIC X        VALUE "Y".
+       01  RETURN-STATUS            PIC X        VALUE SPACE.
+
+       COPY CATREAD  OF COPYLIB.
+       COPY CSTRMJB2 OF COPYLIB.
+       01  STRMRPT-COMAREA.
+           05  STRM-RET-CODE            PIC X(2)  VALUE "00".
+           05  STRM-MODE                PIC S9(4) VALUE ZEROS COMP-4.
+           05  STRM-CO-CODE.
+               10  CO-CODE-PREFIX       PIC X(2)  VALUE SPACES.
+               10  CO-CODE-LAST-DIGIT   PIC X     VALUE SPACES.
+           05  STRM-PRE-RUN-CARDS.
+               10  STRM-PRE-RUN-CARD1   PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD2   PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD3   PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD4   PIC X(80) VALUE SPACES.
+           05  STRM-RUN-CARD            PIC X(80) VALUE SPACES.
+           05  STRM-JOB-NAME            PIC X(8)  VALUE "SQTPOS  ".
+           05  SQTPOS-PARMS.
+               10  SQTPOS-PO.
+                   15  SQT-P            PIC X      VALUE "P".
+                   15  SQT-PO           PIC X(7)   VALUE SPACES.
+                   15  SQT-RLSE         PIC X(3)   VALUE "000".
+                   15  FILLER           PIC X(3)   VALUE "000".
+               10  SQTPOS-QUOTE         PIC X(10)  VALUE SPACES.
+               10  SQT-SHIPDATE         PIC X(6)     VALUE SPACES.
+               10  SQT-EXPECT-DATE      PIC X(6)     VALUE SPACES.
+               10  SQT-FOR-DPT          PIC X(6)     VALUE SPACES.
+               10  SQT-ADDL             PIC X(16)    VALUE SPACES.
+               10  SQT-TAX-CODE         PIC XX       VALUE SPACES.
+               10  FILLER               PIC X(20)    VALUE SPACES.
+           05  SQTPOS-PARM2.
+               10  SQT-RCV-DPT          PIC X(6)     VALUE SPACES.
+               10  SQT-BUDGET           PIC X(12)    VALUE SPACES.
+               10  SQT-TM               PIC X(2)     VALUE SPACES.
+               10  SQT-PRINT            PIC X        VALUE SPACE.
+               10  SQT-LINK-REQ         PIC X        VALUE SPACE.
+               10  FILLER               PIC X(58)    VALUE SPACES.
+           05  STRM-OPTION-CARD2-CTR    PIC X(1)  VALUE SPACES.
+           05  STRM-OPTION-CARD3        PIC X(80) VALUE SPACES.
+           05  STRM-PRTRPT-CARD.
+               10  STRM-PRTRPT-FLAG     PIC X(1).
+               10  STRM-PRTRPT-FILE     PIC X(17).
+               10  STRM-PRTRPT-SPOOLTYP  PIC X(1).
+               10  STRM-PRTRPT-PRINTER   PIC X(3).
+
+       COPY TDATECHK OF COPYLIB.
+       COPY TSHWRDFM OF COPYLIB.
+       COPY CCRTFILE OF COPYLIB.
+       01  RET-CODE                 PIC X(2)     VALUE "00".
+      *---------- TBLOWUP (PRINTS ERRORS TO AN ERROR FILE "BLOWUP.PUB" +)
+      *---------- (ABORTS PROGRAM.  RUN XBLPRT.OBJECT TO READ ERRORS.)
+       01  BU-DISPLAY-MSG           PIC X(60)    VALUE SPACES.
+       01  BU-PGM-NAME              PIC X(8)     VALUE "SQTPOS".
+       01  BU-DISPLAY-AREA          PIC X(110)   VALUE ALL "0".
+       01  BU-DISPLAY-FLDS REDEFINES BU-DISPLAY-AREA.
+           05  BU-DISPLAY-LINE OCCURS 5 TIMES.
+               10  BU-DISPLAY-FLD   PIC X(14).
+               10  BU-DISPLAY-FLD9  PIC S9(8).
+       01  KSAM-STATUS-AREA         PIC X(2)     VALUE "00".
+
+       01  TERMFILENAME               PIC X(11)  VALUE "TERM;".
+       01  FORM-NAMES.
+           05  ENTER-QUOTE          PIC X(10) VALUE "PO_FROM_QU".
+           05  ENTER-PO             PIC X(8)  VALUE "POFROMQ2".
+
+       01  SCREEN-BUFFER.
+           05  VIEW-QUOTE           PIC X(6)     VALUE SPACES.
+           05  DE-COMMAND-LINE1     PIC X(79)    VALUE SPACES.
+           05  DE-MESSAGE-LINE1     PIC X(79).
+
+       01  SCREEN-BUFFER2.
+           05  V2-QUOTE             PIC X(6)     VALUE SPACES.
+           05  V2-ITEMS             PIC ZZZ9.
+           05  V2-BUYER             PIC X(16)    VALUE SPACES.
+           05  V2-VENNAME           PIC X(44)    VALUE SPACES.
+           05  V2-VENADDR1          PIC X(44)    VALUE SPACES.
+           05  V2-VENADDR2          PIC X(44)    VALUE SPACES.
+           05  V2-PO                PIC X(7)     VALUE SPACES.
+           05  V2-X                 PIC X        VALUE SPACES.
+           05  V2-SHIPDATE          PIC X(6)     VALUE SPACES.
+           05  V2-EXPECT-DATE       PIC X(6)     VALUE SPACES.
+           05  V2-FOR-DPT           PIC X(6)     VALUE SPACES.
+           05  V2-ADDL              PIC X(16)    VALUE SPACES.
+           05  V2-RCV-DPT           PIC X(6)     VALUE SPACES.
+           05  V2-BUDGET            PIC X(12)    VALUE SPACES.
+           05  V2-TAX-CODE          PIC XX       VALUE SPACES.
+           05  V2-TM.
+               07  V2-TM1           PIC X        VALUE SPACE.
+               07  V2-TM2           PIC X        VALUE SPACE.
+           05  V2-TM-DESC1          PIC X(5)     VALUE SPACES.
+           05  V2-TM-DESC2          PIC X(18)    VALUE SPACES.
+           05  V2-LINK-REQ          PIC X        VALUE SPACE.
+           05  V2-PRINT             PIC X        VALUE SPACE.
+           05  DE-COMMAND-LINE2     PIC X(79)    VALUE SPACES.
+           05  DE-MESSAGE-LINE2     PIC X(79).
+
+       01  STATUS-AREA.
+           05  COND-WORD            PIC S9(4)    VALUE ZERO COMP-4.
+               88  GOOD-CALL                            VALUE 0.
+               88  END-OF-FILE                          VALUE 11.
+               88  START-OF-CHAIN                       VALUE 14.
+               88  END-OF-CHAIN                         VALUE 15.
+               88  NO-ENTRY                             VALUE 17.
+           05  DATA-LENGTH          PIC S9(4)           COMP-4.
+           05  RCD-NO               PIC S9(9)           COMP-4.
+           05  CHAIN-LENGTH         PIC S9(9)           COMP-4.
+           05  BKWD-ADDR            PIC S9(9)           COMP-4.
+           05  FWRD-ADDR            PIC S9(9)           COMP-4.
+
+       01  VENDOR-ARG               PIC X(10)    VALUE SPACES.
+       01  BUYER-ARG                PIC X(4)     VALUE SPACES.
+       01  PLT-ARG                  PIC X(4)  VALUE SPACES.
+       01  MISC-ARG.
+           05  MISC-ARG1            PIC X(2)     VALUE SPACES.
+           05  MISC-ARG2            PIC X(2)     VALUE SPACES.
+
+       01  MISC-ARG-B REDEFINES MISC-ARG.
+           05  MISC-ARG1B           PIC X(3).
+           05  MISC-ARG2B           PIC X.
+
+       01  QUOTE-ARG.
+           05  QUOTE-ARG-NUM        PIC X(6)     VALUE SPACES.
+           05  FILLER               PIC X(4)     VALUE SPACES.
+
+       COPY DVENDITM  OF COPYLIB.
+       COPY DVENDOR   OF COPYLIB.
+       COPY MBUYER    OF COPYLIB.
+       COPY MPLTINFO  OF COPYLIB.
+       LINKAGE SECTION.
+       01  BASE                     PIC X(10).
+       COPY VCOMLINK  OF COPYLIB.
+       01  FORMFILE                   PIC X(26).
+       COPY LANGSUB  OF COPYLIB.
+
+      *******************************************************************
+      *                     PROCEDURE DIVISION
+      *******************************************************************
+       PROCEDURE DIVISION USING   BASE,
+                                  VIEW-COMAREA,
+                                  FORMFILE,
+                                  LANGUAGE-PARMS.
+
+       00-MAIN.
+           OPEN I-O DISPLAY-FILE DVENDITM3.
+           OPEN INPUT DVENDOR-I MBUYER-I MPLTINFO-I DCHATNO MTAX.
+           MOVE SPACES TO MESSAGE-BUFFER.
+
+      ********************************************
+      *   CHECK CHAT SWITCH
+      ********************************************
+           MOVE "CHAT"         TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF COND-WORD NOT = ZERO
+             IF COND-WORD = 17
+               MOVE "N" TO CHAT-SW
+             ELSE
+               MOVE "GET MPLTINFO 'CHAT' SQTPOS" TO BU-DISPLAY-MSG
+               MOVE PLT-ARG  TO  BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP THRU 999-EXIT
+           ELSE
+             MOVE MPLTINFO-CHAT-PURCH-REQUIRED TO  CHAT-SW.
+
+           PERFORM 100-GET-ENTRY   THRU 199-EXIT.
+           CLOSE DISPLAY-FILE.
+           CLOSE DVENDITM3 DVENDOR-I MBUYER-I MPLTINFO-I MTAX.
+
+       09-EXIT.
+           GOBACK.
+
+      *************************************************************
+      *                    ENTER QUOTE NUMBER                     *
+      *  ENTER THE QUOTE NUMBER.  IT IS VALIDATED TO SEE IF IT    *
+      *  EXISTS AND IF THERE ARE ANY ITEMS.                       *
+      *************************************************************
+       100-GET-ENTRY.
+           MOVE SPACES                        TO SCREEN-BUFFER.
+           MOVE "000000"  TO VIEW-QUOTE.
+           MOVE ENTER-QUOTE TO VIEW-NFNAME.
+       120-SHOW-FORM.
+           MOVE SCREEN-BUFFER TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS VIEW-NFNAME
+              INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           READ DISPLAY-FILE FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           MOVE DISPLAY-REC TO SCREEN-BUFFER.
+      *------ A BAD STATUS MAY MEAN USER TURNED OFF TERMINAL.
+      *------ IF SO, SIMULATE THE F3 KEY TO EXIT PROGRAM.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+           IF VIEW-LASTKEY EQUAL 3
+              GO TO 199-EXIT.
+
+           IF VIEW-LASTKEY EQUAL 1 OR
+              VIEW-LASTKEY EQUAL 2 OR
+              VIEW-LASTKEY EQUAL 8 OR
+              VIEW-LASTKEY EQUAL 4 OR
+              VIEW-LASTKEY EQUAL 7 OR
+              VIEW-LASTKEY EQUAL 6
+              MOVE 9 TO LANG-SETNUM
+              MOVE 10 TO LANG-MSGNUM
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 120-SHOW-FORM.
+
+           MOVE VIEW-QUOTE       TO QUOTE-ARG-NUM, V2-QUOTE.
+
+           MOVE 0 TO COND-WORD.
+           MOVE QUOTE-ARG TO QUOTENUM  OF DVENDITM-REC3.
+           START DVENDITM3 KEY = QUOTENUM OF DVENDITM-REC3
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF NO-ENTRY
+      ******* QUOTE HAS NO ITEMS
+                MOVE 17 TO LANG-SETNUM
+                MOVE 09 TO LANG-MSGNUM
+                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                PERFORM 940-VSETERROR THRU 949-EXIT
+                GO TO 120-SHOW-FORM.
+            IF NOT GOOD-CALL
+      *** QUOTE DOES NOT EXIST
+              MOVE 08 TO LANG-MSGNUM
+              MOVE 17 TO LANG-SETNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 120-SHOW-FORM.
+
+           MOVE 0 TO COND-WORD.
+           READ DVENDITM3  NEXT INTO BUF-DVENDITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF QUOTENUM   OF DVENDITM-REC3  NOT = QUOTE-ARG
+               MOVE 15 TO COND-WORD.
+           IF END-OF-CHAIN
+      ******* QUOTE HAS NO ITEMS
+                MOVE 17 TO LANG-SETNUM
+                MOVE 09 TO LANG-MSGNUM
+                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                PERFORM 940-VSETERROR THRU 949-EXIT
+                GO TO 120-SHOW-FORM.
+           IF NOT GOOD-CALL
+              MOVE "DBGET DVENDITM 150 SQTPOS" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+           IF CHAT-SW = "Y"
+             PERFORM 200-CHECK-CHAT THRU 200-EXIT.
+
+           MOVE VEN-TERMS TO V2-TM.
+           IF VEN-TERMS NOT = SPACES
+              PERFORM 800-DISPLAY-TERMS THRU 809-EXIT.
+
+      *----------  GET EXPIRATION DATE
+           IF VEN-ITM-PRICE-DATE NOT = SPACES
+              MOVE VEN-ITM-PRICE-DATE TO DATE-VALIDATE-IN
+              MOVE 4 TO DATE-MODE
+              CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+              MOVE DATE-OUT TO V2-EXPECT-DATE.
+
+           MOVE VEN-ITM-VENCODE TO VENDOR-ARG.
+
+      *----------  FIND VENDOR NAME
+           MOVE 0 TO COND-WORD.
+           MOVE VENDOR-ARG TO VENCDE OF DVENDOR-REC-I.
+           START DVENDOR-I KEY = VENCDE OF DVENDOR-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF NO-ENTRY
+              MOVE "NO VENDOR NAME AVAILABLE" TO V2-VENNAME
+              GO TO 125-CHECK-BUYER.
+           IF NOT GOOD-CALL
+              MOVE "DBFIND DVENDOR 160 SQTPOS" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+           MOVE "NO VENDOR NAME AVAILABLE" TO V2-VENNAME.
+
+       122-DVENDOR-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DVENDOR-I NEXT INTO BUF-DVENDOR
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF VENCDE OF DVENDOR-REC-I NOT = VEN-ITM-VENCODE
+               MOVE 15 TO COND-WORD.
+           IF END-OF-CHAIN
+              GO TO 125-CHECK-BUYER.
+           IF NOT GOOD-CALL
+              MOVE "DBGET DVENDOR 162 SQUOTINQ" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+           IF VEN-ITM-NO = "00"
+              MOVE VEN-ITM-DATA                      TO V2-VENNAME
+           ELSE
+             IF VEN-ITM-NO = "01"
+                MOVE VEN-ADDRESS TO V2-VENADDR1
+            ELSE
+              IF VEN-ITM-NO = "07"
+                 MOVE VEN-07-RCD TO V2-VENADDR2
+                 GO TO 125-CHECK-BUYER.
+
+             GO TO 122-DVENDOR-LOOP.
+
+      *----------  FIND BUYER NAME
+       125-CHECK-BUYER.
+           MOVE VEN-BUYER-CODE TO BUYER-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE BUYER-ARG TO BUYERCDE OF MBUYER-REC-I.
+           READ MBUYER-I INTO BUF-MBUYER
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF NO-ENTRY
+              MOVE "BUYER NAME NOT AVAILABLE" TO V2-BUYER
+           ELSE
+              MOVE BUYER-NAME TO V2-BUYER.
+
+      *----------  GET DEFAULT PO DATA
+      ********************************************
+      *   GET RECEIVING DEPARTMENT
+      ********************************************
+           MOVE "P 03"         TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = ZERO
+               IF COND-WORD = 17
+                   MOVE SPACES  TO  V2-RCV-DPT
+               ELSE
+                   MOVE "GET MPLTINFO 'P 03' SQTPOS"  TO BU-DISPLAY-MSG
+                   MOVE PLT-ARG  TO  BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP THRU 999-EXIT
+           ELSE
+               MOVE MPLTINFO-RECV-DEPT   TO  V2-RCV-DPT.
+
+      ********************************************
+      *   GET PO PRINTER NUMBER
+      ********************************************
+           MOVE 9                       TO  PASSED-PO-PRINT-NUM.
+           MOVE "POPT"         TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF COND-WORD NOT = ZERO
+               IF COND-WORD = 17
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "GET MPLTINFO 'POPT' SQTPOS" TO BU-DISPLAY-MSG
+                   MOVE PLT-ARG  TO  BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP THRU 999-EXIT
+           ELSE
+               MOVE MPLTINFO-PO-PRT-NO     TO  PASSED-PO-PRINT-NUM.
+
+      **************************************************************
+      *                   ENTER PO NUMBER                          *
+      *  ENTER PO NUMBER AND ANY OTHER DATA ON THE SCREEN.  IF     *
+      *  EVERYTHING VALIDATES OK, THEN STREAM A JOB TO CREATE      *
+      *  THE PO.                                                   *
+      **************************************************************
+           MOVE ENTER-PO TO VIEW-NFNAME.
+           MOVE "Y" TO V2-LINK-REQ, V2-PRINT.
+
+       130-SHOW-FORM.
+           MOVE SCREEN-BUFFER2 TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS VIEW-NFNAME
+              INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           READ DISPLAY-FILE FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE DISPLAY-REC TO SCREEN-BUFFER2.
+
+      *------ A BAD STATUS MAY MEAN USER TURNED OFF TERMINAL.
+      *------ IF SO, SIMULATE THE F3 KEY TO EXIT PROGRAM.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+           IF VIEW-LASTKEY EQUAL 3
+              GO TO 199-EXIT.
+
+           IF VIEW-LASTKEY EQUAL 1 OR
+              VIEW-LASTKEY EQUAL 2 OR
+              VIEW-LASTKEY EQUAL 8 OR
+              VIEW-LASTKEY EQUAL 4 OR
+              VIEW-LASTKEY EQUAL 6
+              MOVE 9 TO LANG-SETNUM
+              MOVE 10 TO LANG-MSGNUM
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 130-SHOW-FORM.
+
+           IF VIEW-LASTKEY = 7
+              GO TO 100-GET-ENTRY.
+
+      *----------  MUST BE SOMETHING ENTERED IN THE PO NUMBER FIELD
+
+           IF V2-PO = SPACES
+      ***  YOU MUST ENTER A PURCHASE ORDER NUMBER
+           MOVE 44               TO LANG-SETNUM
+           MOVE 37               TO LANG-MSGNUM
+           PERFORM 999-CATREAD   THRU 999-CATREAD-EXIT
+           MOVE  7               TO FIELD-NUMBER
+           PERFORM 940-VSETERROR THRU 949-EXIT
+           GO TO 130-SHOW-FORM.
+
+      *----------  EDIT TAX CODE
+           IF V2-TAX-CODE = "  "
+               MOVE "00" TO FILE-STATUS
+           ELSE
+           MOVE V2-TAX-CODE TO TAXCDE OF MTAX-REC
+           READ MTAX
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 20 TO LANG-SETNUM
+               MOVE  7 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 16 TO FIELD-NUMBER
+               PERFORM 940-VSETERROR THRU 949-EXIT
+               GO TO 130-SHOW-FORM.
+
+      *----------  EDIT TERMS
+           IF V2-TM NOT = SPACES
+           MOVE "TMP"            TO MISC-ARG1B
+           MOVE V2-TM1           TO MISC-ARG2B
+           MOVE MISC-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF COND-WORD NOT = 0
+      *----------  TERMS ARE NOT VALID
+              MOVE 9 TO LANG-SETNUM
+              MOVE 6 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE 17 TO FIELD-NUMBER
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 130-SHOW-FORM.
+
+           MOVE SPACES TO SAVE-DATE1, SAVE-DATE2.
+
+           IF V2-SHIPDATE NOT = SPACES
+              MOVE V2-SHIPDATE TO DATE-VALIDATE-IN
+              MOVE 3 TO DATE-MODE
+              CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+              IF DATE-RET-CODE NOT = 0
+                 MOVE DATE-MSG TO MESSAGE-BUFFER
+                 MOVE 10 TO FIELD-NUMBER
+                 PERFORM 940-VSETERROR THRU 949-EXIT
+                 GO TO 130-SHOW-FORM
+              ELSE
+                 MOVE DATE-YMD-OUT TO SAVE-DATE1.
+
+           IF V2-EXPECT-DATE NOT = SPACES
+              MOVE V2-EXPECT-DATE TO DATE-VALIDATE-IN
+              MOVE 3 TO DATE-MODE
+              CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+              IF DATE-RET-CODE NOT = 0
+                 MOVE DATE-MSG TO MESSAGE-BUFFER
+                 MOVE 11 TO FIELD-NUMBER
+                 PERFORM 940-VSETERROR THRU 949-EXIT
+                 GO TO 130-SHOW-FORM
+              ELSE
+                 MOVE DATE-YMD-OUT TO SAVE-DATE2.
+
+           IF V2-X = " "
+               NEXT SENTENCE
+           ELSE
+           IF V2-EXPECT-DATE = "      "
+               MOVE 05072 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 11 TO FIELD-NUMBER
+               PERFORM 940-VSETERROR THRU 949-EXIT
+               GO TO 130-SHOW-FORM.
+
+      *------- CHECK FOR EXISTANCE OF THE CIRCULAR ERROR FILE 'DQTPOERR'.
+      *------- IF NOT THERE, BUILD IT.
+      *------ CALL CCRTFILE TO CREATE A TEMPORARY FILE 'XXXXXXXXXX'
+           MOVE "*LIBL"       TO CCRTFILE-LIBRARY.
+           MOVE "DQTPOERR"    TO CCRTFILE-FILE.
+           MOVE "0133"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "05000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "01000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE "99"          TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'DQTPOERR' FAILED"
+                  TO BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP THRU 999-EXIT.
+
+      *----------  PREPARE JOB STREAM THAT WILL UPDATE QUOTE DEFAULTS
+           MOVE "TQTGENPO"                     TO STRM-RUN-CARD.
+           MOVE QUOTE-ARG                      TO SQTPOS-QUOTE.
+           MOVE V2-PO                          TO SQT-PO.
+           IF V2-X = "X"
+              MOVE "999" TO SQT-RLSE
+           ELSE
+              MOVE "000" TO SQT-RLSE.
+           MOVE SAVE-DATE1                      TO SQT-SHIPDATE.
+           MOVE SAVE-DATE2                      TO SQT-EXPECT-DATE.
+           MOVE V2-FOR-DPT                      TO SQT-FOR-DPT.
+           MOVE V2-ADDL                         TO SQT-ADDL.
+           MOVE V2-TAX-CODE                     TO SQT-TAX-CODE.
+           MOVE V2-RCV-DPT                      TO SQT-RCV-DPT.
+           MOVE V2-BUDGET                       TO SQT-BUDGET.
+           MOVE V2-TM                           TO SQT-TM.
+           MOVE V2-PRINT                        TO SQT-PRINT.
+           MOVE V2-LINK-REQ                     TO SQT-LINK-REQ.
+           MOVE SPACES               TO CSTRMJB2-PARMS.
+           MOVE "CALL TQTGENPO"      TO CSTRM-RUN-CARD (1).
+           MOVE SQTPOS-PARMS         TO CSTRM-RUN-CARD (2).
+           MOVE SQTPOS-PARM2         TO CSTRM-RUN-CARD (3).
+           MOVE "OVRDBF FILE(AKPOFILE) TOFILE(DQTPO)"
+                                     TO CSTRM-RUN-CARD (4).
+           MOVE "OVRDBF FILE(DPOERFIL) TOFILE(DQTPOERR)"
+                                     TO CSTRM-RUN-CARD (5).
+           MOVE "CALL TLOADPO"       TO CSTRM-RUN-CARD (6).
+           MOVE "CALL TQTPOEND"      TO CSTRM-RUN-CARD (7).
+           MOVE SQTPOS-PARMS         TO CSTRM-RUN-CARD (8).
+           MOVE SQTPOS-PARM2         TO CSTRM-RUN-CARD (9).
+           MOVE "Y"                  TO CSTRM-JOBCARD-FLAG.
+           MOVE "BQTGENPO"           TO CSTRM-JOBNAME.
+           CALL "CSTRMJB2" USING CSTRMJB2-PARMS, VIEW-COMAREA.
+           IF CSTRM-RET-CODE NOT = "00"
+              MOVE CSTRM-RET-CODE TO BU-DISPLAY-FLD9 (1)
+              MOVE "STREAM COMMAND FAILED SQTPOS" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+           GO TO 100-GET-ENTRY.
+
+       199-EXIT.
+           EXIT.
+
+       200-CHECK-CHAT.
+           MOVE VEN-ITM-CORPCODE TO CORPCDE OF DCHATNO-REC.
+           START DCHATNO
+             KEY NOT < CORPCDE OF DCHATNO-REC
+               INVALID KEY
+                 MOVE FILE-STATUS TO FILE-STATUS.
+
+           IF FILE-STATUS NOT = "00"
+             GO TO 200-EXIT.
+
+           READ DCHATNO NEXT INTO BUF-DCHATNO
+             AT END MOVE "Y" TO EOF-SW.
+           IF FILE-STATUS = "10" OR "14" OR "46"
+             MOVE "Y" TO EOF-SW.
+
+           IF (EOF-SW = "N") AND
+              (VEN-ITM-CORPCODE = CHAT-CORP-CODE)
+             MOVE "Y" TO SCHATREF-SW
+           ELSE
+             GO TO 200-EXIT.
+
+           MOVE VEN-ITM-CORPCODE TO PASS-CORP-CODE.
+           MOVE VEN-ITM-CHAT-NO  TO RETURN-CHAT-NO.
+
+       200-SCHATREF.
+           IF SCHATREF-SW = "Y"
+             CALL "SCHATREF" USING PASS-CORP-CODE
+                                   RETURN-CHAT-NO
+                                   VIEW-COMAREA
+             IF RETURN-CHAT-NO = SPACES
+               GO TO 200-SCHATREF
+             ELSE
+               MOVE RETURN-CHAT-NO TO VEN-ITM-CHAT-NO
+               REWRITE DVENDITM-REC3 FROM BUF-DVENDITM
+                  INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+               IF FILE-STATUS NOT = "00"
+                 MOVE 99 TO COND-WORD.
+               IF NOT GOOD-CALL
+                 MOVE "REWRITE 6000 SQUOTUPD" TO BU-DISPLAY-MSG
+                 PERFORM 990-BLOWUP THRU 999-EXIT.
+
+           READ DVENDITM3  NEXT INTO BUF-DVENDITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             IF FILE-STATUS = "10" OR "14" OR "46"
+               MOVE 15 TO COND-WORD
+             ELSE
+               MOVE 99 TO COND-WORD.
+
+           IF QUOTENUM   OF DVENDITM-REC3  NOT = QUOTE-ARG
+             MOVE 15 TO COND-WORD.
+           IF END-OF-CHAIN
+             GO TO 200-EXIT
+           ELSE
+             IF NOT GOOD-CALL
+               MOVE "DBGET DVENDITM 6000 SQTPOS" TO BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP THRU 999-EXIT
+             ELSE
+               GO TO 200-CHECK-CHAT.
+       200-EXIT.
+           EXIT.
+
+       800-DISPLAY-TERMS.
+      *----------  EDIT TERMS
+           IF VEN-TERMS-PC NOT = SPACES
+           MOVE "TMP"            TO MISC-ARG1B
+           MOVE V2-TM1           TO MISC-ARG2B
+           MOVE 0 TO COND-WORD.
+           MOVE MISC-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+      *----------  TERMS ARE NOT VALID
+              MOVE SPACES TO V2-TM, V2-TM-DESC1, V2-TM-DESC2
+              GO TO 809-EXIT
+           ELSE
+              MOVE MPLTINFO-DISC-AMNT-DESC TO V2-TM-DESC1.
+
+           IF VEN-TERMS-DTE NOT = SPACES
+           MOVE "TMD"            TO MISC-ARG1B
+           MOVE V2-TM2           TO MISC-ARG2B
+           MOVE 0 TO COND-WORD.
+           MOVE MISC-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF COND-WORD NOT = 0
+      *----------  TERMS ARE NOT VALID
+              MOVE SPACES TO V2-TM, V2-TM-DESC1, V2-TM-DESC2
+           ELSE
+              MOVE MPLTINFO-TMD-DESC TO V2-TM-DESC2.
+
+       809-EXIT.
+           EXIT.
+
+       940-VSETERROR.
+           MOVE B"1" TO IND (99).
+           MOVE B"1" TO IND (FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER TO DE-MESSAGE-LINE1
+                                  DE-MESSAGE-LINE2.
+
+       949-EXIT.  EXIT.
+      ******************************************************************
+      *                       B L O W U P                              *
+      *      CHECK FOR IMAGE, VIEW, OR SPOOL ERROR.  CLOSE             *
+      *      FILES, GET OUT OF BLOCK MODE, AND DISPLAY                 *
+      *      APPROPRIATE ERROR MESSAGE ON SCREEN.                      *
+      *                                                                *
+      *      ALSO APPENDS THE ERROR MESSAGE TO A FILE CALLED           *
+      *      BLOWUP.PUB.  TO READ THIS FILE, RUN "XBLPRT.OBJECT".      *
+      *                                                                *
+      *         |||   PROGRAM IS ABORTED IN TBLOWUP   |||              *
+      ******************************************************************
+       990-BLOWUP.
+           MOVE QUOTE-ARG       TO BU-DISPLAY-FLD (1).
+           MOVE VIEW-NFNAME     TO BU-DISPLAY-FLD (3).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG     ,
+                         BU-DISPLAY-FLDS.
+       999-EXIT.     EXIT.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

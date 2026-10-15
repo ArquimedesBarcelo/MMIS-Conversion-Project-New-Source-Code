@@ -1,0 +1,263 @@
+       PROCESS APOST.
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.       TWO2EDW2.
+       INSTALLATION.
+       AUTHOR.           D. BARAONA.
+       DATE-WRITTEN.     09/2018.
+
+      *************************************************************
+      *  SEND WORK ORDERS BY PART NUMBER TO EDW THROUGH FTP.
+      *      -SELECT WORK ORDERS FROM WO PARTS FILE MCFLMM1201
+      *        SENDING THE WHOLE MCFLMM1201 FILE
+      *      -SELECT PART INFORMATION FROM CODE DESCRIPTION FILE MCFLCS1401
+      *        SENDING THE WHOLE MCFLCS1401 FILE
+      *      -THESE FILES SHARE THE PART NUMBER FIELD (PRTNO)
+      *      -ADD THE PLANT CODE (I.E. N501) TO EACH OUTPUT RECORD
+      *           AS THE FIRST 4 DIGITS.
+      *
+      *      -WRITES TO FILES MCFP120EDW AND MCFP140EDW FOR EDW.
+      *
+      *  CPPI 2016-27276561  MMIS TO EDW INTERFACE
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.  IBM-AS-400.
+       OBJECT-COMPUTER.  IBM-AS-400.
+
+       SPECIAL-NAMES.    REQUESTOR IS WORK-STATION
+                         SYSTEM-CONSOLE IS CONSOLE
+                         SYSTEM-SHUTDOWN IS SHUTDOWN-SWITCH
+                           ON STATUS IS SYSTEM-SHUTDOWN-REQUESTED.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+      *MCFLMM1201 - Workorder Part by WO          INPUT
+            SELECT MCFLMM1201-FILE
+                   ASSIGN TO DATABASE-MCFLMM1201
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+                   FILE STATUS IS MCFLMM1201-SK.
+
+      *MCFLCS1401 - Code Description              INPUT
+            SELECT MCFLCS1401-FILE
+                   ASSIGN TO DATABASE-MCFLCS1401
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+                   FILE STATUS IS MCFLCS1401-SK.
+
+      *MCFP120EDW - FOR EDW- WO-PARTS    Send to EDW       OUTPUT
+            SELECT MCFP120EDW-FILE
+                   ASSIGN TO DATABASE-MCFP120EDW
+                   ORGANIZATION IS SEQUENTIAL
+                   ACCESS IS SEQUENTIAL
+                   FILE STATUS IS MCFP120EDW-SK.
+
+      *MCFP140EDW - FOR EDW -Code Description DDESC  Send to EDW  OUTPUT
+            SELECT MCFP140EDW-FILE
+                   ASSIGN TO DATABASE-MCFP140EDW
+                   ORGANIZATION IS SEQUENTIAL
+                   ACCESS IS SEQUENTIAL
+                   FILE STATUS IS MCFP140EDW-SK.
+
+      *MCFLCS0501 - Read for the PLANT CODE by key ID      INPUT
+            SELECT MCFLCS0501-FILE
+                   ASSIGN TO DATABASE-MCFLCS0501
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   FILE STATUS IS MCFLCS0501-SK.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MCFLMM1201-FILE.
+       01  MCFLMM1201-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1201.
+
+       FD  MCFLCS1401-FILE.
+       01  MCFLCS1401-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS1401.
+
+       FD  MCFP120EDW-FILE.
+       01  MCFP120EDW-REC.
+           COPY DDS-ALL-FORMATS OF MCFP120EDW.
+
+       FD  MCFP140EDW-FILE.
+       01  MCFP140EDW-REC.
+           COPY DDS-ALL-FORMATS OF MCFP140EDW.
+
+       FD  MCFLCS0501-FILE.
+       01  MCFLCS0501-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+      *    COPY MPLTSAP IN COPYLIB. Used what I needed below.
+      *------- KEY = 'SAP'.
+           06  MPLTINFO-SAP REDEFINES PLTINFODTA.
+               10  MPLTINFO-SAP-SEND-SWK           PIC X(1).
+               10  MPLTINFO-SAP-PRINT-SWK          PIC X(1).
+               10  MPLTINFO-SAP-SET-AUTH-FLAG      PIC X(1).
+               10  MPLTINFO-SAP-HIDE-Q1-SW         PIC X(1).
+               10  MPLT-NUMBER                     PIC X(4).
+               10  FILLER                          PIC X(52).
+
+
+       WORKING-STORAGE SECTION.
+       01  MCFLMM1201-SK     PIC  X(02) VALUE SPACES.
+       01  MCFLCS1401-SK     PIC  X(02) VALUE SPACES.
+       01  MCFP120EDW-SK     PIC  X(02) VALUE SPACES.
+       01  MCFP140EDW-SK     PIC  X(02) VALUE SPACES.
+       01  MCFLCS0501-SK     PIC  X(02) VALUE SPACES.
+       01  RET-CODE          PIC X(10).
+
+       01  HOLD-PLANT            PIC X(4) VALUE SPACES.
+
+       01  HOLD-RECORD1.
+           05  HOLD-PLANT1       PIC X(4) VALUE SPACES.
+           05  HOLD-REC120EDW    PIC X(750) VALUE SPACES.
+       01  HOLD-RECORD2.
+           05  HOLD-PLANT2       PIC X(4) VALUE SPACES.
+           05  HOLD-REC140EDW    PIC X(90) VALUE SPACES.
+
+
+       LINKAGE SECTION.
+
+      *********************
+       PROCEDURE DIVISION.
+
+       000-MAIN.
+           PERFORM 1000-OPEN-FILES.
+           IF RET-CODE NOT = SPACES
+               GO TO EOJ.
+
+      * GET PLANT LOCATION
+           MOVE 'XXXX' TO MPLT-NUMBER.
+           MOVE 'SAP' TO PLTINFOKEY OF MCRPCS0500
+           READ MCFLCS0501-FILE
+                INVALID KEY DISPLAY '******************************'
+                            DISPLAY '***  NO PLANT VALUE FOUND  ***'
+                            DISPLAY '*** Error in PGM=MMISEDWXFR **'
+                            DISPLAY '******************************'
+                            GO TO EOJ
+           END-READ.
+           MOVE MPLT-NUMBER TO HOLD-PLANT.
+
+      *Position to beginning of MCFLMM1201 Workorder Parts file
+           MOVE SPACES TO WONUM OF MCRPMM1200.
+           START MCFLMM1201-FILE
+                KEY IS NOT LESS THAN EXTERNALLY-DESCRIBED-KEY
+                INVALID KEY CONTINUE.
+
+           READ MCFLMM1201-FILE NEXT RECORD
+                AT END CONTINUE.
+           PERFORM 300-WRITE-120EDW-REC
+               UNTIL MCFLMM1201-SK NOT = '00'.
+
+      *Position to beginning of MCFLCS1401 Corp Code description file
+           MOVE SPACES TO CORPCDE OF MCRPCS1400.
+           START MCFLCS1401-FILE
+                KEY IS NOT LESS THAN EXTERNALLY-DESCRIBED-KEY
+                INVALID KEY CONTINUE.
+
+           READ MCFLCS1401-FILE NEXT RECORD
+               AT END CONTINUE.
+           PERFORM 400-WRITE-140EDW-REC
+             UNTIL MCFLCS1401-SK IS NOT = '00'.
+
+       EOJ.
+           CLOSE MCFLMM1201-FILE
+                 MCFLCS1401-FILE
+                 MCFP120EDW-FILE
+                 MCFP140EDW-FILE
+                 MCFLCS0501-FILE.
+           STOP RUN.
+           EXIT PROGRAM.
+
+       300-WRITE-120EDW-REC.
+           INITIALIZE HOLD-REC120EDW.
+           MOVE HOLD-PLANT TO HOLD-PLANT1.
+           MOVE MCFLMM1201-REC TO HOLD-REC120EDW.
+           WRITE MCFP120EDW-REC FROM HOLD-RECORD1.
+           IF MCFP120EDW-SK NOT = '00'
+                MOVE 'BAD120EDW' TO RET-CODE
+                DISPLAY '*************************************'
+                DISPLAY 'BAD WRITE ON MCFP120EDW-FILE'
+                DISPLAY 'IN PGM=TWO2EDW2'
+                DISPLAY 'MCFP120EDW-SK = ' MCFP120EDW-SK
+                DISPLAY '*************************************'.
+           READ MCFLMM1201-FILE NEXT RECORD
+                AT END CONTINUE.
+
+       400-WRITE-140EDW-REC.
+           INITIALIZE HOLD-REC140EDW.
+           MOVE HOLD-PLANT TO HOLD-PLANT2.
+           MOVE MCFLCS1401-REC TO HOLD-REC140EDW.
+           WRITE MCFP140EDW-REC FROM HOLD-RECORD2.
+           IF MCFP140EDW-SK NOT = '00'
+                MOVE 'BAD140EDW' TO RET-CODE
+                DISPLAY '*************************************'
+                DISPLAY 'BAD WRITE ON MCFP140EDW-FILE'
+                DISPLAY 'IN PGM=TWO2EDW2'
+                DISPLAY 'MCFP140EDW-SK = ' MCFP140EDW-SK
+                DISPLAY '*************************************'.
+           READ MCFLCS1401-FILE NEXT RECORD
+               AT END CONTINUE.
+
+       1000-OPEN-FILES.
+           MOVE SPACES TO RET-CODE.
+
+           OPEN INPUT MCFLMM1201-FILE.
+           IF MCFLMM1201-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFLMM1201-FILE'
+               DISPLAY 'IN PGM=MMISEDWXFR'
+               DISPLAY 'MCFLMM1201-SK = ' MCFLMM1201-SK
+               DISPLAY 'PROGRAM ABENDING'
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN INPUT MCFLCS1401-FILE.
+           IF MCFLCS1401-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFLCS1401-FILE'
+               DISPLAY 'IN PGM=MMISEDWXFR'
+               DISPLAY 'MCFLCS1401-SK = ' MCFLCS1401-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN OUTPUT MCFP120EDW-FILE.
+           IF MCFP120EDW-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFP120EDW-FILE'
+               DISPLAY 'IN PGM=TWO2EDW2'
+               DISPLAY 'MCFP120EDW-SK = ' MCFP120EDW-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN OUTPUT MCFP140EDW-FILE.
+           IF MCFP140EDW-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFP140EDW-FILE'
+               DISPLAY 'IN PGM=TWO2EDW2'
+               DISPLAY 'MCFP140EDW-SK = ' MCFP140EDW-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN INPUT MCFLCS0501-FILE.
+           IF MCFLCS0501-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFLCS0501-FILE'
+               DISPLAY 'IN PGM=MMISEDWXFR'
+               DISPLAY 'MCFLCS0501-SK = ' MCFLCS0501-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.

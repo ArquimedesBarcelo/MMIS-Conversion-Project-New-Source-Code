@@ -1,0 +1,966 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SPOMOD.
+       AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+
+      **************************************************************
+      *                                                            *
+      *   S P O M O D       SUB PROGRAM TO PO MODIFICATION  PU2-1  *
+      *                     SELECTION SCREEN                       *
+      *   SUBROUTINES CALLED:                                      *
+      *                           1) SPOHEAD.SOURCE    PU2-2       *
+      *                           2) SADDPITM.SOURCE               *
+      *                           3) SMODSITM.SOURCE   PU2-4       *
+      *                           4) SDELSITM.SOURCE   PU2-5       *
+      *                           5) SMODPRC.SOURCE    PU2-10      *
+      *                           6) TPOPRTSL.SOURCE   PU3-1       *
+      *                           7) SMODIACC.SOURCE   PU2-11      *
+      *                           8) SCOMPPO.SOURCE                *
+      **************************************************************
+
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+      *   07/18/1996    CA YODER
+      *     RE-COMPILED PROGRAM TO PICK UP CENTURY DATABASE CHANGES.
+      ***--------------------------------------------------------------
+      *   05/15/1997    CA YODER
+      *     ADDED LOGIC TO PASS FRANCHISE VENDOR SWITCH TO SADDPITM.
+      ***--------------------------------------------------------------
+      *   12/27/2002    DCR  DAN RAUCH
+      *   DCR01 - ADDED LOGIC TO PREVENT CHANGES TO ARIBA BUYER PO'S
+      ***----
+      *    1/03/2003    DCR  DAN RAUCH
+      *    === TEMPORARY ==>  TURNED OFF THE ABOVE MOD PER DAVE PLUM
+      ***--------------------------------------------------------------
+      *   03/27/2003    DCR  DAN RAUCH
+      *   DCR02 - ADDED LOGIC FOR PO LOGGING
+      ***--------------------------------------------------------------
+      *   09/25/2003    DCR  DAN RAUCH
+      *   MOD DCR01  ===>    TURNED ON THE ABOVE MOD PERTAINING TO
+      *                      PREVENTING CHANGES TO ARIBA BUYER PO'S
+      ***--------------------------------------------------------------
+      *   10/28/2003    DCR  DAN RAUCH
+      *   MOD DCR03  ===>    TURNED OFF THE ABOVE MOD PERTAINING TO
+      *                      PREVENTING CHANGES TO ARIBA BUYER PO'S
+      *                      - BUT ADDED A CALL TO SPOMOD2 TO ALLOW
+      *                      CHANGES RESTRICTED TO CERTAIN FIELDS
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  AS400.
+       OBJECT-COMPUTER.  AS400.
+
+       SPECIAL-NAMES.
+             LOCAL-DATA IS LOCAL-DATA-AREA
+             I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE  ASSIGN TO WORKSTATION-ZPURORD-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MPORCV-I      ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I    ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I     ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                 PIC X(2000).
+      *    COPY DD-POMOD1-O OF ZPURORD.
+
+       FD  MPORCV-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1           PIC X  VALUE "0".
+           05  FILE-STATUS-2           PIC X  VALUE "0".
+
+      *------- HOLDING AREA FOR FRANCHISERS
+       01  FRAN-TABLE.
+           05  FRAN-ENTRY OCCURS 4 TIMES INDEXED BY FRAN-IDX.
+               10  FRAN-ID             PIC X(1).
+               10  FRAN-NAME           PIC X(4).
+               10  FRAN-VEN-CODE       PIC X(10).
+       01  FRAN-SUB                    PIC 9.
+       01  SAVE-FRANCHISE-SW           PIC X   VALUE SPACES.
+
+      **********************
+      *                    *
+      *  S W I T C H E S   *
+      *                    *
+      **********************
+
+       01  SWITCH-AREA.
+           05  ZBILL-PO-SW             PIC X       VALUE SPACES.
+               88  ZBILL-PO                        VALUE "1".
+           05  EOJ-SW                  PIC X       VALUE "N".
+
+       01  PO-ARRAY.
+           05  PO-ARR OCCURS 7 TIMES INDEXED BY P-INDEX.
+               10  PO-CHAR                  PIC X.
+
+DCR03  01  WS-ARIBA-MOD-PGM    PIC X(10)   VALUE "SPOMOD2".
+DCR02 *==============================================================
+DCR02  01  WS-Z000-EXTRA-FLDS.
+DCR02      03  WS-Z000-PGM         PIC X(10)   VALUE "SPOMOD".
+DCR02 *==============================================================
+DCR02      COPY POLOGSUBWS  IN COPYLIB.
+
+       01  BUILD-PO-SEARCH.
+           05  PO-PREFIX           PIC X       VALUE "P".
+           05  PO-NO               PIC X(7)    VALUE SPACES.
+           05  PO-REL              PIC X(3)    VALUE SPACES.
+           05  PO-RCV              PIC X(3)    VALUE ZEROS.
+
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(68)    VALUE SPACE.
+           05  MSG-FLD               PIC X(8)     VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC ZZZZZZZ9.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1   COMP-4.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **             TERMINAL I/O DATA AREA                       **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       01  SCREEN-1.
+           05  TRM-PO-NO                PIC X(7).
+           05  TRM-REL-NO               PIC XXX.
+           05  TRM-PO-MODIFY-OPTIONS.
+               10  TRM-MOD-HDG          PIC X.
+               10  TRM-ADD-ITEM         PIC X.
+               10  TRM-MOD-ITEM         PIC X.
+               10  TRM-DEL-ITEM         PIC X.
+               10  TRM-CANCEL-ORDER     PIC X.
+               10  TRM-PO-REPRINT       PIC X.
+               10  TRM-MOD-BLK-PRICE    PIC X.
+               10  TRM-MOD-BLK-ACCTG    PIC X.
+           05  TRM-COMMAND-LINE         PIC X(79).
+           05  TRM-MESSAGE-LINE         PIC X(79).
+
+       COPY CATREAD IN COPYLIB.
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       COPY DPORECD IN COPYLIB.
+
+       COPY MPORCV IN COPYLIB.
+
+       COPY MPLT0 IN COPYLIB.
+
+       COPY MPLTPODL IN COPYLIB.
+
+       COPY MPLTPOPT IN COPYLIB.
+
+       COPY MPLTFRAN IN COPYLIB.
+
+       COPY DBSTAT IN COPYLIB.
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16)  VALUE SPACES.
+           05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+           05  DSET-MPORCV            PIC X(16)  VALUE "MPORCV;".
+           05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+
+       01  ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+           05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+
+       01  ARG-VALUES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+           05  VEN-ARG                PIC X(10) VALUE SPACES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+
+      **********************************************
+      *
+      *  PARAMETERS FOR CALLING 'SADDPITM' WHICH IS A
+      *  SUBROUTINE FOR ADDING ITEMS
+      *
+      **********************************************
+
+       COPY SADDPITM IN COPYLIB.
+
+      **********************************************
+      *
+      *  PARAMETERS FOR CALLING 'SMODBDGT' WHICH IS A
+      *  SUBROUTINE FOR MODIFYING BUDGET AMOUNT
+      *
+      **********************************************
+
+       COPY SMODBDGT IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+
+       LINKAGE SECTION.
+
+       01  BASE             PIC X(10).
+
+       01  BASE-MMISA       PIC X(24).
+
+       01  SWITCH-PARAMETERS.
+           05  FATAL-ERR-SW            PIC X.
+           05  COMPANY-SAVE            PIC X(3).
+
+       COPY VCOMLINK IN COPYLIB.
+
+
+      **************************************
+      *                                    *
+      *  PRINTCNTL IS SET TO 1 THIS CAUSES *
+      *  THE FIELD ON A SCREEN PRINTOUT    *
+      *  TO BE UNDERLINED                  *
+      *                                    *
+      *  PAGECNTL IS SET TO 49 (OCTAL 61)  *
+      *  THIS CAUSE THE LP TO EJECT AFTER  *
+      *  THE SCREEN IS PRINTED             *
+      *                                    *
+      **************************************
+
+       01  SCREEN-PRINT-PARMS.
+           05  PRINTCNTL             PIC S9(4)    COMP-4.
+           05  PAGECNTL              PIC S9(4)    COMP-4.
+           05  SPOOLFIL-OPEN-SW      PIC X.
+
+       01  PASSED-SPOOL-PRT          PIC S9(2)    COMP-4.
+
+       01  PASSED-PO-PRINT-NUM       PIC S9(2)    COMP-4.
+
+       COPY LANGSUB IN COPYLIB.
+
+       COPY ESCNAME IN COPYLIB.
+
+       COPY ITPARMS IN COPYLIB.
+
+
+       PROCEDURE DIVISION USING  BASE,
+                                 BASE-MMISA,
+                                 SWITCH-PARAMETERS,
+                                 VIEW-COMAREA,
+                                 SCREEN-PRINT-PARMS,
+                                 PASSED-SPOOL-PRT,
+                                 PASSED-PO-PRINT-NUM,
+                                 LANGUAGE-PARMS,
+                                 ESC-NAME,
+                                 INTERNAL-ORDER-PARMS.
+
+       PO-MOD SECTION 02.
+
+       BEGIN-HERE.
+
+           OPEN INPUT MPORCV-I, DPORECD-I, MPLTINFO-I.
+           OPEN I-O DISPLAY-FILE.
+
+
+
+DCR02 *---------------------------------------------------------
+DCR02      PERFORM Z000-PGM-SETUP         THRU Z000-PS-EXIT.
+DCR02 *---------------------------------------------------------
+
+
+           MOVE "N"           TO EOJ-SW.
+           MOVE SPACES TO PO-NO, PO-REL.
+
+           PERFORM 6-MAIN THRU 6-M-X
+                   UNTIL (EOJ-SW = "Y").
+
+
+           CLOSE MPORCV-I, DPORECD-I, MPLTINFO-I, DISPLAY-FILE.
+           GOBACK.
+
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS  TO COND-WORD.
+           MOVE "SPOMOD"  TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND(FIELD-NUMBER), IND(99).
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+DCR02  Z000-PGM-SETUP.
+DCR02
+DCR02 *****************************************************
+DCR02 *   GET PLANT CODE
+DCR02 *****************************************************
+DCR02      MOVE "P 01"          TO  PLT-ARG.
+DCR02      MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+DCR02      READ MPLTINFO-I INTO BUF-MPLTINFO.
+DCR02      MOVE PLTINFODTA OF MPLTINFO-REC-I(1:3)
+DCR02                                    TO WS-Z000-PLANT-CODE.
+DCR02
+DCR02 *****************************************************
+DCR02 *   MAKE SURE PO LOGGING IS ACTIVE FOR THIS PLANT
+DCR02 *****************************************************
+DCR02      SET  Z000-POLG-ACTIVE-NO TO TRUE.
+DCR02
+DCR02      MOVE WS-Z000-POLG-KEY         TO  PLT-ARG.
+DCR02      MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+DCR02      READ MPLTINFO-I INTO BUF-MPLTINFO.
+DCR02      IF FILE-STATUS = "00"
+DCR02         IF  PLTINFODTA OF MPLTINFO-REC-I(1:1) = "Y"
+DCR02             SET  Z000-POLG-ACTIVE-YES TO TRUE
+DCR02         END-IF
+DCR02      END-IF.
+DCR02
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          PERFORM Z001-SETUP-PO-LOGGING  THRU Z001-EXIT
+DCR02          PERFORM Z110-RMV-USER-TRIGGER  THRU Z110-EXIT
+DCR02      END-IF.
+DCR02
+DCR01  Z000-PS-EXIT.
+DCR01      EXIT.
+
+       6-MAIN.
+           MOVE "POMOD1"  TO  VIEW-NFNAME.
+
+       6-CLEAR-SCREEN.
+           MOVE SPACES                  TO  SCREEN-1.
+           MOVE PO-NO                   TO  TRM-PO-NO.
+           IF PO-REL NUMERIC
+               MOVE PO-REL              TO  TRM-REL-NO
+           ELSE
+               MOVE ZERO                TO  TRM-REL-NO.
+
+       6-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-1.
+
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"  TO  EOJ-SW
+               GO TO 6-M-X
+           ELSE
+      *---------- 'f2' GO TO PO REPRINT
+           IF VIEW-LASTKEY = 2
+               MOVE 2                   TO VIEW-LASTKEY
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        *** INVALID FUNCTION KEY ENTERED ***
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+               MOVE 1  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+       6-FIELD-EDITS.
+           IF TRM-PO-NO = SPACES
+      *------ YOU MUST ENTER PURCHASE ORDER NUMBER
+               MOVE 44037 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+               MOVE B"1" TO IND(1) IND(99)
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+      **********************
+      *                    *
+      *   GET MPORCV TO    *
+      *    SEE IF P.O.     *
+      *    EVEN EXISTS.... *
+      *   THEN DETERMINE   *
+      *    THE TYPE OF PO  *
+      *    WE WILL BE      *
+      *    MODIFYING       *
+      **********************
+
+       6-FIND-PO-NO.
+           MOVE TRM-PO-NO               TO PO-NO.
+           MOVE TRM-REL-NO              TO PO-REL.
+           MOVE ZEROS                   TO PO-RCV.
+           MOVE BUILD-PO-SEARCH         TO PO-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-I.
+           READ MPORCV-I INTO BUF-MPORCV
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-MPORCV, MODE7,
+      *A           STATUS-AREA, ALL-ITEMS, BUF-MPORCV, PO-ARG.
+           IF COND-WORD = 0
+               NEXT SENTENCE
+           ELSE
+               IF COND-WORD = 17
+      *             *** PURCHASE ORDER DOES NOT EXIST ***
+                   MOVE  16 TO LANG-SETNUM
+                   MOVE  45 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+                   MOVE 1  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1
+           ELSE
+               MOVE "MPORCV 6-FIND-PO-NO"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG                 TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+           IF VIEW-LASTKEY = 2
+               MOVE SPACES              TO TRM-PO-MODIFY-OPTIONS
+               MOVE "X"                 TO TRM-PO-REPRINT
+               GO TO 6-READ-DPORECD.
+
+      *    *** CHOOSE ONLY ONE OPTION ***
+           MOVE   3 TO LANG-SETNUM.
+           MOVE  72 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE.
+
+           IF TRM-MOD-HDG             NOT = SPACE
+               IF TRM-ADD-ITEM            = SPACE     AND
+                  TRM-MOD-ITEM            = SPACE     AND
+                  TRM-DEL-ITEM            = SPACE     AND
+                  TRM-CANCEL-ORDER        = SPACE     AND
+                  TRM-PO-REPRINT          = SPACE     AND
+                  TRM-MOD-BLK-PRICE       = SPACE     AND
+                  TRM-MOD-BLK-ACCTG       = SPACE
+                   GO TO 6-READ-DPORECD
+               ELSE
+                   MOVE 3  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-ADD-ITEM            NOT = SPACE
+               IF TRM-MOD-ITEM            = SPACE     AND
+                  TRM-DEL-ITEM            = SPACE     AND
+                  TRM-CANCEL-ORDER        = SPACE     AND
+                  TRM-PO-REPRINT          = SPACE     AND
+                  TRM-MOD-BLK-PRICE       = SPACE     AND
+                  TRM-MOD-BLK-ACCTG       = SPACE
+                   GO TO 6-READ-DPORECD
+                ELSE
+                   MOVE 4  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-MOD-ITEM            NOT = SPACE
+               IF TRM-DEL-ITEM            = SPACE     AND
+                  TRM-CANCEL-ORDER        = SPACE     AND
+                  TRM-PO-REPRINT          = SPACE     AND
+                  TRM-MOD-BLK-PRICE       = SPACE     AND
+                  TRM-MOD-BLK-ACCTG       = SPACE
+                   GO TO 6-READ-DPORECD
+               ELSE
+                   MOVE 5  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-DEL-ITEM            NOT = SPACE
+               IF TRM-CANCEL-ORDER        = SPACE     AND
+                  TRM-PO-REPRINT          = SPACE     AND
+                  TRM-MOD-BLK-PRICE       = SPACE     AND
+                  TRM-MOD-BLK-ACCTG       = SPACE
+                  GO TO 6-READ-DPORECD
+              ELSE
+                   MOVE 6  TO  FIELD-NUMBER
+                  PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                  GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-CANCEL-ORDER        NOT = SPACE
+               IF TRM-PO-REPRINT          = SPACE     AND
+                  TRM-MOD-BLK-PRICE       = SPACE     AND
+                  TRM-MOD-BLK-ACCTG       = SPACE
+                   GO TO 6-READ-DPORECD
+               ELSE
+                   MOVE 12 TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-PO-REPRINT          NOT = SPACE
+               IF TRM-MOD-BLK-PRICE       = SPACE  AND
+                  TRM-MOD-BLK-ACCTG       = SPACE
+                  GO TO 6-READ-DPORECD
+              ELSE
+                  MOVE 13 TO  FIELD-NUMBER
+                  PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                  GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-MOD-BLK-PRICE       NOT = SPACE
+               IF TRM-MOD-BLK-ACCTG       = SPACE
+                  GO TO 6-READ-DPORECD
+              ELSE
+                  MOVE 11 TO  FIELD-NUMBER
+                  PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                  GO TO 6-SHOWFORM-SCREEN-1.
+           IF TRM-MOD-BLK-ACCTG       NOT = SPACE
+                  GO TO 6-READ-DPORECD
+              ELSE
+      *        *** PLACE 'X' IN ONE OPTION BEFORE ENTERING ***
+               MOVE  16 TO LANG-SETNUM
+               MOVE  61 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+               MOVE 3               TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+      **********************
+      *                    *
+      *   READ  DPORECD    *
+      *                    *
+      **********************
+
+       6-READ-DPORECD.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DPORECD, MODE1,
+      *A       STATUS-AREA, PO-SEARCH, PO-ARG.
+           IF COND-WORD NOT = 0
+               MOVE "DPORECD 6-READ-DPORECD"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG                    TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE 0 TO COND-WORD.
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPORECD-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+      *    CALL "DBGET" USING BASE, DSET-DPORECD, MODE5,
+      *            STATUS-AREA, ALL-ITEMS, BUF-DPORECD, PO-ARG.
+           IF COND-WORD NOT = 0
+               MOVE "GET 6-READ-DPORECD"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG                TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+
+DCR01**===============================================================
+DCR01**= CODE "TURNED BACK ON" 9-25-2003 FOR CHANGE\CANCEL UAT
+DCR01**= PREVENT CHANGES IF OWNED BY ARIBA BUYER
+DCR01**===============================================================
+DCR01      IF  PO-BUYER-CODE = "ARBA"
+DCR01*******   MOVE 3   TO LANG-SETNUM
+DCR01*******   MOVE 218 TO LANG-MSGNUM
+DCR01*******   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+DCR03
+DCR03          CALL WS-ARIBA-MOD-PGM  USING PO-ARG
+DCR03
+DCR03          MOVE SPACE TO BUILD-PO-SEARCH
+DCR03          MOVE "P"   TO PO-PREFIX
+DCR03          GO TO 6-M-X
+DCR03
+DCR01*******   MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+DCR01*******   MOVE 1   TO FIELD-NUMBER
+DCR01*******   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+DCR01*******   GO TO 6-SHOWFORM-SCREEN-1
+DCR01      END-IF.
+DCR01**===============================================================
+
+
+      ****************************************************
+      **   CHECK TO SEE IF THE PO IS A ZBILL PO.  ZBILL
+      **   POs IS A PO NUMBER THAT END WITH A 'M'.  ZBILL
+      **   POs ARE POs FOR GOODYEAR PROPERTY THAT IS OFF
+      **   PLANT SITE FOR REPAIR, FABRICATION, ETC.
+      ****************************************************
+
+           MOVE SPACES                  TO  ZBILL-PO-SW.
+           MOVE PO-NO                   TO  PO-ARRAY.
+           PERFORM 611-FIND-M  VARYING P-INDEX  FROM 7 BY -1
+               UNTIL P-INDEX = 0   OR  ZBILL-PO.
+
+      ***************************************************
+      **   IF THE USER CAN ONLY CREATE INTERNAL ORDERS
+      **   CHECK TO MAKE SURE THE ORDER THEY WISH TO MODIFY
+      **   IS AN INTERNAL ORDER (INDIC IN DPORECD).
+      ***************************************************
+
+           IF INTERNAL-ORDER-ONLY
+               IF PO-INTERNAL-ORDER-INDIC = "X"
+                   NEXT SENTENCE
+               ELSE
+                   IF MATCONT-PO-COMPLETE-SW = "Y"
+                       IF TRM-CANCEL-ORDER = "X"
+                           NEXT SENTENCE
+                       ELSE
+      ***                  CAN ONLY CREATE/ACCESS INTERNAL ORDERS
+                           MOVE 3   TO LANG-SETNUM
+                           MOVE 113 TO LANG-MSGNUM
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+                           MOVE 1   TO FIELD-NUMBER
+                           PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                           GO TO 6-SHOWFORM-SCREEN-1
+                   ELSE
+      ***              CAN ONLY CREATE/ACCESS INTERNAL ORDERS
+                       MOVE 3   TO LANG-SETNUM
+                       MOVE 113 TO LANG-MSGNUM
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+                       MOVE 1   TO FIELD-NUMBER
+                       PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                       GO TO 6-SHOWFORM-SCREEN-1.
+
+       6-WHAT-SHALL-I-DO.
+           IF TRM-MOD-HDG = "X"
+               CALL "SPOHEAD"   USING  BASE,
+                                       BUILD-PO-SEARCH,
+                                       VIEW-COMAREA,
+                                       BUF-DPORECD,
+                                       SWITCH-PARAMETERS,
+                                       ZBILL-PO-SW,
+                                       SCREEN-PRINT-PARMS,
+                                       PASSED-SPOOL-PRT,
+                                       LANGUAGE-PARMS,
+                                       INTERNAL-ORDER-PARMS
+           ELSE
+           IF TRM-ADD-ITEM = "X"
+               PERFORM 61-CALL-ITEM-ADD  THRU  61-CIA-X
+           ELSE
+           IF TRM-MOD-ITEM = "X"
+               CALL "SMODSITM"  USING  BASE,
+                                       BUILD-PO-SEARCH,
+                                       VIEW-COMAREA,
+                                       BUF-DPORECD,
+                                       SWITCH-PARAMETERS,
+                                       SCREEN-PRINT-PARMS,
+                                       PASSED-SPOOL-PRT,
+                                       LANGUAGE-PARMS
+           ELSE
+           IF TRM-DEL-ITEM = "X"
+               CALL "SDELSITM"  USING  BASE,
+                                       BUILD-PO-SEARCH,
+                                       VIEW-COMAREA,
+                                       BUF-DPORECD,
+                                       SWITCH-PARAMETERS,
+                                       SCREEN-PRINT-PARMS,
+                                       PASSED-SPOOL-PRT,
+                                       LANGUAGE-PARMS
+           ELSE
+           IF TRM-CANCEL-ORDER = "X"
+               PERFORM 61-CANCEL-ORDER-OPTION  THRU  61-COO-X
+           ELSE
+           IF TRM-PO-REPRINT = "X"
+               CALL "TPOPRTSL" USING BASE,
+                                     BUILD-PO-SEARCH,
+                                     VIEW-COMAREA,
+                                     SWITCH-PARAMETERS,
+                                     SCREEN-PRINT-PARMS,
+                                     PASSED-SPOOL-PRT,
+                                     PASSED-PO-PRINT-NUM,
+                                     LANGUAGE-PARMS,
+                                     ESC-NAME,
+                                     INTERNAL-ORDER-PARMS
+           ELSE
+           IF TRM-MOD-BLK-PRICE = "X"
+               IF TRM-REL-NO = "999"
+                   CALL "SMODPRC"   USING  BASE,
+                                           BUILD-PO-SEARCH,
+                                           VIEW-COMAREA,
+                                           BUF-DPORECD,
+                                           SWITCH-PARAMETERS,
+                                           SCREEN-PRINT-PARMS,
+                                           PASSED-SPOOL-PRT,
+                                           LANGUAGE-PARMS
+               ELSE
+      *        *** THIS OPTION AVAILABLE FOR REQUIREMENT ORDERS ONLY ***
+                   MOVE  20 TO LANG-SETNUM
+                   MOVE  29 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+                   MOVE 11 TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1
+           ELSE
+           IF TRM-MOD-BLK-ACCTG = "X"
+               IF TRM-REL-NO = "999"
+                   CALL "SMODIACC"  USING  BASE,
+                                           BUILD-PO-SEARCH,
+                                           VIEW-COMAREA,
+                                           BUF-DPORECD,
+                                           SWITCH-PARAMETERS,
+                                           SCREEN-PRINT-PARMS,
+                                           PASSED-SPOOL-PRT,
+                                           LANGUAGE-PARMS
+               ELSE
+      *        *** THIS OPTION AVAILABLE FOR REQUIREMENT ORDERS ONLY ***
+                   MOVE  20 TO LANG-SETNUM
+                   MOVE  29 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE
+                   MOVE 14 TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1.
+
+DCR02 **--------------------------------------------------------------
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          PERFORM Z100-PROCESS-PO-LOGGING  THRU Z100-EXIT
+DCR02      END-IF.
+DCR02 **--------------------------------------------------------------
+
+
+       6-M-X.
+           EXIT.
+
+      ***********************************
+      **  CALL ADD A PO ITEM SUBROUTINE
+      ***********************************
+
+       61-CALL-ITEM-ADD.
+           MOVE SPACES                  TO  ADD-ITEM-PARMS.
+           MOVE ZEROS                   TO  ITEM-NO-SAVE,
+                                            TOTAL-PO-BUDGET.
+           MOVE COMPANY-SAVE            TO  ADD-ITEM-COMPANY-SAVE.
+           IF PO-REL = "999"
+               MOVE "Y"                 TO  BLANKET-SW.
+           IF PO-NON-RCV-INDIC = "X"
+               MOVE "Y"                 TO  NON-RECV-SW.
+           MOVE PO-BUDGET-NUMBER        TO  BUDGET-NO-SAVED.
+           MOVE PO-VEN-CODE             TO  VEN-ARG.
+           MOVE ZBILL-PO-SW             TO  ZBILL-INDICATOR.
+           MOVE PO-CURRENCY-CODE        TO  ADD-ITEM-CUR-CODE.
+
+      *****************************************************
+      *
+      *   GET FRANCHISE INFORMATION
+      *
+      *****************************************************
+
+           MOVE "FRAN"                   TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES               TO  FRAN-TABLE
+           ELSE
+               MOVE MPLTINFO-FRANCHISES  TO  FRAN-TABLE.
+      *--------- SEE IF VENDOR IS A FRANCHISE VENDOR.
+           IF FRAN-TABLE > SPACES
+               SET FRAN-IDX          TO  1
+               SEARCH FRAN-ENTRY
+                   AT END
+                       MOVE "N"   TO  SAVE-FRANCHISE-SW
+                   WHEN FRAN-VEN-CODE(FRAN-IDX) = PO-VEN-CODE
+                       MOVE "Y"   TO  SAVE-FRANCHISE-SW.
+
+      **********************************************
+      *  GET THE INDICATOR THAT DENOTES IF THE PLANT
+      *  IS USING CSIS INVOICE PROCESSING SOFTWARE
+      **********************************************
+
+           MOVE "PODL"       TO PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   MOVE SPACES TO ADD-INVOICE-INDIC-SW
+               ELSE
+                   MOVE "GET MPLTINFO 'PODL' *61-CIA" TO BU-DISPLAY-MSG
+                   MOVE PLT-ARG             TO BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP
+           ELSE
+               MOVE MPLTINFO-INVOICE-IND  TO  ADD-INVOICE-INDIC-SW.
+
+      ******************************************************
+      **   GET THE PRICE COMPARE SWITCH AND PERCENTAGE TO
+      **   TO USE FOR COMPARING PO PRICE TO LAST MARKET COST
+      **   FROM 'MPLTINFO' KEY=POPT.  THIS IS PASSED TO
+      **   THE 'SADDPITM' SUBROUTINE.
+      ******************************************************
+
+           MOVE "POPT"         TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+           IF COND-WORD NOT = ZERO
+               MOVE "GET MPLTINFO 'POPT'*61-CIA" TO BU-DISPLAY-MSG
+               MOVE PLT-ARG  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE MPLTINFO-PO-COMPARE-PRICE-SW
+                                           TO  ADD-PO-COMPARE-PERCENT-SW
+               MOVE MPLTINFO-PO-COMPARE-PERCENT
+                                           TO  ADD-PO-COMPARE-PERCENT
+               MOVE MPLTINFO-ADDTL-DATA-EDIT-SW
+                                           TO  ADD-EDIT-ADDTL-DATA-SW.
+           MOVE "2" TO ADD-PGM-ID.
+           MOVE PO-INVOICELESS-IND         TO  ADD-INVOICELESS-IND.
+           MOVE SAVE-FRANCHISE-SW          TO FRANCHISE-VEND-SW.
+           IF SAVE-FRANCHISE-SW = "Y"
+               IF PO-NONPAY-IND = "X"
+                   MOVE "Y"                TO NONPAY-PO-SW
+               ELSE
+                   MOVE " "                TO NONPAY-PO-SW.
+           CALL "SADDPITM" USING BASE,
+                                 BASE-MMISA,
+                                 BUILD-PO-SEARCH,
+                                 VEN-ARG,
+                                 VIEW-COMAREA,
+                                 ADD-ITEM-PARMS,
+                                 SCREEN-PRINT-PARMS,
+                                 PASSED-SPOOL-PRT,
+                                 LANGUAGE-PARMS.
+
+      *****************************************************
+      **   CALL 'SMODBDGT' TO UPDATE THE BUDGET AMOUNT TO
+      **   REFLECT THE ADDITIONAL ITEMS IF TOTAL-PO-BUDGET
+      **   IS NOT ZERO.
+      *****************************************************
+
+           IF TOTAL-PO-BUDGET = ZEROS
+               NEXT SENTENCE
+           ELSE
+               MOVE BUILD-PO-SEARCH     TO SMODBDGT-PO-NUMBER
+               MOVE TOTAL-PO-BUDGET     TO SMODBDGT-BUDGET-NET-CHG
+               MOVE "Y"                 TO SMODBDGT-GET-DPORECD-SW
+               CALL "SMODBDGT" USING BASE,
+                                     SMODBDGT-PARMS,
+                                     BUF-DPORECD,
+                                     STATUS-AREA,
+                                     BU-DISPLAY-MSG,
+                                     BU-DISPLAY-FLDS
+               IF BU-DISPLAY-MSG-1 NOT = SPACES
+                   GO TO 2-BLOWUP.
+
+       61-CIA-X.
+           EXIT.
+
+
+       61-CANCEL-ORDER-OPTION.
+      *    ***  NOW PROCESSING  ***
+           MOVE  14 TO LANG-SETNUM.
+           MOVE   2 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO TRM-COMMAND-LINE.
+           MOVE B"1" TO IND(98).
+           MOVE SCREEN-1                TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN.
+           PERFORM 998-AUTO-READ-SCREEN.
+
+           CALL "SCOMPPO" USING BASE,
+                                BUILD-PO-SEARCH,
+                                BUF-DPORECD,
+                                SWITCH-PARAMETERS,
+                                LANGUAGE-PARMS.
+
+       61-COO-X.
+           EXIT.
+
+
+       611-FIND-M.
+           IF PO-CHAR (P-INDEX) = "M"
+               MOVE "1" TO ZBILL-PO-SW
+           ELSE
+      ** IF CHAR FOUND NOT = M THEN QUIT THIS CANT BE Z-BILL
+               IF PO-CHAR (P-INDEX) NOT = SPACE
+                   SET P-INDEX TO 1.
+
+       COPY DISPCALL IN COPYLIB.
+       998-AUTO-READ-SCREEN.
+           READ  DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDIC ARE SRF-INDICATORS
+                   NO DATA MOVE DISPLAY-STATUS TO DISPLAY-STATUS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.
+           EXIT.
+
+DCR02  COPY POLOGSUBR IN COPYLIB.

@@ -1,0 +1,3512 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    SPOHEAD.
+000500 AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+000800
+000900******************************************************
+001000*                                                    *
+001100*   S P O H E A D                     PU2-2          *
+001200*                                                    *
+001300*   THIS SUB PROGRAM MODIFIES PO HEADER INFO.        *
+001400*                                                    *
+001500******************************************************
+001600*   N O T E    T H I S   S U B R O U T I N E   I S   *
+001700*         C A L L E D    B Y :                       *
+001800*      1. SPOMOD                                     *
+001900******************************************************
+
+      *****************************************************************
+      *C 04/29/96  CA YODER        REQ #96-023
+      *C   ADDED TWO CHECKS AT THE REQUEST OF JIM FISHEL IN UNC TO
+      *C   NOT ALLOW AN INVOICELESS PO TO BE CREATED IF THE PO IS
+      *C   A MEMO Z-BILL OR A NON-RECEIVABLE PO.
+      *C
+      *C 05/08/96  CA YODER        REQ #94-005
+      *C   ADDED LOGIC TO NOT ALLOW THE CURRENCY CODE TO BE CHANGED
+      *C   IF ANYTHING HAS ALREADY BEEN RECEIVED FOR THE PO.
+      *C
+      *C 07/22/96  CA YODER
+      *C   MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.
+      *C
+      *C 10/31/96  JEFF BUNGO
+      *C   ALLOW RECEIVING INSTRUCTIONS.  STORE AS 000002 IN
+      *C   DPODATAITM.
+      *C
+      *C 05/15/1997   CA YODER
+      *C   ADDED CHECK TO NOT ALLOW A PO TO BE MARKED AS INVOICELESS
+      *C   IF IT'S A NON-PAYABLE PO.
+      *C
+      *C 12/03/97  CA YODER
+      *C   FOUND THAT SOME POS CONTAIN AN "N" IN THE INVOICELESS
+      *C   INDICATOR FIELD INSTEAD OF " " OR "X".  THIS WAS CAUSING
+      *C   A PROBLEM WHEN MODIFYING THE HEADER.  ADDED "N" AS A VALID
+      *C   VALUE SO THAT MESSAGE 03206 WOULDN'T BE DISPLAYED.
+      *C
+      *C 02/19/98  CA YODER
+      *C   ADDED LOGIC TO VALIDATE VALUE IN INVOICELESS INDICATOR
+      *C   FIELD BECAUSE THIS PROGRAM WAS WRITING A "Y" OR "N" INSTEAD
+      *C   OF "X" OR " " IN SOME CASES.
+      *C
+      *C 05/04/98  CA YODER
+      *C   ADDED CHANGE OF PO-FOLLOWUP-DATE AS A CONDITION FOR A
+      *C   CALL TO "SEDIPOLG."  WITH THE NEW SUB-TRANSACTIONS IN
+      *C   "TEDIABST," FOLLOW-UPS CAN NOW BE SENT THROUGH EDI.
+      *C -------------------------------------------------------------
+      *C 09/09/99  CA YODER    NAPANEE REQUEST
+      *C   MOVE ITM-ZBILL-VALUE TO SPOMSTRM PARAMETERS SO THAT THE
+      *C   VALUE CAN BE CONVERTED WHEN THE CURRENCY CODE IS CHANGED.
+      *C -------------------------------------------------------------
+      *C 03/01/00  CA YODER    NAPANEE REQUEST    (D. STUBBS)
+      *C   REMOVED LOGIC TO UPDATE MARKET COST ON REPAIR ORDERS.
+      *C -------------------------------------------------------------
+      *C 05/15/03  DCR     DCR01  DAN RAUCH
+      *C   ADD LOGIC TO PROMPT(F4) FOR FOB DESCRIPTIONS
+      *C -------------------------------------------------------------
+      *C 08/12/03  DCR     DCR02  DAN RAUCH
+      *C   ADD LOGIC TO PROMPT(F4) FOR VIA DESCRIPTIONS
+      *C -------------------------------------------------------------
+      *C 07/20/04  CAY     CAY01  CA YODER      NAPANEE REQUEST
+      *C   COMMENTED OUT EDIT CHECK FOR CHANGING THE INVOICELESS
+      *C   FLAG ON REQUIREMENT ORDERS.
+      *C -------------------------------------------------------------
+002000
+010000
+010100
+010200 ENVIRONMENT DIVISION.
+010300 CONFIGURATION SECTION.
+010400 SOURCE-COMPUTER.  AS400.
+010500 OBJECT-COMPUTER.  AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DPORECD-O
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MVALIDUM-I
+                  ASSIGN TO DATABASE-MCFLCS0401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCOMMENT-I
+                  ASSIGN TO DATABASE-MCFLCS1801
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-O
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MBUYER-I
+                  ASSIGN TO DATABASE-MCFLCS0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPORCV-I
+                  ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+003500
+           SELECT DREQD-O
+                  ASSIGN TO DATABASE-MCFLCS2102
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2502
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-O
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDITM-O
+                  ASSIGN TO DATABASE-MCFLCS0802
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDITM2-O
+                  ASSIGN TO DATABASE-MCFLCS0801
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-O
+                  ASSIGN TO DATABASE-MCFLCS1101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DPORECD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  MVALIDUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDUM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0401.
+
+       FD  MCOMMENT-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCOMMENT-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1801.
+
+       FD  MSTORERM-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  MBUYER-I
+           LABEL RECORDS ARE STANDARD.
+       01  MBUYER-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0601.
+
+       FD  MPORCV-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DREQD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2102.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2502.
+
+       FD  DVENDOR-O
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0701.
+
+       FD  DVENDITM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDITM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0802.
+
+       FD  DVENDITM2-O
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDITM2-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0801.
+
+       FD  DPODATAITM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+011200 WORKING-STORAGE SECTION.
+
+DCR02  77  I                            PIC 9(03)       VALUE ZERO.
+       77  EDI-CHG-SW                   PIC 9.
+       77  LT-EXISTS                    PIC X.
+011400 77  SUB                         PIC S9(4)  COMP-4 VALUE ZEROS.
+       77  VENDOR-CHG-SW                PIC 9.
+       77  FOLLOWUP-SW                  PIC X.
+011600
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+011700**********************
+011800*                    *
+011900*  S W I T C H E S   *
+012000*                    *
+012100**********************
+012200
+012300 01  SWITCH-AREA.
+012400     05  VENDITM-EXISTS-FLAG      PIC X     VALUE SPACES.
+012500     05  VENDOR-CHANGE-FLAG       PIC X     VALUE SPACES.
+012600     05  CHG-TERMS-OR-FOB-SW      PIC X     VALUE SPACES.
+012700     05  STD-INST-ENTRY-EXISTS    PIC X     VALUE SPACES.
+012700     05  RCV-INST-ENTRY-EXISTS    PIC X     VALUE SPACES.
+012800     05  ERR-SW                   PIC X     VALUE SPACES.
+012900     05  CUR-CONV-SW              PIC X     VALUE SPACES.
+013000     05  CURRENCY-CHANGED-SW      PIC X     VALUE SPACES.
+DCR02      05  WS-E-SCREEN-SW           PIC X     VALUE "N".
+DCR02          88  E-SCREEN-NO                    VALUE "N".
+DCR02          88  E-SCREEN-YES                   VALUE "Y".
+013100
+
+DCR01 *================================================================
+DCR01  COPY ZFOBCDWS   IN COPYLIB.
+DCR02  COPY ZVIACDWS   IN COPYLIB.
+DCR01  01  WS-DCR-CHANGES.
+DCR01      03  WS-ZFOB-SAVE-FOB      PIC X(20)        VALUE SPACE.
+DCR02      03  WS-ZVIA-SAVE-VIA      PIC X(20)        VALUE SPACE.
+DCR01  COPY ZMPLTWS    IN COPYLIB.
+DCR01 *================================================================
+
+013200 01  WORK-AREA.
+013600
+013300     05  BUILD-TM-DISCOUNT-KEY.
+013400         10  FILLER                   PIC X(3)  VALUE "TMP".
+013500         10  BUILD-TM-DISCOUNT-VALUE  PIC X     VALUE SPACES.
+013600
+013700     05  BUILD-TM-DUE-DATE-KEY.
+013800         10  FILLER                   PIC X(3)  VALUE "TMD".
+013900         10  BUILD-TM-DATE-VALUE      PIC X     VALUE SPACES.
+014000
+014100     05  BUILD-FB-KEY.
+014200         10  FILLER                   PIC X(2)  VALUE "FB".
+014300         10  BUILD-FB-VALUE           PIC X(2)  VALUE SPACES.
+014400
+014100     05  BUILD-FRT-KEY.
+014200         10  FILLER                   PIC X(3)  VALUE "FRT".
+014300         10  BUILD-FRT-VALUE          PIC X     VALUE SPACE.
+014400
+           05  BUILD-TM-KEY.
+               10  FILLER                   PIC X(2)  VALUE "MT".
+               10  BUILD-TM-VALUE           PIC X(2)  VALUE SPACES.
+
+           05  BUILD-D-KEY.
+               10  FILLER                   PIC X     VALUE "D".
+               10  BUILD-TOD-VALUE          PIC X(3)  VALUE SPACES.
+
+014500     05  SAVE-VEND-CODE.
+014600         10  SAVE-VEND-CODE-1-7       PIC X(7)  VALUE SPACES.
+014700         10  SAVE-VEND-CODE-8-10      PIC X(3)  VALUE SPACES.
+014800
+014900     05  SAVE-SHIP-DATE-YMD           PIC X(6)  VALUE SPACES.
+015000     05  SAVE-EXP-DATE-YMD            PIC X(6)  VALUE SPACES.
+           05  SAVE-FLWP-DATE-CN.
+               10  SAVE-FLWP-CC             PIC X(2)  VALUE SPACES.
+015100         10  SAVE-FLWP-DATE-YMD.
+                   15  SAVE-FLWP-YY         PIC X(2)  VALUE SPACES.
+                   15  FILLER               PIC X(4)  VALUE SPACES.
+015200     05  SAVE-FB-CODE                 PIC X(2)  VALUE SPACES.
+015300
+015400     05  BUILD-COMMENT-NO.
+015500         10  BUILD-COM-PREFIX         PIC X     VALUE "C".
+015600         10  BUILD-COM-NO             PIC X(3)  VALUE SPACES.
+015700
+015800
+015900 01  STD-INST-SAVED.
+016000     05  SAVE-STD-INST-LIST.
+016100         10  STD-INST-NO  OCCURS 12 TIMES  PIC X(3).
+016200     05  SAVE-CONFIRMING-FLAG    PIC X.
+016300     05  SAVE-CONFIRM-VERBAGE    PIC X(34).
+       01  RCV-INST-SAVED.
+           05  SAVE-RCV-INST-LIST.
+               10  RCV-INST-NO  OCCURS 12 TIMES  PIC X(3).
+016400
+016500 01  RCVR-SW                  PIC X  VALUE "N".
+016600     88  RECEIVED-AGAINST            VALUE "Y".
+016700
+016800 01  INVOICE-SW               PIC X  VALUE "N".
+016900     88  INVOICED-AGAINST            VALUE "Y".
+017000
+017100
+017200*************************************************************
+017300**                                                         **
+017400**      V I E W   C O M M U N I C A T I O N   A R E A      **
+017500**                                                         **
+017600*************************************************************
+017700
+017800
+017900 01  MESSAGE-BUFFER.
+018000     05  MSG-TEXT              PIC X(66)    VALUE SPACE.
+018100     05  MSG-FLD               PIC X(10)     VALUE SPACE.
+018200     05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(9)9.
+018300
+018800 01  FIELD-NUMBER              PIC S9(4)    VALUE 1    COMP-4.
+018900
+       COPY CATREAD IN COPYLIB.
+019000
+019100**************************************************************
+019200**************************************************************
+019300**                                                          **
+019400**             TERMINAL I/O DATA AREA                       **
+019500**                                                          **
+019600**************************************************************
+019700**************************************************************
+019800
+019900 01  SCREEN-2.
+020000     05  DE2-COMPANY-CODE           PIC X(3).
+020100     05  DE2-PO-NO                  PIC X(7).
+020200     05  DE2-PO-REL                 PIC X(3).
+020300     05  DE2-PO-DATE                PIC X(8).
+020400     05  DE2-SHIP-DATE              PIC X(6).
+020500     05  DE2-EXP-DATE               PIC X(6).
+020600     05  DE2-VEN-CODE.
+020700         10  DE2-VEN-CD             PIC X(7).
+020800         10  DE2-ORD-VEN-CD         PIC X(3).
+           05  DE2-INVOICELESS-LIT        PIC X(10).
+           05  DE2-INVOICELESS-IND        PIC X.
+           05  DE2-NO-CHECK-LIT           PIC X(10).
+           05  DE2-NO-CHECK               PIC X.
+020900     05  DE2-BUYER-CODE             PIC X(4).
+021000     05  DE2-BUYER-NAME             PIC X(15).
+021100     05  DE2-TYPIST                 PIC X(3).
+021200     05  DE2-FOR-DEPT               PIC X(6).
+021300     05  DE2-REC-DEPT               PIC X(6).
+021400     05  DE2-ADDL-DATA              PIC X(16).
+021500     05  DE2-VIA                    PIC X(20).
+DCR02 ************************************************************
+DCR02      05  DE2-VIA-R1  REDEFINES DE2-VIA.
+DCR02          10  DE2-VIA-CD13           PIC XXX.
+DCR02          10  DE2-VIA-4-20           PIC X(17).
+DCR02 ************************************************************
+021600     05  DE2-FOLLOWUP-DATE          PIC X(6).
+021700     05  DE2-BUDGET-NO              PIC X(12).
+021800     05  DE2-BUDGET-AMT             PIC 9(11).
+021900     05  DE2-REQ-NUMBER             PIC X(12).
+022000     05  DE2-FOB.
+022100         10  DE2-FOB-CODE           PIC XX.
+022200         10  DE2-FOB-3-20           PIC X(18).
+DCR02 ************************************************************
+DCR02      05  DE2-FOB-R1  REDEFINES DE2-FOB.
+DCR02          10  DE2-FOB-CD13           PIC XXX.
+DCR02          10  DE2-FOB-4-20           PIC X(17).
+DCR02 ************************************************************
+           05  DE2-FREIGHT-TERMS          PIC X(1).
+022400     05  DE2-TERMS.
+022500         10  DE2-PCT                PIC X.
+022600         10  DE2-DUE-DTE            PIC X.
+022700     05  DE2-PCT-DESC               PIC X(5).
+022800     05  DE2-DUE-DATE-DESC          PIC X(18).
+022900     05  DE2-CURRENCY-CODE          PIC X(2).
+023000     05  DE2-CURRENCY-DESC          PIC X(12).
+023100     05  DE2-IT-ORDER-INDIC         PIC X.
+023200     05  DE2-ALT-REMIT              PIC X.
+023300     05  DE2-NON-RCV                PIC X.
+023400     05  DE2-CONFIRM-ORDER-INDIC    PIC X.
+023500     05  DE2-CONFIRM-FREE-VERB      PIC X(34).
+023600     05  DE2-STD-INST-LIST.
+023700         10  DE2-STD-NO  OCCURS 12 TIMES  PIC X(3).
+023600     05  DE2-RCV-INST-LIST.
+023700         10  DE2-RCV-NO  OCCURS 12 TIMES  PIC X(3).
+           05  DE2-COMMAND-LINE           PIC X(79).
+DCR02      05  DE2-PROMPT-FMT-NAME        PIC X(10).
+DCR02      05  DE2-PROMPT-FLD-NAME        PIC X(10).
+           05  DE2-MESSAGE-LINE           PIC X(79).
+023800
+019900 01  SCREEN-2E.
+020000     05  DE2-COMPANY-CODE-E         PIC X(3).
+           05  DE2-EDILIT-E               PIC X(6).
+020100     05  DE2-PO-NO-E                PIC X(7).
+020200     05  DE2-PO-REL-E               PIC X(3).
+020300     05  DE2-PO-DATE-E              PIC X(8).
+020400     05  DE2-SHIP-DATE-E            PIC X(6).
+020500     05  DE2-EXP-DATE-E             PIC X(6).
+020600     05  DE2-VEN-CODE-E.
+020700         10  DE2-VEN-CD-E           PIC X(7).
+020800         10  DE2-ORD-VEN-CD-E       PIC X(3).
+           05  DE2-INVOICELESS-LIT-E      PIC X(10).
+           05  DE2-INVOICELESS-IND-E      PIC X.
+           05  DE2-NO-CHECK-LIT-E         PIC X(10).
+           05  DE2-NO-CHECK-E             PIC X.
+020900     05  DE2-BUYER-CODE-E           PIC X(4).
+021000     05  DE2-BUYER-NAME-E           PIC X(15).
+021100     05  DE2-TYPIST-E               PIC X(3).
+021200     05  DE2-FOR-DEPT-E             PIC X(6).
+021300     05  DE2-REC-DEPT-E             PIC X(6).
+021400     05  DE2-ADDL-DATA-E            PIC X(16).
+021500     05  DE2-VIA-E                  PIC X(20).
+021600     05  DE2-FOLLOWUP-DATE-E        PIC X(6).
+           05  DE2-TRANS-MODE-E           PIC XX.
+           05  DE2-TRANS-CHGPAY-E         PIC XX.
+           05  DE2-TERMS-DELIVERY-E       PIC XXX.
+021700     05  DE2-BUDGET-NO-E            PIC X(12).
+021800     05  DE2-BUDGET-AMT-E           PIC 9(11).
+021900     05  DE2-REQ-NUMBER-E           PIC X(12).
+022000     05  DE2-FOB-E.
+022100         10  DE2-FOB-CODE-E         PIC XX.
+022200         10  DE2-FOB-3-20-E         PIC X(18).
+022300     05  DE2-FREIGHT-TERMS-E        PIC X(1).
+022400     05  DE2-TERMS-E.
+022500         10  DE2-PCT-E              PIC X.
+022600         10  DE2-DUE-DTE-E          PIC X.
+022700     05  DE2-PCT-DESC-E             PIC X(5).
+022800     05  DE2-DUE-DATE-DESC-E        PIC X(18).
+022900     05  DE2-CURRENCY-CODE-E        PIC X(2).
+023000     05  DE2-CURRENCY-DESC-E        PIC X(12).
+023100     05  DE2-IT-ORDER-INDIC-E       PIC X.
+023200     05  DE2-ALT-REMIT-E            PIC X.
+023300     05  DE2-NON-RCV-E              PIC X.
+023400     05  DE2-CONFIRM-ORDER-INDIC-E  PIC X.
+023500     05  DE2-CONFIRM-FREE-VERB-E    PIC X(34).
+023600     05  DE2-STD-INST-LIST-E.
+023700         10  DE2-STD-NO-E  OCCURS 12 TIMES  PIC X(3).
+023600     05  DE2-RCV-INST-LIST-E.
+023700         10  DE2-RCV-NO-E  OCCURS 12 TIMES  PIC X(3).
+           05  DE2-COMMAND-LINE-E         PIC X(79).
+DCR02      05  DE2-PROMPT-FMT-NAME-E      PIC X(10).
+DCR02      05  DE2-PROMPT-FLD-NAME-E      PIC X(10).
+           05  DE2-MESSAGE-LINE-E         PIC X(79).
+
+       COPY TSHWRDFM IN COPYLIB.
+
+       01  SCREEN-BUFFER  PIC X(2000).
+
+023900**************************************************************
+024000**************************************************************
+024100**                                                          **
+024200**                DATABASE I/O BUFFER AREA                  **
+024300**                                                          **
+024400**************************************************************
+024500**************************************************************
+024600
+024700 COPY MSTORERM IN COPYLIB.
+024800
+024900 COPY DPOITEM IN COPYLIB.
+025000
+025100 COPY MPLTINFO IN COPYLIB.
+025200
+025700 COPY DVENDITM IN COPYLIB.
+025800
+025900 COPY MPORCV IN COPYLIB.
+026000
+026300 COPY DREQD IN COPYLIB.
+026400
+026500 COPY DVENDOR IN COPYLIB.
+026600
+026700 COPY MBUYER IN COPYLIB.
+026800
+026900 COPY MVALIDUM IN COPYLIB.
+027000
+027100 COPY DPODATA IN COPYLIB.
+027200
+027300 COPY MCOMMENT IN COPYLIB.
+027400
+027500 COPY DINVRCD IN COPYLIB.
+027600
+027700*********************
+027800*                   *
+027900*   DATA SET NAMES  *
+028000*                   *
+028100*********************
+028200
+028300 01  DSET-NAMES.
+028400     05  DSET-NAME              PIC X(16)  VALUE SPACES.
+028500     05  DSET-DREQD             PIC X(16)  VALUE "DREQD;".
+028600     05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+028700     05  DSET-DVENDITM          PIC X(16)  VALUE "DVENDITM;".
+028800     05  DSET-DPOITEM           PIC X(16)  VALUE "DPOITEM;".
+028900     05  DSET-MPORCV            PIC X(16)  VALUE "MPORCV;".
+029000     05  DSET-MSTORERM          PIC X(16)  VALUE "MSTORERM;".
+029200     05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+029300     05  DSET-DVENDOR           PIC X(16)  VALUE "DVENDOR;".
+029400     05  DSET-DINVRCD           PIC X(16)  VALUE "DINVRCD;".
+029500     05  DSET-MBUYER            PIC X(16)  VALUE "MBUYER;".
+029600     05  DSET-MVALIDUM          PIC X(16)  VALUE "MVALIDUM;".
+029700     05  DSET-DPODATAITM        PIC X(16)  VALUE "DPODATAITM;".
+029800     05  DSET-MCOMMENT          PIC X(16)  VALUE "MCOMMENT;".
+030100
+030200 COPY DBSTAT IN COPYLIB.
+030300
+030400 01 ITEMS-LISTING.
+030500     05  ALL-ITEMS              PIC XX    VALUE "@;".
+030600     05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+030700     05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+030800     05  VEN-SEARCH             PIC X(10) VALUE "VEN-CODE;".
+030900
+031000 01 ARG-VALUES.
+031100     05  CODE-ARG               PIC X(8)  VALUE SPACES.
+031200     05  PLT-ARG                PIC X(4)  VALUE SPACES.
+031300     05  VEN-ARG                PIC X(10) VALUE SPACES.
+031400     05  PO-ARG                 PIC X(14) VALUE SPACES.
+031500     05  BUYER-ARG              PIC X(4)  VALUE SPACES.
+031600     05  UM-ARG                 PIC X(2)  VALUE SPACES.
+031700     05  COMMENT-ARG            PIC X(4)  VALUE SPACES.
+031800
+032600
+032700 COPY TDATECHK IN COPYLIB.
+032800
+032900 01  DATES-AND-TIMES.
+033000     05  HP-CUR-DATE.
+033100         10  MM                 PIC XX.
+033200         10  FILLER             PIC X.
+033300         10  DD                 PIC XX.
+033400         10  FILLER             PIC X.
+033500         10  YY                 PIC XX.
+033600     05  CUR-DATE.
+033700         10  YY.
+033800             15 FILLER          PIC X.
+033900             15 YR-YR           PIC X.
+034000         10  MM                 PIC XX.
+034100         10  DD                 PIC XX.
+
+      *****************************************
+      **  PARAMETERS FOR CALLING 'STC360'
+      **  WHICH IS THE SUB. FOR CUTTING
+      **  TC 360 AND 361
+034200*****************************************
+
+       01  STC360-TC                 PIC X(3) VALUE SPACES.
+       01  STC360-COMPANY-SAVE       PIC X(3) VALUE SPACES.
+034300
+034400************************************
+034500*
+034600*  PARAMETERS FOR CALLING
+034700*  SEDIPOLG.SOURCE
+034800*
+034900************************************
+035000
+       COPY SEDIPOLG IN COPYLIB.
+
+034400************************************
+034500*
+034600*  PARAMETERS FOR CALLING
+034700*  SEDIVNCK.SOURCE
+034800*
+034900************************************
+035000
+       COPY SEDIVNCK IN COPYLIB.
+
+034400************************************
+034500*
+034600*  PARAMETERS FOR CALLING
+034700*  SPOMSTRM.SOURCE
+034800*
+034900************************************
+035000
+035100 COPY SPOMSTRM IN COPYLIB.
+035200
+035300 COPY TBLOWUP IN COPYLIB.
+035400
+035500 LINKAGE SECTION.
+035600
+035700 01  BASE                         PIC X(10).
+035800
+035900 01  BUILD-PO-SEARCH.
+036000     05  PO-PREFIX                PIC X.
+036100     05  PO-NO                    PIC X(7).
+036200     05  PO-REL                   PIC X(3).
+036300     05  PO-RCV                   PIC X(3).
+036400
+036500 COPY VCOMLINK IN COPYLIB.
+036600
+036700 COPY DPORECD IN COPYLIB.
+036800
+036900 01  SWITCH-PARAMETERS.
+037000     05  FATAL-ERR-SW             PIC X.
+037100     05  COMPANY-SAVE             PIC X(3).
+037200
+037300 01  ZBILL-PO-SW                  PIC X.
+037400     88  ZBILL-PO                        VALUE "1".
+037500
+037600**************************************
+037700*                                    *
+037800*  PRINTCNTL IS SET TO 1 THIS CAUSES *
+037900*  THE FIELD ON A SCREEN PRINTOUT    *
+038000*  TO BE UNDERLINED                  *
+038100*                                    *
+038200*  PAGECNTL IS SET TO 49 (OCTAL 61)  *
+038300*  THIS CAUSE THE LP TO EJECT AFTER  *
+038400*  THE SCREEN IS PRINTED             *
+038500*                                    *
+038600**************************************
+038700
+038800 01  SCREEN-PRINT-PARMS.
+038900     05  PRINTCNTL             PIC S9(4)    COMP-4.
+039000     05  PAGECNTL              PIC S9(4)    COMP-4.
+039100     05  SPOOLFIL-OPEN-SW      PIC X.
+039200
+039300 01  PASSED-SPOOL-PRT          PIC S9(2)    COMP-4.
+039400
+039500 COPY LANGSUB IN COPYLIB.
+039600
+039700 COPY ITPARMS IN COPYLIB.
+039800
+039900 PROCEDURE DIVISION USING  BASE,
+040000                           BUILD-PO-SEARCH,
+040100                           VIEW-COMAREA,
+040200                           BUF-DPORECD,
+040300                           SWITCH-PARAMETERS,
+040400                           ZBILL-PO-SW,
+040500                           SCREEN-PRINT-PARMS,
+040600                           PASSED-SPOOL-PRT,
+040700                           LANGUAGE-PARMS,
+040800                           INTERNAL-ORDER-PARMS.
+040900
+041000 MODIFY-HEADING SECTION 05.
+       BEGIN-HERE.
+           OPEN INPUT DPOITEM-I, MVALIDUM-I, MCOMMENT-I, MBUYER-I,
+                      MPORCV-I, MPLTINFO-I, DINVRCD-I.
+           OPEN I-O DPORECD-O, MSTORERM-O, DREQD-O, DVENDOR-O,
+                    DVENDITM-O, DPODATAITM-O, DVENDITM2-O.
+
+041100     PERFORM 61-MODIFY-HEADING  THRU  61-MH-X.
+
+           CLOSE DPOITEM-I, MVALIDUM-I, MCOMMENT-I, MBUYER-I, MPORCV-I,
+                 MPLTINFO-I, DINVRCD-I, DPORECD-O, MSTORERM-O, DREQD-O,
+                 DVENDOR-O, DVENDITM-O, DPODATAITM-O, DVENDITM2-O.
+041200     GOBACK.
+041300
+041400 2-BLOWUP.
+041500     MOVE "SPOHEAD"        TO  BU-PGM-NAME.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS TO COND-WORD.
+041600     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+041700         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+041800             BU-DISPLAY-FLDS.
+041900
+042000 2-BLOWUP-X.
+042100     EXIT.
+042200
+045100
+045200 4-PGM-ERROR.
+           MOVE B"1" TO IND(FIELD-NUMBER), IND(99).
+046000
+046100 4-PGM-ERROR-X.
+046200     EXIT.
+048200
+048300 61-MODIFY-HEADING.
+
+           MOVE SPACES  TO SWITCH-AREA, RCVR-SW, INVOICE-SW,
+                           STD-INST-SAVED SEDIVNCK-PARMS
+                           RCV-INST-SAVED.
+
+
+DCR01 **=============================================================
+DCR01 ** USE ZFOB KEY TO DETERMINE IF TMS FOB PROCESS IS ACTIVE
+DCR01 ** THIS WILL FORCE FOB DESC'S TO COME FROM FILE MCFPPOFOB
+DCR01 **=============================================================
+DCR01      SET  ZFOB-USE-DBFILE-NO TO TRUE.
+DCR01      MOVE WS-ZFOB-KEY        TO  WS-ZMPLT-KEY.
+DCR01      PERFORM ZMPLT-GET-MPLTINFO   THRU ZMPLT-EXIT.
+DCR01      IF  WS-ZMPLT-PLTINFODTA(1:1) = "Y"
+DCR01          SET  ZFOB-USE-DBFILE-YES TO TRUE
+DCR01      END-IF.
+DCR01 **=============================================================
+
+
+DCR02 **=============================================================
+DCR02 ** USE ZVIA KEY TO DETERMINE IF TMS VIA PROCESS IS ACTIVE
+DCR02 ** THIS WILL FORCE VIA DESC'S TO COME FROM FILE MCFPPOVIA
+DCR02 **=============================================================
+DCR02      SET  ZVIA-USE-DBFILE-NO TO TRUE.
+DCR02      MOVE WS-ZVIA-KEY        TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO   THRU ZMPLT-EXIT.
+DCR02      IF  WS-ZMPLT-PLTINFODTA(1:1) = "Y"
+DCR02          SET  ZVIA-USE-DBFILE-YES TO TRUE
+DCR02      END-IF.
+DCR02 **=============================================================
+
+048400***********************************************************
+048500**   CHECK TO SEE IF THE PLANT HAS CHOOSEN TO HAVE THEIR
+048600**   PRICE INFO. CONVERTED TO LOCAL CURRENCY IF A FOREIGN
+048700**   CURRENCY CODE IS ENTERED.  THE SWITCH WILL BE SET
+048800**   TO 'Y' AND THE KEY IS 'CCHM' IN THE MPLTINFO DATA SET
+048900***********************************************************
+049000     MOVE "CCHM"                  TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+049100*A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+049200*A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+049300     IF COND-WORD NOT = 0
+049400         IF COND-WORD = 17
+049500             MOVE SPACES          TO  CUR-CONV-SW
+049600         ELSE
+049700             MOVE "GET MPLTINFO *61-MH" TO BU-DISPLAY-MSG
+049800             MOVE PLT-ARG         TO  BU-DISPLAY-FLD (3)
+049900             GO TO 2-BLOWUP
+050000     ELSE
+050100         MOVE MPLTINFO-CUR-CONV-SW  TO  CUR-CONV-SW.
+050200
+050300     MOVE BUILD-PO-SEARCH         TO  PO-ARG,
+                                            SEDIVNCK-PO-NUMBER,
+050400                                      BU-DISPLAY-FLD (1).
+           CALL "SEDIVNCK" USING BASE,
+                                 SEDIVNCK-PARMS.
+
+DCR02      SET E-SCREEN-NO       TO  TRUE.
+           IF SEDIVNCK-EDI-IND = "Y"
+               IF SEDIVNCK-INVLESS-IND = "Y"
+                   MOVE "EPOMOD2I"       TO  VIEW-NFNAME
+DCR02              SET E-SCREEN-YES      TO  TRUE
+               ELSE
+               IF PO-INVOICELESS-IND = "X"
+                   MOVE "EPOMOD2I"       TO  VIEW-NFNAME
+DCR02              SET E-SCREEN-YES      TO  TRUE
+               ELSE
+               IF PO-RLS-NO = "999"
+                   MOVE "EPOMOD2I"       TO VIEW-NFNAME
+DCR02              SET E-SCREEN-YES      TO  TRUE
+               ELSE
+               MOVE "EPOMOD2"            TO  VIEW-NFNAME
+DCR02          SET E-SCREEN-YES      TO  TRUE
+           ELSE
+           IF SEDIVNCK-INVLESS-IND = "Y"
+               MOVE "POMOD2I"            TO  VIEW-NFNAME
+           ELSE
+           IF PO-INVOICELESS-IND = "X"
+               MOVE "POMOD2I"            TO  VIEW-NFNAME
+           ELSE
+           IF PO-RLS-NO = "999"
+               MOVE "POMOD2I"            TO  VIEW-NFNAME
+           ELSE
+           MOVE "POMOD2"                 TO  VIEW-NFNAME.
+
+051200 61-MOVE-HDG-DATA-TO-BUFF.
+           MOVE SPACES                    TO  SCREEN-2 SCREEN-2E.
+052200     MOVE COMPANY-SAVE              TO  DE2-COMPANY-CODE
+                                              DE2-COMPANY-CODE-E.
+           IF SEDIVNCK-EDI-IND = "Y"
+               MOVE "EDI PO"              TO  DE2-EDILIT-E.
+052300     MOVE PO-NO                     TO  DE2-PO-NO
+                                              DE2-PO-NO-E.
+052400     MOVE PO-REL                    TO  DE2-PO-REL
+                                              DE2-PO-REL-E.
+052500     MOVE 4                         TO  DATE-MODE.
+052600     MOVE PO-DATE                   TO  DATE-VALIDATE-IN.
+052700     CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+052800     MOVE DATE-SLASH-OUT            TO  DE2-PO-DATE
+                                              DE2-PO-DATE-E.
+052900     IF PO-SHIP-DATE NUMERIC
+053000         MOVE PO-SHIP-DATE          TO  DATE-VALIDATE-IN
+053100         CALL "TDATECK2" USING DATE-CHECK-AREA LANGUAGE-PARMS
+053200         MOVE DATE-OUT              TO  DE2-SHIP-DATE
+                                              DE2-SHIP-DATE-E
+053300     ELSE
+053400         MOVE PO-SHIP-DATE          TO  DE2-SHIP-DATE
+                                              DE2-SHIP-DATE-E.
+053500     MOVE PO-EXPECT-DATE            TO  DATE-VALIDATE-IN.
+053600     CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+053700     MOVE DATE-OUT                  TO  DE2-EXP-DATE
+                                              DE2-EXP-DATE-E.
+053800     MOVE PO-VEN-CODE               TO  DE2-VEN-CODE
+                                              DE2-VEN-CODE-E.
+           IF VIEW-NFNAME = "POMOD2" OR "EPOMOD2"
+               MOVE "          "          TO  DE2-INVOICELESS-LIT
+                                              DE2-INVOICELESS-LIT-E
+                                              DE2-NO-CHECK-LIT
+                                              DE2-NO-CHECK-LIT-E
+               MOVE " "                   TO  DE2-INVOICELESS-IND
+                                              DE2-INVOICELESS-IND-E
+                                              DE2-NO-CHECK
+                                              DE2-NO-CHECK-E
+           ELSE
+           MOVE "INVLESS PO"              TO  DE2-INVOICELESS-LIT
+                                              DE2-INVOICELESS-LIT-E
+           MOVE PO-INVOICELESS-IND        TO  DE2-INVOICELESS-IND
+                                              DE2-INVOICELESS-IND-E
+           MOVE "NO CHECK  "              TO  DE2-NO-CHECK-LIT
+                                              DE2-NO-CHECK-LIT-E
+           MOVE PO-NO-CHECK-INDIC         TO  DE2-NO-CHECK
+                                              DE2-NO-CHECK-E.
+053900     MOVE PO-BUYER-CODE             TO  DE2-BUYER-CODE
+                                              DE2-BUYER-CODE-E.
+054000     MOVE PO-BUYER                  TO  DE2-BUYER-NAME
+                                              DE2-BUYER-NAME-E.
+054100     MOVE PO-TYPIST                 TO  DE2-TYPIST
+                                              DE2-TYPIST-E.
+054200     MOVE PO-RCV-DEPT               TO  DE2-REC-DEPT
+                                              DE2-REC-DEPT-E.
+054300     MOVE PO-FOR-DEPT               TO  DE2-FOR-DEPT
+                                              DE2-FOR-DEPT-E.
+054400     MOVE PO-ADDL-INFO              TO  DE2-ADDL-DATA
+                                              DE2-ADDL-DATA-E.
+054500     MOVE PO-VIA                    TO  DE2-VIA
+                                              DE2-VIA-E.
+054600     MOVE PO-FOLLOWUP-DATE          TO  DATE-VALIDATE-IN.
+054700     CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+054800     MOVE DATE-OUT                  TO  DE2-FOLLOWUP-DATE
+                                              DE2-FOLLOWUP-DATE-E.
+           MOVE PO-TRANSPORT-MODE         TO  DE2-TRANS-MODE-E.
+           MOVE PO-TRANSPORT-CHGPAY       TO  DE2-TRANS-CHGPAY-E.
+           MOVE PO-TRANSPORT-TERMS-OF-DEL TO  DE2-TERMS-DELIVERY-E.
+054900     MOVE PO-BUDGET-NUMBER          TO  DE2-BUDGET-NO
+                                              DE2-BUDGET-NO-E.
+055000     MOVE PO-BUDGET-AMT             TO  DE2-BUDGET-AMT
+                                              DE2-BUDGET-AMT-E.
+055100     MOVE PO-REQ-NUMBER             TO  DE2-REQ-NUMBER
+                                              DE2-REQ-NUMBER-E.
+055200     MOVE PO-FOB                    TO  DE2-FOB
+                                              DE2-FOB-E.
+055300     MOVE PO-FREIGHT-TERMS          TO  DE2-FREIGHT-TERMS
+                                              DE2-FREIGHT-TERMS-E.
+055400     MOVE PO-INTERNAL-ORDER-INDIC   TO  DE2-IT-ORDER-INDIC
+                                              DE2-IT-ORDER-INDIC-E.
+055500     MOVE PO-TERMS                  TO  DE2-TERMS
+                                              DE2-TERMS-E.
+055600     MOVE PO-CURRENCY-CODE          TO  DE2-CURRENCY-CODE
+                                              DE2-CURRENCY-CODE-E.
+055700     MOVE PO-ALT-REMIT-INDIC        TO  DE2-ALT-REMIT
+                                              DE2-ALT-REMIT-E.
+055800     MOVE PO-NON-RCV-INDIC          TO  DE2-NON-RCV
+                                              DE2-NON-RCV-E.
+055900     PERFORM 611-LOAD-TERM-CUR-DESC  THRU  611-LTCD-X.
+056000     PERFORM 611-GET-STD-INST  THRU  611-GSI-X.
+056100     IF STD-INST-ENTRY-EXISTS = "Y"
+056200         MOVE DATAITM-INFO        TO  STD-INST-SAVED
+056300         MOVE SAVE-STD-INST-LIST  TO  DE2-STD-INST-LIST
+                                            DE2-STD-INST-LIST-E
+056400         MOVE SAVE-CONFIRMING-FLAG
+056500                                  TO  DE2-CONFIRM-ORDER-INDIC
+                                            DE2-CONFIRM-ORDER-INDIC-E
+056600         MOVE SAVE-CONFIRM-VERBAGE
+056700                                  TO  DE2-CONFIRM-FREE-VERB
+                                            DE2-CONFIRM-FREE-VERB-E.
+           PERFORM 611-GET-RCV-INST   THRU 611-GRI-X.
+           IF RCV-INST-ENTRY-EXISTS = "Y"
+               MOVE DATAITM-INFO        TO RCV-INST-SAVED
+               MOVE SAVE-RCV-INST-LIST  TO DE2-RCV-INST-LIST
+                                           DE2-RCV-INST-LIST-E.
+
+057500 61-SHOWFORM-SCREEN-2.
+
+DCR01      MOVE B"0"               TO IND(77).
+DCR01      IF  ZFOB-USE-DBFILE-YES
+DCR01          MOVE B"1"           TO IND(77)
+DCR01      END-IF.
+
+DCR02      MOVE B"0"               TO IND(78).
+DCR02      IF  ZVIA-USE-DBFILE-YES
+DCR02          MOVE B"1"           TO IND(78)
+DCR02      END-IF.
+
+           IF SEDIVNCK-EDI-IND = "Y"
+               MOVE SCREEN-2E  TO SCREEN-BUFFER
+           ELSE
+           MOVE SCREEN-2       TO SCREEN-BUFFER.
+
+           MOVE 3              TO SRF-MODE.
+           CALL "TSHWRDFM" USING SRF-COMAREA, BU-DISPLAY-MSG,
+               VIEW-COMAREA, BASE, STATUS-AREA, SRF-SPOOLER-REC,
+               LANGUAGE-PARMS, SCREEN-BUFFER.
+
+
+           IF BU-DISPLAY-MSG NOT = SPACES
+               GO TO 2-BLOWUP.
+
+           IF SEDIVNCK-EDI-IND = "Y"
+               MOVE SCREEN-BUFFER          TO  SCREEN-2E
+               MOVE DE2-COMPANY-CODE-E     TO  DE2-COMPANY-CODE
+               MOVE DE2-PO-NO-E            TO  DE2-PO-NO
+               MOVE DE2-PO-REL-E           TO  DE2-PO-REL
+               MOVE DE2-PO-DATE-E          TO  DE2-PO-DATE
+               MOVE DE2-SHIP-DATE-E        TO  DE2-SHIP-DATE
+               MOVE DE2-EXP-DATE-E         TO  DE2-EXP-DATE
+               MOVE DE2-VEN-CODE-E         TO  DE2-VEN-CODE
+               MOVE DE2-INVOICELESS-LIT-E  TO  DE2-INVOICELESS-LIT
+               MOVE DE2-INVOICELESS-IND-E  TO  DE2-INVOICELESS-IND
+               MOVE DE2-NO-CHECK-LIT-E     TO  DE2-NO-CHECK-LIT
+               MOVE DE2-NO-CHECK-E         TO  DE2-NO-CHECK
+               MOVE DE2-BUYER-CODE-E       TO  DE2-BUYER-CODE
+               MOVE DE2-BUYER-NAME-E       TO  DE2-BUYER-NAME
+               MOVE DE2-TYPIST-E           TO  DE2-TYPIST
+               MOVE DE2-FOR-DEPT-E         TO  DE2-FOR-DEPT
+               MOVE DE2-REC-DEPT-E         TO  DE2-REC-DEPT
+               MOVE DE2-ADDL-DATA-E        TO  DE2-ADDL-DATA
+               MOVE DE2-VIA-E              TO  DE2-VIA
+               MOVE DE2-FOLLOWUP-DATE-E    TO  DE2-FOLLOWUP-DATE
+               MOVE DE2-BUDGET-NO-E        TO  DE2-BUDGET-NO
+               MOVE DE2-BUDGET-AMT-E       TO  DE2-BUDGET-AMT
+               MOVE DE2-REQ-NUMBER-E       TO  DE2-REQ-NUMBER
+               MOVE DE2-FOB-E              TO  DE2-FOB
+               MOVE DE2-FREIGHT-TERMS-E    TO  DE2-FREIGHT-TERMS
+               MOVE DE2-TERMS-E            TO  DE2-TERMS
+               MOVE DE2-PCT-DESC-E         TO  DE2-PCT-DESC
+               MOVE DE2-DUE-DATE-DESC-E    TO  DE2-DUE-DATE-DESC
+               MOVE DE2-CURRENCY-CODE-E    TO  DE2-CURRENCY-CODE
+               MOVE DE2-CURRENCY-DESC-E    TO  DE2-CURRENCY-DESC
+               MOVE DE2-IT-ORDER-INDIC-E   TO  DE2-IT-ORDER-INDIC
+               MOVE DE2-ALT-REMIT-E        TO  DE2-ALT-REMIT
+               MOVE DE2-NON-RCV-E          TO  DE2-NON-RCV
+               MOVE DE2-CONFIRM-ORDER-INDIC-E
+                                           TO  DE2-CONFIRM-ORDER-INDIC
+               MOVE DE2-CONFIRM-FREE-VERB-E
+                                           TO  DE2-CONFIRM-FREE-VERB
+               MOVE DE2-STD-INST-LIST-E    TO  DE2-STD-INST-LIST
+               MOVE DE2-RCV-INST-LIST-E    TO  DE2-RCV-INST-LIST
+           ELSE
+           MOVE SCREEN-BUFFER     TO SCREEN-2.
+
+DCR01 **** ENTER KEY
+DCR02      IF VIEW-LASTKEY = ZERO
+DCR02          GO TO 61-FIELD-EDITS
+DCR02      END-IF.
+
+DCR02      IF VIEW-LASTKEY = 3
+DCR02          GO TO 61-MH-X
+DCR02      END-IF.
+
+DCR02      IF  VIEW-LASTKEY = 4
+DCR02          IF  E-SCREEN-NO
+DCR02              PERFORM  998-F4-PROMPT-RTN   THRU 998-F4-EXIT
+DCR02          ELSE
+DCR02              PERFORM  998E-F4-PROMPT-RTN  THRU 998E-F4-EXIT
+DCR02          END-IF
+DCR02          GO TO 61-SHOWFORM-SCREEN-2
+DCR02      END-IF.
+
+DCR02      IF VIEW-LASTKEY = 7
+DCR02          GO TO 61-MOVE-HDG-DATA-TO-BUFF
+DCR02      END-IF.
+
+
+062200*    *** INVALID FUNCTION KEY ***
+062300     MOVE   9 TO LANG-SETNUM.
+062400     MOVE  10 TO LANG-MSGNUM.
+062500     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                  DE2-MESSAGE-LINE-E.
+062600     MOVE 11 TO  FIELD-NUMBER.
+062700     PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X.
+062800     GO TO 61-SHOWFORM-SCREEN-2.
+062900
+063000 61-FIELD-EDITS.
+           IF DE2-PO-REL = "999"
+               IF DE2-EXP-DATE = SPACES
+      *-------- YOU MUST ENTER AN EXPIRATION DATE FOR A REQUIREMENT
+                   MOVE 44112 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(12) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-VEN-CODE = SPACES
+      *------ YOU MUST ENTER A VENDOR CODE
+               MOVE 66107 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(22) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-BUYER-CODE = SPACES
+      *------ YOU MUST ENTER A BUYER CODE
+               MOVE 44036 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(46) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+065300
+           IF DE2-TYPIST = SPACES
+      *------ YOU MUST ENTER A TYPIST
+               MOVE 44115 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(5) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+DCR02      IF  ZVIA-USE-DBFILE-YES
+DCR02          IF DE2-VIA = SPACES
+DCR02 ***    "YOU MUST ENTER VIA"
+DCR02             MOVE  44 TO LANG-SETNUM
+DCR02             MOVE 121 TO LANG-MSGNUM
+DCR02             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+DCR02             MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+DCR02                                    DE2-MESSAGE-LINE-E
+DCR02             MOVE B"1" TO IND(19) IND(99)
+DCR02             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+DCR02             GO TO 61-SHOWFORM-SCREEN-2
+DCR02          END-IF
+DCR02      END-IF.
+
+           IF DE2-BUDGET-NO = SPACES
+      *------ YOU MUST ENTER A BUDGET NUMBER
+               MOVE 44038 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(17) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+134100
+           IF DE2-PO-REL = "999"
+               NEXT SENTENCE
+           ELSE
+               IF DE2-BUDGET-AMT = ZEROS
+      *------ YOU MUST ENTER A BUDGET AMOUNT
+                   MOVE 44116 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(18) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+
+           IF DE2-FOB = SPACES
+      *------ YOU MUST ENTER FOB
+               MOVE 44117 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(20) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-FREIGHT-TERMS = "G" OR "P" OR "C" OR "U" OR
+                                  "D" OR " "
+               IF DE2-INVOICELESS-IND = "X"
+                   IF DE2-FREIGHT-TERMS = " "
+                       MOVE 06025 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                              DE2-MESSAGE-LINE-E
+                       MOVE B"1" TO IND(52) IND(99)
+                       GO TO 61-SHOWFORM-SCREEN-2
+                   ELSE
+                   IF DE2-FREIGHT-TERMS = "P"
+                       MOVE 06026 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                              DE2-MESSAGE-LINE-E
+                       MOVE B"1" TO IND(52) IND(99)
+                       GO TO 61-SHOWFORM-SCREEN-2
+                   ELSE
+                   PERFORM 611-VALID-INVLESS-FRT
+                   IF COND-WORD = 17
+                       MOVE 06026 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                              DE2-MESSAGE-LINE-E
+                       MOVE B"1" TO IND(52) IND(99)
+                       GO TO 61-SHOWFORM-SCREEN-2
+                   ELSE
+                   NEXT SENTENCE
+               ELSE
+               NEXT SENTENCE
+           ELSE
+      *------ INVALID FREIGHT TERMS; VALID TERMS ARE (G,P,C,U,D)
+               MOVE 44118 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(52) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-TERMS = SPACES
+      *------ YOU MUST ENTER A VALID TERMS OF PAYMENT
+               MOVE 45035 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(27) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+226100
+           IF DE2-CURRENCY-CODE = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF DE2-CURRENCY-CODE NOT NUMERIC
+      *------ CURRENCY CODE MUST BE NUMERIC
+               MOVE 44043 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE B"1" TO IND(26) IND(99)
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-PO-REL = "999"
+CAY01          NEXT SENTENCE
+CAY01 *------------ COMMENTED OUT EDIT CHECK FOR CHANGING THE  *********
+CAY01 *------------ INVOICELESS FLAG ON REQUIREMENT ORDERS.    *********
+CAY01 *        IF PO-INVOICELESS-IND = " " OR PO-INVOICELESS-IND = "N" *
+CAY01 *            IF DE2-INVOICELESS-IND = "X"                        *
+CAY01 *                NEXT SENTENCE                                   *
+CAY01 *            ELSE                                                *
+CAY01 *            NEXT SENTENCE                                       *
+CAY01 *        ELSE                                                    *
+CAY01 *        IF DE2-INVOICELESS-IND = "X"                            *
+CAY01 *            NEXT SENTENCE                                       *
+CAY01 *        ELSE                                                    *
+CAY01 *        MOVE 03206 TO CATREAD-MSG-NUMBER                        *
+CAY01 *        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT               *
+CAY01 *        MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE                 *
+CAY01 *                               DE2-MESSAGE-LINE-E               *
+CAY01 *        MOVE B"1" TO IND(58) IND(99)                            *
+CAY01 *        GO TO 61-SHOWFORM-SCREEN-2                              *
+CAY01 ******************************************************************
+           ELSE
+           IF DE2-INVOICELESS-IND = " "
+             IF PO-INVOICELESS-IND = "X"
+065400         PERFORM 611-CHECK-RCVR-AND-INVOICES  THRU  611-CRAI-X
+               IF RCVR-SW = "Y"
+                   MOVE 03204 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(58) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2
+               ELSE
+               IF INVOICE-SW = "Y"
+                   MOVE 03205 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(58) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2
+               ELSE
+               NEXT SENTENCE
+             ELSE
+             NEXT SENTENCE
+           ELSE
+           IF PO-INVOICELESS-IND = " "
+             IF DE2-INVOICELESS-IND = "X"
+               MOVE "N" TO LT-EXISTS
+               PERFORM 611-CHECK-4-UM-LT THRU 611-C4UL-X
+               IF LT-EXISTS = "Y"
+      *M   "CANNOT CHANGE TO INVOICELESS - ITEM HAS 'LT' UM"
+                   MOVE 03217 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND (58) IND (99)
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-INVOICELESS-IND = "X"
+               IF ZBILL-PO
+                   IF COMPANY-SAVE = "129"
+      *        "MEMO Z-BILL PO CANNOT BE INVOICELESS"
+                       MOVE 13066 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                              DE2-MESSAGE-LINE-E
+                       MOVE B"1" TO IND(58) IND(99)
+                       GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-INVOICELESS-IND = "X"
+               IF DE2-NON-RCV = "X"
+      *        "NON-RECEIVABLE PO CANNOT BE INVOICELESS"
+                   MOVE 14128 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(58) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-INVOICELESS-IND = "X"
+               IF PO-NONPAY-IND = "X"
+      *        "NON-PAYABLE PO CANNOT BE INVOICELESS"
+                   MOVE 14136 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(58) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE2-NO-CHECK = "X"
+             IF PO-NO-CHECK-INDIC = " "
+               PERFORM 611-CHECK-RCVR-AND-INVOICES  THRU  611-CRAI-X
+               IF INVOICE-SW = "Y"
+                   MOVE 03205 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+                   MOVE B"1" TO IND(58) IND(99)
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+065600*********************************
+065700*                               *
+065800*   SHIP DATE EDIT 'TDATECHK'   *
+065900*                               *
+066000*********************************
+066100
+066200 61-EDIT-SHIP-DATE.
+066300     IF DE2-SHIP-DATE  NOT NUMERIC
+066400         MOVE DE2-SHIP-DATE  TO  SAVE-SHIP-DATE-YMD
+066500     ELSE
+066600         MOVE 3              TO  DATE-MODE
+066700         MOVE DE2-SHIP-DATE  TO  DATE-VALIDATE-IN
+066800         CALL "TDATECK2" USING DATE-CHECK-AREA LANGUAGE-PARMS
+066900         IF DATE-RET-CODE NOT = 0
+067000             MOVE DATE-MSG    TO  MESSAGE-BUFFER
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+067100             MOVE 11          TO  FIELD-NUMBER
+067200             PERFORM 4-PGM-ERROR  THRU 4-PGM-ERROR-X
+067300             GO TO 61-SHOWFORM-SCREEN-2
+067400         ELSE
+067500             MOVE DATE-YMD-OUT  TO  SAVE-SHIP-DATE-YMD.
+067600
+067700**********************************
+067800*                                *
+067900*  EXPECT DATE EDIT 'TDATECHK'   *
+068000*                                *
+068100**********************************
+068200
+068300 61-EDIT-EXP-DATE.
+068400     MOVE SPACES  TO  SAVE-EXP-DATE-YMD.
+068500     IF DE2-EXP-DATE = SPACES
+068600         NEXT SENTENCE
+068700     ELSE
+068800         MOVE 3                TO  DATE-MODE
+068900         MOVE DE2-EXP-DATE     TO  DATE-VALIDATE-IN
+069000         CALL "TDATECK2" USING DATE-CHECK-AREA LANGUAGE-PARMS
+069100         IF DATE-RET-CODE NOT = 0
+069200             MOVE DATE-MSG    TO  MESSAGE-BUFFER
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+069300             MOVE 12          TO  FIELD-NUMBER
+069400             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+069500             GO TO 61-SHOWFORM-SCREEN-2
+069600         ELSE
+069700             MOVE DATE-YMD-OUT  TO  SAVE-EXP-DATE-YMD.
+069800
+069900     IF DE2-NON-RCV = "X"
+070000         IF DE2-EXP-DATE = SPACES
+070100*        *** YOU MUST ENTER AN EXPIRATION DATE FOR A NON-RECEIVABLE PO ***
+070200             MOVE  25 TO LANG-SETNUM
+070300             MOVE  15 TO LANG-MSGNUM
+070400             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+070500             MOVE 12  TO  FIELD-NUMBER
+070600             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+070700             GO TO 61-SHOWFORM-SCREEN-2.
+070800
+       61-INVOICELESS-EDITS.
+           IF DE2-INVOICELESS-IND = " " OR "X"
+               NEXT SENTENCE
+           ELSE
+      *M   "ONLY 'X'AND ' ' ARE VALID"
+           MOVE  41 TO LANG-SETNUM
+           MOVE  29 TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                  DE2-MESSAGE-LINE-E
+           MOVE B"1" TO IND (58) IND (99)
+           GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF PO-INVOICELESS-IND NOT = DE2-INVOICELESS-IND
+               IF DE2-PO-REL = "999"
+CAY01              NEXT SENTENCE
+CAY01 *----------------- COMMENTED OUT EDIT CHECKS FOR CHANGING   *****
+CAY01 *----------------- INVOICELESS FLAG ON REQUIREMENT ORDERS.  *****
+CAY01 *            IF DE2-INVOICELESS-IND = "X"                       *
+CAY01 *                NEXT SENTENCE                                  *
+CAY01 *            ELSE                                               *
+CAY01 *M   "REQMT ORDERS CAN ONLY BE CHANGED FROM INVOICE TO INVLESS" *
+CAY01 *            MOVE 18090 TO CATREAD-MSG-NUMBER                   *
+CAY01 *            PERFORM 999-CATREAD THRU 999-CATREAD-EXIT          *
+CAY01 *            MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE            *
+CAY01 *                                   DE2-MESSAGE-LINE-E          *
+CAY01 *            MOVE B"1" TO IND(58) IND (99)                      *
+CAY01 *            GO TO 61-SHOWFORM-SCREEN-2                         *
+CAY01 *****************************************************************
+               ELSE
+               IF DE2-INVOICELESS-IND = " "
+                   IF RCVR-SW = "Y" OR INVOICE-SW = "Y"
+      *M   "PO CANNOT BE CHANGED FROM INVLESS TO INVOICE"
+                       MOVE 16145 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                              DE2-MESSAGE-LINE-E
+                       MOVE B"1" TO IND (58) IND (99)
+                       GO TO 61-SHOWFORM-SCREEN-2.
+
+
+       61-NO-CHECK-EDIT.
+            IF PO-NO-CHECK-INDIC NOT = DE2-NO-CHECK
+                IF INVOICE-SW = "Y"
+      *M   "PO NO CHECK INDICATOR NOT CHANGEABLE DUE TO ACTIVE INVCS"
+                    MOVE 16146 TO CATREAD-MSG-NUMBER
+                    MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                           DE2-MESSAGE-LINE-E
+                    MOVE B"1" TO IND (59) IND (99)
+                    GO TO 61-SHOWFORM-SCREEN-2.
+
+070900 61-EDIT-FOLLOWUP-DATE.
+071000     MOVE SPACES  TO  SAVE-FLWP-DATE-CN.
+071100     IF DE2-FOLLOWUP-DATE = SPACES
+071200         NEXT SENTENCE
+071300     ELSE
+071400         MOVE 3                   TO  DATE-MODE
+071500         MOVE DE2-FOLLOWUP-DATE   TO  DATE-VALIDATE-IN
+071600         CALL "TDATECK2" USING DATE-CHECK-AREA LANGUAGE-PARMS
+071700         IF DATE-RET-CODE NOT = 0
+071800             MOVE DATE-MSG    TO  MESSAGE-BUFFER
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+071900             MOVE 51          TO  FIELD-NUMBER
+072000             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+072100             GO TO 61-SHOWFORM-SCREEN-2
+072200         ELSE
+072300             MOVE DATE-YMD-OUT  TO  SAVE-FLWP-DATE-YMD
+                   IF SAVE-FLWP-YY >  "70"
+                       MOVE "19"      TO  SAVE-FLWP-CC
+                   ELSE
+                       MOVE "20"      TO  SAVE-FLWP-CC.
+072400
+072500******************************************************
+072600*                                                    *
+072700*  EDIT BUYER CODE USING THE 'MBUYER' DATA SET       *
+072800*  THE BUYER NAME IS TAKEN FROM 'MBUYER'  DATA SET   *
+072900*  FOR DPORECD                                       *
+073000*                                                    *
+073100******************************************************
+073200
+073300 61-EDIT-BUYER-CODE.
+073400     MOVE DE2-BUYER-CODE  TO  BUYER-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE BUYER-ARG TO BUYERCDE OF MBUYER-REC-I.
+           READ MBUYER-I INTO BUF-MBUYER
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+073500*A   CALL "DBGET" USING BASE, DSET-MBUYER, MODE7,
+073600*A       STATUS-AREA, ALL-ITEMS, BUF-MBUYER, BUYER-ARG.
+073700     IF COND-WORD NOT = 0
+073800         IF COND-WORD = 17
+073900*            "BUYER CODE DOES NOT EXIST"
+074000             MOVE   2 TO LANG-SETNUM
+074100             MOVE   4 TO LANG-MSGNUM
+074200             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+074300             MOVE MESSAGE-BUFFER TO MSG-TEXT
+074400             MOVE BUYER-ARG  TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+074500             MOVE 46      TO  FIELD-NUMBER
+074600             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+074700             GO TO 61-SHOWFORM-SCREEN-2
+074800         ELSE
+074900             MOVE "GET MBUYER * 61-EBC"  TO  BU-DISPLAY-MSG
+075000             MOVE BUYER-ARG           TO  BU-DISPLAY-FLD (2)
+075100             GO TO 2-BLOWUP
+075200     ELSE
+075300         MOVE BUYER-NAME          TO  DE2-BUYER-NAME
+                                            DE2-BUYER-NAME-E.
+075400
+      ********************************************
+      *  VALIDATE TRANSPORTATION DATA FOR EDI
+      ********************************************
+
+DCR02 **** IF SEDIVNCK-EDI-IND = "N" GO TO 61-GET-FOB-DESC.
+DCR02      IF SEDIVNCK-EDI-IND = "N" GO TO 61-GET-VIA-DESC.
+           MOVE DE2-TRANS-MODE-E TO BUILD-TM-VALUE.
+           MOVE BUILD-TM-KEY     TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   MOVE   9 TO LANG-SETNUM
+                   MOVE  67 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE-E
+                   MOVE 55 TO FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2
+               ELSE
+               MOVE "GET MPLTINFO *63-VTM" TO BU-DISPLAY-MSG
+               MOVE PLT-ARG TO BU-DISPLAY-FLD (2)
+               GO TO 2-BLOWUP.
+
+           IF DE2-TRANS-CHGPAY-E = "CC" OR "PP"
+               NEXT SENTENCE
+           ELSE
+           MOVE   9 TO LANG-SETNUM
+           MOVE  68 TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE-E
+           MOVE  56 TO FIELD-NUMBER
+           PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+           GO TO 61-SHOWFORM-SCREEN-2.
+
+           MOVE DE2-TERMS-DELIVERY-E TO BUILD-TOD-VALUE.
+           MOVE BUILD-D-KEY          TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   MOVE   9 TO LANG-SETNUM
+                   MOVE  69 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE-E
+                   MOVE  57 TO FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2
+               ELSE
+               MOVE "GET MPLTINFO *63-TOD" TO BU-DISPLAY-MSG
+               MOVE PLT-ARG                TO BU-DISPLAY-FLD (2)
+               GO TO 2-BLOWUP.
+
+075500**********************
+075600*                    *
+075700*      V I A         *
+075800*                    *
+075900**********************
+076000
+076100 61-GET-VIA-DESC.
+DCR02      IF  ZVIA-USE-DBFILE-YES
+DCR02          GO TO 61-GET-VIA-DESC-1
+DCR02      ELSE
+DCR02          GO TO 61-GET-FOB-DESC
+DCR02      END-IF.
+
+DCR02 *================================================================
+DCR02 *==  EDIT VIA AGAINST VIA DB FILE  MCFPPOVIA
+DCR02 *================================================================
+DCR02  61-GET-VIA-DESC-1.
+DCR02
+DCR02      MOVE SPACE TO WS-ZVIA-VIA-CODE   WS-ZVIA-VIA-DESC.
+DCR02      MOVE SPACE TO WS-ZVIA-SAVE-VIA.
+DCR02
+DCR02      MOVE DE2-VIA     TO WS-ZVIA-SAVE-VIA.
+
+DCR02 *==  SEND THE ENTIRE FIELD TO BE VALIDATED AS VIA DESCRIPTION
+DCR02      IF  DE2-VIA-4-20 NOT = SPACES
+DCR02          MOVE DE2-VIA       TO WS-ZVIA-VIA-DESC
+DCR02      END-IF.
+DCR02
+DCR02 *==  SEND THE 1ST THREE CHARACTERS TO BE VALIDATED AS VIA CODE
+DCR02      IF  DE2-VIA-CD13 NOT = SPACES
+DCR02          IF  DE2-VIA-4-20 = SPACES
+DCR02              MOVE DE2-VIA-CD13  TO WS-ZVIA-VIA-CODE
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02      PERFORM ZVIA-READK-VIADSC     THRU ZVIA-READK-EXIT.
+DCR02      IF  WS-ZVIA-VIA-ERR  = "E"
+DCR02 ***  "VIA CODE IS INVALID"
+DCR02          MOVE WS-ZVIA-SAVE-VIA  TO DE2-VIA
+DCR02          MOVE  44 TO LANG-SETNUM
+DCR02          MOVE 122 TO LANG-MSGNUM
+DCR02          PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+DCR02          MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+DCR02                                 DE2-MESSAGE-LINE-E
+DCR02          MOVE B"1" TO IND (19) IND (99)
+DCR02          PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+DCR02          GO TO 61-SHOWFORM-SCREEN-2
+DCR02      END-IF.
+
+DCR02      MOVE WS-ZVIA-VIA-DESC  TO DE2-VIA.
+
+075500**********************
+075600*                    *
+075700*      F O B         *
+075800*                    *
+075900**********************
+076000
+076100 61-GET-FOB-DESC.
+DCR01      IF  ZFOB-USE-DBFILE-YES
+DCR01          GO TO 61-GET-FOB-DESC-2
+DCR01      ELSE
+DCR01          GO TO 61-GET-FOB-DESC-1
+DCR01      END-IF.
+DCR01
+076100 61-GET-FOB-DESC-1.
+076200     MOVE SPACES                  TO  CHG-TERMS-OR-FOB-SW,
+076300                                      SAVE-FB-CODE.
+
+076400     IF DE2-FOB = PO-FOB
+076500         NEXT SENTENCE
+076600     ELSE
+076700         MOVE "Y"                 TO  CHG-TERMS-OR-FOB-SW.
+
+076800     IF DE2-FOB-3-20 = SPACES
+076900         NEXT SENTENCE
+077000     ELSE
+077100         MOVE DE2-FOB             TO  SAVE-FB-CODE
+077200         GO TO 61-EDIT-PAYMENT-TERMS.
+077300
+077400     MOVE DE2-FOB-CODE            TO  BUILD-FB-VALUE,
+                                            SAVE-FB-CODE.
+           MOVE BUILD-FB-KEY            TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+077700*A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+077800*A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+077900     IF COND-WORD NOT = 0
+078000         IF COND-WORD = 17
+078100             NEXT SENTENCE
+078200         ELSE
+078300             MOVE "GET MPLTINFO *61-GFD" TO BU-DISPLAY-MSG
+078400             MOVE PLT-ARG  TO  BU-DISPLAY-FLD (2)
+078500             GO TO 2-BLOWUP
+078600     ELSE
+078700         MOVE MPLTINFO-FOB      TO  DE2-FOB
+                                          DE2-FOB-E.
+
+
+DCR01      GO TO 61-EDIT-PAYMENT-TERMS.
+
+
+DCR01 *================================================================
+DCR01 *==  EDIT FOB AGAINST FOB DB FILE  MCFPPOFOB
+DCR01 *================================================================
+DCR01  61-GET-FOB-DESC-2.
+DCR01
+DCR01      MOVE SPACES          TO  CHG-TERMS-OR-FOB-SW SAVE-FB-CODE.
+DCR01      MOVE SPACE TO WS-ZFOB-FOB-CODE   WS-ZFOB-FOB-DESC.
+DCR01      MOVE SPACE TO WS-ZFOB-SAVE-FOB.
+DCR01
+DCR01 ***==========================================================
+DCR01 *==  FOB FIELD CAN'T BE BLANK
+DCR01 ***==========================================================
+DCR01      IF DE2-FOB = SPACES
+DCR01 ***    "YOU MUST ENTER FOB"
+DCR01         MOVE  44 TO LANG-SETNUM
+DCR01         MOVE 117 TO LANG-MSGNUM
+DCR01         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+DCR01         MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+DCR01                                DE2-MESSAGE-LINE-E
+DCR01         MOVE 20      TO  FIELD-NUMBER
+DCR01         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+DCR01         GO TO 61-SHOWFORM-SCREEN-2
+DCR01      END-IF.
+
+DCR01      MOVE DE2-FOB     TO WS-ZFOB-SAVE-FOB.
+DCR01      IF DE2-FOB = PO-FOB
+DCR01          NEXT SENTENCE
+DCR01      ELSE
+DCR01          MOVE "Y"         TO  CHG-TERMS-OR-FOB-SW
+DCR01      END-IF.
+DCR01
+DCR01 *==  SEND THE ENTIRE FIELD TO BE VALIDATED AS FOB DESCRIPTION
+DCR01      IF  DE2-FOB-4-20 NOT = SPACES
+DCR01          MOVE DE2-FOB       TO WS-ZFOB-FOB-DESC
+DCR01      END-IF.
+DCR01
+DCR01 *==  SEND THE 1ST THREE CHARACTERS TO BE VALIDATED AS FOB CODE
+DCR01      IF  DE2-FOB-CD13 NOT = SPACES
+DCR01          IF  DE2-FOB-4-20 = SPACES
+DCR01              MOVE DE2-FOB-CD13  TO WS-ZFOB-FOB-CODE
+DCR01          END-IF
+DCR01      END-IF.
+
+DCR01      PERFORM ZFOB-READK-FOBDSC     THRU ZFOB-READK-EXIT.
+DCR01      IF  WS-ZFOB-FOB-ERR  = "E"
+DCR01 ***  "FOB CODE IS INVALID"
+DCR01          MOVE WS-ZFOB-SAVE-FOB  TO DE2-FOB
+DCR01          MOVE   6 TO LANG-SETNUM
+DCR01          MOVE 052 TO LANG-MSGNUM
+DCR01          PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+DCR01          MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+DCR01                                 DE2-MESSAGE-LINE-E
+DCR01          MOVE 20      TO  FIELD-NUMBER
+DCR01          PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+DCR01          GO TO 61-SHOWFORM-SCREEN-2
+DCR01      END-IF.
+
+DCR01      MOVE WS-ZFOB-FOB-DESC  TO DE2-FOB.
+DCR01
+DCR01      GO TO 61-EDIT-PAYMENT-TERMS.
+DCR01 *================================================================
+078800
+078900*************************************
+079000*                                   *
+079100*   EDIT PAYMENT TERMS              *
+079200*                                   *
+079300*************************************
+079400
+079500 61-EDIT-PAYMENT-TERMS.
+079600     MOVE DE2-PCT               TO  BUILD-TM-DISCOUNT-VALUE.
+079700     MOVE BUILD-TM-DISCOUNT-KEY TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+079800*A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+079900*A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+080000     IF COND-WORD NOT = 0
+080100         IF COND-WORD = 17
+080200*            "INVALID PAYMENT TERMS; TERMS DOES NOT EXIST"
+080300             MOVE   9 TO LANG-SETNUM
+080400             MOVE   6 TO LANG-MSGNUM
+080500             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+080600             MOVE 27      TO  FIELD-NUMBER
+080700             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+080800             GO TO 61-SHOWFORM-SCREEN-2
+080900         ELSE
+081000             MOVE "GET MPLTINFO1 * 61-EPT" TO BU-DISPLAY-MSG
+081100             MOVE PLT-ARG  TO  BU-DISPLAY-FLD (2)
+081200             GO TO 2-BLOWUP.
+081300
+081400     MOVE DE2-DUE-DTE           TO  BUILD-TM-DATE-VALUE.
+081500     MOVE BUILD-TM-DUE-DATE-KEY TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+081600*A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+081700*A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+081800     IF COND-WORD NOT = 0
+081900         IF COND-WORD = 17
+082000*            "INVALID PAYMENT TERMS; TERMS DOES NOT EXIST"
+082100             MOVE   9 TO LANG-SETNUM
+082200             MOVE   6 TO LANG-MSGNUM
+082300             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+082400             MOVE 27      TO  FIELD-NUMBER
+082500             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+082600             GO TO 61-SHOWFORM-SCREEN-2
+082700         ELSE
+082800             MOVE "GET MPLTINFO2 * 61-EPT" TO BU-DISPLAY-MSG
+082900             MOVE PLT-ARG  TO  BU-DISPLAY-FLD (2)
+083000             GO TO 2-BLOWUP.
+083100
+083200     IF DE2-TERMS NOT = PO-TERMS
+083300         MOVE "Y"                 TO  CHG-TERMS-OR-FOB-SW.
+083400
+083500**********************************************************
+083600*    THE EDIT OF CURRENCY CODE
+083700*    IF THE PLANT HAS CHOSEN TO HAVE ALL
+083800*    PRICE INFORMATION (MARKET COST, BUDGET AMOUNT, TC 320s)
+083900*    CONVERTED TO LOCAL CURRENCY THEN THE MODIFICATION TO
+084000*    CURRENCY CODE IS NOT ALLOWED AND TO CHANGE CURRENCY CODE
+084100*    IN THIS CASE THEY MUST DELETE AND REENTER THE PO
+084200**********************************************************
+084300
+084400 61-EDIT-CURRENCY-CODE.
+084500     IF DE2-CURRENCY-CODE = PO-CURRENCY-CODE
+084600         MOVE "N"                 TO CURRENCY-CHANGED-SW
+084700         GO TO 61-EDIT-RCV-INDIC
+084800     ELSE
+084900         MOVE "Y"                 TO CURRENCY-CHANGED-SW.
+085000
+085100     IF CUR-CONV-SW = "Y"
+085200*     *** CANNOT CHANGE CURRENCY CODE-MUST DELETE AND REENTER PO
+085300         MOVE   3 TO LANG-SETNUM
+085400         MOVE 134 TO LANG-MSGNUM
+085500         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+085600         MOVE 26      TO  FIELD-NUMBER
+085700         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+085800         GO TO 61-SHOWFORM-SCREEN-2.
+085900
+086000     IF DE2-CURRENCY-CODE  =  SPACES
+086100         IF CUR-CODE-REQUIRED-SW = "Y"
+086200*            "CURRENCY CODE IS REQUIRED IN YOUR PLANT"
+086300             MOVE   3     TO LANG-SETNUM
+086400             MOVE  184    TO LANG-MSGNUM
+086500             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+086600             MOVE 26      TO  FIELD-NUMBER
+086700             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+086800             GO TO 61-SHOWFORM-SCREEN-2.
+
+           PERFORM 611-CHECK-RCVR-AND-INVOICES THRU 611-CRAI-X.
+           IF RECEIVED-AGAINST
+      *        "RECEIVERS EXIST; CANNOT MODIFY CURRENCY"
+               MOVE  16     TO LANG-SETNUM
+               MOVE  172    TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE 26      TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-2
+           ELSE
+               GO TO 61-EDIT-RCV-INDIC.
+
+087200     MOVE DE2-CURRENCY-CODE   TO  UM-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE UM-ARG TO VALIDUM OF MVALIDUM-REC-I.
+           READ MVALIDUM-I INTO BUF-MVALIDUM
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+087300*A   CALL "DBGET" USING BASE, DSET-MVALIDUM, MODE7,
+087400*A       STATUS-AREA, ALL-ITEMS, BUF-MVALIDUM, UM-ARG.
+087500     IF COND-WORD NOT = 0
+087600         IF COND-WORD = 17
+087700*            *** CURRENCY CODE DOES NOT EXIST ***
+087800             MOVE   3 TO LANG-SETNUM
+087900             MOVE  70 TO LANG-MSGNUM
+088000             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+088100             MOVE UM-ARG  TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+088200             MOVE 26      TO  FIELD-NUMBER
+088300             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+088400             GO TO 61-SHOWFORM-SCREEN-2
+088500         ELSE
+088600             MOVE "GET MVALIDUM * 61-ECC" TO BU-DISPLAY-MSG
+088700             MOVE UM-ARG  TO  BU-DISPLAY-FLD (2)
+088800             GO TO 2-BLOWUP.
+088900
+089000*********************************
+089100*                               *
+089200*  EDIT PO TYPE (RCV OR NON-RCV)*
+089300*                               *
+089400*********************************
+089500
+089600 61-EDIT-RCV-INDIC.
+089700     IF DE2-NON-RCV = PO-NON-RCV-INDIC
+089800         NEXT SENTENCE
+089900     ELSE
+090000     IF RECEIVED-AGAINST
+090100***  CANT CHANGE PO TYPE SINCE A RECEIPT WAS MADE
+090200         MOVE 3  TO  LANG-SETNUM
+090300         MOVE 45  TO  LANG-MSGNUM
+090400         PERFORM 999-CATREAD  THRU  999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+090500         MOVE 44  TO  FIELD-NUMBER
+090600         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+090700         GO TO 61-SHOWFORM-SCREEN-2
+090800     ELSE
+090900     IF INVOICED-AGAINST
+091000***  CANT CHANGE PO TYPE SINCE THE PO WAS INVOICED
+091100         MOVE 3  TO  LANG-SETNUM
+091200         MOVE 46  TO  LANG-MSGNUM
+091300         PERFORM 999-CATREAD  THRU  999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+091400         MOVE 44  TO  FIELD-NUMBER
+091500         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+091600         GO TO 61-SHOWFORM-SCREEN-2.
+091700
+091800     IF DE2-NON-RCV = "X"
+091900         MOVE SPACES              TO  ERR-SW
+092000         PERFORM 611-CHECK-FOR-CODED-ITEMS  THRU  611-CFCI-X
+092100         IF ERR-SW = "Y"
+092200             GO TO 61-SHOWFORM-SCREEN-2.
+092300
+092400***********************************************
+092500**  EDIT INTERNAL ORDER INDICATOR. IF THE USER
+092600**  IS LIMITED TO INTERNAL ORDERS ONLY THEN
+092700**  THEY CANNOT MODIFY THE INTERNAL ORDER
+092800**  INDICATOR
+092900***************************************
+093000
+093100 61-EDIT-IT-ORDER-INDIC.
+093200     IF INTERNAL-ORDER-ONLY
+093300         IF DE2-IT-ORDER-INDIC NOT = PO-INTERNAL-ORDER-INDIC
+093400**   CANNOT MODIFY INTERNAL ORDER INDICATOR
+093500             MOVE   3 TO LANG-SETNUM
+093600             MOVE 126 TO LANG-MSGNUM
+093700             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+093800             MOVE 50  TO  FIELD-NUMBER
+093900             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+094000             GO TO 61-SHOWFORM-SCREEN-2.
+094100
+094200***********************************
+094300*                                 *
+094400*   EDIT CONFIRMING ORDER         *
+094500*                                 *
+094600***********************************
+094700
+094800 61-EDIT-CONFIRM-ORDER.
+094900     IF DE2-CONFIRM-FREE-VERB  NOT =  SPACES
+095000         IF DE2-CONFIRM-ORDER-INDIC  =  SPACES
+095100*     *** ENTER 'X' IN CONFIRMING ORDER TO USE CONFIRMING FREE VERBAGE ***
+095200           MOVE   5 TO LANG-SETNUM
+095300           MOVE  34 TO LANG-MSGNUM
+095400           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                        DE2-MESSAGE-LINE-E
+095500           MOVE 30  TO  FIELD-NUMBER
+095600           PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+095700           GO TO 61-SHOWFORM-SCREEN-2.
+095800
+095900
+096000 61-EDIT-STD-INST.
+096100     MOVE 0  TO  SUB.
+096200
+096300***************************************
+096400*                                     *
+096500*  EDIT COMMENTS FOR VALID COMMENT NO.*
+096600*                                     *
+096700***************************************
+096800
+096900 61-EDIT-COMMENT-NO.
+097000     ADD 1 TO SUB.
+097100     IF SUB  >  12
+               MOVE 0 TO SUB
+097200         GO TO 61-EDIT-RCV-COMMENT-NO.
+097300
+097400     IF DE2-STD-NO (SUB) = SPACES
+097500         GO TO 61-EDIT-COMMENT-NO.
+097600     MOVE DE2-STD-NO (SUB) TO BUILD-COM-NO.
+           MOVE "C"              TO BUILD-COM-PREFIX.
+097700     MOVE BUILD-COMMENT-NO  TO  COMMENT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE COMMENT-ARG TO MCOMCOMMNT OF MCOMMENT-REC-I.
+           READ MCOMMENT-I INTO BUF-MCOMMENT
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+097800*A   CALL "DBGET" USING BASE, DSET-MCOMMENT, MODE7,
+097900*A       STATUS-AREA, ALL-ITEMS, BUF-MCOMMENT, COMMENT-ARG.
+098000     IF COND-WORD NOT = 0
+098100         IF COND-WORD = 17
+098200*            *** INSTRUCTION NUMBER DOES NOT EXIST ***
+098300             MOVE   9 TO LANG-SETNUM
+098400             MOVE  60 TO LANG-MSGNUM
+098500             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+098600             ADD 30, SUB  GIVING FIELD-NUMBER
+098700             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+098800             GO TO 61-SHOWFORM-SCREEN-2
+098900         ELSE
+099000             MOVE "GET MCOMMENT * 61-ECN" TO BU-DISPLAY-MSG
+099100             MOVE COMMENT-ARG             TO BU-DISPLAY-FLD (2)
+099200             GO TO 2-BLOWUP.
+099300
+099400     GO TO 61-EDIT-COMMENT-NO.
+099500
+096300***************************************
+096400*                                     *
+096500*  EDIT RCV COMM FOR VALID COMMENT NO.*
+096600*                                     *
+096700***************************************
+096800
+096900 61-EDIT-RCV-COMMENT-NO.
+097000     ADD 1 TO SUB.
+097100     IF SUB  >  12
+097200         GO TO 61-EDIT-VENDOR.
+097300
+097400     IF DE2-RCV-NO (SUB) = SPACES
+097500         GO TO 61-EDIT-RCV-COMMENT-NO.
+097600     MOVE DE2-RCV-NO (SUB) TO BUILD-COM-NO.
+           MOVE "R"              TO BUILD-COM-PREFIX.
+097700     MOVE BUILD-COMMENT-NO  TO  COMMENT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE COMMENT-ARG TO MCOMCOMMNT OF MCOMMENT-REC-I.
+           READ MCOMMENT-I INTO BUF-MCOMMENT
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+098000     IF COND-WORD NOT = 0
+098100         IF COND-WORD = 17
+098200*            *** INSTRUCTION NUMBER DOES NOT EXIST ***
+098300             MOVE   9 TO LANG-SETNUM
+098400             MOVE  60 TO LANG-MSGNUM
+098500             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+098600             ADD 59, SUB  GIVING FIELD-NUMBER
+098700             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+098800             GO TO 61-SHOWFORM-SCREEN-2
+098900         ELSE
+099000             MOVE "READ MCOMMENT * 61-ERCN" TO BU-DISPLAY-MSG
+099100             MOVE COMMENT-ARG             TO BU-DISPLAY-FLD (2)
+099200             GO TO 2-BLOWUP.
+099300
+099400     GO TO 61-EDIT-RCV-COMMENT-NO.
+099500
+099600*********************************
+099700*                               *
+099800*   VENDOR CODE                 *
+099900*                               *
+100000*********************************
+100100
+100200 61-EDIT-VENDOR.
+100300     MOVE SPACES            TO VENDOR-CHANGE-FLAG.
+100400     IF DE2-VEN-CODE = PO-VEN-CODE
+101100         GO TO 61-UPDATE-DPORECD.
+101200
+103300     MOVE DE2-VEN-CODE      TO VEN-ARG.
+           MOVE 0                 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-O.
+           START DVENDOR-O KEY = VENCDE OF DVENDOR-REC-O
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17        TO COND-WORD
+               ELSE
+                   MOVE 99        TO COND-WORD.
+103400*A   CALL "DBGET" USING BASE, DSET-NAME, MODE7,
+103500*A       STATUS-AREA, ALL-ITEMS, BUF-AVENDCODE, VEN-ARG.
+103600     IF COND-WORD NOT = 0
+103700         IF COND-WORD = 17
+103800*           *** VENDOR CODE DOES NOT EXIST ***
+103900            MOVE  22        TO LANG-SETNUM
+104000            MOVE   3        TO LANG-MSGNUM
+104100            PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                  MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                         DE2-MESSAGE-LINE-E
+104200            MOVE 22         TO FIELD-NUMBER
+104300            PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+104400            GO TO 61-SHOWFORM-SCREEN-2
+104500         ELSE
+104600         MOVE "GET1 AVENDCODE *61-EV" TO BU-DISPLAY-MSG
+104700         MOVE VEN-ARG                TO BU-DISPLAY-FLD (2)
+104800         GO TO 2-BLOWUP.
+104900     IF DE2-ORD-VEN-CD  =  "000"
+105000         NEXT SENTENCE
+105100     ELSE
+105200         MOVE DE2-VEN-CD  TO  SAVE-VEND-CODE-1-7
+105300         MOVE "000"       TO  SAVE-VEND-CODE-8-10
+105400         MOVE SAVE-VEND-CODE TO  VEN-ARG
+               MOVE 0 TO COND-WORD
+               MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-O
+               START DVENDOR-O KEY = VENCDE OF DVENDOR-REC-O
+                   INVALID KEY MOVE "2" TO FILE-STATUS-1 END-START
+               IF FILE-STATUS NOT = "00"
+                   IF FILE-STATUS-1 = "2"
+105900*                *** ASSOCIATED PAYTO VENDOR NOT ON FILE ***
+106000                 MOVE   1 TO LANG-SETNUM
+106100                 MOVE  16 TO LANG-MSGNUM
+106200                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                              DE2-MESSAGE-LINE-E
+106300                 MOVE 22  TO  FIELD-NUMBER
+106400                 PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+106500                 GO TO 61-SHOWFORM-SCREEN-2
+                   ELSE
+106700                MOVE "START2 DVENDOR *61-EV" TO BU-DISPLAY-MSG
+106800                MOVE VEN-ARG            TO BU-DISPLAY-FLD (2)
+106900                GO TO 2-BLOWUP.
+107600
+           MOVE 0          TO VENDOR-CHG-SW.
+           PERFORM 610-RETRIEVE-VENDOR-INFO THRU 610-RVI-X.
+           IF VENDOR-CHG-SW = 1
+               MOVE 22 TO LANG-SETNUM
+               MOVE  3 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+               MOVE 22             TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+101300*****************************
+101400*                           *
+101500*  CHECK FOR RCVRS AGAINST  *
+      *  THE OLD VENDOR CODE IF   *
+      *  CHANGING FROM INVOICED   *
+      *  TO INVOICELESS           *
+101600*                           *
+101700*****************************
+101800
+101900     IF PO-VEN-CODE-T = "T"
+102000         NEXT SENTENCE
+102100     ELSE
+           PERFORM 611-CHECK-RCVR-AND-INVOICES
+102200     IF RECEIVED-AGAINST
+               IF PO-INVOICELESS-IND = DE2-INVOICELESS-IND
+                   NEXT SENTENCE
+               ELSE
+               IF PO-INVOICELESS-IND = " " OR "N"
+                   IF DE2-INVOICELESS-IND = "Y"
+102300*M       *** PO HAS BEEN RECEIVED AGAINST-CAN'T CHANGE VENDOR ***
+102400             MOVE  16 TO LANG-SETNUM
+102500             MOVE  55 TO LANG-MSGNUM
+102600             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+102700*            MOVE PO-VEN-CODE  TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE-E
+102800             MOVE 22  TO  FIELD-NUMBER
+102900             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+103000             GO TO 61-SHOWFORM-SCREEN-2.
+103100
+107700     MOVE "Y"        TO VENDOR-CHANGE-FLAG.
+107800     IF PO-VEN-CODE-T  =  "T"
+107900         PERFORM 612-DELETE-DVENDOR  THRU  612-DD-X.
+108000
+108100     PERFORM 611-CHANGE-DVENDITM THRU 611-CD-X.
+108200
+108300     PERFORM 611-CHECK-AND-CHANGE-REQ THRU 611-CACR-X.
+108400
+108500*********************************
+108600*                               *
+108700*  IF VENDOR CODE IS CHANGED    *
+108800*  THEN DPORECD RECORD IS       *
+108900*  DELETED AND A NEW RECORD IS  *
+109000*  INSERTED WITH A NEW          *
+109100*  EXPECTED DELIVERY DATE       *
+109200*                               *
+109300*********************************
+109400
+111000
+111100 61-UPDATE-DPORECD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-O.
+           START DPORECD-O KEY = PORCVNO OF DPORECD-REC-O
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE "START DPORECD *61-UD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+           READ DPORECD-O NEXT INTO BUF-DPORECD
+               AT END MOVE "1" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPORECD * 61-UD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+           IF PORCVNO OF DPORECD-REC-O NOT = PO-ARG
+               MOVE "DPORECD PO DOESNT MATCH" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+111200     MOVE SAVE-SHIP-DATE-YMD      TO  PO-SHIP-DATE.
+      *--------- ACCOUNT FOR CENTURY.
+           IF PO-SHIP-YY = "  " OR PO-SHIP-YY NOT NUMERIC
+               MOVE "  "                TO  PO-SHIP-DATE-CC
+           ELSE
+           IF PO-SHIP-YY > "70"
+               MOVE "19"                TO  PO-SHIP-DATE-CC
+           ELSE
+               MOVE "20"                TO  PO-SHIP-DATE-CC.
+           IF PO-DATE-YY = "  "
+               MOVE "  "                TO  PO-DATE-CC
+           ELSE
+           IF PO-DATE-YY > "70"
+               MOVE "19"                TO  PO-DATE-CC
+           ELSE
+               MOVE "20"                TO  PO-DATE-CC.
+111300     MOVE SAVE-EXP-DATE-YMD       TO  PO-EXPECT-DATE.
+           IF PO-EXPECT-YY = "  "
+               MOVE "  "                TO  PO-EXPECT-DATE-CC
+           ELSE
+           IF PO-EXPECT-YY > "70"
+               MOVE "19"                TO  PO-EXPECT-DATE-CC
+           ELSE
+               MOVE "20"                TO  PO-EXPECT-DATE-CC.
+111500     MOVE DE2-VEN-CODE            TO  PO-VEN-CODE.
+           MOVE DE2-INVOICELESS-IND     TO  PO-INVOICELESS-IND.
+           MOVE DE2-NO-CHECK            TO  PO-NO-CHECK-INDIC.
+111600     MOVE DE2-BUYER-CODE          TO  PO-BUYER-CODE.
+111700     MOVE DE2-BUYER-NAME          TO  PO-BUYER.
+111800     MOVE DE2-TYPIST              TO  PO-TYPIST.
+111900     MOVE DE2-REC-DEPT            TO  PO-RCV-DEPT.
+112000     MOVE DE2-FOR-DEPT            TO  PO-FOR-DEPT.
+112100     MOVE DE2-ADDL-DATA           TO  PO-ADDL-INFO.
+112200     MOVE DE2-VIA                 TO  PO-VIA.
+           MOVE 0                       TO  EDI-CHG-SW.
+      *---------- CHECK IF FOLLOW-UP DATE CHANGED.
+           MOVE "N"                     TO  FOLLOWUP-SW.
+           IF SEDIVNCK-EDI-IND = "Y"
+               IF SAVE-FLWP-DATE-CN NOT = PO-FOLLOWUP-DATE-CN
+                   MOVE 1               TO  EDI-CHG-SW
+                   MOVE "Y"             TO  FOLLOWUP-SW.
+111400     MOVE SAVE-FLWP-DATE-CN       TO  PO-FOLLOWUP-DATE-CN.
+
+           IF SEDIVNCK-EDI-IND = "Y"
+             IF DE2-TRANS-MODE-E = PO-TRANSPORT-MODE
+               IF DE2-TRANS-CHGPAY-E = PO-TRANSPORT-CHGPAY
+                 IF DE2-TERMS-DELIVERY-E = PO-TRANSPORT-TERMS-OF-DEL
+                     NEXT SENTENCE
+                 ELSE
+                 MOVE DE2-TERMS-DELIVERY-E
+                                        TO  PO-TRANSPORT-TERMS-OF-DEL
+                 MOVE 1                 TO  EDI-CHG-SW
+               ELSE
+               MOVE DE2-TRANS-CHGPAY-E  TO  PO-TRANSPORT-CHGPAY
+               MOVE 1                   TO  EDI-CHG-SW
+             ELSE
+             MOVE DE2-TRANS-MODE-E      TO  PO-TRANSPORT-MODE
+             MOVE 1                     TO  EDI-CHG-SW.
+           IF EDI-CHG-SW = 1
+               MOVE SPACES              TO  SEDIPOLG-PARMS
+               MOVE PO-ARG              TO  PO-NUMBER-EDI
+               MOVE DE2-VEN-CODE        TO  VENDOR-CODE-EDI
+               MOVE "X"                 TO  FLAG-EDI-M
+               IF FOLLOWUP-SW = "Y"
+                   MOVE "X"             TO  FLAG-EDI-F
+               END-IF
+               MOVE "0000"              TO  PO-ITEM-NO-EDI
+               MOVE "SPOHEAD"           TO  CALLING-PGM-EDI
+               CALL "SEDIPOLG" USING BASE,
+                                     SEDIPOLG-PARMS,
+                                     LANGUAGE-PARMS.
+112300     MOVE DE2-BUDGET-NO           TO  PO-BUDGET-NUMBER.
+112400     MOVE DE2-BUDGET-AMT          TO  PO-BUDGET-AMT.
+112500     MOVE DE2-REQ-NUMBER          TO  PO-REQ-NUMBER.
+112600     MOVE DE2-FOB                 TO  PO-FOB.
+112700     MOVE DE2-FREIGHT-TERMS       TO  PO-FREIGHT-TERMS.
+112800     MOVE DE2-IT-ORDER-INDIC      TO  PO-INTERNAL-ORDER-INDIC.
+112900     MOVE DE2-TERMS               TO  PO-TERMS.
+113000     MOVE DE2-CURRENCY-CODE       TO  PO-CURRENCY-CODE.
+113100     MOVE DE2-ALT-REMIT           TO  PO-ALT-REMIT-INDIC.
+113200     MOVE DE2-NON-RCV             TO  PO-NON-RCV-INDIC.
+114500
+114600*********************************
+114700*                               *
+114800*  IF VENDOR CODE IS            *
+114900*  CHANGED THEN A DBPUT IS DONE *
+115000*  TO PUT A NEW RECORD IN ELSE  *
+115100*  A DBUPDATE IS DONE TO UPDATE *
+115200*  THE EXISTING RECORD          *
+115300*                               *
+115400*********************************
+115500
+115600 61-PUT-UPDATE-DPORECD.
+           MOVE 0 TO COND-WORD.
+      *---------- VALIDATE INVOICELESS FLAG VALUE.
+           IF PO-INVOICELESS-IND = "Y"
+               MOVE "X"        TO  PO-INVOICELESS-IND.
+           IF PO-INVOICELESS-IND = "N"
+               MOVE " "        TO  PO-INVOICELESS-IND.
+           REWRITE DPORECD-REC-O FROM BUF-DPORECD
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE "REWRITE-DPORECD *61-PUD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+117600
+117700     IF VENDOR-CHANGE-FLAG  =  "Y"
+117800         NEXT SENTENCE
+117900     ELSE
+118000         IF CHG-TERMS-OR-FOB-SW  =  "Y"
+118100             PERFORM 611-UPDATE-FOB-TERMS THRU 611-UFT-X.
+118200
+118300**********************
+118400*                    *
+118500*LOAD DATA FOR TC 361*
+118600*                    *
+118700**********************
+118800
+118900 61-PUT-DDAILYTC-361.
+119000     MOVE "361"                TO  STC360-TC.
+119100     MOVE COMPANY-SAVE         TO  STC360-COMPANY-SAVE.
+119200     CALL "STC360" USING BASE,
+                               STC360-COMPANY-SAVE,
+119300                         STC360-TC,
+                               BUF-DPORECD,
+119400                         STATUS-AREA,
+119500                         BU-DISPLAY-MSG,
+119600                         BU-DISPLAY-FLDS.
+119700     IF BU-DISPLAY-MSG NOT = SPACES
+119800         GO TO 2-BLOWUP.
+122000
+122100 61-UPDATE-STD-INST.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-O.
+           MOVE "000001" TO ITEMSEQNO OF DPODATAITM-REC-O.
+           MOVE 0 TO COND-WORD.
+           MOVE "N" TO STD-INST-ENTRY-EXISTS.
+           READ DPODATAITM-O INTO BUF-DPODATAITM
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPODATAITM 61-USI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE "Y" TO STD-INST-ENTRY-EXISTS.
+123200     MOVE DE2-STD-INST-LIST        TO  SAVE-STD-INST-LIST.
+123300     MOVE DE2-CONFIRM-ORDER-INDIC  TO  SAVE-CONFIRMING-FLAG.
+123400     MOVE DE2-CONFIRM-FREE-VERB    TO  SAVE-CONFIRM-VERBAGE.
+123500     IF STD-INST-SAVED = SPACES
+123600        IF STD-INST-ENTRY-EXISTS = "Y"
+123700            PERFORM 611-DELETE-STD-INST  THRU  611-DSI-X
+123800        ELSE
+123900            NEXT SENTENCE
+124000     ELSE
+124100        IF STD-INST-ENTRY-EXISTS = "Y"
+124200            PERFORM 611-UPDATE-STD-INST  THRU  611-USI-X
+124300        ELSE
+124400            PERFORM 611-PUT-STD-INST  THRU  611-PSI-X.
+125100
+122100 61-UPDATE-RCV-INST.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-O.
+           MOVE "000002" TO ITEMSEQNO OF DPODATAITM-REC-O.
+           MOVE 0 TO COND-WORD.
+           MOVE "N" TO RCV-INST-ENTRY-EXISTS.
+           READ DPODATAITM-O INTO BUF-DPODATAITM
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPODATAITM 61-URI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE "Y" TO RCV-INST-ENTRY-EXISTS.
+123200     MOVE DE2-RCV-INST-LIST        TO  SAVE-RCV-INST-LIST.
+123500     IF RCV-INST-SAVED = SPACES
+123600        IF RCV-INST-ENTRY-EXISTS = "Y"
+123700            PERFORM 611-DELETE-RCV-INST  THRU  611-DRI-X
+123800        ELSE
+123900            NEXT SENTENCE
+124000     ELSE
+124100        IF RCV-INST-ENTRY-EXISTS = "Y"
+124200            PERFORM 611-UPDATE-RCV-INST  THRU  611-URI-X
+124300        ELSE
+124400            PERFORM 611-PUT-RCV-INST  THRU  611-PRI-X.
+125100
+125200**********************************************************
+125300**   IF CURRENCY CODE IS CHANGED UPDATE MARKET COST
+125400**   FOR EACH CODED ITEM BY CALL 'SPOMSTRM'
+125500**********************************************************
+125600
+125700     IF CURRENCY-CHANGED-SW = "Y"
+125800         PERFORM 614-UPDATE-MKT-COST  THRU  614-UMC-X.
+126500
+126600 61-MH-X.
+126700     EXIT.
+126800
+       610-RETRIEVE-VENDOR-INFO.
+           MOVE DE2-VEN-CODE      TO VENCDE OF DVENDOR-REC-O.
+           START DVENDOR-O KEY = VENCDE OF DVENDOR-REC-O
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 1             TO VENDOR-CHG-SW
+               GO TO 610-RVI-X.
+       610-RVI-LOOP.
+           READ DVENDOR-O NEXT INTO BUF-DVENDOR
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 610-RVI-X.
+           IF VEN-VEN-CODE NOT = DE2-VEN-CODE GO TO 610-RVI-X.
+           IF VEN-ITM-NO = 10
+               MOVE VEN-INVLESS-IND TO DE2-INVOICELESS-IND
+                                       DE2-INVOICELESS-IND-E
+           ELSE
+           IF VEN-ITM-NO = 16
+               IF VEN-PO-FOB = SPACES
+                   IF VEN-PO-TERMS = SPACES
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE VEN-PO-TERMS TO DE2-TERMS
+                                        DE2-TERMS-E
+               ELSE
+               MOVE VEN-PO-FOB      TO DE2-FOB
+                                       DE2-FOB-E
+               IF VEN-PO-TERMS = SPACES
+                   NEXT SENTENCE
+               ELSE
+               MOVE VEN-PO-TERMS    TO DE2-TERMS
+                                       DE2-TERMS-E.
+           GO TO 610-RVI-LOOP.
+       610-RVI-X.    EXIT.
+
+       611-VALID-INVLESS-FRT.
+           MOVE 0 TO COND-WORD.
+           MOVE DE2-FREIGHT-TERMS TO BUILD-FRT-VALUE.
+           MOVE BUILD-FRT-KEY     TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+      *    MOVE MPLTINFO-FRT-DESC TO DE2-FOB.
+126900
+127000 611-LOAD-TERM-CUR-DESC.
+127100     MOVE DE2-PCT               TO  BUILD-TM-DISCOUNT-VALUE.
+127200     MOVE BUILD-TM-DISCOUNT-KEY TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+127300*A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+127400*A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+127500     IF COND-WORD NOT = 0
+127600         IF COND-WORD = 17
+127700             GO TO 611-GET-CURRENCY-DESC
+127800         ELSE
+127900             MOVE "GET MPLTINFO1 * 611-LTCD" TO BU-DISPLAY-MSG
+128000             MOVE PLT-ARG  TO  BU-DISPLAY-FLD (2)
+128100             GO TO 2-BLOWUP
+128200     ELSE
+128300         MOVE MPLTINFO-DISC-AMNT-DESC  TO  DE2-PCT-DESC
+                                                 DE2-PCT-DESC-E.
+128400
+128500     MOVE DE2-DUE-DTE           TO  BUILD-TM-DATE-VALUE.
+128600     MOVE BUILD-TM-DUE-DATE-KEY TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+128700*A   CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+128800*A       STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+128900     IF COND-WORD NOT = 0
+129000         IF COND-WORD = 17
+129100             MOVE SPACES  TO  DE2-PCT-DESC DE2-PCT-DESC-E
+129200         ELSE
+129300             MOVE "GET MPLTINFO2 * 611-LTCD" TO BU-DISPLAY-MSG
+129400             MOVE PLT-ARG  TO  BU-DISPLAY-FLD (2)
+129500             GO TO 2-BLOWUP
+129600     ELSE
+129700         MOVE MPLTINFO-TMD-DESC    TO  DE2-DUE-DATE-DESC
+                                             DE2-DUE-DATE-DESC-E.
+129800
+129900 611-GET-CURRENCY-DESC.
+130000     IF DE2-CURRENCY-CODE  =  SPACES
+130100         GO TO 611-LTCD-X.
+130200
+130300     MOVE DE2-CURRENCY-CODE   TO  UM-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE UM-ARG TO VALIDUM OF MVALIDUM-REC-I.
+           READ MVALIDUM-I INTO BUF-MVALIDUM
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+130400*A   CALL "DBGET" USING BASE, DSET-MVALIDUM, MODE7,
+130500*A       STATUS-AREA, ALL-ITEMS, BUF-MVALIDUM, UM-ARG.
+130600     IF COND-WORD NOT = 0
+130700         IF COND-WORD = 17
+130800             NEXT SENTENCE
+130900         ELSE
+131000             MOVE "GET MVALIDUM * 611-GCD" TO BU-DISPLAY-MSG
+131100             MOVE UM-ARG  TO  BU-DISPLAY-FLD (2)
+131200             GO TO 2-BLOWUP
+131300     ELSE
+131400         MOVE VALID-CURRENCY-DESC  TO  DE2-CURRENCY-DESC
+                                             DE2-CURRENCY-DESC-E.
+131500
+131600 611-LTCD-X.
+131700     EXIT.
+131800
+131900
+132000
+132100*******************************************************
+132200**                                                   **
+132300**   THIS ROUTINE CHECKS FOR A RECEIPT BY CHECKING   **
+132400**   MPORCV DATA SET AND LOOKING FOR A LAST RCVR NO. **
+132500**   IT ALSO CHECKS FOR AN INVOICE BY LOOKING FOR    **
+132600**   INVOICES NOT ON HOLD IN 'DINVRCD' DATA SET.     **
+132700**   BOTH CONDITIONS OF A RECEIPT OR A INVOICE WILL  **
+132800**   NOT ALLOW A PO-TYPE CHANGE AND A RECEIPT WILL   **
+132900**   NOT ALLOW A VENDOR CODE CHANGE UNLESS OLD VENDOR**
+133000**   CODE WAS A TEMPORARY VENDOR CODE.               **
+133100**                                                   **
+133200*******************************************************
+133300
+133400 611-CHECK-RCVR-AND-INVOICES.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-I.
+           READ MPORCV-I INTO BUF-MPORCV
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+133500*A   CALL "DBGET" USING BASE, DSET-MPORCV, MODE7,
+133600*A       STATUS-AREA, ALL-ITEMS, BUF-MPORCV, PO-ARG.
+133700     IF COND-WORD NOT = 0
+133800         MOVE "GET MPORCV*611-CRAI"  TO  BU-DISPLAY-MSG
+133900         GO TO 2-BLOWUP
+134000     ELSE
+134100     IF M-PO-LAST-RCVR-X NUMERIC
+134200         PERFORM 62-CHECK-FOR-RCVR-QTY  THRU 62-CFRQ-X.
+134300
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "READ DINVRCD *613-CRAI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               PERFORM 613-GET-DINVRCD
+                   UNTIL COND-WORD = 15 OR INVOICE-SW = "Y".
+135500
+135600 611-CRAI-X.
+135700     EXIT.
+135800
+      *****************************************************
+      **  THIS ROUTINE CHECKS ALL THE PO ITEMS LOOKING
+      **  FOR ANY CONTAINING THE 'LT' UNIT OF MEASURE.
+      **  DUE TO PROBLEMS ENCOUNTERD IN UNION CITY, IT
+      **  WAS DECIDED THAT IF THE ITEM HAD AN 'LT' UNIT
+      **  OF MEASURE, THE PURCHASE ORDER SHOULD NOT BE
+      **  ALLOWED TO BE CHANGED FROM INVOICED TO
+      **  INVOICELESS......JEC
+      *****************************************************
+
+136900 611-CHECK-4-UM-LT.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+137200     IF COND-WORD NOT = 0
+137300         MOVE "FIND DPOITEM * 611-C4UL" TO BU-DISPLAY-MSG
+137400         GO TO 2-BLOWUP.
+137500
+137600 611-C4UL-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+137900     IF COND-WORD NOT = 0
+138000         IF COND-WORD = 15
+138100             GO TO 611-C4UL-X
+138200         ELSE
+138300         MOVE "GET DPOITEM * 611-C4UL" TO BU-DISPLAY-MSG
+138400         GO TO 2-BLOWUP.
+138500     IF ITM-UM = "LT" OR ITM-PRICE-UM = "LT"
+138600         MOVE "Y" TO LT-EXISTS
+               GO TO 611-C4UL-X.
+138700     GO TO 611-C4UL-LOOP.
+139600
+139700 611-C4UL-X.
+139800     EXIT.
+139900
+135900*****************************************************
+136000**  THIS ROUTINE CHECKS ALL THE PO ITEMS LOOKING
+136100**  FOR A CODED ITEM.  THIS ROUTINE IS EXECUTED ONLY
+136200**  WHEN THE PO TYPE IS CHANGED FROM RECEIVABLE TO
+136300**  NON-RECEIVABLE.  IF A CODED ITEM IS FOUND THEN AN
+136400**  ERROR MESSAGE IS DISPLAY SINCE A PO MUST CONTAIN
+136500**  ALL NON-CODED ITEMS BEFORE IT CAN BECOME A
+136600**  NON-RECEIVABLE PO
+136700*****************************************************
+136800
+136900 611-CHECK-FOR-CODED-ITEMS.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+137000*A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+137100*A       STATUS-AREA, PO-SEARCH, PO-ARG.
+137200     IF COND-WORD NOT = 0
+137300         MOVE "FIND DPOITEM * 611-CFCI" TO BU-DISPLAY-MSG
+137400         GO TO 2-BLOWUP.
+137500
+137600 611-CHECK-DPOITEM-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+137700*A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+137800*A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, PO-ARG.
+137900     IF COND-WORD NOT = 0
+138000         IF COND-WORD = 15
+138100             GO TO 611-CFCI-X
+138200         ELSE
+138300             MOVE "GET DPOITEM * 611-CDL" TO BU-DISPLAY-MSG
+138400             GO TO 2-BLOWUP.
+138500     IF ITM-CORP-CODE = "NON-STR"
+138600         GO TO 611-CHECK-DPOITEM-LOOP
+138700     ELSE
+138800*   CANT CREATE NON-RCV PO; PO CONTAINS CODED ITEM; ITEM NO. =
+138900         MOVE  3  TO  LANG-SETNUM
+139000         MOVE  59 TO  LANG-MSGNUM
+139100         PERFORM 999-CATREAD  THRU  999-CATREAD-EXIT
+139200         MOVE ITM-NUMBER          TO  MSG-FLD-9
+               MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+                                      DE2-MESSAGE-LINE-E
+139300         MOVE 44                  TO  FIELD-NUMBER
+139400         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+139500         MOVE "Y"                 TO  ERR-SW.
+139600
+139700 611-CFCI-X.
+139800     EXIT.
+139900
+140000
+140100*****************************************************
+140200**   THIS ROUTINE IS EXECUTED IF VENDOR CODE IS    **
+140300**   CHANGED AND THIS IS A CODED P.O.              **
+140400**    IT UPDATES TWO DATA SETS:                    **
+140500**     A. WHILE DOING A SERIAL READ OF DPOITEM     **
+140600**        IT FINDS THE CODE AND UPDATES THE FIELD  **
+140700**        LAST VENDOR OF MSTORERM IF THE LAST PO   **
+140800**        IS A MATCH WITH THE P.O. BEING MODIFIED  **
+140900**     B. WHILE DOING THE SERIAL READ OF DPOITEM   **
+141000**        ANY DVENDITM SEG. WITH THE OLD VENDOR    **
+141100**        CODE IS DELETED IF THERE ARE NO LEAD     **
+141200**        TIMES AND IT IS NOT A QUOTE 'Q'. THEN    **
+141300**        A DVENDITM SEG. IS EITHER UPDATED OR     **
+141400**        ADDED TO CONTAIN THE NEW VENDOR CODE AND **
+141500**        AND CORP CODE. PRICE, UM, FOB, AND TERMS **
+141600**        ARE UPDATED OR PUT INTO DVENDITM AT      **
+141700**        THIS TIME.                               **
+141800*****************************************************
+141900
+142000 611-CHANGE-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+142100*A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+142200*A       STATUS-AREA, PO-SEARCH, PO-ARG.
+142300     IF COND-WORD NOT = 0
+142400         MOVE "FIND 611-CHANGE-DVENDITM"  TO  BU-DISPLAY-MSG
+142500         GO TO 2-BLOWUP.
+143800
+143900 611-GET-DPOITEMS.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+144000     MOVE SPACES           TO VENDITM-EXISTS-FLAG.
+144100*A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+144200*A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, PO-ARG.
+144300     IF COND-WORD NOT = 0
+144400         IF COND-WORD = 15
+144500             GO TO 611-CD-X
+144600         ELSE
+144700             MOVE "GET 611-GET-DPOITEMS"  TO  BU-DISPLAY-MSG
+144800             GO TO 2-BLOWUP.
+144900
+145000     IF ITM-CORP-CODE = "NON-STR"
+145100         GO TO 611-GET-DPOITEMS.
+145200
+145300 611-UPDATE-MSTORERM.
+145400     MOVE ITM-CORP-CODE  TO  CODE-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-O.
+           READ MSTORERM-O INTO BUF-MSTORERM
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+145500*A   CALL "DBGET" USING BASE, DSET-MSTORERM, MODE7,
+145600*A       STATUS-AREA, ALL-ITEMS, BUF-MSTORERM, CODE-ARG.
+145700     IF COND-WORD NOT  =  0
+145800         MOVE "UPDATE 611-UPDATE-MSTORERM" TO BU-DISPLAY-MSG
+145900         MOVE CODE-ARG                 TO BU-DISPLAY-FLD (2)
+146000         GO TO 2-BLOWUP.
+146100     IF PO-NO  =  STR-LAST-PO
+146200         IF PO-REL  =  STR-LAST-RLSE
+146300             MOVE DE2-VEN-CODE  TO  STR-LAST-VENDOR
+146400         ELSE
+146500             GO TO 611-FIND-DVENDITM
+146600     ELSE
+146700         GO TO 611-FIND-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+146800*A   CALL "DBUPDATE" USING BASE, DSET-MSTORERM, MODE1,
+146900*A       STATUS-AREA, ALL-ITEMS, BUF-MSTORERM.
+147000     IF COND-WORD NOT = 0
+147100         MOVE "UPDATE 611-UPDATE-MSTORERM" TO BU-DISPLAY-MSG
+147200         MOVE CODE-ARG                 TO BU-DISPLAY-FLD (2)
+147300         GO TO 2-BLOWUP.
+147400
+147500 611-FIND-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF DVENDITM-REC-O.
+           START DVENDITM-O KEY = CORPCDE OF DVENDITM-REC-O
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+147600*A   CALL "DBFIND" USING BASE, DSET-DVENDITM, MODE1,
+147700*A       STATUS-AREA, CODE-SEARCH, CODE-ARG.
+147800     IF COND-WORD NOT = 0
+147900         MOVE "FIND 611-FIND-DVENDITM"  TO  BU-DISPLAY-MSG
+148000         MOVE CODE-ARG                  TO  BU-DISPLAY-FLD (2)
+148100         GO TO 2-BLOWUP.
+148200
+148300 611-GET-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           READ DVENDITM-O NEXT INTO BUF-DVENDITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF CORPCDE OF DVENDITM-REC-O NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+148400*A   CALL "DBGET" USING BASE, DSET-DVENDITM, MODE5,
+148500*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDITM, CODE-ARG.
+148600     IF COND-WORD NOT = 0
+148700         IF COND-WORD = 15
+148800             GO TO 611-DVENDITM-CHECK
+148900         ELSE
+149000             MOVE "GET 611-GET-DVENDITM"  TO  BU-DISPLAY-MSG
+149100             MOVE CODE-ARG                TO  BU-DISPLAY-FLD (2)
+149200             GO TO 2-BLOWUP.
+149300     IF DE2-VEN-CODE  =  VEN-ITM-VENCODE
+149400         MOVE "Y"  TO  VENDITM-EXISTS-FLAG
+149500         PERFORM 612-UPDATE-DVENDITM THRU 612-UD-X
+149600         GO TO 611-GET-DVENDITM.
+149700
+149800     IF PO-VEN-CODE  =  VEN-ITM-VENCODE
+149900         NEXT SENTENCE
+150000     ELSE
+150100         GO TO 611-GET-DVENDITM.
+150200     IF (VEN-ITM-LT1 = 0) AND (VEN-ITM-LT2 = 0) AND
+150300         (VEN-ITM-LT3 = 0) AND (VEN-QUOTE-FLAG NOT = "Q")
+150400          NEXT SENTENCE
+150500     ELSE
+150600         GO TO 611-DVENDITM-CHECK.
+150700
+           MOVE 0 TO COND-WORD.
+           DELETE DVENDITM-O INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+150800*A   CALL "DBDELETE" USING BASE, DSET-DVENDITM, MODE1,
+150900*A       STATUS-AREA.
+151000     IF COND-WORD NOT = 0
+151100         MOVE "DELETE 611-GET-DVENDITM"  TO  BU-DISPLAY-MSG
+151200         MOVE CODE-ARG                   TO  BU-DISPLAY-FLD (2)
+151300         GO TO 2-BLOWUP.
+151400
+151500 611-DVENDITM-CHECK.
+151600     IF VENDITM-EXISTS-FLAG = "Y"
+151700         GO TO 611-GET-DPOITEMS.
+151800
+151900 611-CONT-DVENDITM-CHECK.
+           MOVE 0 TO COND-WORD.
+           READ DVENDITM-O NEXT INTO BUF-DVENDITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF CORPCDE OF DVENDITM-REC-O NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+152000*A   CALL "DBGET" USING BASE, DSET-DVENDITM, MODE5,
+152100*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDITM, CODE-ARG.
+152200     IF COND-WORD NOT = 0
+152300         IF COND-WORD  =  15
+152400             PERFORM 612-ADD-DVENDITM THRU 612-AD-X
+152500         ELSE
+152600             MOVE "611-CONT-DVENDITM-CHK" TO BU-DISPLAY-MSG
+152700             MOVE CODE-ARG            TO BU-DISPLAY-FLD (2)
+152800             GO TO 2-BLOWUP
+152900     ELSE
+153000         IF DE2-VEN-CODE  =  VEN-ITM-VENCODE
+153100             PERFORM 612-UPDATE-DVENDITM THRU 612-UD-X
+153200         ELSE
+153300             GO TO 611-CONT-DVENDITM-CHECK.
+153400
+153500     GO TO 611-GET-DPOITEMS.
+154300
+154400 611-CD-X.
+154500     EXIT.
+154600
+154700**************************************************
+154800**  THIS ROUTINE IS EXECUTED IF EITHER PO TERMS **
+154900**  OR FOB IS CHANGED AND THE VENDOR CODE WAS   **
+155000**  NOT CHANGED.  THE P.O. MUST BE A CODED P.O. **
+155100**  IF VENDOR CODE WAS CHANGED FOB AND TERMS    **
+155200**  WOULD HAVE ALREADY BEEN UPDATED IN DVENDITM **
+155300**************************************************
+155400
+155500 611-UPDATE-FOB-TERMS.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+155600*A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+155700*A       STATUS-AREA, PO-SEARCH, PO-ARG.
+155800     IF COND-WORD NOT = 0
+155900         MOVE "FIND 611-UPDATE-FOB-TERMS"  TO  BU-DISPLAY-MSG
+156000         GO TO 2-BLOWUP.
+156700
+156800 611-GET-EACH-DPOITEMS.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+156900*A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+157000*A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, PO-ARG.
+157100     IF COND-WORD NOT = 0
+157200         IF COND-WORD = 15
+157300             GO TO 611-UFT-X
+157400         ELSE
+157500             MOVE "611-GET-EACH-DPOITEMS"  TO  BU-DISPLAY-MSG
+157600             GO TO 2-BLOWUP.
+157700
+157800     IF ITM-CORP-CODE = "NON-STR"
+157900         GO TO 611-GET-EACH-DPOITEMS.
+158000
+158100 611-FIND-EACH-DVENDITM.
+158200     MOVE ITM-CORP-CODE  TO  CODE-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF DVENDITM-REC-O.
+           START DVENDITM-O KEY = CORPCDE OF DVENDITM-REC-O
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+158300*A   CALL "DBFIND" USING BASE, DSET-DVENDITM, MODE1,
+158400*A       STATUS-AREA, CODE-SEARCH, CODE-ARG.
+158500     IF COND-WORD NOT = 0
+158600         MOVE "611-FIND-EACH-DVENDITM"  TO  BU-DISPLAY-MSG
+158700         MOVE CODE-ARG                  TO  BU-DISPLAY-FLD (2)
+158800         GO TO 2-BLOWUP.
+158900
+159000 611-GET-EACH-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           READ DVENDITM-O NEXT INTO BUF-DVENDITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF CORPCDE OF DVENDITM-REC-O NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+159100*A   CALL "DBGET" USING BASE, DSET-DVENDITM, MODE5,
+159200*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDITM,
+159300*A           CODE-ARG.
+159400     IF COND-WORD = 0
+159500         IF VEN-ITM-VENCODE = PO-VEN-CODE
+159600             PERFORM 612-UPDATE-DVENDITM THRU 612-UD-X
+159700         ELSE
+159800             GO TO 611-GET-EACH-DVENDITM
+159900     ELSE
+160000         IF COND-WORD = 15
+160100             PERFORM 612-ADD-DVENDITM  THRU  612-AD-X
+160200         ELSE
+160300             MOVE "611-GET-EACH-DVENDITM" TO BU-DISPLAY-MSG
+160400             MOVE CODE-ARG            TO BU-DISPLAY-FLD (2)
+160500             GO TO 2-BLOWUP.
+160600
+160700     GO TO 611-GET-EACH-DPOITEMS.
+160800
+161700 611-UFT-X.
+161800     EXIT.
+161900
+162000
+162100****************************************************
+162200**  THIS ROUTINE IS EXECUTED IF VENDOR CODE IS    **
+162300**  CHANGED AND THIS IS A CODE P.O. ALL REQ.      **
+162400**  TIED IN WITH THE P.O. ARE MODIFIED TO SHOW    **
+162500**  THE CORRECT NEW VENDOR IN THE VENDOR-CODE     **
+162600**  FIELD OF DREQD SEGMENT                        **
+162700****************************************************
+162800
+162900 611-CHECK-AND-CHANGE-REQ.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DREQD-REC-O.
+           START DREQD-O KEY = PORCVNO OF DREQD-REC-O
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+163000*A   CALL "DBFIND" USING BASE, DSET-DREQD, MODE1,
+163100*A       STATUS-AREA, PO-SEARCH, PO-ARG.
+163200     IF COND-WORD NOT = 0
+163300         IF COND-WORD  =  17
+163400             GO TO 611-CACR-X
+163500         ELSE
+163600             MOVE "F 611-CHECK-AND-CHG-REQ" TO BU-DISPLAY-MSG
+163700             GO TO 2-BLOWUP.
+163800
+164300
+165400***********************************************
+165500*                                             *
+165600*   DO A BACKWARD DBGET ON DREQD SEGMENT      *
+165700*                                             *
+165800***********************************************
+165900
+166000 611-GET-DREQD.
+           MOVE 0 TO COND-WORD.
+           READ DREQD-O NEXT INTO BUF-DREQD
+               AT END MOVE "1" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 611-CACR-X
+               ELSE
+                   MOVE "READ DREQD *611-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+           IF PORCVNO OF DREQD-REC-O NOT = PO-ARG
+               GO TO 611-CACR-X.
+
+167400     MOVE DE2-VEN-CODE  TO  DREQD-VEN-CODE.
+           MOVE 0 TO COND-WORD.
+           REWRITE DREQD-REC-O FROM BUF-DREQD
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+167500*A   CALL "DBPUT" USING BASE, DSET-DREQD, MODE1,
+167600*A       STATUS-AREA, ALL-ITEMS, BUF-DREQD.
+167700     IF COND-WORD NOT = 0
+167800         MOVE "PUT 611-GET-DREQD"  TO  BU-DISPLAY-MSG
+167900         GO TO 2-BLOWUP.
+168000
+168400     GO TO 611-GET-DREQD.
+168500
+169300 611-CACR-X.
+169400     EXIT.
+169500
+169600
+169700 611-GET-STD-INST.
+           MOVE "N"                 TO  STD-INST-ENTRY-EXISTS.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-O.
+           MOVE "000001" TO ITEMSEQNO OF DPODATAITM-REC-O.
+           MOVE 0 TO COND-WORD.
+           READ DPODATAITM-O INTO BUF-DPODATAITM
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPODATAITM 61-USI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE "Y" TO STD-INST-ENTRY-EXISTS
+               MOVE HIGH-VALUES TO PORCVNO OF DPODATAITM-REC-O
+               START DPODATAITM-O KEY > PORCVNO OF DPODATAITM-O
+                   INVALID KEY MOVE "00" TO FILE-STATUS.
+172500
+172600 611-GSI-X.
+172700     EXIT.
+
+       611-GET-RCV-INST.
+           MOVE "N"                 TO  RCV-INST-ENTRY-EXISTS.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-O.
+           MOVE "000002" TO ITEMSEQNO OF DPODATAITM-REC-O.
+           MOVE 0 TO COND-WORD.
+           READ DPODATAITM-O INTO BUF-DPODATAITM
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPODATAITM 61-URI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE "Y" TO RCV-INST-ENTRY-EXISTS
+               MOVE HIGH-VALUES TO PORCVNO OF DPODATAITM-REC-O
+               START DPODATAITM-O KEY > PORCVNO OF DPODATAITM-O
+                   INVALID KEY MOVE "00" TO FILE-STATUS.
+       611-GRI-X.
+           EXIT.
+
+172900 611-DELETE-STD-INST.
+           MOVE 0 TO COND-WORD.
+           DELETE DPODATAITM-O INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+173000*A   CALL "DBDELETE" USING BASE, DSET-DPODATAITM, MODE1,
+173100*A       STATUS-AREA.
+173200     IF COND-WORD NOT = 0
+173300         MOVE "DELETE DPODATA * 611-DSI" TO BU-DISPLAY-MSG
+173400         GO TO 2-BLOWUP.
+173500
+173600 611-DSI-X.
+173700     EXIT.
+173800
+       611-DELETE-RCV-INST.
+           MOVE 0 TO COND-WORD.
+           DELETE DPODATAITM-O INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "DELETE DPODATA * 611-DRI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+       611-DRI-X.
+           EXIT.
+
+173900 611-PUT-STD-INST.
+174000     MOVE SPACES                  TO  BUF-DPODATAITM.
+174100     MOVE BUILD-PO-SEARCH         TO  DATAITM-PO-RCV-NO.
+174200     MOVE "000001"                TO  DATAITM-LINE.
+174300     MOVE STD-INST-SAVED          TO  DATAITM-INFO.
+           MOVE 0 TO COND-WORD.
+           WRITE DPODATAITM-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+174400*A   CALL "DBPUT" USING BASE, DSET-DPODATAITM, MODE1,
+174500*A       STATUS-AREA, ALL-ITEMS, BUF-DPODATAITM.
+174600     IF COND-WORD NOT = 0
+174700         MOVE "PUT DPODATA * 611-PSI" TO BU-DISPLAY-MSG
+174800         GO TO 2-BLOWUP.
+174900
+175000 611-PSI-X.
+175100     EXIT.
+175200
+       611-PUT-RCV-INST.
+           MOVE SPACES                  TO  BUF-DPODATAITM.
+           MOVE BUILD-PO-SEARCH         TO  DATAITM-PO-RCV-NO.
+           MOVE "000002"                TO  DATAITM-LINE.
+           MOVE RCV-INST-SAVED          TO  DATAITM-INFO.
+           MOVE 0 TO COND-WORD.
+           WRITE DPODATAITM-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "PUT DPODATA * 611-PRI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+       611-PRI-X.
+           EXIT.
+
+175300 611-UPDATE-STD-INST.
+175400     MOVE STD-INST-SAVED   TO  DATAITM-INFO.
+           MOVE 0 TO COND-WORD.
+           REWRITE DPODATAITM-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+175500*A   CALL "DBUPDATE" USING BASE, DSET-DPODATAITM, MODE1,
+175600*A       STATUS-AREA, ALL-ITEMS, BUF-DPODATAITM.
+175700     IF COND-WORD NOT = 0
+175800         MOVE "UPDATE DPODATA *611-USI" TO BU-DISPLAY-MSG
+175900         GO TO 2-BLOWUP.
+176000
+176100 611-USI-X.
+176200     EXIT.
+176300
+       611-UPDATE-RCV-INST.
+           MOVE RCV-INST-SAVED   TO  DATAITM-INFO.
+           MOVE 0 TO COND-WORD.
+           REWRITE DPODATAITM-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "UPDATE DPODATA *611-URI" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+       611-URI-X.
+           EXIT.
+
+176400********************************************
+176500**                                        **
+176600** THIS ROUTINE UPDATES A DVENDITM SEG.   **
+176700** WHEN EITHER - VENDOR-CODE, TERMS, OR   **
+176800** FOB ARE CHANGED IN THE HEADER OF P.O.  **
+176900**                                        **
+177000********************************************
+177100
+177200 612-UPDATE-DVENDITM.
+177300     IF VEN-QUOTE-FLAG  =  "Q"
+177400         GO TO 612-UD-X.
+177500     MOVE DE2-TERMS             TO VEN-TERMS.
+177600     MOVE ITM-UNIT-PRICE        TO VEN-ITM-PRICE.
+177700     MOVE ITM-PRICE-UM          TO VEN-ITM-PRICE-UM.
+177800     MOVE SAVE-FB-CODE          TO VEN-FOB.
+      *---------- ACCOUNT FOR CENTURY.
+177900     MOVE PO-DATE-CN            TO VEN-ITM-PRICE-DATE-CN.
+           MOVE 0 TO COND-WORD.
+           REWRITE DVENDITM-REC-O FROM BUF-DVENDITM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+178000*A   CALL "DBUPDATE" USING BASE, DSET-DVENDITM, MODE1,
+178100*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDITM.
+178200     IF COND-WORD NOT = 0
+178300         MOVE "UPDATE 612-UPDATE-DVENDITM" TO BU-DISPLAY-MSG
+178400         MOVE CODE-ARG                 TO BU-DISPLAY-FLD (2)
+178500         GO TO 2-BLOWUP.
+178600
+178700 612-UD-X.
+178800     EXIT.
+178900
+179000
+179100 612-ADD-DVENDITM.
+179200     MOVE SPACES                TO BUF-DVENDITM.
+001000     MOVE ZEROES                TO VEN-ITM-PRICE,
+001100                                   VEN-EST-LT
+001200                                   VEN-ITM-LT1
+001300                                   VEN-ITM-LT2
+001400                                   VEN-ITM-LT3
+001500                                   VEN-LOW-QTY (1)
+001600                                   VEN-LOW-QTY (2)
+001700                                   VEN-LOW-QTY (3)
+001800                                   VEN-HIGH-QTY (1)
+001900                                   VEN-HIGH-QTY (2)
+002000                                   VEN-HIGH-QTY (3)
+002100                                   VEN-WORK-PRICE (1)
+002200                                   VEN-WORK-PRICE (2)
+002300                                   VEN-WORK-PRICE (3)
+002400                                   VEN-BID-QTY
+002500                                   VEN-SURCHARGE
+002600                                   VEN-DISCOUNT-PERCENT
+002700                                   VEN-NONCODED-ITEM
+                                         VEN-ITM-YTD-BUS.
+179400     MOVE DE2-VEN-CODE          TO VEN-ITM-VENCODE.
+179500     MOVE ITM-CORP-CODE         TO VEN-ITM-CORPCODE.
+179600     MOVE 0                     TO VEN-ITM-LT1,
+179700                                   VEN-ITM-LT2,
+179800                                   VEN-ITM-LT3,
+179900                                   VEN-ITM-YTD-BUS.
+180000     MOVE ITM-UNIT-PRICE        TO VEN-ITM-PRICE.
+180100     MOVE ITM-PRICE-UM          TO VEN-ITM-PRICE-UM.
+180200     MOVE DE2-TERMS             TO VEN-TERMS.
+180300     MOVE SAVE-FB-CODE          TO VEN-FOB.
+      *---------- ACCOUNT FOR CENTURY.
+180400     MOVE PO-DATE-CN            TO VEN-ITM-PRICE-DATE-CN.
+           MOVE 0 TO COND-WORD.
+           WRITE DVENDITM-REC-O FROM BUF-DVENDITM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+180500*A   CALL "DBPUT" USING BASE, DSET-DVENDITM, MODE1,
+180600*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDITM.
+180700     IF COND-WORD NOT = 0
+180800         MOVE "PUT 612-BUILD-DVENDITM"  TO  BU-DISPLAY-MSG
+180900         MOVE CODE-ARG                  TO  BU-DISPLAY-FLD (2)
+181000         GO TO 2-BLOWUP.
+181100
+181200 612-AD-X.
+181300     EXIT.
+181400
+181500*****************************************
+181600**                                     **
+181700**  THIS ROUTINE DELETES A TEMPORARY   **
+181800**  VENDOR. THIS IS EXECUTED IF THE    **
+181900**  VENDOR CODE IS CHANGED AND THE OLD **
+182000**  VENDOR CODE IS A TEMPORARY         **
+182100**  VENDOR 'T........."                **
+182200**                                     **
+182300*****************************************
+182400
+182500 612-DELETE-DVENDOR.
+182600     MOVE PO-VEN-CODE  TO  VEN-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-O.
+           START DVENDOR-O KEY = VENCDE OF DVENDOR-REC-O
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+182700*A   CALL "DBFIND" USING BASE, DSET-DVENDOR, MODE1,
+182800*A       STATUS-AREA, VEN-SEARCH, VEN-ARG.
+182900     IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   GO TO 612-FIND-DVENDITM
+               ELSE
+183000         MOVE "FIND 612-DELETE-DVENDOR" TO BU-DISPLAY-MSG
+183100         MOVE VEN-ARG               TO BU-DISPLAY-FLD (2)
+183200         GO TO 2-BLOWUP.
+184600
+184700 612-GET-DVENDOR.
+           MOVE 0 TO COND-WORD.
+           READ DVENDOR-O NEXT INTO BUF-DVENDOR
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF VENCDE OF DVENDOR-REC-O NOT = VEN-ARG
+               MOVE 15 TO COND-WORD.
+184800*A   CALL "DBGET" USING BASE, DSET-DVENDOR, MODE5,
+184900*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDOR, VEN-ARG.
+185000     IF COND-WORD NOT = 0
+185100         IF COND-WORD = 15
+185200             GO TO 612-FIND-DVENDITM
+185300         ELSE
+185400             MOVE "GET 612-GET-DVENDOR" TO BU-DISPLAY-MSG
+185500             MOVE VEN-ARG           TO BU-DISPLAY-FLD (2)
+185600             GO TO 2-BLOWUP.
+           MOVE 0 TO COND-WORD.
+           DELETE DVENDOR-O INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+185700*A   CALL "DBDELETE" USING BASE, DSET-DVENDOR, MODE1,
+185800*A       STATUS-AREA.
+185900     IF COND-WORD NOT  =  0
+186000         MOVE "DELETE 612-GET-DVENDOR" TO BU-DISPLAY-MSG
+186100         MOVE VEN-ARG              TO BU-DISPLAY-FLD (2)
+186200         GO TO 2-BLOWUP.
+186300
+186400     GO TO 612-GET-DVENDOR.
+186500
+186600 612-FIND-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDITM2-REC-O.
+           START DVENDITM2-O KEY = VENCDE OF DVENDITM2-REC-O
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+186700*A   CALL "DBFIND" USING BASE, DSET-DVENDITM, MODE1,
+186800*A       STATUS-AREA, VEN-SEARCH, VEN-ARG.
+186900     IF COND-WORD NOT = 0
+187000         MOVE "FIND 612-FIND-DVENDITM" TO BU-DISPLAY-MSG
+187100         MOVE VEN-ARG               TO BU-DISPLAY-FLD (2)
+187200         GO TO 2-BLOWUP.
+187300
+187400 612-GET-DVENDITM.
+           MOVE 0 TO COND-WORD.
+           READ DVENDITM2-O NEXT INTO BUF-DVENDITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF VENCDE OF DVENDITM2-REC-O NOT = VEN-ARG
+               MOVE 15 TO COND-WORD.
+187500*A   CALL "DBGET" USING BASE, DSET-DVENDITM, MODE5,
+187600*A       STATUS-AREA, ALL-ITEMS, BUF-DVENDITM, VEN-ARG.
+187700     IF COND-WORD NOT = 0
+187800         IF COND-WORD = 15
+187900             GO TO 612-DD-X
+188000         ELSE
+188100             MOVE "GET 612-GET-DVENDITM" TO BU-DISPLAY-MSG
+188200             MOVE VEN-ARG           TO BU-DISPLAY-FLD (2)
+188300             GO TO 2-BLOWUP.
+           MOVE 0 TO COND-WORD.
+           DELETE DVENDITM2-O INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+188400*A   CALL "DBDELETE" USING BASE, DSET-DVENDITM, MODE1,
+188500*A       STATUS-AREA.
+188600     IF COND-WORD NOT  =  0
+188700         MOVE "DELETE 612-GET-DVENDITM" TO BU-DISPLAY-MSG
+188800         MOVE VEN-ARG              TO BU-DISPLAY-FLD (2)
+188900         GO TO 2-BLOWUP.
+189000
+189100     GO TO 612-GET-DVENDITM.
+190000
+190100 612-DD-X.
+190200     EXIT.
+190300
+190400 613-GET-DINVRCD.
+           MOVE 0 TO COND-WORD.
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+190500*A   CALL "DBGET" USING BASE, DSET-DINVRCD, MODE5,
+190600*A       STATUS-AREA, ALL-ITEMS, BUF-DINVRCD, PO-ARG.
+190700     IF COND-WORD NOT = 0
+190800         IF COND-WORD = 15
+190900             NEXT SENTENCE
+191000         ELSE
+191100             MOVE "GET DINVRCD * 613-GD" TO BU-DISPLAY-MSG
+191200             GO TO 2-BLOWUP
+191300     ELSE
+191400         IF INV-STATUS = "H" OR "I"
+191500             NEXT SENTENCE
+191600         ELSE
+191700             MOVE "Y"             TO INVOICE-SW.
+191800
+191900********************************************************
+192000**   THIS ROUTINE UPDATES LAST MARKET COST FOR ALL
+192100**   CODED ITEMS IF THE CURRENCY CODE IS CHANGED
+192200**   'SPOMSTRM' IS CALLED TO UPDATE MARKET COST.
+192300********************************************************
+192400
+192500 614-UPDATE-MKT-COST.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+192600*A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+192700*A       STATUS-AREA, PO-SEARCH, PO-ARG.
+192800     IF COND-WORD NOT = 0
+192900         MOVE "FIND DPOITEM * 614-UMC" TO BU-DISPLAY-MSG
+193000         GO TO 2-BLOWUP.
+193100
+193200 614-GET-DPOITEM-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+193300*A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+193400*A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, PO-ARG.
+193500     IF COND-WORD NOT = 0
+193600         IF COND-WORD = 15
+193700             GO TO 614-UMC-X
+193800         ELSE
+193900             MOVE "GET DPOITEM * 614-GDL" TO BU-DISPLAY-MSG
+194000             GO TO 2-BLOWUP.
+194100     IF ITM-CORP-CODE = "NON-STR"
+194200         GO TO 614-GET-DPOITEM-LOOP.
+194300
+194400***********************************************
+194500**   CALL 'SPOMSTRM' TO UPDATE MARKET COST
+194600***********************************************
+194700     MOVE COMPANY-SAVE            TO  SPOMSTRM-COMPANY-SAVE.
+194800     MOVE ITM-QTY-ORD             TO  SPOMSTRM-QTY.
+194900     MOVE ITM-UM                  TO  SPOMSTRM-QTY-UM.
+195000     MOVE ITM-UNIT-PRICE          TO  SPOMSTRM-PRICE.
+195100     MOVE ITM-PRICE-UM            TO  SPOMSTRM-PRICE-UM.
+195200     MOVE ITM-CORP-CODE           TO  CODE-ARG.
+      *---------- DO NOT UPDATE MARKET COST.
+      *****IF ZBILL-PO
+      *****    MOVE ITM-ZBILL-VALUE     TO  SPOMSTRM-UNIT-VALUE.
+195300     MOVE SPACES                  TO  SPOMSTRM-PO-NUM,
+195400                                      SPOMSTRM-PO-RLSE,
+195500                                      SPOMSTRM-VEN-CODE.
+195600     MOVE PO-CURRENCY-CODE        TO  SPOMSTRM-CUR-CODE.
+195700     CALL "SPOMSTRM" USING BASE,
+195800                           CODE-ARG,
+195900                           SPOMSTRM-PARMS,
+196000                           ZBILL-PO-SW,
+196100                           STATUS-AREA,
+196200                           BU-DISPLAY-MSG,
+196300                           BU-DISPLAY-FLDS.
+196400     IF BU-DISPLAY-MSG NOT = SPACES
+196500         GO TO 2-BLOWUP.
+196600
+196700     GO TO 614-GET-DPOITEM-LOOP.
+196800
+196900 614-UMC-X.
+197000     EXIT.
+197100
+080100 62-CHECK-FOR-RCVR-QTY.
+           MOVE SPACES TO RCVR-SW.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 62-CFRQ-X
+               ELSE
+080500             MOVE "FIND DPOITEM * 62-CFRQ" TO BU-DISPLAY-MSG
+080600             GO TO 2-BLOWUP.
+080700
+080800 62-GET-DPOITEM-LOOP.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   GO TO 62-CFRQ-X
+               ELSE
+081500             MOVE "GET DPOITEM * 62-CFRQ" TO BU-DISPLAY-MSG
+081600             GO TO 2-BLOWUP.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               GO TO 62-CFRQ-X
+081700     ELSE
+081800     IF ITM-QTY-DLVR = .0000
+081900         GO TO 62-GET-DPOITEM-LOOP
+082000     ELSE
+082100     MOVE "Y" TO RCVR-SW.
+084600
+084700 62-CFRQ-X.
+084800     EXIT.
+
+DCR02 *****************************************************************
+DCR02 *** F4 FIELD PROMPT ROUTINE
+DCR02 *****************************************************************
+DCR02  998-F4-PROMPT-RTN.
+
+DCR02      IF  DE2-PROMPT-FLD-NAME(1:3) = "FOB"
+DCR02          IF  ZFOB-USE-DBFILE-YES
+DCR02              PERFORM  ZFOB-F4-PROMPT-RTN  THRU ZFOB-F4-EXIT
+DCR02              IF  WS-ZFOB-FOB-DESC NOT = SPACE
+DCR02                  MOVE WS-ZFOB-FOB-DESC  TO DE2-FOB
+DCR02              END-IF
+DCR02              GO TO 998-F4-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02      IF  DE2-PROMPT-FLD-NAME(1:3) = "VIA"
+DCR02          IF  ZVIA-USE-DBFILE-YES
+DCR02              PERFORM  ZVIA-PROMPT-RTN  THRU ZVIA-PROMPT-EXIT
+DCR02              IF  WS-ZVIA-VIA-DESC NOT = SPACE
+DCR02                  MOVE WS-ZVIA-VIA-DESC  TO DE2-VIA
+DCR02              END-IF
+DCR02              GO TO 998-F4-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02  998-F4-PROMPT-ERR.
+
+DCR02      MOVE  44     TO LANG-SETNUM.
+DCR02      MOVE  123    TO LANG-MSGNUM.
+DCR02      PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+DCR02      MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+DCR02                             DE2-MESSAGE-LINE-E.
+DCR02      PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X.
+
+DCR02  998-F4-EXIT.
+DCR02       EXIT.
+
+DCR02 *****************************************************************
+DCR02 *** F4 FIELD PROMPT ROUTINE  FOR "E" FORMAT
+DCR02 *****************************************************************
+DCR02  998E-F4-PROMPT-RTN.
+DCR02
+DCR02      IF  DE2-PROMPT-FLD-NAME-E(1:6) = "EDIFOB"
+DCR01          IF  ZFOB-USE-DBFILE-YES
+DCR01              PERFORM  ZFOB-F4-PROMPT-RTN  THRU ZFOB-F4-EXIT
+DCR02              IF  WS-ZFOB-FOB-DESC NOT = SPACE
+DCR02                  MOVE WS-ZFOB-FOB-DESC  TO DE2-FOB-E
+DCR02              END-IF
+DCR02              GO TO 998E-F4-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02      IF  DE2-PROMPT-FLD-NAME-E(1:6) = "EDIVIA"
+DCR02          IF  ZVIA-USE-DBFILE-YES
+DCR02              PERFORM  ZVIA-PROMPT-RTN  THRU ZVIA-PROMPT-EXIT
+DCR02              IF  WS-ZVIA-VIA-DESC NOT = SPACE
+DCR02                  MOVE WS-ZVIA-VIA-DESC  TO DE2-VIA-E
+DCR02              END-IF
+DCR02              GO TO 998E-F4-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02  998E-F4-PROMPT-ERR.
+
+DCR02      MOVE  44     TO LANG-SETNUM.
+DCR02      MOVE  123    TO LANG-MSGNUM.
+DCR02      PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+DCR02      MOVE MESSAGE-BUFFER TO DE2-MESSAGE-LINE
+DCR02                             DE2-MESSAGE-LINE-E.
+DCR02      PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X.
+
+DCR02  998E-F4-EXIT.
+DCR02       EXIT.
+
+       999-CATREAD.
+
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM
+           END-IF.
+
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.
+           EXIT.
+
+DCR01  COPY  ZFOBCDM1   IN COPYLIB.
+DCR01  COPY  ZFOBCDM2   IN COPYLIB.
+DCR02  COPY  ZVIACDM1   IN COPYLIB.
+DCR02  COPY  ZVIACDM2   IN COPYLIB.
+DCR01  COPY  ZMPLTSUBR  IN COPYLIB.

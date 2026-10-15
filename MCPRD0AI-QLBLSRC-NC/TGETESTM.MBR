@@ -1,0 +1,198 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TGETESTM.
+       AUTHOR.                 R L ENSMINGER/JIM COFFMAN (MAINTAINER).
+       INSTALLATION.           GOODYEAR TIRE AND RUBBER.
+      **********************************************************
+      * CALCULATES THE COST ESTIMATES FOR A PLANNED WORK ORDER *
+      **********************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+      **********************************************************
+      *  1-7-91  -  DELETED COPY OF CATREAD IN LINKAGE SECTION.
+      *  IT WAS NOT BEING REFERENCED.          PD RAGLOW
+      **********************************************************
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-PARTS
+                  ASSIGN       TO DATABASE-MCFLMM1201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT JOBPLAN
+                  ASSIGN       TO DATABASE-MCFLMM1801
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-PARTS
+           LABEL RECORDS ARE STANDARD.
+       01  WP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1201.
+
+       FD  JOBPLAN
+           LABEL RECORDS ARE STANDARD.
+       01  JP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1801.
+
+       WORKING-STORAGE SECTION.
+       77  LABOR-EST           PIC 9(12).
+       77  SEQ-NO              PIC 9999.
+       77  SEQ-NO-TEMP         PIC 999.
+       77  STOP-READ           PIC X.
+       77  CRAFT-SW            PIC X VALUE "N".
+       77  FILE-STAT           PIC XX.
+
+       01  CRAFT-TABLE.
+           05 C-R-ENTRY OCCURS 200 TIMES INDEXED BY CRAFT-INDEX.
+              10 CRAFT             PIC XX.
+              10 RATE              PIC 999999V99.
+
+       01  C-L-R.
+           05 CRAFT-LABOR-RATE     PIC 999999V99.
+
+       01  JOBPLAN-KEY.
+           05 JOBWONUM             PIC X(10).
+           05 JOBSEQUENCE.
+              10 SEQNUM            PIC X(3).
+              10 FILLER            PIC X.
+
+       01  MATERIAL-DATA.
+           COPY DWOPARTS       OF COPYLIB.
+
+       01  CRAFT-BUFFER.
+           COPY MWOCRAFT       OF COPYLIB.
+
+       01  JOBPLAN-DATA.
+           COPY DJOBPLAN       OF COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        OF COPYLIB.
+
+       01  P-WONUM             PIC X(10).
+       01  LABOR-ESTIMATE      PIC 9(16).
+       01  STORE-ESTIMATE      PIC 9(16).
+       01  PURCH-ESTIMATE      PIC 9(16).
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               P-WONUM
+                               LABOR-ESTIMATE
+                               STORE-ESTIMATE
+                               PURCH-ESTIMATE.
+
+       BEGIN-PAR.
+           OPEN INPUT          WO-PARTS.
+           OPEN INPUT          JOBPLAN.
+           MOVE 0              TO LABOR-ESTIMATE
+                                  STORE-ESTIMATE
+                                  PURCH-ESTIMATE.
+
+           IF CRAFT-SW = "N"
+               MOVE "Y"        TO CRAFT-SW
+               CALL "TSETCRFT" USING DBPARAMETERS
+                               CRAFT-TABLE.
+
+           PERFORM RSGM        THRU RSGME.
+           PERFORM RSJP        THRU RSJPE.
+
+       END-PAR.
+           CLOSE               WO-PARTS.
+           CLOSE               JOBPLAN.
+           GOBACK.
+
+       RSGM.
+           MOVE P-WONUM        TO WONUM OF WO-PARTS.
+           START WO-PARTS      KEY = WONUM OF WO-PARTS
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO RSGME.
+
+           MOVE "N"            TO STOP-READ.
+           PERFORM READ-PARTS-CHAIN THRU RMCE
+                               UNTIL STOP-READ = "Y".
+
+       RSGME.                  EXIT.
+
+       READ-PARTS-CHAIN.
+           READ WO-PARTS       NEXT RECORD INTO MATERIAL-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "Y"        TO STOP-READ
+               GO TO RMCE.
+
+           IF WONUM OF WP-REC NOT = P-WONUM
+               MOVE "Y"        TO STOP-READ
+               GO TO RMCE.
+
+           IF P-EST-COST NUMERIC
+               IF PRT-STATUS = "M " OR "X "
+                   ADD P-EST-COST TO PURCH-ESTIMATE
+               ELSE
+                   ADD P-EST-COST TO STORE-ESTIMATE.
+
+       RMCE.                   EXIT.
+
+       RSJP.
+           MOVE P-WONUM        TO JOBWONUM.
+           MOVE SPACES         TO JOBSEQUENCE.
+           MOVE "000"          TO SEQNUM.
+           MOVE JOBPLAN-KEY    TO JOBPWOSEQ.
+           START JOBPLAN       KEY IS GREATER THAN JOBPWOSEQ
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+             GO TO RSJPE.
+
+           MOVE "N"            TO STOP-READ.
+           PERFORM COMPUTE-LABOR-EST THRU CLEE
+                               UNTIL STOP-READ = "Y".
+
+       RSJPE.                  EXIT.
+
+       COMPUTE-LABOR-EST.
+           READ JOBPLAN        NEXT RECORD INTO JOBPLAN-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "Y"        TO STOP-READ
+               GO TO CLEE.
+
+           IF JOBPLAN-WO-NO NOT = P-WONUM
+               MOVE "Y"        TO STOP-READ
+               GO TO CLEE.
+
+           MOVE SPACES         TO C-L-R.
+           IF JOBPLAN-CRAFT = "  "
+               NEXT SENTENCE
+           ELSE
+           IF JOBPLAN-MEN NUMERIC AND JOBPLAN-EST-TIME NUMERIC
+               PERFORM F-C-L-R THRU F-C-L-R-E
+               IF CRAFT-LABOR-RATE NUMERIC
+                   COMPUTE LABOR-EST = CRAFT-LABOR-RATE *
+                                       JOBPLAN-MEN      *
+                                       JOBPLAN-EST-TIME
+                   ADD LABOR-EST TO LABOR-ESTIMATE.
+
+       CLEE.                   EXIT.
+
+       F-C-L-R.
+           SET CRAFT-INDEX     TO 1.
+           SEARCH C-R-ENTRY
+               AT END          GO TO F-C-L-R-E
+               WHEN JOBPLAN-CRAFT = CRAFT (CRAFT-INDEX)
+                   MOVE RATE (CRAFT-INDEX) TO CRAFT-LABOR-RATE
+                   GO TO F-C-L-R-E
+
+               WHEN CRAFT (CRAFT-INDEX) = SPACES
+                   GO TO F-C-L-R-E.
+
+       F-C-L-R-E.              EXIT.
+

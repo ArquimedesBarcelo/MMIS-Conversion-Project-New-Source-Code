@@ -1,0 +1,1312 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TCRITEMS.
+       AUTHOR.              BARBARA J. PLUM.
+       DATE-WRITTEN.        MAR.30, 1982.
+      *REMARKS.             THIS PROGRAM WILL PRINT A REPORT, SORTED BY
+      *                     CORPORATE CODE. IT WILL LIST ALL CORPORATE
+      *                     CODES BELOW EXPEDITE WITH AND DESPITE OPEN
+      *                     PURCHASE ORDERS, IF THEY CONTAIN THE LETTER
+      *                     "C" (FOR CRITICAL) IN THE STR-INS-ITM FIELD.
+      *
+      *                     ALL QUANTITIES ON THE DOCK ARE TREATED AS
+      *                     IF ONHAND, BEFORE THE DETERMINATION IS MADE.
+      *
+      *                     1) ON JUNE 10, 1982 THIS PROGRAM WAS CHANGED
+      *                     SO THAT ALL CRITICAL ITEMS (ITEMS THAT CONTAIN
+      *                     EITHER THE LETTER "C" OR "B" IN THE STR-INS-ITM
+      *                     FIELD) ARE LISTED. THEY NO LONGER NEED TO BE
+      *                     BELOW EXPEDITE. THE REPORT IS SORTED BY CORPOR-
+      *                     ATE CODE.   BJP.
+      *
+      *                     2) ON MARCH 15, 1983 THIS PROGRAM WAS CHANGED
+      *                     SO THAT THE ONLY REQUIREMENT FOR A CODE TO
+      *                     APPEAR ON THIS REPORT IS THAT THE STR-INS-ITM
+      *                     FIELD CONTAINS THE LETTER "C" OR "B". BEFORE
+      *                     THE CHANGE, WE EXCLUDED STOCKOUT CODES AND ALSO
+      *                     CODES THAT HAD BOTH REORDER AND EXPEDITE
+      *                     LEVELS VALUED AT ZERO.
+      *
+      *                     2) ON MARCH 22, 1983 THIS PROGRAM WAS CHANGED
+      *                     SO THAT ONORDER ERRORS IN THE DATA BASE WOULD
+      *                     NOT ELIMINATE CODES FROM APPEARING ON THIS
+      *                     REPORT. THE PROGRAM ASSUMED THAT THERE HAD TO
+      *                     BE OPEN PURCHASE ORDERS IF ONORDER WAS GREATER
+      *                     THAN ZERO.
+      *
+      *               ADDED INTERNATIONAL DATE ROUTINE "TDATECHK" ON
+      *               MAY 22, 1985.    V.W.D.
+      *
+      *               DECEMBER 9, 1986 - EXPANDED ALL PRICE/COST FIELD
+      *               SIZES.  ALSO ADDED COPYLIB FOR ALL DATABASE BUFFER
+      *               AREAS AND ADDED CALLS TO "CDESC" TO PROVIDE CODE
+      *               DESCRIPTIONS.      D.A. PLUM.
+      *
+      *              MARCH 12, 1987.  THE FOLLOWING WAS ADDED:
+      *               -TRSCREEN FOR FRONT END REPORT OPTIONS
+      *               -THDPRT2 FOR THE HEADER PAGE
+      *               -PRINT COMPRESSION FEATURE
+      *               -NON-HP LOGIC
+      *               -SONORDER FOR TOTAL ONORDER
+      *                                   C.R. KALMAN.
+      *
+      *C  JUNE 23, 1994   CR KALMAN
+      *C   ADDED CALL TO COBOL ERROR HANDLER -MCXCBLERR.
+      *C
+      *C  SEPT 16, 1996   CA YODER
+      *C   MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.
+      *C
+      *C  07/29/1997   CA YODER     REQ #95-015
+      *C    MODIFIED PROGRAM TO ACCEPT AND USE THE NEW OPTIONS ADDED
+      *C    TO THE MATERIALS CONTROL REPORTS.
+      *C    NOTE:  THIS PROGRAM NOW USES COPYLIB MEMBERS FOR MOST OF
+      *C           ITS PROCESSING LOGIC.  TO SEE ALL OF THE MEMBERS,
+      *C           LOOK IN COPYLIB FOR THE FILES THAT START WITH THE
+      *C           PREFIX "MTLS".
+      *C
+      *C  11/25/97    JEFF BUNGO   REQ #97-017
+      *C     ADD USAGE FIELDS FOR DIRECT DELIVERY.  DD USAGE
+      *C     TO BE STORED IN ADDITIONAL FIELD AND TOTAL USAGE.
+      *C     STORE ISSUE USAGE CALCULATED BY TOTAL USAGE - DD USAGE.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       SPECIAL-NAMES.
+           C01 IS NEWPAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+           SELECT SORT-FILE  ASSIGN TO DISK-SORT.
+           SELECT USAGEFIL-I
+                  ASSIGN TO DATABASE-MCFLCSUSAG
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DDESC-I
+                  ASSIGN TO DATABASE-MCFLCS1401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DMANPART-I
+                  ASSIGN TO DATABASE-MCFLCS3603
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  ONLINE-PRT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-RCD.
+       01  PRINT-RCD.
+           05  PRINT-LINE             PIC X(132).
+
+       COPY MTLSSORT IN COPYLIB.
+
+      *SD  SORT-FILE
+      *    RECORD CONTAINS 84 CHARACTERS.
+      *01  SORT-RCD.
+      *    05  SORT-VEND-CODE         PIC X(10).
+      *    05  SORT-CODE              PIC X(8).
+      *    05  SORT-PO-NO.
+      *        10  SORT-PO            PIC X(7).
+      *        10  SORT-PO-REM.
+      *            15  SORT-DASH      PIC X.
+      *            15  SORT-RLSE      PIC X(3).
+      *    05  SORT-PO-DATE           PIC X(8).
+      *    05  SORT-SHIP-DATE         PIC X(8).
+      *    05  SORT-EXP-DATE          PIC X(8).
+      *    05  SORT-ITM-NO            PIC X(4).
+      *    05  SORT-ITM-DLVR          PIC S9(8)V9(4).
+      *    05  SORT-ITM-ORD           PIC S9(8)V9(4).
+      *    05  SORT-UM                PIC XX.
+      *    05  SORT-ONORDER-ERROR     PIC X.
+
+       FD  USAGEFIL-I
+           LABEL RECORDS ARE STANDARD.
+       01  USAGEFIL-REC-I.
+           COPY DDS-MCRPCSUSAG   OF MCFLCSUSAG.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500   OF MCFLCS0501.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200   OF MCFLCS0201.
+
+       FD  DDESC-I
+           LABEL RECORDS ARE STANDARD.
+       01  DDESC-REC-I.
+           COPY DDS-MCRPCS1400   OF MCFLCS1401.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-MCRPCS0900   OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-MCRPCS1000   OF MCFLCS1001.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-MCRPCS0700   OF MCFLCS0701.
+
+       FD  DMANPART-I
+           LABEL RECORDS ARE STANDARD.
+       01  DMANPART-REC-I.
+           COPY DDS-MCRPCS3600  OF MCFLCS3603.
+
+       WORKING-STORAGE SECTION.
+       77  AVAILABLE                  PIC S9(8)       VALUE ZEROS.
+       77  CHECK-QTY                  PIC S9(8)V9(4)  VALUE ZEROS.
+       77  DOCK-ONHAND                PIC S9(8)V9(4)  VALUE ZEROS.
+       77  TOTAL-ONHAND               PIC S9(8)V9(4)  VALUE ZEROS.
+       77  EOF-SW                     PIC X           VALUE "N".
+       77  EOSF-SW                    PIC X           VALUE "N".
+       77  VEN-HDR-SW                 PIC X           VALUE "N".
+       77  STAT-SUB                   PIC 99          VALUE ZEROS.
+       77  LINE-COUNT                 PIC 99          VALUE ZEROS.
+       77  REL-SORT-K                 PIC 9(5)        VALUE ZEROS.
+       77  RET-SORT-K                 PIC 9(5)        VALUE ZEROS.
+       77  PG-CTR                     PIC 999         VALUE ZEROS.
+       77  SUB                     PIC 9(3)  VALUE 0.
+       77  RET-CODE                PIC X(2)  VALUE SPACES.
+       77  GRAND-TOTAL             PIC S9(13)V9(4) VALUE +0.
+       77  TOTAL-COST              PIC S9(13)V9(4) VALUE +0.
+
+       01  SWITCH-AREA.
+           05  END-OF-INPUT-FILE               PIC X VALUE "N".
+               88  ALL-INPUT-RECORDS-PROCESSED       VALUE "Y".
+           05  END-OF-SORT-FILE                PIC X VALUE "N".
+               88  ALL-SORTED-RECORDS-PROCESSED      VALUE "Y".
+           05  BLOWUP-SWITCH                   PIC X VALUE "N".
+
+9406CK 01  SCOPE   PIC X.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1          PIC X           VALUE SPACES.
+           05  FILE-STATUS-2          PIC X           VALUE SPACES.
+
+       01  DATE-WORKAREA.
+           05  UNEDITED-DATE.
+               10  YY                 PIC XX.
+               10  MM                 PIC XX.
+               10  DD                 PIC XX.
+
+       01  TRANS-TIME.
+           05  HH                     PIC XX.
+           05  MIN                    PIC XX.
+           05  SS                     PIC XX.
+
+       01  SAVE-AREA.
+           05  SAVE-CC                PIC X(8).
+
+       01  PO-RLSE-RS-WORKAREA.
+           05  PO-RLSE-RS.
+               10  PO-INDIC           PIC X           VALUE "P".
+               10  WS-PO              PIC X(7)        VALUE SPACES.
+               10  WS-RLSE            PIC X(3)        VALUE SPACES.
+               10  WS-RS              PIC X(3)        VALUE SPACES.
+
+       01  UNEDITED-PHONE.
+           05  UNEDITED-AREA          PIC X(3).
+           05  UNEDITED-FIRST3        PIC X(3).
+           05  UNEDITED-LAST4         PIC X(4).
+
+       01  UNEDITED-PHONE2 REDEFINES UNEDITED-PHONE.
+           05  PHONE2-FIRST3          PIC X(3).
+           05  PHONE2-LAST4           PIC X(4).
+           05  PHONE2-TEST            PIC X(3).
+
+       COPY TDATECHK IN COPYLIB.
+
+       COPY CDESC IN COPYLIB.
+
+       COPY TCHKBLKT IN COPYLIB.
+
+       COPY SONORDER IN COPYLIB.
+
+       COPY DATAB IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+       01  VIEW-COMAREA.
+           05  FILLER                  PIC X(118) VALUE ZEROES.
+           05  FILLER                  PIC S9(4)  COMP-4 VALUE 9999.
+
+       COPY ESCNAM2 IN COPYLIB.
+       01  COMPRESS-PRINT              PIC X(8).
+       01  NORMAL-PRINT                PIC X(8).
+
+       COPY THDPRTA IN COPYLIB.
+
+       COPY CCRTFILE IN COPYLIB.
+       COPY CCHKOBJ  IN COPYLIB.
+       COPY OVRPFDATA IN COPYLIB.
+      *****ARGUMENT VALUES*****
+       01  CODE-ARG                   PIC X(8)        VALUE SPACES.
+       01  PO-ARG                     PIC X(14)       VALUE SPACES.
+       01  VEN-ARG                    PIC X(10)       VALUE SPACES.
+       01  PLT-ARG                    PIC X(4)  VALUE SPACES.
+
+       01  ITEM-LISTINGS.
+           05  ALL-ITEM-LIST          PIC XX    VALUE "@;".
+           05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+           05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+           05  VEN-SEARCH             PIC X(9)  VALUE "VEN-CODE;".
+
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16) VALUE SPACES.
+           05  DSET-DVENDOR           PIC X(16) VALUE "DVENDOR;".
+           05  DSET-DPORECD           PIC X(16) VALUE "DPORECD;".
+           05  DSET-DPOITEM           PIC X(16) VALUE "DPOITEM;".
+           05  DSET-MSTORERM          PIC X(16) VALUE "MSTORERM;".
+           05  DSET-DDESC             PIC X(16) VALUE "DDESC;".
+
+           05  DSET-MPLTINFO          PIC X(16) VALUE "MPLTINFO;".
+
+       COPY MTLSWORK IN COPYLIB.
+
+      *********************************
+      *                               *
+      *  BELOW ARE THE BUFFER AREAS   *
+      *    SET UP FOR EACH DATASET IN *
+      *    THE DATABASE - STORES      *
+      *                               *
+      *********************************
+
+       COPY DVENDOR IN COPYLIB.
+
+       COPY DPORECD IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY DDESC IN COPYLIB.
+
+       COPY DPOITEM IN COPYLIB.
+
+       COPY MPLTINFO IN COPYLIB.
+
+       COPY DMANPART IN COPYLIB.
+
+      *****************
+      *               *
+      * H E A D E R S *
+      *               *
+      *****************
+
+       COPY MTLSHDNG IN COPYLIB.
+
+      *01  HDR-1.
+      *    05  FILLER    PIC X(5)   VALUE "PAGE ".
+      *    05 PRT-PAGE   PIC ZZ9.
+      *    05  FILLER    PIC X(3)   VALUE SPACES.
+      *    05  FILLER    PIC X(9)   VALUE "REPORT 31".
+      *    05  FILLER    PIC X(35)  VALUE SPACES.
+      *    05  FILLER    PIC X(19)  VALUE "STOREROOM CRITICAL ".
+      *    05  FILLER    PIC X(5)   VALUE "ITEMS".
+      *    05  FILLER    PIC X(27)  VALUE SPACES.
+      *    05  FILLER    PIC X(5)   VALUE "DATE ".
+      *    05 PRT-DATE   PIC X(8).
+      *    05  FILLER    PIC XX     VALUE SPACES.
+      *    05 PRT-TIME   PIC X(8)   VALUE SPACES.
+      *    05  FILLER    PIC XXX    VALUE SPACES.
+      *
+       01  HDR-7.
+           05  FILLER    PIC X(13)  VALUE " ************".
+           05  FILLER    PIC X(119) VALUE SPACES.
+
+       01  HDR-8.
+           05  FILLER    PIC X(6)   VALUE " CODE ".
+           05 PRT-CODE   PIC X(7).
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05 PRT-DESC1  PIC X(80).
+           05  FILLER    PIC X(6)   VALUE SPACES.
+           05  FILLER    PIC X(8)   VALUE "STATUS  ".
+           05 PRT-STATUS-AREA.
+               10  PRT-STATUS  OCCURS 7 TIMES.
+                   15 PRT-STAT  PIC XX.
+                   15 FILLER    PIC X.
+
+       01  HDR-9.
+           05  FILLER    PIC XXX    VALUE SPACES.
+           05 PRT-DESC2  PIC X(80).
+           05  FILLER    PIC X(49)  VALUE SPACES.
+
+       01  HDR-9A.
+           05  FILLER    PIC XXX    VALUE SPACES.
+           05 PRT-DESC3  PIC X(80).
+           05  FILLER    PIC X(49)  VALUE SPACES.
+
+       01  HDR-9B.
+           05  FILLER    PIC XXX    VALUE SPACES.
+           05 PRT-DESC4  PIC X(80).
+           05  FILLER    PIC X(49)  VALUE SPACES.
+
+       01  HDR-10.
+           05  FILLER    PIC X(6)   VALUE "   UM ".
+           05 PRT-UM     PIC XX.
+           05  FILLER    PIC XXX    VALUE SPACES.
+           05  FILLER    PIC X(20)  VALUE "LAST ACTIVITY DATE  ".
+           05 PRT-ACT-D  PIC X(8).
+           05  FILLER    PIC X(12)  VALUE SPACES.
+           05  FILLER    PIC X(9)   VALUE "AVG COST ".
+           05 PRT-AVG    PIC Z(10)9.9(4).
+           05  FILLER    PIC X(15)  VALUE "    ONHAND     ".
+           05 PRT-ONHAND PIC Z(7)9.
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05  FILLER    PIC X(15)  VALUE "AVG MTHLY USAGE".
+           05 PRT-FCST   PIC Z(7)9.
+           05  FILLER    PIC X(6)   VALUE SPACES.
+
+       01  HDR-11.
+           05  FILLER    PIC X(11)  VALUE SPACES.
+           05  FILLER    PIC X(20)  VALUE "LAST ISSUE DATE     ".
+           05 PRT-ISS-D  PIC X(8).
+           05  FILLER    PIC X(1)   VALUE SPACES.
+           05 PRT-CHG    PIC X(10).
+           05  FILLER    PIC X(1)   VALUE SPACES.
+           05  FILLER    PIC X(9)   VALUE "MKT COST ".
+           05 PRT-MKT    PIC Z(10)9.9(4).
+           05  FILLER    PIC X(15)  VALUE "    RESERVED   ".
+           05 PRT-RSRV   PIC Z(7)9.
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05  FILLER    PIC X(15)  VALUE "REORDER        ".
+           05 PRT-REORD  PIC Z(7)9.
+           05  FILLER    PIC X(6)   VALUE SPACES.
+
+       01  HDR-12.
+           05  FILLER    PIC X(11)  VALUE SPACES.
+           05  FILLER    PIC X(19)  VALUE "ESTIMATED LEAD TIME".
+           05 PRT-EST-LT PIC ZZZ9.
+           05  FILLER    PIC X(5)   VALUE " DAYS".
+           05  FILLER    PIC X(12)  VALUE SPACES.
+           05  FILLER    PIC X(11)  VALUE "M/T/D USAGE".
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05 PRT-MTD    PIC ---------9.
+           05  FILLER    PIC X(15)  VALUE "    AVAILABLE  ".
+           05 PRT-AVAIL  PIC Z(7)9.
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05  FILLER    PIC X(15)  VALUE "EXPEDITE       ".
+           05 PRT-EXPED  PIC Z(7)9.
+           05  FILLER    PIC X(6)   VALUE SPACES.
+
+       01  HDR-13.
+           05  FILLER    PIC X(11)  VALUE SPACES.
+           05  FILLER    PIC X(19)  VALUE "LAST DELIVERY TIME ".
+           05 PRT-DEL-LT PIC ZZZ9.
+           05  FILLER    PIC X(5)   VALUE " DAYS".
+           05  FILLER    PIC X(12)  VALUE SPACES.
+           05  FILLER    PIC X(13)  VALUE "LST 24H USAGE".
+           05  FILLER    PIC X(3)   VALUE SPACES.
+           05 PRT-24H    PIC Z(8)9.
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05  FILLER    PIC X(11)  VALUE "ONORDER    ".
+           05 PRT-ONORD  PIC Z(7)9.
+           05  FILLER    PIC X(4)   VALUE SPACES.
+           05  FILLER    PIC X(15)  VALUE "MAXIMUM        ".
+           05 PRT-MAX    PIC Z(7)9.
+           05  FILLER    PIC X(6)   VALUE SPACES.
+
+       01  PO-VEN-HDR.
+           05  FILLER    PIC X(16)  VALUE "PURCHASE ORDER  ".
+           05  FILLER    PIC X(10)  VALUE "ITEM NO.  ".
+           05  FILLER    PIC X(10)  VALUE "P.O.DATE  ".
+           05  FILLER    PIC X(10)  VALUE "EXPECTED  ".
+           05  FILLER    PIC X(11)  VALUE "SHIP DATE  ".
+           05  FILLER    PIC X(12)  VALUE " DELIVERED  ".
+           05  FILLER    PIC X(14)  VALUE "QTY. ORDERED  ".
+           05  FILLER    PIC X(4)   VALUE "UM  ".
+           05  FILLER    PIC X(12)  VALUE "VEND. CODE  ".
+           05  FILLER    PIC X(11)  VALUE "VENDOR NAME".
+           05  FILLER    PIC X(22)  VALUE SPACES.
+
+       01  PRT-PO-VEN-HDR.
+           05  PRT-PO.
+               10  PRT-PO-NO          PIC X(7).
+               10  PRT-PO-REM.
+                   15  PRT-DASH       PIC X.
+                   15  PRT-RLSE       PIC X(3).
+           05  FILLER      PIC X(5)       VALUE SPACES.
+           05 PRT-ITM-NO   PIC X(4).
+           05  FILLER      PIC X(6)       VALUE SPACES.
+           05 PRT-PO-D     PIC X(8).
+           05  FILLER      PIC X(2)       VALUE SPACES.
+           05 PRT-EXP-D    PIC X(8).
+           05  FILLER      PIC X(2)       VALUE SPACES.
+           05 PRT-SHIP-D   PIC X(8).
+           05 PRT-QTY-DLVR PIC Z(7)9.9999.
+           05  FILLER      PIC X(1)       VALUE SPACES.
+           05 PRT-QTY-ORD  PIC Z(7)9.9999.
+           05  FILLER      PIC XX         VALUE SPACES.
+           05 PRT-ORD-UM   PIC XX.
+           05  FILLER      PIC X(2)       VALUE SPACES.
+           05 PRT-VCODE    PIC X(10).
+           05  FILLER      PIC X(2)       VALUE SPACES.
+           05 PRT-VNAME    PIC X(33).
+
+       01  GRAND-TOTAL-LINE.
+           05  FILLER        PIC X(50) VALUE SPACES.
+           05  FILLER        PIC X(13) VALUE "TOTAL ITEMS: ".
+           05  PRT-GRD-ITMS  PIC Z(4)9 VALUE ZERO.
+           05  FILLER        PIC X(5)  VALUE SPACES.
+           05  FILLER        PIC X(19) VALUE "GRAND TOTAL OF ALL ".
+           05  FILLER        PIC X(15) VALUE "CRITICAL ITEMS ".
+           05  PRT-GRD-TOTAL PIC Z(13)9.9(4) VALUE ZEROES.
+
+      **************************************************************
+      **                                                          **
+      **               K S A M   W O R K                          **
+      **                                                          **
+      **************************************************************
+
+       01  KEY-VALUE                     PIC X(8)  VALUE SPACES.
+       01  KEY-LOC                       PIC S9(4) COMP VALUE 3.
+       01  RECSIZE                       PIC S9(4) COMP VALUE 66.
+       01  RESULT                        PIC 9(4)  VALUE ZEROS.
+
+       01  USAGE-REC.
+           05  FILLER                   PIC XX.
+           05  K-CORP-CODE              PIC X(8).
+           05  K-MONTHS                 OCCURS 14 TIMES.
+               10  K-MTH-USAGE          PIC S9(9) COMP-4.
+           05  K-MONTHS-DD              OCCURS 14 TIMES.
+               10  K-MTH-USAGE-DD       PIC S9(9) COMP-4.
+
+       01  FILETABLE.
+           05  FILENUMBER               PIC S9(4) COMP VALUE 0.
+           05  FILENAME                 PIC X(8)  VALUE "USAGEFIL".
+           05  I-O-TYPE                 PIC S9(4) COMP VALUE 0.
+           05  A-MODE                   PIC S9(4) COMP VALUE 1.
+           05  PREV-OP                  PIC S9(4) COMP VALUE 0.
+
+       01  KSAM-STATUS.
+           05  K-STAT-1                 PIC X.
+           05  FILLER                   PIC X.
+
+      *LINKAGE SECTION.
+       COPY THDPRTB IN COPYLIB.
+
+       COPY MTLSLINK IN COPYLIB.
+
+      *01  DATA-LINE                   PIC X(112).
+      *PROCEDURE DIVISION USING HD-ROUTE-DATA, DATA-LINE.
+       PROCEDURE DIVISION.
+
+       START-UP SECTION.
+
+       BEGIN-SORT.
+9406CK     MOVE "C" TO SCOPE.
+9406CK     CALL "MCXCBLERR" USING SCOPE.
+
+           ACCEPT HD-ROUTE-DATA.
+           ACCEPT MTLS-DATA-LINE-1.
+           ACCEPT MTLS-DATA-LINE-1B.
+           ACCEPT MTLS-DATA-LINE-2.
+
+      *---------- OPEN THE PRINT FILE, GET THE FILE NUMBER OF THE PRINT
+      *---------- FILE, AND PRINT THE HEADER PAGE.
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"            TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES   TO OVRPRTF-COPIES.
+           MOVE "MCPRT"           TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT ONLINE-PRT.
+
+           MOVE "TCRITEMS" TO BU-PGM-NAME.
+           OPEN INPUT MSTORERM-I, MPLTINFO-I, DDESC-I, DPORECD-I,
+                DPOITEM-I, DVENDOR-I, DMANPART-I.
+
+           MOVE "P 01" TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "DBGET ERR: BEGIN-SORT" TO BU-DISPLAY-MSG
+              MOVE "PLT-ARG" TO BU-DISPLAY-FLD (1)
+              MOVE PLT-ARG TO BU-DISPLAY-FLD (2)
+              PERFORM 2-BLOWUP.
+
+           MOVE MTLS-RPT-TITLE     TO PRT-RPT-TITLE.
+           MOVE "TCRITEMS"         TO PRT-PGM-NAME.
+           IF MTLS-FROM-RANGE > SPACES OR MTLS-TO-RANGE > SPACES
+               PERFORM 9-MOVE-HEADING-DESC.
+
+           COPY MTLSPROC IN COPYLIB.
+
+      *    SORT SORT-FILE
+      *         ON ASCENDING KEY      SORT-CODE
+      *                               SORT-PO-NO
+      *         INPUT  PROCEDURE IS  7-INPUT
+      *         OUTPUT PROCEDURE IS  8-OUTPUT.
+
+           GOBACK.
+
+       2-BLOWUP.
+           WRITE PRINT-RCD FROM NORMAL-PRINT AFTER ADVANCING 0.
+
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                                VIEW-COMAREA, FILE-STATUS,
+                                BU-DISPLAY-MSG, BU-DISPLAY-AREA.
+
+      *******************************************
+      *                                         *
+      *    I N P U T    P R O C E D U R E       *
+      *                                         *
+      *******************************************
+
+       7-INPUT-RECORDS SECTION.
+
+       COPY MTLSINPT IN COPYLIB.
+
+      *7-INPUT SECTION.
+      *    PERFORM 7-1-HSK.
+      *    PERFORM 7-6-MAIN THRU 7-6-MAIN-EXIT UNTIL EOF-SW = "Y".
+      *    GO TO 7-INPUT-EXIT.
+      *
+      *7-1-HSK.
+      *    MOVE "TCRITEMS" TO BU-PGM-NAME.
+      *    OPEN INPUT MSTORERM-I, MPLTINFO-I, DDESC-I, DPORECD-I,
+      *         DPOITEM-I, DVENDOR-I, DMANPART-I.
+      *
+      *    READ MSTORERM-I FIRST RECORD INTO BUF-MSTORERM
+      *        AT END MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS NOT = "00"
+      *        MOVE "Y" TO EOF-SW.
+      *
+      *7-6-MAIN.
+      *****************************************************
+      *                                                   *
+      *    IF STR-INS-ITM IS NOT = "C"OR "B", IT          *
+      *      SHOULD NOT APPEAR ON THIS REPORT.            *
+      *                                                   *
+      *****************************************************
+      *
+      *    IF (STR-INS-ITM = "C" OR "B")
+      *      AND (CORP-CODE NOT = "NON-STR")
+      *        ADD 1 TO REL-SORT-K
+      *    ELSE
+      *        GO TO 7-6-CONT.
+      *
+      *    MOVE "P 01" TO PLT-ARG.
+      *    MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+      *    READ MPLTINFO-I INTO BUF-MPLTINFO
+      *        INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS NOT = "00"
+      *       MOVE "DBGET ERR: 7-6-MAIN" TO BU-DISPLAY-MSG
+      *       MOVE "PLT-ARG" TO BU-DISPLAY-FLD (1)
+      *       MOVE PLT-ARG TO BU-DISPLAY-FLD (2)
+      *       PERFORM 2-BLOWUP.
+      *    CALL "SONORDER" USING BASE, CORP-CODE, SONORDER-PARMS,
+      *                    MPLTINFO-COMPANY, STATUS-AREA, BU-DISPLAY-MSG,
+      *                    BU-DISPLAY-FLDS.
+      *    IF BU-DISPLAY-MSG NOT = SPACES
+      *       PERFORM 2-BLOWUP.
+      *    IF SONORDER-TOTAL-ONORDER NOT = 0
+      *        PERFORM 7-62-FIND-VEND-CODE THRU 7-62-FVC-X
+      *    ELSE
+      *        MOVE SPACES TO SORT-RCD
+      *        MOVE CORP-CODE TO SORT-CODE
+      *        RELEASE SORT-RCD.
+      *
+      * 7-6-CONT.
+      *** SERIAL GET THRU MSTORERM FOR CODES ***
+      *    READ MSTORERM-I NEXT INTO BUF-MSTORERM
+      *        AT END MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS NOT = "00"
+      *        IF FILE-STATUS = "10" OR "14" OR "46"
+      *            MOVE "Y" TO EOF-SW
+      *            GO TO 7-6-MAIN-EXIT
+      *        ELSE
+      *            MOVE "DBGET ERR: 7-6-MAIN" TO BU-DISPLAY-MSG
+      *            PERFORM 2-BLOWUP.
+      *7-6-MAIN-EXIT.
+      *    EXIT.
+
+      *******************************************
+      *   HERE THE VENDOR CODE IS FOUND, SO     *
+      *   THAT THE PROGRAM CAN BE SORTED BY     *
+      *   VENDOR CODE.                          *
+      *******************************************
+      *
+      *7-62-FIND-VEND-CODE.
+      *    MOVE CORP-CODE TO CORPCDE OF DPOITEM-REC-I.
+      *    START DPOITEM-I KEY = CORPCDE OF DPOITEM-REC-I
+      *        INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS NOT = "00"
+      *        IF FILE-STATUS-1 = "2"
+      *           MOVE SPACES    TO SORT-RCD
+      *           MOVE CORP-CODE TO SORT-CODE
+      *           MOVE "Y" TO SORT-ONORDER-ERROR
+      *           RELEASE SORT-RCD
+      *           MOVE SPACES TO SORT-ONORDER-ERROR
+      *           GO TO 7-62-FVC-X
+      *        ELSE
+      *       MOVE "DBFIND ERR: 7-62-FIND-VEND-CODE" TO BU-DISPLAY-MSG
+      *       PERFORM 2-BLOWUP.
+      *
+      *7-621-FVC-CONT.
+      *    READ DPOITEM-I NEXT INTO BUF-DPOITEM
+      *        AT END MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS NOT = "00"
+      *        IF FILE-STATUS = "10" OR "14" OR "46"
+      *           GO TO 7-62-FVC-X
+      *        ELSE
+      *           MOVE "DBGET ERR: 7-621-FVC-CONT" TO BU-DISPLAY-MSG
+      *           PERFORM 2-BLOWUP.
+      *    IF CORPCDE OF DPOITEM-REC-I NOT = CORP-CODE
+      *        GO TO 7-62-FVC-X.
+      *
+      *    MOVE ITM-PO-RCV-NO TO PO-RLSE-RS.
+      *
+      *    IF ITM-QTY-DLVR < ITM-QTY-ORD
+      *        MOVE SPACES       TO SORT-RCD
+      *        MOVE ITM-QTY-DLVR TO SORT-ITM-DLVR
+      *        MOVE ITM-QTY-ORD  TO SORT-ITM-ORD
+      *        MOVE ITM-UM       TO SORT-UM
+      *        MOVE ITM-NUMBER   TO SORT-ITM-NO
+      *        MOVE WS-PO        TO SORT-PO
+      *        IF WS-RLSE = ZEROES
+      *            MOVE SPACES TO SORT-PO-REM
+      *        ELSE
+      *            MOVE "-" TO SORT-DASH
+      *            MOVE WS-RLSE TO SORT-RLSE
+      *    ELSE
+      *        GO TO 7-621-FVC-CONT.
+      *
+      *7-622-FVC-CONT.
+      *    MOVE PO-RLSE-RS TO PO-ARG.
+      *    MOVE PO-ARG     TO PORCVNO OF DPORECD-REC-I.
+      *    READ DPORECD-I INTO BUF-DPORECD
+      *        INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS-1 = "2"
+      *        GO TO 7-621-FVC-CONT
+      *    ELSE
+      *    IF FILE-STATUS NOT = "00"
+      *       MOVE "DBFIND ERR: 7-622-FVC-CONT" TO BU-DISPLAY-MSG
+      *       PERFORM 2-BLOWUP.
+      *
+      *
+      *    MOVE PO-VEN-CODE       TO  SORT-VEND-CODE.
+      *
+      *    IF PO-DATE-CN > SPACES
+      *        MOVE 4 TO DATE-MODE
+      *        MOVE PO-DATE TO DATE-VALIDATE-IN
+      *        CALL "TDATECHK" USING DATE-CHECK-AREA
+      *        MOVE DATE-SLASH-OUT TO SORT-PO-DATE
+      *    ELSE
+      *        MOVE SPACES        TO  SORT-PO-DATE.
+      *
+      *    IF PO-SHIP-DATE-CN > SPACES
+      *        IF PO-SHIP-DATE-CN IS NOT NUMERIC
+      *            MOVE PO-SHIP-DATE TO SORT-SHIP-DATE
+      *        ELSE
+      *        MOVE 4 TO DATE-MODE
+      *        MOVE PO-SHIP-DATE TO DATE-VALIDATE-IN
+      *        CALL "TDATECHK" USING DATE-CHECK-AREA
+      *        MOVE DATE-SLASH-OUT TO SORT-SHIP-DATE
+      *    ELSE
+      *        MOVE SPACES         TO  SORT-SHIP-DATE.
+      *
+      *    IF PO-EXPECT-DATE-CN > SPACES
+      *        MOVE 4 TO DATE-MODE
+      *        MOVE PO-EXPECT-DATE  TO DATE-VALIDATE-IN
+      *        CALL "TDATECHK" USING DATE-CHECK-AREA
+      *        MOVE DATE-SLASH-OUT  TO SORT-EXP-DATE
+      *    ELSE
+      *        MOVE SPACES          TO  SORT-EXP-DATE.
+      *
+      *    MOVE CORP-CODE          TO  SORT-CODE.
+      *    RELEASE SORT-RCD.
+      *    GO TO 7-621-FVC-CONT.
+      *
+      *7-62-FVC-X.
+      *    EXIT.
+
+       7-IR-EXIT.
+           EXIT.
+
+      *******************************************
+      *                                         *
+      *    O U T P U T   P R O C E D U R E      *
+      *                                         *
+      *******************************************
+
+      *8-OUTPUT SECTION.
+       8-WRITE-RECORDS SECTION.
+           PERFORM 8-1-HSK.
+           PERFORM 8-6-MAIN UNTIL EOSF-SW = "Y".
+      *------- DON'T PRINT TOTAL LINE IF BIN LOC OR MANUF SORT BECAUSE
+      *------- CODES COULD BE DUPLICATED.
+           IF MTLS-SORT-OPT NOT = "06" AND MTLS-SORT-OPT NOT = "08"
+               MOVE CODES-RELEASED TO PRT-GRD-ITMS
+               MOVE GRAND-TOTAL TO PRT-GRD-TOTAL
+               WRITE PRINT-RCD FROM GRAND-TOTAL-LINE
+                   AFTER ADVANCING 2 LINES.
+           PERFORM 8-2-EOJ.
+           GO TO 8-WR-EXIT.
+
+       8-1-HSK.
+
+           OPEN INPUT USAGEFIL-I.
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI TO COMPRESS-PRINT.
+           MOVE CHAR-10PI TO NORMAL-PRINT.
+           MOVE "DHDR48.PUB" TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM,
+                                HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+              MOVE "THDPRT ERR: 8-1-HSK" TO BU-DISPLAY-MSG
+              MOVE "HD-RET-CODE = " TO BU-DISPLAY-FLD (1)
+              MOVE HD-RET-CODE TO BU-DISPLAY-FLD (2)
+              MOVE "DHDR48.PUB" TO BU-DISPLAY-FLD (3)
+              PERFORM 2-BLOWUP.
+           IF PAPER-IS-132-COLS
+              NEXT SENTENCE
+           ELSE
+              WRITE PRINT-RCD FROM COMPRESS-PRINT AFTER ADVANCING 0.
+
+           PERFORM 9-MOVE-OPTION-LINES.
+           WRITE PRINT-RCD FROM OPTION-LINE-1  AFTER ADVANCING 3 LINES.
+           WRITE PRINT-RCD FROM OPTION-LINE-2  AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-2B AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-2C AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-3  AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-4  AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-5  AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-6  AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-7  AFTER ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM OPTION-LINE-8  AFTER ADVANCING 1 LINE.
+
+           PERFORM 8-3-RETURN THRU 8-3-RETURN-EXIT.
+
+           IF EOSF-SW = "Y"
+               MOVE SPACES TO PRINT-RCD
+               WRITE PRINT-RCD BEFORE ADVANCING NEWPAGE
+               MOVE 1 TO DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO PRT-DATE
+               MOVE DATE-FORMATTED-TIME-OUT TO PRT-TIME
+               MOVE 1  TO  PRT-PAGE
+               WRITE PRINT-RCD FROM HEADING-1 BEFORE ADVANCING 1 LINE
+               WRITE PRINT-RCD FROM HEADING-2 BEFORE ADVANCING 2 LINES
+               MOVE "ZERO CODES QUALIFIED FOR REPORT" TO PRINT-LINE
+               WRITE PRINT-RCD AFTER ADVANCING 2 LINES
+               PERFORM 8-2-EOJ
+               GO TO 8-WR-EXIT.
+
+           PERFORM 9-MOVE-CONTROL-BREAK.
+
+      *    MOVE SORT-CODE TO SAVE-CC.
+           ADD 1 TO RET-SORT-K.
+           MOVE SPACES TO PRINT-RCD.
+           WRITE PRINT-RCD BEFORE ADVANCING NEWPAGE.
+      *    PERFORM 8-10-HDR-INFO THRU 8-10-HDR-INFO-EXIT.
+      *    PERFORM 8-15-HEADINGS THRU 8-15-HEADINGS-X.
+           PERFORM HDR-1-INFO THRU HDR-1-INFO-EXIT.
+           PERFORM 8-15-HEADINGS THRU 8-15-HEADINGS1-6-X.
+
+       8-10-HDR-INFO.
+
+       HDR-1-INFO.
+           ADD 1                       TO   PG-CTR.
+           MOVE PG-CTR                 TO   PRT-PAGE.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO PRT-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT TO PRT-TIME.
+
+       HDR-1-INFO-EXIT.
+           EXIT.
+
+       HDR-8-9-INFO.
+
+           MOVE  4  TO CDESC-LINES-TO-GET.
+           MOVE "N" TO CDESC-LOCAL-DESC-OPTION.
+
+           CALL "CDESC" USING CDESC-RET-CODE,
+                              BASE,
+                              STATUS-AREA,
+                              BU-DISPLAY-MSG,
+                              SRT-CORP-CODE,
+                              CDESC-DATA.
+
+           IF CDESC-RET-CODE IS NOT EQUAL TO "00"
+               MOVE "NO DESCRIPTION ON FILE" TO PRT-DESC1
+               GO TO HDR-10-13-INFO.
+
+           MOVE CDESC (1) TO PRT-DESC1.
+           MOVE CDESC (2) TO PRT-DESC2.
+           MOVE CDESC (3) TO PRT-DESC3.
+           MOVE CDESC (4) TO PRT-DESC4.
+
+       HDR-8-9-INFO-EXIT.
+           EXIT.
+
+       HDR-10-13-INFO.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               GO TO 8-10-HDR-INFO-EXIT
+           ELSE
+           IF FILE-STATUS NOT = "00"
+              MOVE "DBGET ERR: HDR-10-13-INFO" TO BU-DISPLAY-MSG
+              PERFORM 2-BLOWUP.
+
+           IF STR-ACT-DATE-CN > SPACES
+               MOVE 4 TO DATE-MODE
+               MOVE STR-ACT-DATE         TO  DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO PRT-ACT-D
+           ELSE
+               MOVE SPACES               TO  PRT-ACT-D.
+
+           IF STR-LAST-IDATE-CN > SPACES
+               MOVE 4 TO DATE-MODE
+               MOVE STR-LAST-IDATE       TO  DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO PRT-ISS-D
+           ELSE
+               MOVE SPACES               TO  PRT-ACT-D.
+
+           MOVE STR-REORDER              TO  PRT-REORD.
+           MOVE STR-MAX                  TO  PRT-MAX.
+           MOVE STR-EXPEDITE             TO  PRT-EXPED.
+           MOVE STR-AVG-COST             TO  PRT-AVG.
+           MOVE STR-UM                   TO  PRT-UM.
+           MOVE STR-MKT-COST             TO  PRT-MKT.
+           MOVE STR-ONHAND               TO  PRT-ONHAND.
+           MOVE STR-MTH-FCST             TO  PRT-FCST.
+           MOVE STR-LAST-CHARGE          TO  PRT-CHG.
+           MOVE STR-RESERVED             TO  PRT-RSRV.
+           MOVE STR-EST-LT               TO  PRT-EST-LT.
+           COMPUTE TOTAL-COST = SRT-ONHAND * SRT-COST.
+           ADD TOTAL-COST TO GRAND-TOTAL.
+
+           COMPUTE AVAILABLE = (STR-ONHAND - STR-RESERVED).
+           MOVE AVAILABLE                TO  PRT-AVAIL.
+           MOVE STR-LAST-DLVTIMES (1)    TO  PRT-DEL-LT.
+      *
+      *    IF SORT-ONORDER-ERROR = "Y"
+      *        MOVE ZEROS                TO  PRT-ONORD
+      *    ELSE
+
+           CALL "SONORDER" USING BASE, SRT-CORP-CODE, SONORDER-PARMS,
+                                 MPLTINFO-COMPANY, STATUS-AREA,
+                                 BU-DISPLAY-MSG, BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+              PERFORM 2-BLOWUP
+           ELSE
+              MOVE SONORDER-TOTAL-ONORDER   TO  PRT-ONORD.
+
+      *************************************************
+      *                                               *
+      * C L A S S I F I C A T I O N    OF   I T E M S *
+      *                                               *
+      *************************************************
+
+           MOVE SPACES TO PRT-STATUS-AREA.
+           MOVE ZERO   TO STAT-SUB.
+
+           IF STR-HIGH-USAGE IS GREATER THAN SPACES
+               ADD       1         TO STAT-SUB
+               MOVE     "HU"       TO PRT-STAT (STAT-SUB).
+
+           IF STR-WR-DOWN     = "X"
+               ADD       1         TO STAT-SUB
+               MOVE     "WD"       TO PRT-STAT (STAT-SUB).
+
+           IF STR-INS-ITM     = "X" OR "B"
+               ADD       1         TO STAT-SUB
+               MOVE     "IN"       TO PRT-STAT (STAT-SUB).
+
+           IF STR-ORD-ENG     = "X"
+               ADD       1         TO STAT-SUB
+               MOVE     "OE"       TO PRT-STAT (STAT-SUB).
+
+           IF STR-OUT-REP     = "X"
+               ADD       1         TO STAT-SUB
+               MOVE     "OR"       TO PRT-STAT (STAT-SUB).
+
+           IF STR-MAINT       = "X"
+               ADD       1         TO STAT-SUB
+               MOVE     "MR"       TO PRT-STAT (STAT-SUB).
+
+           IF STR-IMPORT-IND  = "X"
+               ADD       1         TO STAT-SUB
+               MOVE     "IM"       TO PRT-STAT (STAT-SUB).
+
+      **************************************************************
+      **   THE KSAM FILE "USAGEFIL" IS USED TO GET MONTHLY USAGE  **
+      **   DATA FOR THE INQUIRY.  IF ERR STAT IS 9, KSAM SUPPLIES **
+      **   A FORMATTED ERROR MESSAGE.                             **
+      **************************************************************
+
+           MOVE SRT-CORP-CODE  TO CORPCDE OF USAGEFIL-REC-I.
+           READ USAGEFIL-I INTO USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               DISPLAY  "NO MATERIAL STATUS INFO " KEY-VALUE
+               MOVE ZEROS TO PRT-MTD, PRT-24H
+               GO TO 8-10-HDR-INFO-EXIT.
+
+           MOVE K-MTH-USAGE (13) TO PRT-MTD.
+           MOVE K-MTH-USAGE (14) TO PRT-24H.
+
+       HDR-10-13-INFO-EXIT.
+           EXIT.
+
+       8-10-HDR-INFO-EXIT.
+           EXIT.
+
+       8-15-HEADINGS.
+
+       8-15-HEADINGS1-6.
+           WRITE PRINT-RCD FROM HEADING-1 BEFORE ADVANCING 1 LINE.
+           WRITE PRINT-RCD FROM HEADING-2 BEFORE ADVANCING 1 LINE.
+           IF MTLS-SORT-OPT > SPACES AND MTLS-SORT-OPT NOT = "01"
+             MOVE CNTL-BREAK-HOLD-FIELD TO PRT-H2B-VALUE
+             WRITE PRINT-RCD FROM HEADING-2B BEFORE ADVANCING 1 LINE
+             ADD   1                   TO   LINE-COUNT.
+
+      *    MOVE HDR-1                  TO   PRINT-LINE.
+      *    WRITE PRINT-RCD BEFORE ADVANCING 2 LINES.
+           MOVE SPACES TO PRINT-RCD.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINE.
+           ADD 3                       TO   LINE-COUNT.
+
+       8-15-HEADINGS1-6-X.
+           EXIT.
+
+       8-15-HEADINGS-CONT.
+           MOVE HDR-7                  TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 2 LINES.
+           MOVE HDR-8                  TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           MOVE HDR-9                  TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           MOVE HDR-9A                 TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           MOVE HDR-9B                 TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 2 LINES.
+           MOVE HDR-10                 TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           MOVE HDR-11                 TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           MOVE HDR-12                 TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           MOVE HDR-13                 TO   PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 2 LINES.
+           ADD 12                      TO   LINE-COUNT.
+
+       8-15-HEADINGS-X.
+           EXIT.
+
+       8-2-EOJ.
+           IF PAPER-IS-132-COLS
+              NEXT SENTENCE
+           ELSE
+              WRITE PRINT-RCD FROM NORMAL-PRINT AFTER ADVANCING 0.
+           CLOSE MSTORERM-I, MPLTINFO-I, DDESC-I, DPORECD-I,
+                DPOITEM-I, DVENDOR-I, USAGEFIL-I, DMANPART-I.
+           CLOSE ONLINE-PRT.
+
+       8-3-RETURN.
+           RETURN SORT-FILE
+      *        AT END MOVE SPACES TO SORT-REC
+               AT END MOVE "Y" TO EOSF-SW.
+      *          MOVE "Y" TO EOSF-SW.
+           IF EOSF-SW NOT = "Y"
+               MOVE SRT-CORP-CODE TO PRT-CODE, CODE-ARG.
+
+       8-3-RETURN-EXIT.
+           EXIT.
+
+       8-6-MAIN.
+           IF LINE-COUNT > 55
+               MOVE SPACES TO PRINT-LINE
+               WRITE PRINT-RCD BEFORE ADVANCING NEWPAGE
+               MOVE ZEROES TO LINE-COUNT
+               ADD 1       TO PG-CTR
+               MOVE PG-CTR TO PRT-PAGE
+               PERFORM 8-15-HEADINGS1-6 THRU 8-15-HEADINGS1-6-X.
+
+           MOVE SPACES TO PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 2 LINES.
+           ADD 2       TO LINE-COUNT.
+      *    MOVE SRT-CORP-CODE TO SAVE-CC.
+           ADD 1 TO RET-SORT-K.
+           MOVE "N" TO VEN-HDR-SW.
+           IF LINE-COUNT > 45
+               MOVE SPACES TO PRINT-LINE
+               WRITE PRINT-RCD BEFORE ADVANCING NEWPAGE
+               MOVE ZEROES TO LINE-COUNT
+               ADD 1       TO PG-CTR
+               MOVE PG-CTR TO PRT-PAGE
+               PERFORM 8-15-HEADINGS1-6 THRU 8-15-HEADINGS1-6-X
+               PERFORM HDR-8-9-INFO THRU HDR-10-13-INFO-EXIT
+               PERFORM 8-15-HEADINGS-CONT THRU  8-15-HEADINGS-X
+           ELSE
+               PERFORM HDR-8-9-INFO THRU HDR-10-13-INFO-EXIT
+               PERFORM 8-15-HEADINGS-CONT THRU  8-15-HEADINGS-X.
+
+           IF SONORDER-TOTAL-ONORDER = 0
+               PERFORM 8-60-NO-PO-ROUTINE
+           ELSE
+               PERFORM 8-61-PO-ROUTINE.
+
+      *    IF SORT-CODE = SAVE-CC
+      *        IF SORT-PO-NO = SPACES
+      *            PERFORM 8-60-NO-PO-ROUTINE
+      *        ELSE
+      *            PERFORM 8-61-PO-ROUTINE
+      *    ELSE
+      *        MOVE SPACES TO PRINT-LINE
+      *        WRITE PRINT-RCD BEFORE ADVANCING 2 LINES
+      *        ADD 2       TO LINE-COUNT
+      *        MOVE SORT-CODE TO SAVE-CC
+      *        ADD 1 TO RET-SORT-K
+      *        MOVE "N" TO VEN-HDR-SW
+      *        IF LINE-COUNT > 45
+      *            MOVE SPACES TO PRINT-LINE
+      *            WRITE PRINT-RCD BEFORE ADVANCING NEWPAGE
+      *            MOVE ZEROES TO LINE-COUNT
+      *            ADD 1       TO PG-CTR
+      *            MOVE PG-CTR TO PRT-PAGE
+      *            PERFORM 8-15-HEADINGS1-6 THRU 8-15-HEADINGS1-6-X
+      *            PERFORM HDR-8-9-INFO THRU HDR-10-13-INFO-EXIT
+      *            PERFORM 8-15-HEADINGS-CONT THRU  8-15-HEADINGS-X
+      *            IF SORT-PO-NO = SPACES
+      *                PERFORM 8-60-NO-PO-ROUTINE
+      *            ELSE
+      *                PERFORM 8-61-PO-ROUTINE
+      *        ELSE
+      *            PERFORM HDR-8-9-INFO THRU HDR-10-13-INFO-EXIT
+      *            PERFORM 8-15-HEADINGS-CONT THRU  8-15-HEADINGS-X
+      *            IF SORT-PO-NO = SPACES
+      *                PERFORM 8-60-NO-PO-ROUTINE
+      *            ELSE
+      *                PERFORM 8-61-PO-ROUTINE.
+
+           PERFORM 8-3-RETURN THRU 8-3-RETURN-EXIT.
+
+      *--------- PRINT CONTROL BREAKS.
+           IF MTLS-SORT-OPT NOT = "01" AND MTLS-SORT-OPT NOT = "  "
+               IF EOSF-SW NOT = "Y"
+                   PERFORM 9-CHECK-CONTROL-BREAK
+               END-IF
+               IF EOSF-SW = "Y" OR CNTL-BREAK-SW = "Y"
+                   PERFORM 9-PRINT-CONTROL-BREAK
+                   WRITE PRINT-RCD FROM CONTROL-BREAK-LINE
+                                             AFTER ADVANCING 2 LINES
+                   PERFORM 9-MOVE-CONTROL-BREAK
+                   IF EOSF-SW = "N"
+                       MOVE 60            TO  LINE-COUNT.
+
+       8-60-NO-PO-ROUTINE.
+           MOVE "NO OPEN PURCHASE ORDERS" TO PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           ADD 1 TO LINE-COUNT.
+
+       8-61-PO-ROUTINE.
+           PERFORM 8-62-CHECK-VEN-HDR-SW.
+           PERFORM 8-65-FIND-VEND-CODE THRU 8-65-FVC-X.
+      *    PERFORM 8-63-MOVE-TO-PRINT.
+
+       8-62-CHECK-VEN-HDR-SW.
+           IF VEN-HDR-SW = "N"
+               MOVE PO-VEN-HDR TO PRINT-LINE
+               WRITE PRINT-RCD BEFORE ADVANCING 1 LINES
+               ADD 1 TO LINE-COUNT
+               MOVE "Y" TO VEN-HDR-SW.
+
+       8-63-MOVE-TO-PRINT.
+      *    MOVE SORT-PO-NO         TO  PRT-PO.
+      *    MOVE SORT-PO-DATE       TO  PRT-PO-D.
+      *    MOVE SORT-SHIP-DATE     TO  PRT-SHIP-D.
+      *    MOVE SORT-EXP-DATE      TO  PRT-EXP-D.
+      *    MOVE SORT-ITM-DLVR      TO  PRT-QTY-DLVR.
+      *    MOVE SORT-ITM-ORD       TO  PRT-QTY-ORD.
+      *    MOVE SORT-VEND-CODE     TO  PRT-VCODE.
+      *    MOVE SORT-ITM-NO        TO  PRT-ITM-NO.
+      *    MOVE SORT-UM            TO  PRT-ORD-UM.
+           PERFORM 8-64-FIND-VEND-INFO THRU 8-64-FVI-EXIT.
+           MOVE PRT-PO-VEN-HDR     TO  PRINT-LINE.
+           WRITE PRINT-RCD BEFORE ADVANCING 1 LINES.
+           ADD 1                   TO  LINE-COUNT.
+
+       8-64-FIND-VEND-INFO.
+           MOVE PO-VEN-CODE            TO VEN-ARG, PRT-VCODE.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-I.
+           MOVE "00"    TO VENITMNO OF DVENDOR-REC-I.
+           READ DVENDOR-I INTO BUF-DVENDOR
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE "NO NAME ON FILE" TO PRT-VNAME
+               GO TO 8-64-FVI-EXIT.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBFIND ERR: 8-64-FIND-VEND-INFO" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           MOVE VEN-NAME TO PRT-VNAME.
+
+       8-64-FVI-EXIT.
+           EXIT.
+
+       8-65-FIND-VEND-CODE.
+           MOVE CORP-CODE TO CORPCDE OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = CORPCDE OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *           MOVE SPACES    TO SORT-RCD
+      *           MOVE CORP-CODE TO SORT-CODE
+      *           MOVE "Y" TO SORT-ONORDER-ERROR
+      *           RELEASE SORT-RCD
+      *           MOVE SPACES TO SORT-ONORDER-ERROR
+                  GO TO 8-65-FVC-X
+               ELSE
+              MOVE "DBFIND ERR: 8-65-FIND-VEND-CODE" TO BU-DISPLAY-MSG
+              PERFORM 2-BLOWUP.
+
+       8-651-FVC-CONT.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                  GO TO 8-65-FVC-X
+               ELSE
+                  MOVE "DBGET ERR: 8-651-FVC-CONT" TO BU-DISPLAY-MSG
+                  PERFORM 2-BLOWUP.
+           IF CORPCDE OF DPOITEM-REC-I NOT = SRT-CORP-CODE
+               GO TO 8-65-FVC-X.
+
+           MOVE ITM-PO-RCV-NO TO PO-RLSE-RS.
+
+           IF ITM-QTY-DLVR < ITM-QTY-ORD
+      *        MOVE SPACES       TO SORT-RCD
+               MOVE ITM-QTY-DLVR TO PRT-QTY-DLVR
+               MOVE ITM-QTY-ORD  TO PRT-QTY-ORD
+               MOVE ITM-UM       TO PRT-ORD-UM
+               MOVE ITM-NUMBER   TO PRT-ITM-NO
+               MOVE WS-PO        TO PRT-PO-NO
+               IF WS-RLSE = ZEROES
+                   MOVE SPACES TO PRT-PO-REM
+               ELSE
+                   MOVE "-" TO PRT-DASH
+                   MOVE WS-RLSE TO PRT-RLSE
+           ELSE
+               GO TO 8-651-FVC-CONT.
+
+       8-652-FVC-CONT.
+           MOVE PO-RLSE-RS TO PO-ARG.
+           MOVE PO-ARG     TO PORCVNO OF DPORECD-REC-I.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               GO TO 8-651-FVC-CONT
+           ELSE
+           IF FILE-STATUS NOT = "00"
+              MOVE "DBFIND ERR: 8-652-FVC-CONT" TO BU-DISPLAY-MSG
+              PERFORM 2-BLOWUP.
+
+
+           MOVE PO-VEN-CODE       TO  PRT-VCODE.
+
+           IF PO-DATE-CN > SPACES
+               MOVE 4 TO DATE-MODE
+               MOVE PO-DATE TO DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO PRT-PO-D
+           ELSE
+               MOVE SPACES        TO  PRT-PO-D.
+
+           IF PO-SHIP-DATE-CN > SPACES
+               IF PO-SHIP-DATE-CN IS NOT NUMERIC
+                   MOVE PO-SHIP-DATE TO PRT-SHIP-D
+               ELSE
+               MOVE 4 TO DATE-MODE
+               MOVE PO-SHIP-DATE TO DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO  PRT-SHIP-D
+           ELSE
+               MOVE SPACES         TO  PRT-SHIP-D.
+
+           IF PO-EXPECT-DATE-CN > SPACES
+               MOVE 4 TO DATE-MODE
+               MOVE PO-EXPECT-DATE  TO DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT  TO  PRT-EXP-D
+           ELSE
+               MOVE SPACES          TO  PRT-EXP-D.
+
+           PERFORM 8-63-MOVE-TO-PRINT.
+
+           GO TO 8-651-FVC-CONT.
+
+       8-65-FVC-X.
+           EXIT.
+
+       8-WR-EXIT.
+           EXIT.
+
+       9-UTILITY SECTION.
+
+       COPY MTLSUTIL  IN COPYLIB.
+
+       COPY OVRPFCALL IN COPYLIB.
+
+      *------- DUMMY PARAGRAPH; NOT USED IN THIS PROGRAM.
+       9-COMPUTE-USAGE.
+           EXIT.

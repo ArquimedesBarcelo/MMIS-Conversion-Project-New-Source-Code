@@ -1,0 +1,926 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    TPRTRPT.
+000400 AUTHOR.        C.I.HILLES.
+000500*REMARKS.
+000600**************************************************************
+000700*                                                            *
+000800*    T P R T R P T                                           *
+000900*                                                            *
+001000* THIS PROGRAM PRINTS A REPORT HELD IN A DISK FILE TO A      *
+001100* PRINTER. CONTROL JCW'S USED:                               *
+002300*                                                            *
+003300*   1. PRTNUM:      PRINTER NUMBER TO PRINT AT.              *
+003400*      FOR HP IT IS THE LOGICAL DEVICE NUMBER.  FOR IBM      *
+003500*      IT IS THE PRT FILE NUMBER (IE PRTNUM = 25 MEANS       *
+003600*      USE FILE 'MCPRT25'. DEFAULT IS SYSTEM LINE PRINTER.   *
+004300*                                                            *
+      *   2. COMPRESS-FLAG:  Y/1 = COMPRESS, N/0 = DON'T           *
+      *                                                            *
+      *   3. RDATES:  Y/1 = BRING UP RANGE OF DATES SCREEN FOR     *
+004400*      A CIRCULAR REPORT FILE, N/0 = PRINT ENTIRE FILE.      *
+      *                                                            *
+      *   4. TODAY:   Y/1 = NO SCREEN, BUT PRINT ONLY TODAY'S      *
+      *      REPORT FROM THE CIRCULAR FILE, N/0 = DON'T            *
+      *                                                            *
+      * IN THE REPORT FILE, THE FIRST BYTE 'CTL' IS USED AS A      *
+      * CONTROL CHARACTER.  '0' MEANS NEW-PAGE, ANY OTHER NUMBER   *
+      * MEANS ADVANCE THAT MANY LINES.                             *
+000600**************************************************************
+      *C
+      *C  11/07/1997    CA YODER
+      *C    MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.
+      *C
+      *C  12/03/1997    CA YODER   REQ #97-014
+      *C    MODIFIED PROGRAM TO RECOGNIZE THE "D" CONTROL CHARACTER
+      *C    WHICH MEANS THAT THE REPORT WILL BE DISTRIBUTED BY
+      *C    DEPARTMENT, OR WHATEVER KEY IS DEFINED TO THE REPORT
+      *C    DISTRIBUTION PROGRAM.
+      *C    - IF THE REPORT IS TO BE DISTRIBUTED IN THIS WAY, A SWITCH
+      *C      AFTER THE DATE IN THE "*" RECORD WILL BE SET TO "Y."
+      *C      THIS WILL CAUSE THE PROGRAM TO SKIP THE FIRST OVERRIDE
+      *C      AND JUST OVERRIDE ACCORDING TO THE PRINTERS IN MCFPCS6800.
+      *C    - BEFORE EACH PAGE, THE REPORT ID AND THEN THE KEY VALUE
+      *C      WILL FOLLOW THE "D" CONTROL CHARACTER.  THE PROGRAM
+      *C      "SGETRPT" WILL THEN LOOK UP WHAT PRINTER TO OVERRIDE TO.
+      *C      IF BOTH THE KEY VALUE AND THE DEFAULT VALUE ARE NOT
+      *C      FOUND IN MCFPCS6800, THE PROGRAM WILL REVERT BACK TO THE
+      *C      MCPRT FILE PASSED TO THIS PROGRAM.
+      *C
+      *C  01/26/1998     CA YODER
+      *C      ADDED LOGIC TO MAKE SURE THERE IS A DATE ALONG WITH THE
+      *C      "*" CONTROL CHARACTER.  IN ONE PROGRAM, AN ASTERISK WAS
+      *C      BEING WRITTEN TO THE CONTROL CHARACTER WITHOUT A VALID
+      *C      DATE.  THIS CAUSED THE DATE TO EVAULATE TO A "20??????"
+      *C      DATE, WHICH WAS ALWAYS LARGER THAN THE CURRENT DATE
+      *C      (AT LEAST UNTIL AFTER THE YEAR 2000), SO THE WHOLE FILE
+      *C      COULD BE PRINTED IF THE ASTERISK APPEARED EARLY ENOUGH
+      *C      IN A FILE.
+      *C
+      *C  01/03/2003    DAVE PLUM
+      *C      ADDED LOGIC TO HANDLE THE CASE WHERE:
+      *C        1) THE FIRST RECORD IN THE REPORT FILE INDICATES THAT
+      *C           WE ARE TO DISTRIBUTE REPORTS BY DEPARTMENT
+      *C           (FOR EXAMPLE "*030103Y")
+      *C        AND
+      *C        2) THE REPORT FILE ONLY CONTAINS THIS ONE CONTROL
+      *C           RECORD.  (THERE ARE NO REPORT RECORDS TO DISTRIBUTE.)
+      *C      THIS SITUATION OCCURRED IN LAWTON OVER A HOLIDAY WHEN
+      *C      PROGRAM TDLYCHGS READ AN ABSTFILE THAT CONTAINED ZERO
+      *C      "DAILY CHARGES" TYPE RECORDS.  IN THIS CASE, TDLYCHGS ONLY
+      *C      WROTE THE SINGLE CONTROL RECORD TO THE FILE DDLYCHGS WHICH
+      *C      IS USED BY THIS PROGRAM AS THE REPORT FILE.
+      *C
+      *C  05/09/2003    BRUCE GEISER
+      *C      ADDED LOGIC TO MAKE SURE THE PRINT FILE WAS OPENED BEFORE
+      *C      WRITING RECORDS.
+      *C
+009500 ENVIRONMENT DIVISION.
+009600 CONFIGURATION SECTION.
+009700 SOURCE-COMPUTER.  HP-3000.
+009800 OBJECT-COMPUTER.  HP-3000.
+       COPY SPECIALN IN COPYLIB.
+009900
+010400 INPUT-OUTPUT SECTION.
+010500 FILE-CONTROL.
+           SELECT PRINT-FILE    ASSIGN TO PRINTER-MCPRT.
+           SELECT REPORT-FILE   ASSIGN TO DISK-MCFPRPT
+               FILE STATUS IS FILE-STATUS.
+           SELECT REPRINT-FILE  ASSIGN TO DISK-MCFPREPRT.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZPRTRPT-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DISPLAY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+
+011100 DATA DIVISION.
+011200 FILE SECTION.
+011300
+011400 FD PRINT-FILE
+011500     LABEL RECORDS ARE OMITTED
+011600     RECORD CONTAINS 132 CHARACTERS
+011700     DATA RECORD IS PRT-REC.
+011800 01  PRT-REC              PIC X(132).
+011900
+012600 FD  REPORT-FILE
+012700     LABEL RECORDS ARE OMITTED
+012800     RECORD CONTAINS 133 CHARACTERS
+012900     DATA RECORD IS REPORT-REC.
+013000 01  REPORT-REC.
+           05  CTL-X                      PIC X(1).
+013100     05  CTL REDEFINES CTL-X        PIC 9.
+013200     05  REPORT-LINE.
+013300         10  CTL-DATE               PIC X(6).
+               10  CTL-DIST-SW            PIC X.
+013400         10  FILLER                 PIC X(125).
+013500
+013600 FD  REPRINT-FILE
+013700     LABEL RECORDS ARE OMITTED
+013800     RECORD CONTAINS 80 CHARACTERS
+013900     DATA RECORD IS REPRINT-REC.
+014000 01  REPRINT-REC.
+           05  FILLER                    PIC X(12).
+014100     05  REPRINT-RNUM              PIC X(2).
+014200     05  REPRINT-RNAME             PIC X(35).
+014300     05  REPRINT-FNAME             PIC X(26).
+014400     05  FILLER                    PIC X(5).
+014600
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC        PIC X(2000).
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+014700 WORKING-STORAGE SECTION.
+       77  COMPRESS-FLAG           PIC X(1).
+015000 77  EOF                     PIC S9(9) BINARY VALUE ZEROS.
+015300 77  SUB                     PIC S9(4) BINARY VALUE 0.
+       77  FOUND-FLAG              PIC X(1).
+015700 77  END-OF-READ             PIC X(1)       VALUE "N".
+015800 77  FILE-EOF                PIC X(1).
+       77  END-RPT                 PIC X(1).
+015900 77  DATES-FLAG              PIC X(1)       VALUE "N".
+016000 77  TODAY-FLAG              PIC X(1)       VALUE "N".
+       77  HOLD-LDEV               PIC 9(2).
+       77  LAST-LDEV               PIC 9(2).
+       77  HOLD-DIST-SW            PIC X          VALUE "N".
+       77  PRINTER-OPEN-SW         PIC X          VALUE "N".
+
+       01  BEGIN-DATE-CN.
+           05  BEGIN-DATE-CC       PIC X(2).
+           05  BEGIN-DATE-YMD.
+               10  BEGIN-DATE-YY   PIC X(2).
+               10  BEGIN-DATE-MM   PIC X(2).
+               10  BEGIN-DATE-DD   PIC X(2).
+
+       01  END-DATE-CN.
+           05  END-DATE-CC         PIC X(2).
+           05  END-DATE-YMD.
+               10  END-DATE-YY     PIC X(2).
+               10  END-DATE-MM     PIC X(2).
+               10  END-DATE-DD     PIC X(2).
+
+       01  EARLIEST-DATE-CN.
+           05  EARLIEST-DATE-CC       PIC X(2).
+           05  EARLIEST-DATE-YMD.
+               10  EARLIEST-DATE-YY   PIC X(2).
+               10  EARLIEST-DATE-MM   PIC X(2).
+               10  EARLIEST-DATE-DD   PIC X(2).
+
+       01  HOLD-CTL-DATE-CN.
+           05  HOLD-CTL-DATE-CC       PIC X(2).
+           05  HOLD-CTL-DATE-YMD.
+               10  HOLD-CTL-DATE-YY   PIC X(2).
+               10  HOLD-CTL-DATE-MM   PIC X(2).
+               10  HOLD-CTL-DATE-DD   PIC X(2).
+
+       01  RPT-DIST-LINE.
+           05  RPT-ID                 PIC X(4).
+           05  RPT-KEY                PIC X(10).
+
+      *------- PARAMETERS FOR "SGETRPT" TO GET REPORT DISTRIBUTION
+      *------- INFORMATION.
+       01  SGETRPT-PARMS.
+           05  SGETRPT-PGM              PIC X(8).
+           05  SGETRPT-ID               PIC X(4).
+           05  SGETRPT-SW               PIC X.
+           05  SGETRPT-KEY              PIC X(10).
+           05  SGETRPT-PRINTER          PIC X(2).
+
+017400*************************************************************
+017500**                                                          **
+017600**          C O M M U N I C A T I O N S   A R E A S         **
+017700**                                                          **
+017800**************************************************************
+017900
+018000 COPY TSHWRDFM   IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY FUNCTDEF   IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+
+       01  JCW-PARMS.
+           05  JCW-NAME               PIC X(16).
+           05  JCW-VALUE.
+               10  JCW-VALUE-1-3.
+                   15  JCW-VALUE-1-2  PIC X(2).
+                   15  FILLER         PIC X(1).
+               10  JCW-VALUE-1-3N REDEFINES JCW-VALUE-1-3 PIC 9(3).
+               10  FILLER             PIC X(1).
+           05  JCW-YES-NO             PIC X(1).
+           05  JCW-STATUS             PIC 9(4).
+           05  JCW-STARTING-POS       PIC 9(4).
+           05  JCW-LENGTH             PIC 9(1).
+
+       COPY OVRPFDAT   IN COPYLIB.
+       COPY CCHKOBJ    IN COPYLIB.
+018100 COPY TDATECHK   IN COPYLIB.
+018200 COPY TBLOWUP    IN COPYLIB.
+
+       01  CONVERT-VALUE             PIC 9(4)  VALUE ZERO.
+
+019400****************************************
+019500*  COMPRESSION SEQ IS USED TO FIT      *
+019600*  A 132 CHARACTER REPORT ON 80        *
+019700*  CHARACTER WIDE PAPER USED ON MOST   *
+019800*  OF THE CHARACTER PRINTERS           *
+019900****************************************
+020000
+020100 COPY ESCNAM2   IN COPYLIB.
+020200
+020300 01  COMP-ESC-SEQ         PIC X(8).
+020400
+020500 01  STAND-ESC-SEQ        PIC X(8).
+020600
+022400*************************************************************
+022500**                                                         **
+022600**     C O M M A N D   I N T R I N S I C   W O R K         **
+022700**                                                         **
+022800*************************************************************
+022900
+       COPY COMMAND IN COPYLIB.
+       01  WORK-LINE           PIC X(80) VALUE SPACES.
+
+023700 01  FILE-PRNT1.
+023800     05  FILLER          PIC X(15) VALUE "FILE PRNT1;DEV=".
+023900     05  PRNT1-LDEV      PIC 9(4)  VALUE ZEROS.
+023910     05  FILLER          PIC X(3)  VALUE ",8,".
+023920     05  PRNT1-COPIES    PIC 99    VALUE 1.
+024000
+024100 01  FILE-STATEMENT.
+024200     05  FILLER         PIC X(14) VALUE "FILE REPORTFL=".
+024300     05  REPORT-FILE-ST PIC X(26).
+024400
+024500**************************************************************
+024600**                                                          **
+024700**                  V I E W   W O R K                       **
+024800**                                                          **
+024900**************************************************************
+025000
+025100 COPY VCOMAREA   IN COPYLIB.
+025200 01  MESSAGE-BUFFER.
+025300     05  MSG-TEXT.
+               10  MESSAGE-BUFFER-1        PIC X(1)  VALUE SPACES.
+               10  FILLER                  PIC X(67) VALUE SPACES.
+025400     05  MSG-FLD                     PIC X(8)  VALUE SPACES.
+025500     05  MSG-FLD-9 REDEFINES MSG-FLD PIC ZZZZZZZ9.
+025600
+025700 01  MSG-BUFFLEN          PIC S9(4)  BINARY VALUE 76.
+025800 01  MSG-ACTUALEN         PIC S9(4)  BINARY VALUE 76.
+025900
+026000 01  FORMFILE.
+026100     05  FORM-FNAME                PIC X(7)  VALUE "FPRTRPT".
+026200     05  FILLER                    PIC X     VALUE ".".
+026300     05  FORM-GNAME.
+026400         10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+026500         10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+026600     05  FILLER                    PIC X(19) VALUE SPACES.
+026700 01  FIELD-NUMBER         PIC S9(4) BINARY VALUE 1.
+026800
+026900**************************************************************
+027000**                                                          **
+027100**                 S C R E E N   D A T A                    **
+027200**                                                          **
+027300**************************************************************
+027400
+027500 01  DE-FIELDS.
+027600     05  DE-REPORT-AREA.
+027700         10  DE-REPORT-LINE OCCURS 10 TIMES.
+027800             15  DE-REPORT-NUM     PIC X(2).
+027900             15  DE-REPORT-NAME    PIC X(35).
+028000     05  DE-REPORT                 PIC 9(2).
+028100     05  DE-PRINTER                PIC X(3).
+028200     05  DE-BEGIN-DATE             PIC X(8).
+028300     05  DE-END-DATE               PIC X(8).
+           05  DE-COMMAND-LINE           PIC X(79).
+           05  DE-MESSAGE-LINE           PIC X(79).
+028400
+028500 01  HOLD-AREA.
+028600     05  HOLD-LINE OCCURS 10 TIMES.
+028700         10  HOLD-REPRINT-FILE     PIC X(26).
+028800
+028900**************************************************************
+029000**                                                          **
+029100**           D A T A B A S E   W O R K                      **
+029200**                                                          **
+029300**************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+029400
+029500 01  BASE                       PIC X(10) VALUE "  STORES;".
+029600 01  PASSWORD                   PIC X(5)  VALUE "JADE;".
+       COPY DBSTAT IN COPYLIB.
+030500 01  DB-DATASETS.
+030600     05  DSET-MPLTINFO       PIC X(16)  VALUE "MPLTINFO;".
+030700
+030800 01  ITEM-LISTS.
+030900     05  ALL-ITEM-LIST          PIC XX   VALUE "@;".
+031000
+031100 01  MODE-AREA.
+031200     05  MODE1                  PIC S9(4)   COMP       VALUE 1.
+031300     05  MODE7                  PIC S9(4)   COMP       VALUE 7.
+031400
+031500 01  PLT-ARG.
+031600     05  MPLTINFO-SPOOLTYP-KEY  PIC X(1)  VALUE "*".
+031700     05  MPLTINFO-PRT           PIC X(3).
+031800
+031900**************************************************************
+032000**                                                          **
+032100**           D A T A B A S E   B U F F E R S                **
+032200**                                                          **
+032300**************************************************************
+032400
+032500 01  BUF-MPLTINFO.
+032600     05  MPLTINFO-KEY             PIC X(4).
+032700     05  MPLTINFO-DATA            PIC X(60).
+032800     05  MPLTINFO-PRINTER REDEFINES MPLTINFO-DATA.
+032900         10  MPLTINFO-JSPOOLER    PIC X(2).
+033000         10  MPLTINFO-JSPOOL-TYPE PIC X(2).
+033100         10  FILLER               PIC X(56).
+033200
+033300 COPY LANGUAGE   IN COPYLIB.
+033400
+033500 PROCEDURE DIVISION.
+033600
+033700 1000-HOUSEKEEP.
+033800
+033900     CALL "TESCSEQ" USING ESC-NAME.
+034000     MOVE CHAR-1636PI TO COMP-ESC-SEQ.
+034100     MOVE CHAR-10PI   TO STAND-ESC-SEQ.
+034200
+034300     PERFORM 1000-HSK THRU 1990-HSK-X.
+034500     PERFORM 6000-MAIN THRU 6990-MAIN-X.
+           PERFORM 2000-EOJ THRU 2090-EOJ-X.
+035200     GOBACK.
+035300
+035400 1000-HSK.
+
+      *------ THIS JCW TELLS WHERE TO PRINT
+           MOVE "PRTNUM;         "  TO JCW-NAME.
+           MOVE 292                 TO JCW-STARTING-POS.
+           MOVE 3                   TO JCW-LENGTH.
+           CALL "CFINDJCW" USING JCW-PARMS.
+               IF JCW-VALUE-1-3 NUMERIC
+                   MOVE JCW-VALUE-1-3N TO  PRNT1-LDEV
+               ELSE
+                   MOVE 6              TO  PRNT1-LDEV.
+
+           MOVE PRNT1-LDEV             TO  HOLD-LDEV
+                                           LAST-LDEV.
+
+040200*-------- GET THE JCW COMPRESS FLAG: TELLS US WHETHER TO
+040300*-------- COMPRESS THE OUTPUT.
+           MOVE "COMPRESS;       "  TO JCW-NAME.
+           MOVE 295                 TO JCW-STARTING-POS.
+           MOVE 1                   TO JCW-LENGTH.
+           CALL "CFINDJCW" USING JCW-PARMS.
+           MOVE JCW-YES-NO          TO COMPRESS-FLAG.
+
+041910*-------- GET THE JCW "COPIES".  IF IT DOESN'T EXIST, DEFAULT
+041911*-------- TO 1 COPY FOR PRINTOUTS.
+           MOVE "COPIES;         "  TO JCW-NAME.
+           MOVE 296                 TO JCW-STARTING-POS.
+           MOVE 2                   TO JCW-LENGTH.
+           CALL "CFINDJCW" USING JCW-PARMS.
+           IF JCW-VALUE-1-2 NUMERIC
+               MOVE JCW-VALUE-1-2 TO CONVERT-VALUE
+               MOVE CONVERT-VALUE TO PRNT1-COPIES
+           ELSE
+               MOVE 1 TO PRNT1-COPIES.
+
+042000**********
+042100*** GET THE JCW "RDATES".  IF THIS JCW EXISTS AND IS = TO 1,
+042200*** THEN WE INPUT A RANGE OF DATES FROM THE USER TO
+042300*** BE REPRINTED (USING "VIEW"), OTHERWISE WE REPRINT
+042400*** THE ENTIRE FILE.
+042500**********
+           MOVE "RDATES;         "  TO JCW-NAME.
+           MOVE 298                 TO JCW-STARTING-POS.
+           MOVE 1                   TO JCW-LENGTH.
+           CALL "CFINDJCW" USING JCW-PARMS.
+           MOVE JCW-YES-NO TO DATES-FLAG.
+043600
+043700**********
+043800*** GET THE JCW "TODAY" - ONLY IF "RDATES" NOT SPECIFIED.
+043900*** THIS IS FOR A BATCH REPORT (NO SCREEN), WHICH DOES HAVE THE
+044000*** DATE CONTROL RECORDS.  IN THIS CASE, IF "TODAY" IS SET,
+044100*** ALL REPORTS IN THE FILE PRIOR TO TODAY WILL BE SKIPPED.
+044200**********
+           MOVE "N"                     TO TODAY-FLAG.
+044300     IF DATES-FLAG = "N"
+               MOVE "TODAY;          "  TO JCW-NAME
+               MOVE 299                 TO JCW-STARTING-POS
+               MOVE 1                   TO JCW-LENGTH
+               CALL "CFINDJCW" USING JCW-PARMS
+               MOVE JCW-YES-NO             TO TODAY-FLAG.
+
+           PERFORM 9999-OPEN-STUFF.
+045400
+045500**********
+045600*** IF DATES JCW IS SET, INPUT DATA FROM THE USER.  SINCE THE
+045700*** FILE TO REPRINT FROM IS INPUT IN THIS CASE FROM THE USER,
+045800*** THE ORDER OF LOGIC MUST BE:
+045900***   1.  READ SCREEN
+046000***       a.  DETERMINE FILE TO REPRINT FROM
+046100***       b.  OPEN, DETERMINE BEGINNING DATE, AND CLOSE FILE
+046200***       c.  EDIT BEGINNING DATE ENTERED BY USER
+046300***   2.  GET EOF OF FILE USING FILEINFO, AND OPEN FILE
+046400***   3.  SKIP PARTIAL DATES
+046500***   4.  SKIP TO BEGIN DATE
+046600**********
+046700     IF DATES-FLAG = "Y"
+046800         PERFORM 7000-READ-DATES THRU 7990-RD-X.
+047100
+052400     OPEN INPUT REPORT-FILE.
+           IF FILE-STATUS NOT = "00"
+               MOVE "ERROR OPENING REPORT-FILE, STATUS IS..."
+                  TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS TO BU-DISPLAY-FLD (1)
+               PERFORM 2100-BLOWUP.
+
+      *--------- IF CTL-DIST-SW = "Y" THEN WE ARE DISTRIBUTING THIS
+      *--------- REPORT BY DEPARTMENT.
+      *--------- IF WE ARE DISTRIBUTING THIS REPORT BY DEPARTMENT,
+      *--------- MAKE SURE THAT THE REPORT FILE CONTAINS MORE THAN
+      *--------- JUST THIS CONTROL RECORD.  (IN OTHER WORDS, VERIFY
+      *--------- THAT THERE IS A SECOND RECORD IN THE REPORT FILE.)
+           READ REPORT-FILE
+               AT END MOVE "Y"      TO  FILE-EOF.
+           IF FILE-EOF NOT = "Y"
+               MOVE CTL-DIST-SW     TO  HOLD-DIST-SW
+               IF HOLD-DIST-SW = "Y"
+                   READ REPORT-FILE
+                       AT END
+                           CLOSE REPORT-FILE
+                           DISPLAY "********************************"
+                           DISPLAY "THERE ARE NO REPORT RECORDS"
+                           DISPLAY "TO BE DISTRIBUTED BY DEPARTMENT."
+                           DISPLAY "THIS PROGRAM WILL NOW END."
+                           DISPLAY "********************************"
+                           GOBACK
+                   END-READ.
+
+
+           MOVE "N"              TO  FILE-EOF.
+           CLOSE REPORT-FILE.
+
+           OPEN INPUT REPORT-FILE.
+           IF FILE-STATUS NOT = "00"
+               MOVE "2: ERROR OPENING REPORT-FILE, STATUS IS..."
+                  TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS TO BU-DISPLAY-FLD (1)
+               PERFORM 2100-BLOWUP.
+
+052500
+052600**********
+052700** IF TODAY'S REPORT ONLY IS USED IN BATCH MODE, WILL BE JUST
+052800** AS IF USER HAD SELECTED TODAY'S DATE AS BEGINNING DATE AND
+052900** ENDING DATE IN THE RANGE
+053000**********
+053100
+053200     IF TODAY-FLAG = "Y"
+053300         MOVE 1                    TO  DATE-MODE
+053400         CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+053500         MOVE DATE-YMD-OUT         TO  BEGIN-DATE-YMD
+                                             END-DATE-YMD
+               IF BEGIN-DATE-YY > "70"
+                   MOVE "19"             TO  BEGIN-DATE-CC
+               ELSE
+                   MOVE "20"             TO  BEGIN-DATE-CC
+               END-IF
+               IF END-DATE-YY > "70"
+                   MOVE "19"             TO  END-DATE-CC
+               ELSE
+                   MOVE "20"             TO  END-DATE-CC.
+               DISPLAY "BEGIN-DATE-CN:  " BEGIN-DATE-CN.
+               DISPLAY "END-DATE-CN:    " END-DATE-CN.
+053600
+053700**********
+053800*** IF THE RANGE OF DATES OPTION WAS CHOSEN, SKIP BY
+053900*** ANY PARTIAL DAYS REPORT IN THE FILE (READ UP TO FIRST
+054000*** "*" CONTROL RECORD).  THIS ALSO FINDS THE EARLIEST REPORT
+054100*** DATE IN THE FILE - THE USER WILL NOT BE ALLOWED TO ENTER
+054200*** A DATE EARLIER THAN THE FIRST REPORT DATE.
+054300**********
+054400     IF DATES-FLAG = "Y" OR TODAY-FLAG = "Y"
+               PERFORM 8000-SKIP-PARTIAL-DATES
+054700         IF FILE-EOF = "Y"
+054800             DISPLAY
+054900             "NOTHING IN REPORT FILE - NO REPRINT WILL BE DONE"
+055000             GOBACK.
+           DISPLAY "EARLIEST-DATE-CN:  " EARLIEST-DATE-CN.
+055100
+055200**********
+055300*** IF THE RANGE OF DATES OPTION WAS CHOSEN, SKIP BY ANY
+055400*** REPORTS IN THE REPORT FILE WITH A DATE LESS THAN THE
+055500*** USER-SPECIFIED BEGINNING DATE.
+055600**********
+055700     IF DATES-FLAG = "Y" OR TODAY-FLAG = "Y"
+055800         IF BEGIN-DATE-CN > EARLIEST-DATE-CN
+055900             MOVE "N"              TO  END-OF-READ
+056000             PERFORM UNTIL END-OF-READ = "Y" OR FILE-EOF = "Y"
+056100                 READ REPORT-FILE AT END
+                           MOVE "Y"      TO  FILE-EOF
+                       END-READ
+                       IF CTL-X = "*"
+                           PERFORM 1900-FORMAT-DATE
+                           IF HOLD-CTL-DATE-CN >= BEGIN-DATE-CN
+                               MOVE "Y"      TO END-OF-READ
+                           END-IF
+                       END-IF
+                   END-PERFORM
+056200             IF FILE-EOF = "Y"
+056300                 DISPLAY "*NOTHING TO REPRINT IN RANGE SPECIFIED*"
+056500                 DISPLAY "BEGIN-DATE-CN =    ", BEGIN-DATE-CN
+056600                 DISPLAY "END-DATE-CN =      ", END-DATE-CN
+056700                 DISPLAY "EARLIEST-DATE-CN = ", EARLIEST-DATE-CN
+056800                 GOBACK.
+056900
+057000 1990-HSK-X.
+057100     EXIT.
+057200
+       1900-FORMAT-DATE.
+           IF CTL-DATE NOT NUMERIC
+               MOVE SPACES       TO  HOLD-CTL-DATE-CN
+           ELSE
+               MOVE CTL-DATE     TO  HOLD-CTL-DATE-YMD
+               IF HOLD-CTL-DATE-YY > "70"
+                   MOVE "19" TO HOLD-CTL-DATE-CC
+               ELSE
+                   MOVE "20" TO HOLD-CTL-DATE-CC.
+
+057300 2000-EOJ.
+057400     CLOSE REPORT-FILE.
+           PERFORM 9999-CLOSE-STUFF.
+057600
+057700 2090-EOJ-X.
+057800     EXIT.
+057900
+058700 2100-BLOWUP.
+058800     MOVE "TPRTRPT"                TO  BU-PGM-NAME.
+058900     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+059000       VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+059100       BU-DISPLAY-FLDS.
+059200
+059300 6000-MAIN.
+061200     MOVE FILE-PRNT1  TO  COMMAND.
+      *-------- DON'T PERFORM FIRST OVERRIDE IF WE ARE DISTRIBUTING
+      *-------- THIS REPORT BY DEPARTMENT.
+           IF HOLD-DIST-SW NOT = "Y"
+               PERFORM 9999-OVERRIDE-PRNT1
+062100         OPEN OUTPUT PRINT-FILE
+               MOVE "Y"   TO  PRINTER-OPEN-SW
+
+062500         IF COMPRESS-FLAG = "N"
+                   MOVE CHAR-10PI TO PRT-REC
+                   WRITE PRT-REC AFTER ADVANCING 0
+062700         ELSE
+062800             MOVE COMP-ESC-SEQ         TO  PRT-REC
+062900             WRITE PRT-REC AFTER ADVANCING 0.
+063000
+070000**********
+070100*** IF DATE SELECTION IS USED, END THE REPORT WHEN THE REPORT
+070200*** DATE IS GREATER THAN USER-SELECTED ENDING DATE.
+070300*** ALSO, DONT PRINT THE DATE CONTROL RECORD.
+070400**********
+           MOVE "N" TO END-RPT.
+           PERFORM UNTIL END-RPT = "Y"
+               READ REPORT-FILE AT END
+                   MOVE "Y" TO END-RPT
+               END-READ
+               IF CTL-X = "*" OR CTL-X NUMERIC OR CTL-X = "D"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "1" TO CTL-X
+               END-IF
+               IF CTL-X = "*" AND DATES-FLAG = "Y"
+                   PERFORM 1900-FORMAT-DATE
+                   IF  HOLD-CTL-DATE-CN > END-DATE-CN
+                       MOVE "Y" TO END-RPT
+                   END-IF
+               END-IF
+               IF CTL-X = "D"
+                   PERFORM 6001-OVERRIDE-PRINTER
+               END-IF
+               IF CTL-X = "*" OR END-RPT = "Y" OR CTL-X = "D"
+                   CONTINUE
+               ELSE
+                   IF PRINTER-OPEN-SW NOT = "Y"
+                       OPEN OUTPUT PRINT-FILE
+                       MOVE "Y"     TO PRINTER-OPEN-SW
+                   END-IF
+                   MOVE REPORT-LINE TO PRT-REC
+                   IF CTL-X = "0"
+                       WRITE PRT-REC AFTER ADVANCING NEW-PAGE
+                   ELSE
+                       WRITE PRT-REC AFTER ADVANCING CTL
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+063200     MOVE STAND-ESC-SEQ  TO  PRT-REC.
+063300     WRITE PRT-REC AFTER ADVANCING 0.
+063400     CLOSE PRINT-FILE.
+063500
+       6990-MAIN-X.
+           EXIT.
+
+       6001-OVERRIDE-PRINTER.
+           MOVE REPORT-LINE              TO  RPT-DIST-LINE.
+           MOVE RPT-ID                   TO  SGETRPT-ID.
+           MOVE RPT-KEY                  TO  SGETRPT-KEY.
+           CALL "SGETRPT" USING SGETRPT-PARMS.
+           IF SGETRPT-PRINTER NOT = LAST-LDEV OR PRINTER-OPEN-SW = "N"
+               IF PRINTER-OPEN-SW = "Y"
+                   CLOSE PRINT-FILE
+               END-IF
+               IF SGETRPT-PRINTER = SPACES
+                   MOVE HOLD-LDEV        TO  OVRPRTF-TOFILE-NUM
+                                             LAST-LDEV
+               ELSE
+                   MOVE SGETRPT-PRINTER  TO  OVRPRTF-TOFILE-NUM
+                                             LAST-LDEV
+               END-IF
+               PERFORM 996-OVERRIDE-PRINT-FILE
+               OPEN OUTPUT PRINT-FILE
+               MOVE "Y"                  TO  PRINTER-OPEN-SW
+               IF COMPRESS-FLAG = "N"
+                   MOVE CHAR-10PI TO PRT-REC
+                   WRITE PRT-REC AFTER ADVANCING 0
+               ELSE
+                   MOVE COMP-ESC-SEQ         TO  PRT-REC
+                   WRITE PRT-REC AFTER ADVANCING 0.
+
+073100**************************************************************
+073300**    THIS SECTION WILL INPUT A RANGE OF DATES TO APPEAR    **
+073400**    ON THE REPRINT FROM THE USER.  IT WILL BE DONE ONLY   **
+073500**    IF THE JCW "RDATES" EXISTS AND IS SET TO 1.           **
+073700**************************************************************
+073900 7000-READ-DATES.
+074000     OPEN INPUT REPRINT-FILE.
+074100     MOVE SPACES                   TO  DE-FIELDS.
+074200 7010-REPRINT-FILE-LOOP.
+074300     READ REPRINT-FILE AT END
+074400         GO TO 7020-OPEN-VIEW.
+074500     ADD 1                         TO  SUB.
+074600     IF SUB > 10
+074700         GO TO 7020-OPEN-VIEW.
+074800     MOVE REPRINT-RNUM             TO  DE-REPORT-NUM (SUB).
+074900     MOVE REPRINT-RNAME            TO  DE-REPORT-NAME (SUB).
+075000     MOVE REPRINT-FNAME            TO  HOLD-REPRINT-FILE (SUB).
+075100
+075200     GO TO 7010-REPRINT-FILE-LOOP.
+075300
+075400 7020-OPEN-VIEW.
+           PERFORM 9999-OPEN-VIEW.
+           MOVE "FPRTRPT1" TO VIEW-NFNAME.
+           PERFORM 9951-GETNEXTFORM.
+079700
+079800 7100-SHOWFORM.
+079900**********
+080000*** TSHWRDF2 WILL DO A "BEHIND THE BACK" DATABASE OPEN ON
+080100*** THE FIRST CALL, AND HANDLE SCREEN PRINT, FLOP SCREEN, ETC.
+080200*** THE KEY " AFE" FOR FUNCTION KEY 1 TELLS TSHWRDF2 TO
+080300*** DO AN AUTO READ, FALL THRU, AND DO A FIELD EDITS ON
+080400*** AN f1 OR f2.  f1 IS USED TO PRINT ONLY TODAYS REPORT,
+080500*** AND f2 IS USED TO PRINT ENTIRE FILE.
+080600**********
+080700     MOVE "Y"                      TO   SRF-BASE-FLAG.
+080800     MOVE " AFE"                   TO   SRF-FKEY (1),
+080900                                        SRF-FKEY (2).
+081000     MOVE 2                        TO   SRF-MODE.
+081100     MOVE 5                        TO   SRF-KEYSET.
+081200     MOVE "I"                      TO   SRF-FKEY (7).
+           MOVE ZERO TO DE-REPORT.
+           MOVE PRNT1-LDEV TO DE-PRINTER.
+       7110-SHOWFORM.
+           PERFORM 9953-PUTBUFFER.
+           PERFORM 998-WRITE-SCREEN THRU 9989-WS-X.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               PERFORM 9954-SETERROR
+               GO TO 7110-SHOWFORM.
+
+082100     IF VIEW-LASTKEY = 3
+082200         PERFORM 7200-CLOSE-VIEW
+082300         GOBACK
+082400     ELSE
+082500     IF VIEW-LASTKEY = 1
+082600         MOVE 1                    TO  DATE-MODE
+082700         CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+082800
+           PERFORM 9952-GETBUFFER.
+083500
+           MOVE "N" TO FOUND-FLAG.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 10
+           OR FOUND-FLAG = "Y"
+               IF DE-REPORT-NUM (SUB) = DE-REPORT
+                   MOVE "Y" TO FOUND-FLAG
+               END-IF
+           END-PERFORM.
+           IF FOUND-FLAG = "N"
+               MOVE 35 TO LANG-SETNUM
+               MOVE 105 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 24 TO FIELD-NUMBER
+               PERFORM 9954-SETERROR
+               GO TO 7110-SHOWFORM.
+
+083600     MOVE HOLD-REPRINT-FILE (DE-REPORT) TO  REPORT-FILE-ST.
+083700     MOVE FILE-STATEMENT           TO  COMMAND.
+           PERFORM 9999-OVERRIDE-RPT-FILE.
+084500
+084600     OPEN INPUT REPORT-FILE.
+084700     MOVE "N"                      TO  END-OF-READ, FILE-EOF.
+084800     PERFORM 8000-SKIP-PARTIAL-DATES.
+085000     IF FILE-EOF = "Y"
+085100         CLOSE REPORT-FILE
+085200         MOVE  14 TO LANG-SETNUM
+085300         MOVE  56 TO LANG-MSGNUM
+085400         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+085500         MOVE MESSAGE-BUFFER TO MSG-TEXT
+085600         MOVE HOLD-REPRINT-FILE (DE-REPORT) TO MSG-FLD
+085700         MOVE 24                   TO  FIELD-NUMBER
+085800         PERFORM 9954-SETERROR
+085900         GO TO 7110-SHOWFORM.
+086000     CLOSE REPORT-FILE.
+086100
+086200     IF VIEW-LASTKEY = 1
+086300         MOVE DATE-SLASH-OUT       TO  DE-END-DATE,
+086400                                       DE-BEGIN-DATE.
+086500
+086600     IF VIEW-LASTKEY = 2
+086700         MOVE 4                    TO  DATE-MODE
+086800         MOVE EARLIEST-DATE-YMD    TO  DATE-VALIDATE-IN
+086900         CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+087000         MOVE DATE-SLASH-OUT       TO  DE-BEGIN-DATE
+087100         MOVE "12/31/50"           TO  DE-END-DATE.
+087200
+087300     MOVE 3                        TO  DATE-MODE.
+087400     MOVE DE-BEGIN-DATE            TO  DATE-VALIDATE-IN.
+087500     CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+087600     IF DATE-RET-CODE NOT = 0
+087700         MOVE DATE-MSG             TO  MESSAGE-BUFFER
+087800         MOVE 1                    TO  FIELD-NUMBER
+087900         PERFORM 9954-SETERROR
+088000         GO TO 7110-SHOWFORM.
+088100
+088200     MOVE DATE-YMD-OUT             TO  BEGIN-DATE-YMD.
+           IF BEGIN-DATE-YY > "70"
+               MOVE "19"                 TO  BEGIN-DATE-CC
+           ELSE
+               MOVE "20"                 TO  BEGIN-DATE-CC.
+088300
+088400     MOVE DE-END-DATE              TO  DATE-VALIDATE-IN.
+088500     CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+088600     IF DATE-RET-CODE NOT = 0
+088700         MOVE DATE-MSG             TO  MESSAGE-BUFFER
+088800         MOVE 2                    TO  FIELD-NUMBER
+088900         PERFORM 9954-SETERROR
+089000         GO TO 7110-SHOWFORM.
+089100
+089200     MOVE DATE-YMD-OUT             TO  END-DATE-YMD.
+           IF END-DATE-YY > "70"
+               MOVE "19"                 TO  END-DATE-CC
+           ELSE
+               MOVE "20"                 TO  END-DATE-CC.
+089300
+089400     IF END-DATE-CN < BEGIN-DATE-CN
+089500         MOVE   2 TO LANG-SETNUM
+089600         MOVE   8 TO LANG-MSGNUM
+089700         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+089800         MOVE 1                    TO  FIELD-NUMBER
+089900         PERFORM 9954-SETERROR
+090000         GO TO 7110-SHOWFORM.
+090100
+090200     IF BEGIN-DATE-CN < EARLIEST-DATE-CN
+090300         MOVE   5 TO LANG-SETNUM
+090400         MOVE  21 TO LANG-MSGNUM
+090500         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+090600         MOVE MESSAGE-BUFFER TO MSG-TEXT
+090700         MOVE 4                    TO  DATE-MODE
+090800         MOVE EARLIEST-DATE-YMD    TO  DATE-VALIDATE-IN
+090900         CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+091000         MOVE DATE-SLASH-OUT       TO  MSG-FLD
+091100         MOVE 1                                   TO  FIELD-NUMBER
+091200         PERFORM 9954-SETERROR
+091300         GO TO 7110-SHOWFORM.
+091400
+           MOVE DE-PRINTER               TO  PRNT1-LDEV.
+           DISPLAY "BEGIN-DATE-CN =    ", BEGIN-DATE-CN.
+           DISPLAY "END-DATE-CN =      ", END-DATE-CN.
+           DISPLAY "EARLIEST-DATE-CN = ", EARLIEST-DATE-CN.
+094300
+094400 7200-CLOSE-VIEW.
+           PERFORM 9999-CLOSE-VIEW.
+094800 7990-RD-X.
+094900     EXIT.
+095000
+       8000-SKIP-PARTIAL-DATES.
+           PERFORM UNTIL END-OF-READ = "Y" OR FILE-EOF = "Y"
+               READ REPORT-FILE AT END
+                   MOVE "Y"        TO FILE-EOF
+               END-READ
+               IF CTL-X = "*"
+                   PERFORM 8010-FORMAT-DATE
+                   IF EARLIEST-DATE-CN > SPACES
+                       MOVE "Y"    TO END-OF-READ
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+       8010-FORMAT-DATE.
+           IF CTL-DATE NOT NUMERIC
+               MOVE SPACES       TO  EARLIEST-DATE-CN
+           ELSE
+               MOVE CTL-DATE     TO  EARLIEST-DATE-YMD
+               IF EARLIEST-DATE-YY > "70"
+                   MOVE "19" TO EARLIEST-DATE-CC
+               ELSE
+                   MOVE "20" TO EARLIEST-DATE-CC.
+
+       COPY OVRPFCAL IN COPYLIB.
+       COPY DISPCALL IN COPYLIB.
+       COPY DISPCAL2 IN COPYLIB.
+       COPY HCATREAD IN COPYLIB.
+
+       9930-LOCK.
+       9940-UNLOCK.
+       9951-GETNEXTFORM.
+       9952-GETBUFFER.
+           MOVE DISPLAY-REC TO DE-FIELDS.
+
+       9953-PUTBUFFER.
+           MOVE SPACES TO DISPLAY-REC.
+           MOVE DE-FIELDS TO DISPLAY-REC.
+
+       9954-SETERROR.
+           MOVE B"1" TO IND (99).
+           MOVE B"1" TO IND (FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER TO DE-MESSAGE-LINE.
+
+       9955-CLEAR-FORM.
+           MOVE SPACES TO DE-FIELDS, MESSAGE-BUFFER.
+
+       9956-PUTWINDOW.
+       9957-FIELDEDITS.
+       9958-INITFORM.
+       9959-SHOWFORM.
+       9960-SETKEYLABEL.
+       9961-AUTOREAD.
+       9962-OPENFORM.
+       9963-CLOSEFORM.
+       9964-FINISHFORM.
+
+       9999-OPEN-VIEW.
+       9999-CLOSE-VIEW.
+       9999-OVERRIDE-RPT-FILE.
+           MOVE SPACES TO WORK-LINE.
+           STRING "OVRDBF FILE(MCFPRPT) TOFILE(" DELIMITED BY SIZE,
+              REPORT-FILE-ST DELIMITED BY SPACES,
+              ")" DELIMITED BY SIZE
+            INTO WORK-LINE.
+           MOVE WORK-LINE TO COMMAND-WORK.
+           CALL "QCMDEXC" USING COMMAND-WORK, COMMAND-LEN.
+
+       9999-OVERRIDE-PRNT1.
+           MOVE PRNT1-LDEV TO OVRPRTF-TOFILE-NUM.
+           MOVE PRNT1-COPIES TO OVRPRTF-COPIES.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+
+       9999-DBGET7-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET7 ERR 9999-DBGET7-MPLTINFO-PK-I"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP.
+
+       9999-OPEN-STUFF.
+           IF DATES-FLAG = "Y"
+               OPEN I-O DISPLAY-FILE.
+           OPEN INPUT MPLTINFO-PK-I                              .
+
+       9999-CLOSE-STUFF.
+           IF DATES-FLAG = "Y"
+               CLOSE DISPLAY-FILE.
+           CLOSE      MPLTINFO-PK-I                              .

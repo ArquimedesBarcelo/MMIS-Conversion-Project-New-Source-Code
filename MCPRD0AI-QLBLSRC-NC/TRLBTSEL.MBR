@@ -1,0 +1,1339 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    TRLBTSEL.
+000400 AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+000600
+000700**************************************************************
+000800*                                                            *
+000900*   T R L B T S E L   THIS PROGRAM LAUNCHES THE JOB THAT     *
+001000*     PROCESSES THE BATCH SHIPPING RELEASE FILE (DSHIPREL).  *
+001100*     THIS PROGRAM GIVES THE USER 3 OPTIONS BY WHICH TO      *
+001200*     PROCESS THE BATCH FILE.  BASED ON THE SELECTION IT     *
+001300*     BUILDS THE JOB STREAM (BXRLCRTE) TO DENOTE THE         *
+001400*     SELECTION MADE.  THIS PROGRAM CAN ALSO BE USED TO      *
+001500*     BROWSE THE BATCH FILE WITHOUT LAUNCHING THE JOB        *
+001600*     STREAM "BXRLCRTE"                                      *
+001700*                                                            *
+001800**************************************************************
+001900*                                                            *
+002000*   TO BUILD THE TEMPORARY JOB STREAM "BXRLCRTE" THIS        *
+002100*   PROGRAM USES 2 PERMANENT PARTIAL JOB STREAMS.            *
+002200*     1) BXRLTOP     - USED TO FORM THE TOP OF THE JOB       *
+002300*        'BXRLCRTE'     PRIOR TO THE USER CHOSEN SELECTIONS  *
+002400*     2) BXRLBOT     - USED TO FORM THE BOTTON OF THE JOB    *
+002500*        STREAM AFTER THE USER CHOSEN SELECTIONS HAVE BEEN   *
+002600*        WRITE TO THE JOB STREAM 'BXRLCRTE'.                 *
+002700*                                                            *
+002800**************************************************************
+      *C
+      *C  SEPT 16, 1996     CA YODER
+      *C    MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.
+      *C
+      *C  SEPT 10, 1997     CA YODER
+      *C    CHANGED THE WAY SHIPPING RELEASES ARE SELECTED FROM THE
+      *C    BATCH FILE TO BE PROCESSED.  IN ADDITION TO BEING ABLE TO
+      *C    KEY IN REQUIREMENT ORDERS TO INCLUDE, THE ABILITY TO MARK
+      *C    REQUIREMENT ORDERS WITH AN "X" WAS ADDED.  THE ABILITY TO
+      *C    SPECIFY EXCLUDED REQUIREMENT ORDERS WAS REMOVED.
+      *C
+      *C  10/27/1997        CA YODER
+      *C    RE-COMPILED PROGRAM TO PICK UP NOTIFY USER-ID IN DSHIPREL.
+      *C    ALSO INCREASED LENGTH OF BATCHFILE FROM 96 TO 106.
+      *C
+      *C   9/17/98   CA YODER
+      *C   ADDED LOGIC TO PROCESS NEW DESCRIPTION LINE "99"
+      *C   WHICH CONTAINS ALL 12 STANDARD INSTRUCTIONS FROM THE
+      *C   BLANKET ORDER.  THESE RECORDS WILL BE IGNORED WHEN
+      *C   DISPLAYING SHIPPING RELEASES ON THE SELECTION SCREEN.
+      *C
+      *C   3/7/2001   CA YODER   (LAWTON REQUEST)
+      *C   ADDED "EXCLUDE" OPTION BACK INTO LIST OF OPTIONS TO
+      *C   SELECT REQUIREMENT ORDERS TO BE PROCESSED.
+      *C
+      *C   MAY 2001   JE COFFMAN
+      *C   ADDED CHECK FOR JCW SET VIA CLPS2 OR CLPS2X TO TELL
+      *C   US WHETHER THE USER IS PROCESSING NORMAL PS2 RELEASES
+      *C   OR HELD PS2 RELEASES.
+      *C
+002900
+004800
+004900
+005000
+005100 ENVIRONMENT DIVISION.
+005200 CONFIGURATION SECTION.
+005300 SOURCE-COMPUTER.  HP-3000.
+005400 OBJECT-COMPUTER.  HP-3000.
+
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+005500
+005600 INPUT-OUTPUT SECTION.
+005700 FILE-CONTROL.
+005800     SELECT BATCH-FILE-SORTED ASSIGN TO DISK-BATCFILE.
+      *        ORGANIZATION IS RELATIVE
+005900*        ACCESS MODE IS DYNAMIC
+006000*        RELATIVE KEY IS ACT-KEY
+      *        FILE STATUS IS FILE-STATUS.
+006100     SELECT SORT-FILE ASSIGN TO DISK-SORT.
+006200     SELECT RELEASE-CREATE-BEGIN-FILE ASSIGN TO DISK-MCXRLTOP.
+006300     SELECT RELEASE-CREATE-END-FILE ASSIGN TO DISK-MCXRLBOT.
+006400     SELECT RELEASE-CREATE-JOB-FILE ASSIGN TO DISK-MCXRELCRTE.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZRLBTSEL-SI
+                  ORGANIZATION IS TRANSACTION
+      ****        ACCESS IS SEQUENTIAL
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS RELATIVE-RECNO
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DSHIPREL-I
+                  ASSIGN TO DATABASE-MCFLCS2901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+006500
+006600 DATA DIVISION.
+006700 FILE SECTION.
+006800 FD  BATCH-FILE-SORTED
+006900     RECORD CONTAINS 106 CHARACTERS
+007000     LABEL RECORD IS OMITTED
+007100     DATA RECORD IS BATCH-FILE-SORTED-RCD.
+007200 01  BATCH-FILE-SORTED-RCD.
+007300     05  REQ-ORDER-SORTED         PIC X(7).
+007400     05  ITEM-SORTED              PIC X(4).
+007500     05  ITEM-SEQ-NO-SORTED       PIC X(2).
+007600     05  CODE-SORTED              PIC X(7).
+007700     05  ITEM-INFO-SORTED.
+007800         10  QTY-SORTED           PIC S9(8)V9(4).
+007900         10  SHIP-DATE-SORTED     PIC X(6).
+008000         10  SUBD-SORTED          PIC X(4).
+008100         10  ADDTL-DATA-SORTED    PIC X(6).
+008200         10  TAX-MSG-SORTED       PIC X(2).
+008300         10  STD-INST-SORTED      PIC X(9).
+008400         10  REQ-NO-SORTED        PIC X(12).
+008500         10  SUB-SORTED           PIC X(3).
+008600         10  EXPECT-DATE-SORTED   PIC X(6).
+               10  COMPANY-SORTED       PIC X(3).
+               10  PRIME-SORTED         PIC X(3).
+008700         10  FILLER               PIC X(4).
+008800     05  ITEM-DESC-SORT  REDEFINES  ITEM-INFO-SORTED
+008900                                  PIC X(70).
+           05  CHAT-NO-SORTED           PIC X(6).
+           05  ITEM-NOTIFY-USERID       PIC X(10).
+009000
+009100 SD  SORT-FILE
+009200     RECORD CONTAINS 106 CHARACTERS.
+009300 01  SORT-RCD.
+009400     05  SORT-REQ-ORDER           PIC X(7).
+009500     05  SORT-ITEM                PIC X(4).
+009600     05  SORT-ITEM-SEQ-NO         PIC X(2).
+009700     05  SORT-CODE                PIC X(7).
+009800     05  SORT-ITEM-DATA           PIC X(70).
+           05  SORT-CHAT-NO             PIC X(6).
+           05  SORT-NOTIFY-USERID       PIC X(10).
+009900
+010000 FD  RELEASE-CREATE-BEGIN-FILE
+010100     RECORD CONTAINS 80 CHARACTERS
+010200     DATA RECORD IS RELEASE-CREATE-BEGIN-RCD.
+010300 01  RELEASE-CREATE-BEGIN-RCD.
+010400     05  FILLER                   PIC X(80).
+010500
+010600 FD  RELEASE-CREATE-END-FILE
+010700     RECORD CONTAINS 80 CHARACTERS
+010800     DATA RECORD IS RELEASE-CREATE-END-RCD.
+010900 01  RELEASE-CREATE-END-RCD.
+011000     05  FILLER                    PIC X(80).
+011100
+011200 FD  RELEASE-CREATE-JOB-FILE
+011300     RECORD CONTAINS 80 CHARACTERS
+011400     DATA RECORD IS RELEASE-CREATE-JOB-RCD.
+011500 01  RELEASE-CREATE-JOB-RCD.
+           05  FILLER                     PIC X(12).
+011600     05  RELEASE-NUM-ENTRY          PIC X(7).
+           05  RELEASE-PROC-OPT           PIC X(2).
+011700     05  FILLER                     PIC X(59).
+011800
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC             PIC X(2000).
+      *    COPY DDS-ALL-FORMATS OF ZRLBTSEL.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DSHIPREL-I
+           LABEL RECORDS ARE STANDARD.
+       01  DSHIPREL-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2901.
+
+011900
+012000 WORKING-STORAGE SECTION.
+012100 77  COMP-SCREEN-INDIC       PIC X(3)    VALUE SPACES.
+012200 77  ACT-KEY                 PIC 9(9)  VALUE ZEROS.
+       77  SAVE-PCPO-SW            PIC X.
+012300 77  SUB                     PIC S9(4)  VALUE ZEROS COMP-4.
+       77  SAVE-ORDER-OUT          PIC X(7)   VALUE SPACES.
+       77  MAX-RECS                PIC 9(9)   VALUE ZERO.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+       01  RELATIVE-RECNO               PIC 9(9) VALUE 0.
+
+       01  SFL-CNTL-NAME                PIC X(16) VALUE SPACES.
+
+012400**********************
+012500*                    *
+012600*  S W I T C H E S   *
+012700*                    *
+012800**********************
+012900
+013000 01  SWITCH-AREA.
+013100     05  FATAL-ERR-SW            PIC X       VALUE "N".
+013200     05  F6-VALID-SW             PIC X       VALUE "N".
+013300         88  F6-VALID                        VALUE "Y".
+013400     05  F7-VALID-SW             PIC X       VALUE "N".
+013500         88  F7-VALID                        VALUE "Y".
+013600     05  EOF-SW                  PIC X       VALUE "N".
+013700     05  ERR-SW                  PIC X       VALUE "N".
+           05  REL-CHOSEN-SW           PIC X       VALUE "N".
+013800
+013900
+014000 01  BUILD-PO-NUM.
+014100     05  FILLER                  PIC X    VALUE "P".
+014200     05  PO-NUM                  PIC X(7) VALUE SPACES.
+014300     05  PO-RLSE                 PIC X(3) VALUE "999".
+014400     05  PO-RCV                  PIC X(3) VALUE "000".
+014500
+014600
+       01  DE-SUBFILE.
+014700     05  REL-BATCH-TABLE.
+               10  DE-SELECT            PIC X.
+014800**** 05  REL-BATCH-DETAIL-LINE OCCURS 8 TIMES.
+014900         10  REL-ITEM-INFO.
+                   15  ORDER-INFO.
+015000                 20  ORDER-OUT    PIC X(7).
+015100                 20  ORDER-OUT-FL PIC X(1).
+015200             15  CODE-OUT         PIC X(7).
+015300****         15  FILLER           PIC X(1).
+015400             15  ITEM-OUT         PIC ZZZ9.
+015500****         15  FILLER           PIC X.
+015600             15  QTY-OUT          PIC Z(6)9.9(4).
+015700             15  FILLER           PIC X(1).
+015800             15  SHIP-DTE-OUT     PIC X(8).
+015900             15  FILLER           PIC X(1).
+016000             15  EXPECT-DTE-OUT   PIC X(8).
+016100             15  FILLER           PIC X(1).
+016200             15  SUB-OUT          PIC X(3).
+016300             15  FILLER           PIC X(1).
+016400             15  SUBD-OUT         PIC X(4).
+016500             15  FILLER           PIC X.
+016600             15  ADDTL-DATA-OUT   PIC X(6).
+016700             15  FILLER           PIC X(1).
+016800             15  REQ-OUT          PIC X(7).
+016900             15  FILLER           PIC X(1).
+017000             15  TAX-OUT          PIC X(2).
+017100         10  REL-ITEM-DESC-LINE  REDEFINES  REL-ITEM-INFO.
+017200             15  FILLER           PIC X(8).
+017300             15  COMMENT-LINE-OUT PIC X(68).
+017400
+       01  DE-SUBFILE-L.
+014700     05  REL-BATCH-TABLE-L.
+014800**** 05  REL-BATCH-DETAIL-LINE-L OCCURS 8 TIMES.
+               10  DE-SELECT-L          PIC X.
+014900         10  REL-ITEM-INFO-L.
+                   15  ORDER-INFO-L.
+015000                 20  ORDER-OUT-L  PIC X(7).
+015100                 20  ORDER-OUT-FL-L PIC X(1).
+015200             15  CODE-OUT-L       PIC X(7).
+015300****         15  FILLER           PIC X(1).
+015400             15  ITEM-OUT-L       PIC ZZZ9.
+015500****         15  FILLER           PIC X.
+015600             15  QTY-OUT-L        PIC Z(6)9.9(4).
+015700             15  FILLER           PIC X(1).
+015800             15  SHIP-DTE-OUT-L   PIC X(6).
+015900             15  FILLER           PIC X(1).
+016000             15  EXPECT-DTE-OUT-L PIC X(6).
+016100             15  FILLER           PIC X(1).
+                   15  CO-OUT-L         PIC X(3).
+                   15  PRI-OUT-L        PIC X(3).
+016200             15  SUB-OUT-L        PIC X(3).
+016400             15  SUBD-OUT-L       PIC X(4).
+016600             15  ADDTL-DATA-OUT-L PIC X(6).
+016700             15  FILLER           PIC X(1).
+016800             15  REQ-OUT-L        PIC X(7).
+016900             15  FILLER           PIC X(1).
+017000             15  TAX-OUT-L        PIC X(2).
+017100         10  REL-ITEM-DESC-LINE-L  REDEFINES  REL-ITEM-INFO-L.
+017200             15  FILLER           PIC X(8).
+017300             15  COMMENT-LINE-OUT-L PIC X(68).
+017400
+       COPY JCWAREA IN COPYLIB.
+
+017500 COPY VCOMAREA IN COPYLIB.
+018600
+018700 01  MESSAGE-BUFFER.
+018800     05  MSG-TEXT              PIC X(64)    VALUE SPACE.
+018900     05  MSG-FLD               PIC X(12)    VALUE SPACE.
+019000     05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(11)9.
+019100
+019600 01  FIELD-NUMBER              PIC S9(4)    VALUE 1       COMP-4.
+019800
+019900 01  PASSED-SPOOL-PRT          PIC S9(2)    VALUE ZEROS   COMP-4.
+020000
+020100 01  SCREEN-PRINT-PARMS.
+020200     05  PRINTCNTL             PIC S9(4)    VALUE ZERO    COMP-4.
+020300     05  PAGECNTL              PIC S9(4)    VALUE 49      COMP-4.
+020400     05  SPOOLFIL-OPEN-SW      PIC X        VALUE "N".
+020500
+       COPY CATREAD IN COPYLIB.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+021200
+021300**************************************************************
+021400**************************************************************
+021500**                                                          **
+021600**             TERMINAL I/O DATA AREA                       **
+021700**                                                          **
+021800**************************************************************
+021900**************************************************************
+022000
+022100 01  SCREEN-1.
+022200     05  DISP-COMPANY-1          PIC X(3)  VALUE SPACES.
+022300     05  DE-PROCESS-ALL-1        PIC X     VALUE SPACES.
+022400     05  DE-BLKT-NUM             PIC X(7)  VALUE SPACES.
+           05  DE1-COMMAND-LINE        PIC X(79) VALUE SPACES.
+           05  DE1-MESSAGE-LINE        PIC X(79) VALUE SPACES.
+022500
+022600 01  SCREEN-2.
+022700     05  DISP-COMPANY-2          PIC X(3)  VALUE SPACES.
+022800     05  DE-PROCESS-ALL          PIC X     VALUE SPACES.
+022900     05  DE-PROCESS-ONLY-TABLE.
+023000         10  DE-INCLUDE-ORDER    PIC X(7) OCCURS 12 TIMES.
+023100     05  DE-PROCESS-EXCEPT-TABLE.
+023200         10  DE-EXCLUDE-ORDER    PIC X(7) OCCURS 12 TIMES.
+023300**** 05  DISP-RELEASE-INFO.
+023400****     10  DISP-BATCH-ENTRY    PIC X(79) OCCURS 8 TIMES.
+
+       01  SCREEN-2B.
+023500**** 05  DISP-MSG-LINE1          PIC X(30) VALUE SPACES.
+023600**** 05  DISP-MSG-LINE2          PIC X(30) VALUE SPACES.
+           05  DE2-COMMAND-LINE        PIC X(79) VALUE SPACES.
+           05  DE2-MESSAGE-LINE        PIC X(79) VALUE SPACES.
+023700
+023800 01  SCREEN-3.
+023900     05  DISP-COMPANY-3          PIC X(3)  VALUE SPACES.
+           05  DE3-COMMAND-LINE        PIC X(79) VALUE SPACES.
+           05  DE3-MESSAGE-LINE        PIC X(79) VALUE SPACES.
+024000
+024100 01  NO-ENTRIES-QUALIFIED-MSG.
+024200     05  FILLER           PIC X(34).
+024300     05  NO-ENTRIES-REQ-NUM  PIC X(7)  VALUE SPACES.
+024400     05  FILLER           PIC X(12).
+024500
+024600
+024700**************************************************************
+024800**************************************************************
+024900**                                                          **
+025000**                DATABASE I/O BUFFER AREA                  **
+025100**                                                          **
+025200**************************************************************
+025300**************************************************************
+025400
+025500
+025600 COPY DSHIPREL IN COPYLIB.
+025700
+025800 COPY MPLTINFO IN COPYLIB.
+025900
+026000
+026100*********************
+026200*                   *
+026300*   DATA SET NAMES  *
+026400*                   *
+026500*********************
+026600
+026700 01  DSET-NAMES.
+026800     05  DSET-NAME              PIC X(16)  VALUE SPACES.
+026900     05  DSET-DSHIPREL          PIC X(16)  VALUE "DSHIPREL;".
+027000     05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+027100     05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+027200
+027300 COPY DATAB IN COPYLIB.
+027400
+       COPY DBSTHIST IN COPYLIB.
+
+027500 01 ITEMS-LISTING.
+027600     05  ALL-ITEMS              PIC XX    VALUE "@;".
+027700     05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+027800     05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+027900     05  REQ-SEARCH             PIC X(12) VALUE "REQ-NUMBER;".
+028000
+028100 01 ARG-VALUES.
+028200     05  REQ-ARG                PIC X(12) VALUE SPACES.
+028300     05  PLT-ARG                PIC X(4)  VALUE SPACES.
+028400     05  CODE-ARG               PIC X(8)  VALUE SPACES.
+028500     05  PO-ARG                 PIC X(14) VALUE SPACES.
+029500
+029600 01  STREAM-COMMAND.
+029700     05  FILLER  PIC X(7)  VALUE "STREAM ".
+029800     05  FILLER  PIC X(8) VALUE "BXRLCRTE".
+029900
+030000 01  BUILD-COMMAND.
+030100     05  FILLER  PIC X(6)  VALUE "BUILD ".
+030200     05  FILLER  PIC X(8)  VALUE "RLACTIVE".
+030300
+030400 01  PURGE-COMMAND.
+030500     05  FILLER  PIC X(6)  VALUE "PURGE ".
+030600     05  FILLER  PIC X(8)  VALUE "RLACTIVE".
+030700
+       COPY CDLTFILE IN COPYLIB.
+
+       COPY CCRTFILE IN COPYLIB.
+
+       COPY CCHKOBJ IN COPYLIB.
+
+       COPY CCHKOBJM IN COPYLIB.
+
+       01  OVRDBF-PARM1  PIC X(80) VALUE SPACES.
+       01  OVRDBF-PARM2  PIC S9(10)V9(5) COMP-3 VALUE 80.
+
+030800 01  DATES-AND-TIMES.
+030900     05  HP-CUR-DATE.
+031000         10  MM               PIC XX.
+031100         10  FILLER           PIC X.
+031200         10  DD               PIC XX.
+031300         10  FILLER           PIC X.
+031400         10  YY               PIC XX.
+031500     05  CUR-DATE.
+031600         10  YY               PIC XX.
+031700         10  MM               PIC XX.
+031800         10  DD               PIC XX.
+031900
+032000 COPY TDATECHK IN COPYLIB.
+032100
+032200
+032300 COPY TBLOWUP IN COPYLIB.
+032400
+032500
+032600 COPY LANGUAGE IN COPYLIB.
+032700
+       COPY SEDIVNCK IN COPYLIB.
+032800
+032900 PROCEDURE DIVISION.
+033000
+033100 PROC-DIV SECTION 01.
+033200
+033300 BEGIN-HERE.
+033400     PERFORM 1-HSK THRU 1-H-X.
+033500
+033600     PERFORM 6-MAIN THRU 6-M-X.
+033700
+033800     PERFORM 2-EOJ  THRU 2-EOJ-X.
+033900
+034000     GOBACK.
+034100
+034200 1-HSK.
+037100     MOVE  14 TO LANG-SETNUM.
+037200     MOVE   6 TO LANG-MSGNUM.
+037300     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+037400     MOVE MESSAGE-BUFFER TO NO-ENTRIES-QUALIFIED-MSG.
+037500
+           OPEN I-O DISPLAY-FILE.
+           OPEN INPUT MPLTINFO-I, DPORECD-I, DSHIPREL-I.
+
+           MOVE "N"     TO  SAVE-PCPO-SW.
+039500     MOVE "PCPO"  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+039900         MOVE "READ FAILED IN TRLBTSEL" TO  BU-DISPLAY-MSG
+040000         MOVE PLT-ARG                 TO  BU-DISPLAY-FLD (1)
+040100         GO TO 2-BLOWUP.
+           IF MPLTINFO-PCPO-SW = " "
+               MOVE "N"                     TO  SAVE-PCPO-SW
+           ELSE
+040200     MOVE MPLTINFO-PCPO-SW            TO  SAVE-PCPO-SW.
+
+038800**************************************************
+038900*                                                *
+039000*   GET CO. AND PRIME FROM MPLTINFO              *
+039100*   USING 'P 01' AS THE ARGUMENT                 *
+039200*                                                *
+039300**************************************************
+039400
+039500     MOVE "P 01"  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+039900         MOVE "DBGET MPLTINFO 1-HSK P 01"  TO  BU-DISPLAY-MSG
+040000         MOVE PLT-ARG                 TO  BU-DISPLAY-FLD (1)
+040100         GO TO 2-BLOWUP.
+040200     MOVE MPLTINFO-COMPANY            TO  COMP-SCREEN-INDIC.
+           ACCEPT CUR-DATE FROM DATE.
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+040500
+040600 1-H-X.
+040700     EXIT.
+040800
+040900 2-EOJ.
+           CLOSE DISPLAY-FILE, MPLTINFO-I, DPORECD-I, DSHIPREL-I.
+042900
+043000 2-EOJ-X.
+043100      EXIT.
+043200
+043300******************************************************
+043400**                                                  **
+043500**   BLOWUP ROUTINE                                 **
+043600**                                                  **
+043700******************************************************
+043800
+043900 2-BLOWUP.
+           MOVE SPACES           TO DLTFILE-PARMS.
+054200     MOVE "RLACTIVE"              TO  DLTFILE-FILE-NAME.
+           CALL "CDLTFILE" USING DLTFILE-LIB-NAME,
+                                 DLTFILE-FILE-NAME,
+                                 DLTFILE-RETURN-STATUS.
+054500     IF DLTFILE-RETURN-STATUS NOT = "00"
+055700         IF DLTFILE-NOT-FOUND
+055800             NEXT SENTENCE
+055900         ELSE
+                   NEXT SENTENCE.
+056500
+044200     MOVE "TRLBTSEL"              TO  BU-PGM-NAME.
+044300     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+044400         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+044500                 BU-DISPLAY-FLDS.
+044600
+044700 2-BLOWUP-X.
+044800     EXIT.
+045200
+048000
+048100 4-PGM-ERROR.
+           MOVE B"1" TO IND(FIELD-NUMBER), IND(99).
+           MOVE MESSAGE-BUFFER  TO DE1-MESSAGE-LINE,
+                                   DE2-MESSAGE-LINE,
+                                   DE3-MESSAGE-LINE.
+048900
+049000 4-PGM-ERROR-X.
+049100     EXIT.
+052300
+052400
+052500**************************************************
+052600*                                                *
+052700*     6 - M A I N                                *
+052800*                                                *
+052900**************************************************
+053000
+053100 6-MAIN.
+           MOVE SPACES             TO  SEDIVNCK-PARMS.
+053200     MOVE "RLBTSEL1"         TO  VIEW-NFNAME.
+054700     MOVE SPACES             TO  SCREEN-1.
+054800     MOVE COMP-SCREEN-INDIC  TO  DISP-COMPANY-1.
+055500
+055600 6-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1           TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC        TO SCREEN-1.
+056300
+056400     IF VIEW-LASTKEY = 3
+056500         GO TO 6-M-X
+056600     ELSE
+058000     IF VIEW-LASTKEY = 1 OR
+058100        VIEW-LASTKEY = 2 OR
+058200        VIEW-LASTKEY = 4 OR
+058300        VIEW-LASTKEY = 5 OR
+058400        VIEW-LASTKEY = 6 OR
+058500        VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+058700*        "* INVALID FUNCTION KEY ENTERED *"
+058800         MOVE   9 TO LANG-SETNUM
+058900         MOVE  10 TO LANG-MSGNUM
+059000         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+059100         MOVE 3  TO  FIELD-NUMBER
+059200         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+059300         GO TO 6-SHOWFORM-SCREEN-1.
+059400
+      *------ FIELD EDITS
+           IF DE-PROCESS-ALL-1 = SPACES AND
+              DE-BLKT-NUM = SPACES
+      *    YOU MUST CHOOSE AN OPTION
+               MOVE 25030 TO CATREAD-MSG-NUMBER
+069800         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+069900         MOVE 3  TO FIELD-NUMBER
+070000         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+070100         GO TO 6-SHOWFORM-SCREEN-1.
+061300
+           IF DE-PROCESS-ALL-1 NOT = SPACES AND
+              DE-BLKT-NUM NOT = SPACES
+      *    SELECT ONLY ONE OPTION
+               MOVE 66140 TO CATREAD-MSG-NUMBER
+069800         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+069900         MOVE 1  TO FIELD-NUMBER
+070000         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+070100         GO TO 6-SHOWFORM-SCREEN-1.
+
+061400****************************************************
+061500*                                                  *
+061600*   CHECK FOR A PROCESS THE ENTIRE FILE OPTION     *
+061700*   SELECTION. IF THIS WAS CHOSEN THEN BYPASS      *
+061800*   THE REVIEW SCREEN AND STREAM THE RELEASE       *
+061900*   CREATE JOB STREAM. ONCE THIS IS DONE END THE   *
+062000*   PROGRAM                                        *
+062100*                                                  *
+062200****************************************************
+062300
+062400 6-CHECK-FOR-PROCESS-ALL.
+062500     IF DE-PROCESS-ALL-1 = "X"
+062600         PERFORM 64-BUILD-RLACTIVE  THRU  64-BUILD-RLACTIVE-X
+062700         IF ERR-SW = "Y"
+062800             MOVE 3  TO  FIELD-NUMBER
+062900             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+063000             GO TO 6-SHOWFORM-SCREEN-1
+063100         ELSE
+063200             MOVE "X"  TO  DE-PROCESS-ALL
+063300             PERFORM 62-CREATE-LAUNCH-JOB-STREAM  THRU  62-CLJS-X
+063400             GO TO 6-M-X.
+063500
+063600*****************************************************
+063700*                                                   *
+063800*    EDIT REQUIREMENT ORDER NUMBER                  *
+063900*                                                   *
+064000*****************************************************
+064100
+064200 6-EDIT-REQUIRE-ORDER.
+064300     IF DE-BLKT-NUM = "ALL"
+064400         GO TO 6-REVIEW-BATCH-FILE.
+064500     MOVE DE-BLKT-NUM             TO  PO-NUM.
+064600     MOVE BUILD-PO-NUM            TO  PO-ARG.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+065100*            "* REQUIREMENT ORDER DOES NOT EXIST *"
+065200             MOVE  18 TO LANG-SETNUM
+065300             MOVE  20 TO LANG-MSGNUM
+065400             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+065500             MOVE MESSAGE-BUFFER TO MSG-TEXT
+065600             MOVE DE-BLKT-NUM  TO  MSG-FLD
+065700             MOVE 1            TO  FIELD-NUMBER
+065800             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+065900             GO TO 6-SHOWFORM-SCREEN-1
+066000         ELSE
+066100             MOVE "FIND DPORECD 6-ERO" TO BU-DISPLAY-MSG
+066200             MOVE PO-ARG               TO BU-DISPLAY-FLD (1)
+066300             GO TO 2-BLOWUP.
+066400
+066500 6-REVIEW-BATCH-FILE.
+066600     PERFORM 61-PROCESS-BATCH-FILE  THRU  61-PBF-X.
+066700     IF VIEW-LASTKEY = 3
+066800         GO TO 6-MAIN.
+066900
+067000     PERFORM 62-CREATE-LAUNCH-JOB-STREAM  THRU  62-CLJS-X.
+067100
+067200     GO TO 6-MAIN.
+067300
+067400 6-M-X.
+067500     EXIT.
+067600
+067700
+067800 61-PROCESS-BATCH-FILE.
+      *----- CALL CCRTFILE TO CREATE A TEMPORARY FILE 'BATCFILE'
+      *----- LIBRARY 'QTEMP' IS USED FOR TEMPORARY FILES
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "BATCFILE"    TO CCRTFILE-FILE.
+           MOVE "0106"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "01000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "01000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE "20"          TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'PRNTWORK' FAILED"
+                  TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+      *******************************************************
+      **   DO A CLEAR PHYSICAL FILE MEMBER ON BATCFILE
+      **   IN CASE THIS ROUTINE WAS ALREADY EXECUTED AT LEAST
+      **   ONCE BECAUSE FOR SOME REASON IF NO ENTRIES QUALIFY
+      **   DURING THE INPUT PROCEDURE THEN THE FILE BATCFILE
+      **   HAS THE OLD ENTRIES FROM THE PREVIOUS EXECUTION.
+      *******************************************************
+
+           MOVE "CLRPFM FILE(QTEMP/BATCFILE)" TO OVRDBF-PARM1.
+           CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+
+067900     SORT SORT-FILE ON ASCENDING KEY SORT-REQ-ORDER
+068000                                     SORT-ITEM
+068100                                     SORT-ITEM-SEQ-NO
+068200         INPUT PROCEDURE IS READ-BATCH-FILE
+068300         GIVING BATCH-FILE-SORTED.
+068400
+068500     OPEN INPUT BATCH-FILE-SORTED.
+068600
+           IF SAVE-PCPO-SW = "Y"
+               MOVE "RLSFLCNTL2" TO SFL-CNTL-NAME
+           ELSE
+               MOVE "RLSFLCNTL"  TO SFL-CNTL-NAME.
+069200
+069300     MOVE SPACES  TO  SCREEN-2
+                            SCREEN-2B.
+069400     MOVE COMP-SCREEN-INDIC  TO  DISP-COMPANY-2.
+069500     MOVE 1                  TO  ACT-KEY.
+069600
+069700 61-PUT-BUFFER-2.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           PERFORM 612-CLEAR-SUBFILE.
+
+069800     PERFORM 611-FILL-BATCH-INQ-SCREEN THRU 611-FBIS-X.
+071300
+071400 61-SHOWFORM-SCREEN-2.
+           WRITE DISPLAY-REC FROM SCREEN-2B
+               FORMAT "RLSFLB"
+               INDICATORS SRF-INDICATORS.
+
+           MOVE B"1"     TO IND(70) IND(71) IND(73).
+
+      **** IF RELATIVE-RECNO > ZERO
+      ****     MOVE B"1" TO IND(75)
+      **** ELSE
+      ****     MOVE B"0" TO IND(75).
+
+           WRITE SUBFILE DISPLAY-REC FROM SCREEN-2
+               FORMAT SFL-CNTL-NAME
+               INDICATORS SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           READ DISPLAY-FILE
+               FORMAT SFL-CNTL-NAME
+               INDICATORS SRF-INDICATORS.
+
+      *    PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-2.
+072100
+072200     IF F3-KEY-USED
+               MOVE ALL B"0" TO SRF-INDICATORS
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY
+072300         GO TO 61-CLOSE-BATCH-FILE.
+
+           IF F4-KEY-USED
+               CALL "SPOINQ" USING BASE,
+                                   BASE-STHIST,
+                                   VIEW-COMAREA,
+                                   COMP-SCREEN-INDIC,
+                                   LANGUAGE-PARMS
+               MOVE ALL B"0" TO SRF-INDICATORS
+               GO TO 61-SHOWFORM-SCREEN-2.
+
+076700     IF F1-KEY-USED
+076800         PERFORM 63-DISPLAY-INSTRUCTION-SCREEN THRU 63-DIS-X
+076900         GO TO 61-SHOWFORM-SCREEN-2.
+080100
+080200 61-EDIT-SELECTION.
+
+           MOVE "N"  TO  REL-CHOSEN-SW.
+           MOVE 1    TO  RELATIVE-RECNO.
+           INITIALIZE    DE-SUBFILE
+                         DE-SUBFILE-L.
+           IF SAVE-PCPO-SW = "Y"
+               PERFORM UNTIL DE-SELECT-L = "X" OR
+                             RELATIVE-RECNO > MAX-RECS
+                   READ SUBFILE DISPLAY-FILE
+                        INTO DE-SUBFILE-L
+                        FORMAT IS "RLSFL2"
+                   END-READ
+                   ADD 1  TO RELATIVE-RECNO
+               END-PERFORM
+               IF DE-SELECT-L = "X"
+                   MOVE "Y"  TO  REL-CHOSEN-SW
+               END-IF
+           ELSE
+               PERFORM UNTIL DE-SELECT = "X" OR
+                             RELATIVE-RECNO > MAX-RECS
+                   READ SUBFILE DISPLAY-FILE
+                        INTO DE-SUBFILE
+                        FORMAT IS "RLSFL"
+                   END-READ
+                   ADD 1  TO RELATIVE-RECNO
+               END-PERFORM
+               IF DE-SELECT = "X"
+                   MOVE "Y"  TO  REL-CHOSEN-SW.
+
+           IF DE-PROCESS-ALL = SPACES
+             IF REL-CHOSEN-SW = "N"
+                 IF DE-PROCESS-ONLY-TABLE = SPACES AND
+                    DE-PROCESS-EXCEPT-TABLE = SPACES
+      *        "YOU MUST SELECT AN OPTION BY WHICH TO PROCESS THE BATCH FILE"
+                   MOVE  25 TO LANG-SETNUM
+                   MOVE  16 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 2  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE-PROCESS-ALL > SPACES
+               IF DE-PROCESS-ONLY-TABLE > SPACES OR
+                  DE-PROCESS-EXCEPT-TABLE > SPACES
+      *            "* SELECT ONLY ONE OPTION *"
+                   MOVE  19 TO LANG-SETNUM
+                   MOVE  27 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  2  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE-PROCESS-ALL NOT = SPACES
+               IF REL-CHOSEN-SW = "Y"
+      *            "* SELECT ONLY ONE OPTION *"
+                   MOVE  19 TO LANG-SETNUM
+                   MOVE  27 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  2  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE-PROCESS-ONLY-TABLE > SPACES
+               IF REL-CHOSEN-SW = "Y"
+      *            "* SELECT ONLY ONE OPTION *"
+                   MOVE  19 TO LANG-SETNUM
+                   MOVE  27 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  3  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2.
+084400
+           IF DE-PROCESS-EXCEPT-TABLE > SPACES
+               IF REL-CHOSEN-SW = "Y"
+      *            "* SELECT ONLY ONE OPTION *"
+                   MOVE  19 TO LANG-SETNUM
+                   MOVE  27 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 15  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+           IF DE-PROCESS-ONLY-TABLE > SPACES
+               IF DE-PROCESS-EXCEPT-TABLE > SPACES
+      *            "* SELECT ONLY ONE OPTION *"
+                   MOVE  19 TO LANG-SETNUM
+                   MOVE  27 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  3  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-2.
+
+084500     PERFORM 64-BUILD-RLACTIVE  THRU  64-BUILD-RLACTIVE-X.
+084600     IF ERR-SW = "Y"
+084700         MOVE 2  TO  FIELD-NUMBER
+084800         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+084900         GO TO 61-SHOWFORM-SCREEN-2.
+085000
+085100 61-CLOSE-BATCH-FILE.
+085200     CLOSE BATCH-FILE-SORTED.
+085300
+085400 61-PBF-X.
+085500     EXIT.
+085600
+085700 611-FILL-BATCH-INQ-SCREEN.
+085800     MOVE SPACES         TO  REL-BATCH-TABLE
+                                   REL-BATCH-TABLE-L.
+085900     MOVE ZEROS          TO  SUB
+                                   RELATIVE-RECNO.
+086000     MOVE "N"            TO  EOF-SW,
+086100                             F6-VALID-SW,
+086200                             F7-VALID-SW.
+           MOVE SPACES         TO  SAVE-ORDER-OUT.
+
+086400 611-READ-BATCH-FILE-LOOP.
+086500     READ BATCH-FILE-SORTED
+086600          AT END
+086700              MOVE "Y"  TO  EOF-SW.
+086800
+           IF EOF-SW = "Y" AND RELATIVE-RECNO = 0
+               IF DE-BLKT-NUM = "ALL"
+      *            "SHIPPING RELEASE BATCH FILE IS EMPTY"
+                   MOVE  19 TO LANG-SETNUM
+                   MOVE   6 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DE1-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE
+               ELSE
+                   MOVE DE-BLKT-NUM   TO  NO-ENTRIES-REQ-NUM
+                   MOVE NO-ENTRIES-QUALIFIED-MSG
+                                      TO  DE1-MESSAGE-LINE
+                                          DE2-MESSAGE-LINE
+               END-IF
+               MOVE B"1"              TO  IND(99)
+               GO TO 611-FBIS-X.
+
+           IF EOF-SW = "Y" AND RELATIVE-RECNO > 0
+               MOVE RELATIVE-RECNO TO MAX-RECS
+               GO TO 611-FBIS-X.
+
+           IF EOF-SW = "N"
+               IF ITEM-SEQ-NO-SORTED = "99"
+                   GO TO 611-CONT
+               ELSE
+               IF ITEM-SEQ-NO-SORTED = "00"
+                   PERFORM 6111-LOAD-ITEM-DETAIL
+               ELSE
+                   MOVE B"1"           TO IND(20)
+                   MOVE SPACES         TO ORDER-OUT
+                                          ORDER-OUT-L
+                   MOVE ITEM-DESC-SORT TO COMMENT-LINE-OUT
+                                          COMMENT-LINE-OUT-L.
+
+           ADD 1 TO RELATIVE-RECNO.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE DE-SUBFILE-L TO DISPLAY-REC
+               WRITE SUBFILE DISPLAY-REC FORMAT "RLSFL2"
+                 INDICATORS SRF-INDICATORS
+               END-WRITE
+           ELSE
+               MOVE DE-SUBFILE TO DISPLAY-REC
+               WRITE SUBFILE DISPLAY-REC FORMAT "RLSFL"
+                 INDICATORS SRF-INDICATORS.
+
+           MOVE SPACES TO DE-SUBFILE
+                          DE-SUBFILE-L.
+
+       611-CONT.
+
+           GO TO 611-READ-BATCH-FILE-LOOP.
+
+093500 611-FBIS-X.
+093600     EXIT.
+093700
+093800 6111-LOAD-ITEM-DETAIL.
+           MOVE SPACE             TO  SEDIVNCK-PARMS.
+093900     MOVE REQ-ORDER-SORTED  TO  ORDER-OUT
+                                      ORDER-OUT-L
+064500                                PO-NUM.
+           IF REQ-ORDER-SORTED = SAVE-ORDER-OUT
+               MOVE B"1"              TO  IND(20)
+               MOVE SPACES            TO  ORDER-OUT
+                                          ORDER-OUT-L
+           ELSE
+               MOVE REQ-ORDER-SORTED  TO  SAVE-ORDER-OUT
+               MOVE B"0"              TO  IND(20).
+
+           MOVE BUILD-PO-NUM      TO  SEDIVNCK-PO-NUMBER.
+           CALL "SEDIVNCK" USING BASE,
+                                 SEDIVNCK-PARMS.
+           IF SEDIVNCK-EDI-IND = "Y"
+                MOVE "*"          TO  ORDER-OUT-FL
+                                      ORDER-OUT-FL-L
+           ELSE
+           MOVE " "               TO  ORDER-OUT-FL
+                                      ORDER-OUT-FL-L.
+094000     MOVE ITEM-SORTED       TO  ITEM-OUT
+                                      ITEM-OUT-L.
+094100     MOVE CODE-SORTED       TO  CODE-OUT
+                                      CODE-OUT-L.
+094200     MOVE QTY-SORTED        TO  QTY-OUT
+                                      QTY-OUT-L.
+094300     IF SHIP-DATE-SORTED = SPACES
+094400         MOVE SPACES            TO  SHIP-DTE-OUT
+                                          SHIP-DTE-OUT-L
+094500     ELSE
+           IF SAVE-PCPO-SW = "Y"
+               MOVE SHIP-DATE-SORTED  TO  SHIP-DTE-OUT-L
+           ELSE
+094600         MOVE 4                 TO  DATE-MODE
+094700         MOVE SHIP-DATE-SORTED  TO  DATE-VALIDATE-IN
+094800         CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+094900         MOVE DATE-SLASH-OUT    TO  SHIP-DTE-OUT.
+095000     IF EXPECT-DATE-SORTED = SPACES
+095100         MOVE SPACES            TO  EXPECT-DTE-OUT
+                                          EXPECT-DTE-OUT-L
+095200     ELSE
+           IF SAVE-PCPO-SW = "Y"
+               MOVE EXPECT-DATE-SORTED TO EXPECT-DTE-OUT-L
+           ELSE
+095300         MOVE 4                 TO  DATE-MODE
+095400         MOVE EXPECT-DATE-SORTED  TO  DATE-VALIDATE-IN
+095500         CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+095600         MOVE DATE-SLASH-OUT    TO  EXPECT-DTE-OUT.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE COMPANY-SORTED TO CO-OUT-L
+               MOVE PRIME-SORTED   TO PRI-OUT-L.
+095700     MOVE SUB-SORTED        TO  SUB-OUT
+                                      SUB-OUT-L.
+095800     MOVE SUBD-SORTED       TO  SUBD-OUT
+                                      SUBD-OUT-L.
+095900     MOVE ADDTL-DATA-SORTED TO  ADDTL-DATA-OUT
+                                      ADDTL-DATA-OUT-L.
+096000     MOVE TAX-MSG-SORTED    TO  TAX-OUT
+                                      TAX-OUT-L.
+096100     MOVE REQ-NO-SORTED     TO  REQ-OUT
+                                      REQ-OUT-L.
+096200
+       612-CLEAR-SUBFILE.
+           MOVE B"1" TO IND (71), IND (72).
+           MOVE B"0" TO IND (70).
+           WRITE SUBFILE DISPLAY-REC FROM SCREEN-2
+               FORMAT SFL-CNTL-NAME
+               INDICATORS SRF-INDICATORS.
+           MOVE B"0" TO IND (72).
+           MOVE ZERO TO RELATIVE-RECNO.
+
+096300
+096400 62-CREATE-LAUNCH-JOB-STREAM.
+      **************************************************
+      **   OVERRIDE FILE 'MCXRLTOP' TO QJOBSRC/MCXRLTOP
+      **************************************************
+           STRING "OVRDBF FILE(MCXRLTOP) TOFILE(QJOBSRC) ",
+             "MBR(MCXRLTOP)" DELIMITED BY SIZE INTO OVRDBF-PARM1.
+           CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+      **************************************************
+      **   OVERRIDE FILE 'MCXRLBOT' TO QJOBSRC/MCXRLBOT
+      **************************************************
+           STRING "OVRDBF FILE(MCXRLBOT) TOFILE(QJOBSRC) ",
+             "MBR(MCXRLBOT)" DELIMITED BY SIZE INTO OVRDBF-PARM1.
+           CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+      ****************************************************
+      **   CALL 'CCHKOBJM' TO SEE IF THE FILE
+      **   'QTEMP/QJOBSRC' EXISTS IF IT DOESNT CREATE
+      **   IT VIA 'CRTSRCPF'.
+      ****************************************************
+           MOVE "QJOBSRC" TO CHKOBJM-FILE-NAME.
+           CALL "CCHKOBJM" USING CHKOBJM-LIB,
+                                CHKOBJM-FILE-NAME,
+                                CHKOBJM-FILE-MBR,
+                                CHKOBJM-OBJ-TYPE,
+                                CHKOBJM-RETURN-STATUS.
+           IF CHKOBJM-EXISTS
+               NEXT SENTENCE
+           ELSE
+               MOVE "CRTSRCPF FILE(QJOBSRC)" TO OVRDBF-PARM1
+               CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+      ****************************************************
+      **   CALL 'CCHKOBJM' TO SEE IF THE FILE MEMBER
+      **   'MCXRELCRTE' IN 'QTEMP/QJOBSRC' EXISTS
+      **   IF IT  DOESNT CREATE IT VIA 'ADDPFM'
+      ****************************************************
+           MOVE "QJOBSRC" TO CHKOBJM-FILE-NAME.
+           MOVE "MCXRELCRTE" TO CHKOBJM-FILE-MBR.
+           CALL "CCHKOBJM" USING CHKOBJM-LIB,
+                                CHKOBJM-FILE-NAME,
+                                CHKOBJM-FILE-MBR,
+                                CHKOBJM-OBJ-TYPE,
+                                CHKOBJM-RETURN-STATUS.
+           IF CHKOBJM-EXISTS
+               NEXT SENTENCE
+           ELSE
+               MOVE "ADDPFM FILE(QJOBSRC) MBR(MCXRELCRTE) " TO
+                   OVRDBF-PARM1
+               CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+      **************************************************
+      **   OVERRIDE FILE 'MCXRELCRTE' TO QJOBSRC/MCXRELCRTE
+      **************************************************
+           STRING "OVRDBF FILE(MCXRELCRTE) TOFILE(QJOBSRC) ",
+           "MBR(MCXRELCRTE)" DELIMITED BY SIZE INTO OVRDBF-PARM1.
+           CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+
+096500     OPEN INPUT RELEASE-CREATE-BEGIN-FILE,
+096600                RELEASE-CREATE-END-FILE
+096700          OUTPUT RELEASE-CREATE-JOB-FILE.
+096800
+096900 62-READ-RELEASE-BEGIN-FILE.
+097000     READ RELEASE-CREATE-BEGIN-FILE
+097100         AT END  GO TO 62-WRITE-SELECTION.
+097200     MOVE RELEASE-CREATE-BEGIN-RCD
+097300         TO  RELEASE-CREATE-JOB-RCD.
+097400     WRITE RELEASE-CREATE-JOB-RCD.
+097500     GO TO 62-READ-RELEASE-BEGIN-FILE.
+097600
+097700 62-WRITE-SELECTION.
+097800     MOVE SPACES  TO  RELEASE-CREATE-JOB-RCD.
+097900     IF DE-PROCESS-ALL = "X"
+098000         MOVE "ALL"  TO  RELEASE-NUM-ENTRY
+               MOVE JCW-PS2-310-311 TO RELEASE-PROC-OPT
+098100         WRITE RELEASE-CREATE-JOB-RCD
+098200     ELSE
+098300         PERFORM 621-WRITE-SELECTED-ENTRIES THRU 621-WSE-X.
+098400
+098500 62-READ-RELEASE-END-FILE.
+098600     READ RELEASE-CREATE-END-FILE
+098700         AT END  GO TO 62-STREAM-JOB.
+098800     MOVE RELEASE-CREATE-END-RCD
+098900         TO  RELEASE-CREATE-JOB-RCD.
+099000     WRITE RELEASE-CREATE-JOB-RCD.
+099100     GO TO 62-READ-RELEASE-END-FILE.
+099200
+099300 62-STREAM-JOB.
+099400     CLOSE RELEASE-CREATE-BEGIN-FILE,
+099500           RELEASE-CREATE-END-FILE,
+099600           RELEASE-CREATE-JOB-FILE.
+      ***********************************************************
+      **   STRDBRDR TO LAUNCH JOB STREAM 'MCXRELCRTE' IN QJOBSRC
+      ***********************************************************
+           MOVE "STRDBRDR FILE(*LIBL/QJOBSRC) MBR(MCXRELCRTE)"
+               TO OVRDBF-PARM1.
+           CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+100400
+100500 62-CLJS-X.
+100600     EXIT.
+100700
+100800 621-WRITE-SELECTED-ENTRIES.
+
+           IF DE-PROCESS-EXCEPT-TABLE NOT = SPACES
+               MOVE "EXCLUDE"            TO  RELEASE-NUM-ENTRY
+               MOVE JCW-PS2-310-311      TO  RELEASE-PROC-OPT
+               WRITE RELEASE-CREATE-JOB-RCD
+               MOVE 0  TO  SUB
+               GO TO 621-PROCESS-TABLE.
+
+           MOVE "INCLUDE"                TO  RELEASE-NUM-ENTRY.
+           MOVE JCW-PS2-310-311          TO  RELEASE-PROC-OPT.
+           WRITE RELEASE-CREATE-JOB-RCD.
+           IF DE-PROCESS-ONLY-TABLE NOT = SPACES
+               MOVE 0  TO  SUB
+               GO TO 621-PROCESS-TABLE.
+
+101000*    MOVE "INCLUDE"            TO  RELEASE-NUM-ENTRY.
+101100*    ELSE
+101200*        MOVE "EXCLUDE"            TO  RELEASE-NUM-ENTRY.
+101300*    WRITE RELEASE-CREATE-JOB-RCD.
+101400*    MOVE 0  TO  SUB.
+101500*
+           MOVE 1 TO RELATIVE-RECNO.
+101600 621-PROCESS-SELECTION-LOOP.
+           PERFORM UNTIL RELATIVE-RECNO > MAX-RECS
+             IF SAVE-PCPO-SW = "Y"
+                 READ SUBFILE DISPLAY-FILE
+                      INTO DE-SUBFILE-L
+                      FORMAT IS "RLSFL2"
+                 END-READ
+                 IF DE-SELECT-L = "X"
+                     MOVE SPACES TO RELEASE-CREATE-JOB-RCD
+                     MOVE ORDER-OUT-L TO RELEASE-NUM-ENTRY
+                     MOVE JCW-PS2-310-311 TO RELEASE-PROC-OPT
+                     WRITE RELEASE-CREATE-JOB-RCD
+                 END-IF
+             ELSE
+                 READ SUBFILE DISPLAY-FILE
+                      INTO DE-SUBFILE
+                      FORMAT IS "RLSFL"
+                 END-READ
+                 IF DE-SELECT = "X"
+                     MOVE SPACES TO RELEASE-CREATE-JOB-RCD
+                     MOVE ORDER-OUT TO RELEASE-NUM-ENTRY
+                     MOVE JCW-PS2-310-311 TO RELEASE-PROC-OPT
+                     WRITE RELEASE-CREATE-JOB-RCD
+                 END-IF
+             END-IF
+             ADD 1 TO RELATIVE-RECNO
+           END-PERFORM.
+           GO TO 621-WRITE-END-SEL-CARD.
+
+       621-PROCESS-TABLE.
+101700     ADD 1  TO  SUB.
+101800     IF SUB > 12
+101900         GO TO 621-WRITE-END-SEL-CARD.
+102000     IF DE-PROCESS-ONLY-TABLE  NOT = SPACES
+102100         IF DE-INCLUDE-ORDER (SUB)  NOT = SPACES
+102200             MOVE DE-INCLUDE-ORDER (SUB) TO RELEASE-NUM-ENTRY
+                   MOVE JCW-PS2-310-311        TO RELEASE-PROC-OPT
+102300         ELSE
+102400             GO TO 621-PROCESS-TABLE
+102500     ELSE
+102600         IF DE-EXCLUDE-ORDER (SUB)  NOT = SPACES
+102700             MOVE DE-EXCLUDE-ORDER (SUB) TO RELEASE-NUM-ENTRY
+                   MOVE JCW-PS2-310-311        TO RELEASE-PROC-OPT
+102800         ELSE
+102900             GO TO 621-PROCESS-SELECTION-LOOP.
+103000
+103100     WRITE RELEASE-CREATE-JOB-RCD.
+103200     GO TO 621-PROCESS-TABLE.
+103300
+103400 621-WRITE-END-SEL-CARD.
+           MOVE SPACES TO RELEASE-CREATE-JOB-RCD.
+103500     MOVE "*******"                TO  RELEASE-NUM-ENTRY.
+           MOVE JCW-PS2-310-311          TO  RELEASE-PROC-OPT.
+103600     WRITE RELEASE-CREATE-JOB-RCD.
+103700
+103800 621-WSE-X.
+103900     EXIT.
+104000
+104100
+104200 63-DISPLAY-INSTRUCTION-SCREEN.
+104300**** MOVE "RLBTSEL3"  TO  VIEW-NFNAME.
+           MOVE "RLHELP"    TO  VIEW-NFNAME.
+105800     MOVE SPACES             TO  SCREEN-3.
+105900     MOVE COMP-SCREEN-INDIC  TO  DISP-COMPANY-3.
+106600
+106700 63-SHOWFORM-SCREEN-3.
+           MOVE SCREEN-3       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-3.
+107400
+108800     IF VIEW-LASTKEY = 1 OR
+108900        VIEW-LASTKEY = 2 OR
+109000        VIEW-LASTKEY = 3 OR
+109100        VIEW-LASTKEY = 4 OR
+109100        VIEW-LASTKEY = 5 OR
+109200        VIEW-LASTKEY = 6 OR
+109300        VIEW-LASTKEY = 7 OR
+109400        VIEW-LASTKEY = 8
+109600*        "* INVALID FUNCTION KEY ENTERED *"
+109700         MOVE   9 TO LANG-SETNUM
+109800         MOVE  10 TO LANG-MSGNUM
+109900         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+110000         MOVE 1  TO  FIELD-NUMBER
+110100         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+110200         GO TO 63-SHOWFORM-SCREEN-3.
+110300
+110400 63-PREPARE-FOR-PREVIOUS-SCREEN.
+110500     MOVE "RLBTSEL2"  TO  VIEW-NFNAME.
+112500
+112600 63-DIS-X.
+112700     EXIT.
+112800
+112900
+113000 64-BUILD-RLACTIVE.
+113100     MOVE "N"  TO  ERR-SW.
+
+           MOVE "RLACTIVE" TO CHKOBJ-FILE-NAME.
+           CALL "CCHKOBJ" USING CHKOBJ-FILE-NAME,
+                                CHKOBJ-RETURN-STATUS.
+           IF CHKOBJ-RETURN-STATUS NOT = "00"
+               NEXT SENTENCE
+           ELSE
+113600*        "RELEASES ARE BEING PROCESSED NOW; CANNOT PROCESS"
+113700         MOVE  18 TO LANG-SETNUM
+113800         MOVE  59 TO LANG-MSGNUM
+113900         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+114000         MOVE "Y"  TO  ERR-SW
+               GO TO 64-BUILD-RLACTIVE-X.
+114600
+      *------ CALL CCRTFILE TO CREATE 'RLACTIVE'
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "RLACTIVE"    TO CCRTFILE-FILE.
+           MOVE "0080"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "00001"       TO CCRTFILE-NO-RECORDS.
+           MOVE "00000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE "00"          TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'RLACTIVE' FAILED"
+                  TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+114700 64-BUILD-RLACTIVE-X.
+114800     EXIT.
+114900
+       COPY DISPCALL IN COPYLIB.
+115000
+115100 READ-BATCH-FILE SECTION.
+115200
+       70-START-DRELFILE.
+      *------- DO A START GREATER THAN SPACES TO POSITION TO BEGINNING
+      *------- OF THE FILE
+      *----------- CHANGE KEY TO DATECYMD INSTEAD OF DLYTCDTE SINCE
+      *----------- CENTURY DATABASE CHANGES.
+           MOVE SPACES TO DATECYMD OF DSHIPREL-REC-I.
+           START DSHIPREL-I KEY > DATECYMD OF DSHIPREL-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "START DSHIPREL * 70-SD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+115300 70-READ-DRELFILE.
+           READ DSHIPREL-I NEXT INTO BUF-DSHIPREL
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+115800             GO TO 70-RD-X
+115900         ELSE
+116000             MOVE "GET DSHIPREL 70-RD" TO BU-DISPLAY-MSG
+116100             GO TO 2-BLOWUP.
+116200
+116300     IF DE-BLKT-NUM = "ALL"
+116400         NEXT SENTENCE
+116500     ELSE
+116600     IF DE-BLKT-NUM = DREL-NUMBER
+116700         NEXT SENTENCE
+116800     ELSE
+116900         GO TO 70-READ-DRELFILE.
+117000
+           IF JCW-PS2-310-311 = "2 "
+               IF DREL-HOLD = " "
+                   NEXT SENTENCE
+               ELSE
+               GO TO 70-READ-DRELFILE
+           ELSE
+           IF JCW-PS2-310-311 = "2X"
+               IF DREL-HOLD = "H"
+                   NEXT SENTENCE
+               ELSE
+               GO TO 70-READ-DRELFILE.
+
+117100     MOVE DREL-NUMBER             TO  SORT-REQ-ORDER.
+117200     MOVE DREL-ITEM-NO            TO  SORT-ITEM.
+117300     MOVE DREL-SEQ-NO             TO  SORT-ITEM-SEQ-NO.
+117400     MOVE DREL-DSHIPREL-CODE      TO  SORT-CODE.
+117500     MOVE DREL-LINE-DATA          TO  SORT-ITEM-DATA.
+           MOVE DREL-CHAT-NO            TO  SORT-CHAT-NO.
+           MOVE DREL-NOTIFY-USERID      TO  SORT-NOTIFY-USERID.
+117600     RELEASE SORT-RCD.
+117700     GO TO 70-READ-DRELFILE.
+117800
+118600 70-RD-X.
+118700     EXIT.
+118800
+118900 CAT-READ SECTION.
+119000
+119100 999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+120700 999-CATREAD-EXIT.
+120800     EXIT.

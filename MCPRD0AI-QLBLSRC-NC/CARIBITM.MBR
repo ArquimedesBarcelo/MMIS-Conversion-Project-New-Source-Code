@@ -1,0 +1,1350 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    CARIBITM.
+       AUTHOR.        BILL FONAGY.
+      ************************************************************
+      **                                                        **
+      **  C A R I B I T M                                       **
+      **                                                        **
+      **  THIS SUBROUTINE EDITS THE INDIVIDUAL LINE ITEMS ON A  **
+      **  PURCHASE ORDER SENT TO IT BY ARIBA BUYER.  IT IS      **
+      **  CALLED FROM 'TARIBAPO' AND WILL RECEIVE AN ARRAY      **
+      **  CONTAINING THE INDIVIDUAL LINE ITEMS.  IT WILL THEN   **
+      **  VALIDATE THE FIELDS FOR EACH LINE AND PASS BACK       **
+      **  TO 'TARIBAPO' A SUCCESS OR FAILURE FLAG.              **
+      **                                                        **
+      *****************************************************************
+      **           M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+      ** WHO       WHEN      DESCRIPTION OF CHANGE
+      ** --------  --------  ------------------------------------------
+DCR01 ** D.RAUCH   11/01/02  CONVERTED FROM HP3000 TO AS400
+DCR01 ** DCR01               INACTIVATED EEC PROCESSING PER BILL FONAGY
+      ** --------  --------  ------------------------------------------
+DCR02 ** D.RAUCH    7/14/03  ADD LOGIC TO ALLOW CHANGE\CANCEL PROCESS'G
+DCR02 ** DCR02      SEE TARIBAPO FOR EDITS TO HEADER RECORD FIELDS
+      ** --------  --------  ------------------------------------------
+      ** D.RAUCH    1/09/04  RECOMPILED TO INCORPORATE CHANGE TO COPY
+      **            MEMBER ARIBAPOITM - ADDED REQ# TO TRAILING FILLER.
+      **            --- NO CODE CHANGE REQUIRED !
+      ** --------  --------  ------------------------------------------
+DCR03 ** D.RAUCH    5/03/04  ADDED CHECK TO STOREROOM ITEM LOGIC FOR
+DCR03 **            ZERO OR BLANK EXPENSE CLASS - PER DAVE PLUM.
+      ** --------  --------  ------------------------------------------
+DCR04 ** D.RAUCH    5/12/04  ADDED CHECK TO STOREROOM ITEM LOGIC TO CHG
+DCR04 **            EXPENSE CLASS TO ZERO FOR NAPANEE(631) STOREROOM
+DCR04 **            CODED ITEMS.
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.  AS400.
+       OBJECT-COMPUTER.  AS400.
+       SPECIAL-NAMES.    LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MVALPLTDTA-FILE   ASSIGN TO DATABASE-MCFLCS1701
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MSTOREROOM-FILE   ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MVALIDUM-FILE     ASSIGN TO DATABASE-MCFLCS0401
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MCOMMENT-FILE     ASSIGN TO DATABASE-MCFLCS1801
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MTAX-FILE         ASSIGN TO DATABASE-MCFLCS3701
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT EEC-COMMCD-FILE   ASSIGN TO DATABASE-MCFLCS5301
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+           SELECT VALID-DATA-FILE   ASSIGN TO DATABASE-MCFLCS5202
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+DCR02      SELECT DPOITEM-FILE      ASSIGN TO DATABASE-MCFLCS1002
+DCR02             ORGANIZATION IS INDEXED
+DCR02             ACCESS IS DYNAMIC
+DCR02             FILE STATUS WS-FILE-STATUS
+DCR02             RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  MVALPLTDTA-FILE.
+       01  MVALPLTDTA-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1701.
+       COPY MVALDPLT IN COPYLIB.
+
+       FD  MSTOREROOM-FILE.
+       01  MSTOREROOM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0201.
+       COPY MSTORERM IN COPYLIB.
+
+       FD  MVALIDUM-FILE.
+       01  MVALIDUM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0401.
+       COPY MVALIDUM IN COPYLIB.
+
+       FD  MCOMMENT-FILE.
+       01  MCOMMENT-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1801.
+       COPY MCOMMENT IN COPYLIB.
+
+       FD  MTAX-FILE.
+       01  MTAX-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS3701.
+       COPY MTAX     IN COPYLIB.
+
+       FD  EEC-COMMCD-FILE.
+       01  EEC-COMMCD-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS5301.
+       COPY MEECCMCD IN COPYLIB.
+
+       FD  VALID-DATA-FILE.
+       01  VALID-DATA-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS5202.
+       COPY DVLDDATA IN COPYLIB.
+
+DCR02  FD  DPOITEM-FILE.
+DCR02  01  DPOITEM-REC.
+DCR02  COPY DDS-ALL-FORMATS OF MCFLCS1002.
+DCR02  COPY DPOITEM  IN COPYLIB.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+
+       COPY FILESTATUS IN COPYLIB.
+       COPY CVALID IN COPYLIB.
+
+      **********************
+      *                    *
+      *  S W I T C H E S   *
+      *                    *
+      **********************
+
+       01  SWITCH-AREA.
+           05  EEC-COMMCODE-SW       PIC X       VALUE SPACES.
+           05  EEC-MBR-SW            PIC X       VALUE SPACES.
+           05  SAVE-PACD-SW          PIC X       VALUE SPACES.
+           05  SAVE-PCPO-SW          PIC X       VALUE SPACES.
+           05  SAVE-CHAT-SW          PIC X       VALUE SPACES.
+DCR03      05  WS-FUNKY-EXP-CLS-SW   PIC X(6)    VALUE SPACES.
+DCR03          88  ZERO-OR-BLANK-EXP-CLS   VALUES "000000"  "      ".
+
+       01  SAVE-AREA.
+           05  BU-DISPLAY-MSG        PIC X(60)   VALUE SPACES.
+           05  SAVE-EEC-COMMCODE     PIC X(12)   VALUE SPACES.
+           05  SAVE-PLANT            PIC X(3)    VALUE SPACES.
+           05  SAVE-PRIME            PIC X(3)    VALUE SPACES.
+           05  SAVE-STR-DEPT         PIC X(4)    VALUE SPACES.
+
+       01  SUB-AREA.
+           05  SUB                   PIC 9(3)    VALUE ZEROS.
+           05  SUB1                  PIC 9(3)    VALUE ZEROS.
+
+       01  WORK-AREA.
+           05  SEQ-NO-SAVE.
+               10  SEQ-ITEM-NO-SAVE        PIC 9(4)  VALUE ZEROS.
+               10  LINE-NO-SAVE            PIC 99    VALUE ZEROS.
+
+       01  WORK-AREA-KEYS.
+
+DCR02      05  WS-PLNT-KEY          PIC X(04)       VALUE "P 01".
+DCR02      05  WS-PACD-KEY          PIC X(04)       VALUE "PACD".
+DCR02      05  WS-PCPO-KEY          PIC X(04)       VALUE "PCPO".
+DCR02      05  WS-CHAT-KEY          PIC X(04)       VALUE "CHAT".
+DCR02      05  WS-DSTR-KEY          PIC X(04)       VALUE "DSTR".
+DCR02      05  WS-EECM-KEY          PIC X(04)       VALUE "EECM".
+
+           05  BUILD-VALID-DEPT-KEY.
+               10  DEPT-PREFIX            PIC XX   VALUE "DP".
+               10  DEPT-NUM               PIC X(8) VALUE SPACES.
+
+           05  BUILD-EXPENSE-CLASS.
+               10  FILLER                 PIC X(2) VALUE "EC".
+               10  EXPENSE-CLASS          PIC X(6) VALUE SPACES.
+
+           05  BUILD-NEW-WORK.
+               10  FILLER                 PIC X(2) VALUE "NW".
+               10  NEW-WORK               PIC X(6) VALUE SPACES.
+
+           05  BUILD-COMMENT-NO.
+               10  BUILD-COM-PREFIX       PIC X     VALUE "C".
+               10  BUILD-COM-NO           PIC X(3)  VALUE SPACES.
+
+DCR02      05  BUILD-PO-SEARCH.
+DCR02          10  PO-PREFIX              PIC X       VALUE SPACE.
+DCR02          10  PO-NO-REL.
+DCR02              15  PO-NO              PIC X(7)    VALUE SPACE.
+DCR02              15  PO-REL             PIC X(3)    VALUE SPACE.
+DCR02          10  PO-RCV                 PIC X(3)    VALUE SPACE.
+
+
+       COPY ARIBAPOITM  IN COPYLIB.
+       COPY MPLTINFO    IN COPYLIB.
+       COPY ZMPLTWS     IN COPYLIB.
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16) VALUE SPACES.
+           05  DSET-MSTORERM          PIC X(16) VALUE "MSTORERM;".
+           05  DSET-MCOMMENT          PIC X(16) VALUE "MCOMMENT;".
+           05  DSET-MVALIDUM          PIC X(16) VALUE "MVALIDUM;".
+           05  DSET-MTAX              PIC X(16) VALUE "MTAX;".
+           05  DSET-MVALIDPLTDATA     PIC X(16) VALUE "MVALIDPLTDATA;".
+           05  DSET-MPLTINFO          PIC X(16) VALUE "MPLTINFO;".
+           05  DSET-MEECCMCD          PIC X(16) VALUE "MEECCMCD;".
+
+       01  ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+
+       01 ARG-VALUES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+           05  MVALIDPLT-ARG.
+               10  MVALIDPLT-ARG-1-2  PIC XX    VALUE SPACES.
+               10  MVALIDPLT-ARG-3-10.
+                   15  MVALIDPLT-ARG-3-8  PIC 9(6).
+                   15  FILLER             PIC XX.
+           05  COMMENT-ARG            PIC X(4)  VALUE SPACES.
+           05  UM-ARG                 PIC X(2)  VALUE SPACES.
+           05  TAX-ARG                PIC X(2)  VALUE SPACES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+           05  COMMCODE-ARG           PIC X(12) VALUE SPACES.
+DCR02      05  PO2-ARG                PIC X(14) VALUE SPACES.
+
+       01  WS-MISCELLANEOUS-FLDS.
+           03  WS-HOLDNUM-FLD        PIC 9(14)    VALUE ZERO.
+           03  WS-HOLDNUM-FLD-A   REDEFINES WS-HOLDNUM-FLD  PIC X(14).
+
+DCR04      03  WS-ZERO-EXP-CLS       PIC X(6)    VALUE "000000".
+
+DCR02      03  WS-ITEM-ERR-MSG.
+DCR02          05  FILLER           PIC X(10)       VALUE "ITEM NBR:".
+DCR02          05  WS-ITEM-ERR-NBR  PIC X(04)       VALUE SPACE.
+
+       01 WS-PROGRAM-MESSAGES.
+           03  WS-DEPT-MSG1          PIC X(60)          VALUE
+               "ERR - INVALID DEPARTMENT CODE".
+           03  WS-EXPCLS-MSG1        PIC X(60)          VALUE
+               "ERR - INVALID EXPENSE CLASS".
+           03  WS-EXPCLS-MSG2        PIC X(60)          VALUE
+               "ERR - INVALID EXPENSE CLASS -OR- WORK NUMBER".
+           03  WS-UOM-MSG1           PIC X(60)          VALUE
+               "ERR - INVALID UNIT OF MEASURE".
+           03  WS-UOM-MSG2           PIC X(60)          VALUE
+               "ERR - INVALID UNIT OF MEASURE FOR INVOICELESS".
+           03  WS-UOM-MSG3           PIC X(60)          VALUE
+               "ERR - INVALID UNIT PRICE UNIT OF MEASURE".
+           03  WS-UOM-MSG4           PIC X(60)          VALUE
+               "ERR - QUANTITY UOM NOT A STOREROOM UOM".
+           03  WS-UOM-MSG5           PIC X(60)          VALUE
+               "ERR - PRICE UOM NOT A STOREROOM UOM".
+           03  WS-UOM-MSG6           PIC X(60)          VALUE
+               "ERR - QUANTITY/PRICE UOM MUST BE = FOR NON-CODED PO".
+           03  WS-QTY-MSG1           PIC X(60)          VALUE
+               "ERR - QUANTITY MUST BE > ZERO".
+           03  WS-PRICE-MSG1         PIC X(60)          VALUE
+               "ERR - PRICE MUST BE > ZERO".
+           03  WS-COMMCD-MSG1        PIC X(60)          VALUE
+               "ERR - COMMODITY CODE MUST BE ENTERED".
+           03  WS-COMMCD-MSG2        PIC X(60)          VALUE
+               "ERR - INVALID COMMODITY CODE".
+           03  WS-COMMCD-MSG3        PIC X(60)          VALUE
+              "ERR - COMMODITY CODE CANT BE CHGD - ORIGINAL REDISPLAY".
+           03  WS-EECCOO-MSG1        PIC X(60)          VALUE
+              "ERR - INVALID COUNTRY OF ORIGIN".
+           03  WS-TAXCD-MSG1         PIC X(60)          VALUE
+              "ERR - INVALID TAX CODE".
+           03  WS-COMPANY-MSG1      PIC X(60)          VALUE
+              "ERR - COMPANY IS A REQUIRED ENTRY".
+           03  WS-COMPANY-MSG2      PIC X(60)          VALUE
+              "ERR - INVALID COMPANY CODE".
+           03  WS-PRIME-MSG1        PIC X(60)          VALUE
+              "ERR - PRIME IS A REQUIRED ENTRY".
+           03  WS-PRIME-MSG2        PIC X(60)          VALUE
+              "ERR - INVALID PRIME CODE".
+           03  WS-CLASS-MSG1        PIC X(60)          VALUE
+              "ERR - CLASS IS A REQUIRED ENTRY".
+           03  WS-CLASS-MSG2        PIC X(60)          VALUE
+              "ERR - INVALID CLASS ENTERED".
+           03  WS-EXPNW-MSG1        PIC X(60)          VALUE
+              "ERR - INVALID EXP/NW FOR CLASS".
+           03  WS-COMMENT-MSG1      PIC X(60)          VALUE
+              "ERR - INVALID INSTRUCTION NUMBER".
+           03  WS-STORERM-MSG1      PIC X(60)          VALUE
+              "ERR - MUST BE CODED ITEM FOR STOREROOM DEPARTMENT".
+           03  WS-NR-MSG1           PIC X(60)          VALUE
+              "ERR - NON-RECEIVABLE MUST BE NON-CODED - 'NC' IN CODE".
+
+DCR02      03  WS-CC-PO-NBR-MISSING-MSG PIC X(60)          VALUE
+DCR02      "CHG\CNL ERR- ARIBA ITEM - CSIS PO NUMBER MISSING".
+DCR02      03  WS-CC-LINE-ITEM-NFND-MSG PIC X(60)          VALUE
+DCR02      "CHG\CNL ERR - CSIS ITEM RECORD(DPOITEM) NFND".
+DCR02      03  WS-CC-ITM-QTY-ERR-MSG1   PIC X(80)     VALUE
+DCR02      "CHG\CNL ERR - CSIS ITEM CHG FAILED - QTY < DELIVERED ".
+DCR02      03  WS-CC-ITM-UOM-ERR-MSG1   PIC X(80)     VALUE
+DCR02      "CHG\CNL ERR - CSIS ITEM UOM CANT BE CHGD AFTER RECEIPT".
+DCR02      03  WS-CC-ITM-UOM-ERR-MSG2   PIC X(80)     VALUE
+DCR02      "CHG\CNL ERR - CSIS PRICE UOM CANT BE CHGD AFTER RECEIPT".
+DCR02      03  WS-CC-ITM-PRC-ERR-MSG1   PIC X(80)     VALUE
+DCR02      "CHG\CNL ERR - CSIS UNIT PRICE CANT BE CHGD AFTER RECEIPT".
+DCR02      03  WS-CC-ITM-DPT-ERR-MSG1   PIC X(80)     VALUE
+DCR02      "CHG\CNL ERR - ACCTG DATA(DEPT) CANT BE CHGD AFTER RECEIPT".
+
+      *================================================================
+      *===             L I N K A G E   S E C T I O N
+      *================================================================
+       LINKAGE SECTION.
+       01  BASE                         PIC X(10).
+
+       01  ARIBAITEM-AREA-TBL.
+           03  ARIBAITEM-AREA           OCCURS 300 TIMES
+                                        PIC X(260).
+       01  ARIBAITEM-FIELDS.
+           03  NON-RECV-SW              PIC X.
+           03  ITEM-CNT                 PIC 9(3).
+           03  ITEM-REQ-NO              PIC X(12).
+           03  INVOICELESS-IND          PIC X.
+           03  ITEM-VALID-SW            PIC X.
+           03  ADD-EDIT-ADDTL-DATA-SW   PIC X.
+
+       COPY LANGSUB IN COPYLIB.
+
+       01  MESSAGE-BUFFER.
+           03  MSG-TXT               PIC X(66).
+           03  MSG-FLD               PIC X(14).
+
+      *================================================================
+      *===           P R O C E D U R E    D I V I S I O N
+      *================================================================
+       PROCEDURE DIVISION USING BASE
+                                ARIBAITEM-AREA-TBL
+                                ARIBAITEM-FIELDS
+                                LANGUAGE-PARMS
+                                MESSAGE-BUFFER.
+
+       0000-PROGRAM-ENTRY.
+
+           OPEN  INPUT  MSTOREROOM-FILE
+                        MVALIDUM-FILE
+                        MVALPLTDTA-FILE
+                        MCOMMENT-FILE
+                        EEC-COMMCD-FILE
+                        VALID-DATA-FILE
+DCR02                   DPOITEM-FILE
+                        MTAX-FILE.
+
+
+           INITIALIZE MESSAGE-BUFFER.
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           CLOSE        MSTOREROOM-FILE
+                        MVALIDUM-FILE
+                        MVALPLTDTA-FILE
+                        MCOMMENT-FILE
+                        EEC-COMMCD-FILE
+                        VALID-DATA-FILE
+DCR02                   DPOITEM-FILE
+                        MTAX-FILE.
+
+       0000-PROGRAM-EXIT.
+           GOBACK.
+
+       1-HSK.
+
+      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+      *    RETRIEVE SWITCHES USED FOR LUX ACCOUNT CODE LOGICS
+      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+
+            MOVE "Y" TO ITEM-VALID-SW.
+
+      *
+      *    RETRIEVE MPLTINFO USING KEY "PACD"
+      *
+DCR02      MOVE WS-PACD-KEY      TO WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE "N"                TO SAVE-PACD-SW
+               MOVE "N" TO ITEM-VALID-SW
+               MOVE "ERR PACD READK-MPLTINFO  " TO MSG-TXT
+               MOVE WS-ZMPLT-KEY                TO MSG-FLD
+           ELSE
+               MOVE MPLTINFO-PACD-SW   TO SAVE-PACD-SW
+           END-IF.
+
+
+      *
+      *    RETRIEVE MPLTINFO USING KEY "PCPO"
+      *
+DCR02      MOVE WS-PCPO-KEY      TO WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE "N"                TO SAVE-PCPO-SW
+               MOVE "N" TO ITEM-VALID-SW
+               MOVE "ERR PCPO READK-MPLTINFO  " TO MSG-TXT
+               MOVE WS-ZMPLT-KEY                TO MSG-FLD
+           ELSE
+               MOVE MPLTINFO-PCPO-SW   TO SAVE-PCPO-SW
+           END-IF.
+
+      *
+      *    RETRIEVE MPLTINFO USING KEY "CHAT"
+      *
+DCR02      MOVE WS-CHAT-KEY      TO WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE "N"                TO SAVE-CHAT-SW
+               MOVE "N" TO ITEM-VALID-SW
+               MOVE "ERR CHAT READK-MPLTINFO  " TO MSG-TXT
+               MOVE WS-ZMPLT-KEY                TO MSG-FLD
+           ELSE
+               MOVE MPLTINFO-CHAT-PURCH-REQUIRED TO
+                                  SAVE-CHAT-SW
+           END-IF.
+
+      *
+      *    GET PLANT NUMBER, PRIME
+      *
+DCR02      MOVE WS-PLNT-KEY      TO WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE SPACES             TO SAVE-PLANT,
+                                          SAVE-PRIME
+           ELSE
+               MOVE MPLTINFO-COMPANY   TO SAVE-PLANT
+               MOVE MPLTINFO-PRIME     TO SAVE-PRIME
+           END-IF.
+
+      *
+      *    GET STOREROOM DEPARTMENT
+      *
+DCR02      MOVE WS-DSTR-KEY      TO WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE SPACES                TO SAVE-STR-DEPT
+           ELSE
+               MOVE MPLTINFO-DEPT-STR (1) TO SAVE-STR-DEPT
+           END-IF.
+
+      *
+      *    RETRIEVE EEC SWITCHES
+      *
+           MOVE "N" TO EEC-COMMCODE-SW, EEC-MBR-SW.
+DCR01 **************************************************************
+DCR01 ** EEC PROCESSING INACTIVE ON AS400 PER BILL FONAGY 11/01/2002
+DCR01 **************************************************************
+DCR01 *    MOVE WS-EECM-KEY      TO WS-ZMPLT-KEY.
+DCR01 *    PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR01 *    MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR01 *    MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+DCR01 *    IF FS-GOOD-FILE-IO
+DCR01 *        MOVE MPLTINFO-EEC-MEMBR TO EEC-MBR-SW
+DCR01 *        MOVE MPLTINFO-EEC-PO    TO EEC-COMMCODE-SW
+DCR01 *    END-IF.
+DCR01 **************************************************************
+
+       1-H-X.
+           EXIT.
+
+       6-MAIN.
+
+           PERFORM 62-PROCESS-ITEM-DATA THRU 62-PID-X
+               VARYING SUB FROM 1 BY 1 UNTIL
+                       SUB > ITEM-CNT OR
+                       ITEM-VALID-SW = "N".
+
+       6-M-X.
+           EXIT.
+
+      *****************************************************
+      *                                                   *
+      *   PROCESS PO ITEM INFORMATION SECTION             *
+      *                                                   *
+      *****************************************************
+       62-PROCESS-ITEM-DATA.
+
+           INITIALIZE BUF-ARIBAPO-DETAIL,
+                      ARG-VALUES,
+                      MESSAGE-BUFFER.
+
+           MOVE ARIBAITEM-AREA (SUB) TO BUF-ARIBAPO-DETAIL.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 **  THE ENTIRE PO GETS SENT DOWN DURING CHANGE\CANCEL PROCESS
+DCR02 **  PROCESS ONLY THOSE RECORDS THAT HAVE CHANGED:
+DCR02 **  --> RECORDS WHERE 2ND POSITION OF ARIBAITM-REC-IND = "C"
+DCR02 **===============================================================
+DCR02      IF  ARIBAITM-REC-IND  OF BUF-ARIBAPO-DETAIL(1:1) = "4"
+DCR02      AND ARIBAITM-REC-IND  OF BUF-ARIBAPO-DETAIL(2:1) NOT = "C"
+DCR02          GO TO 62-PID-X
+DCR02      END-IF.
+
+DCR02      IF  ARIBAITM-REC-IND  OF BUF-ARIBAPO-DETAIL(1:1) = "4"
+DCR02          PERFORM 625-CHG-CNL-EDITS  THRU  625-CC-EXIT
+DCR02          IF  ITEM-VALID-SW = "N"
+DCR02              GO TO 62-PID-X
+DCR02          END-IF
+DCR02      END-IF.
+
+           PERFORM 620-PCPO-EDITS   THRU 620-PE-X.
+           IF ITEM-VALID-SW = "N"
+               GO TO 62-PID-X
+           END-IF.
+
+      ********************************************************
+      *
+      *  EDIT CORPORATE CODE.  MAKE SURE IT EXISTS AND HAS
+      *  VALID UNIT OF MEASURE.
+      *
+      ********************************************************
+           IF ARIBAITM-CORP-CODE = "NON-STR"
+               PERFORM 621-EDIT-NONCODED-ITEM  THRU  621-ENI-X
+           ELSE
+               PERFORM 621-EDIT-CODED-ITEM  THRU  621-ECI-X
+           END-IF.
+
+           IF ITEM-VALID-SW = "N"
+               GO TO 62-PID-X
+           END-IF.
+
+       62-EDIT-DEPT.
+
+           MOVE ARIBAITM-SUB-DETL     TO  DEPT-NUM.
+           MOVE BUILD-VALID-DEPT-KEY  TO MVALIDPLT-ARG.
+           PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+      *       "DEPARTMENT CODE DOES NOT EXIST"
+               MOVE "N" TO ITEM-VALID-SW
+               MOVE WS-DEPT-MSG1          TO MSG-TXT
+               MOVE MVALIDPLT-ARG TO MSG-FLD
+               GO TO 62-PID-X
+           END-IF.
+
+      ***********************************
+      *
+      *  EDIT ADDITIONAL DATA FOR
+      *  EITHER A VALID EXPENSE CLASS OR
+      *  NEW WORK NUMBER
+      *
+      ***********************************
+
+       62-EDIT-ADDTL-DATA.
+
+           IF ARIBAITM-ADDTL-DATA = SPACES OR
+              ADD-EDIT-ADDTL-DATA-SW = "N"
+              GO TO 62-EDIT-UMS
+           END-IF.
+
+           IF SAVE-PCPO-SW = "Y"
+      *        "EXP CLASS NOT 000-099, SKIP VALID. OF ADDTL DATA"
+               IF ARIBAITM-SUB < "000" OR ARIBAITM-SUB > "099"
+                   GO TO 62-EDIT-UMS
+               END-IF
+           END-IF.
+
+           MOVE ARIBAITM-EXP-NW       TO  EXPENSE-CLASS.
+           MOVE BUILD-EXPENSE-CLASS   TO  MVALIDPLT-ARG.
+           PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+               MOVE ARIBAITM-EXP-NW       TO  NEW-WORK
+               MOVE BUILD-NEW-WORK        TO  MVALIDPLT-ARG
+               PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *      "INVALID EXPENSE CLASS OR NEW WORK NUMBER"
+                  MOVE WS-EXPCLS-MSG2         TO MSG-TXT
+                  MOVE MVALIDPLT-ARG TO MSG-FLD
+                  MOVE "N" TO ITEM-VALID-SW
+                  GO TO 62-PID-X
+               END-IF
+           END-IF.
+
+       62-EDIT-UMS.
+
+           IF  ARIBAITM-UNIT-MEASURE NOT = SPACES
+           OR  ARIBAITM-QTY-ORDERED  NOT = ZEROS
+               MOVE ARIBAITM-UNIT-MEASURE TO UM-ARG
+               PERFORM 9030-READK-MVALIDUM   THRU 9030-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+                   MOVE WS-UOM-MSG1     TO MESSAGE-BUFFER
+                   MOVE ARIBAITM-UNIT-MEASURE       TO MSG-FLD
+      ************ MOVE "INVALID QUANTITY UM      " TO MESSAGE-BUFFER
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 62-PID-X
+               END-IF
+           END-IF.
+
+           IF INVOICELESS-IND = "Y"
+               IF ARIBAITM-UNIT-MEASURE = "AS" OR "LT"
+                  MOVE WS-UOM-MSG2     TO MSG-TXT
+                  MOVE ARIBAITM-UNIT-MEASURE       TO MSG-FLD
+      *********** MOVE "INVALID UM FOR INVOICELESS" TO MSG-BUFFER
+                  MOVE "N" TO ITEM-VALID-SW
+                  GO TO 62-PID-X
+               ELSE
+DCR02          IF  ARIBAITM-REC-IND  OF BUF-ARIBAPO-DETAIL(1:1) = "2"
+DCR02          AND ARIBAITM-QTY-ORDERED = ZEROES
+      *************  MOVE "QTY MUST BE > ZERO    " TO MESSAGE-BUFFER
+                     MOVE ARIBAITM-QTY-ORDERED  TO WS-HOLDNUM-FLD
+                     MOVE WS-HOLDNUM-FLD-A      TO MSG-FLD
+                     MOVE WS-QTY-MSG1     TO MSG-TXT
+                     MOVE "N" TO ITEM-VALID-SW
+                     GO TO 62-PID-X
+                  END-IF
+               END-IF
+           END-IF.
+
+      **************************************************
+      ** THE PRICE UM IS CHECKED AGAINST THE DATABASE **
+      **************************************************
+
+           IF ARIBAITM-PRICE-UM NOT = SPACES OR
+              ARIBAITM-UNIT-PRICE NOT = ZEROS
+               MOVE ARIBAITM-PRICE-UM TO UM-ARG
+               PERFORM 9030-READK-MVALIDUM   THRU 9030-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *            "UNIT PRICE UM IS INVALID"
+      ************ MOVE "UNIT PRICE UM IS INVALID " TO MESSAGE-BUFFER
+                   MOVE WS-UOM-MSG3     TO MSG-TXT
+                   MOVE ARIBAITM-PRICE-UM  TO MSG-FLD
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 62-PID-X
+               END-IF
+           END-IF.
+
+           IF INVOICELESS-IND = "Y"
+               IF ARIBAITM-PRICE-UM = "AS" OR "LT"
+      *            "UNIT OF MEASURE INVALID FOR INVOICELESS"
+                  MOVE WS-UOM-MSG2     TO MESSAGE-BUFFER
+      *********** MOVE "UM INVALID FOR INVOICELESS" TO MESSAGE-BUFFER
+                  MOVE "N" TO ITEM-VALID-SW
+                  GO TO 62-PID-X
+               ELSE
+                   IF ARIBAITM-UNIT-PRICE = ZEROES
+      **************** MOVE "PRICE MUST BE > ZERO  " TO MESSAGE-BUFFER
+                       MOVE WS-PRICE-MSG1   TO MSG-TXT
+                       MOVE ARIBAITM-UNIT-PRICE  TO WS-HOLDNUM-FLD
+                       MOVE WS-HOLDNUM-FLD-A     TO MSG-FLD
+                       MOVE "N" TO ITEM-VALID-SW
+                       GO TO 62-PID-X
+                   END-IF
+               END-IF
+           END-IF.
+
+
+       62-EDIT-EEC-FIELDS.
+
+DCR01 **************************************************************
+DCR01 ** EEC PROCESSING INACTIVE ON AS400 PER BILL FONAGY 11/01/2002
+DCR01 ** SKIP DIRECTLY TO TAX CODE PROCESSING
+DCR01 **************************************************************
+DCR01 *****IF EEC-MBR-SW = "N"
+DCR01          GO TO 62-EDIT-TAX-CODE
+DCR01 *****END-IF.
+
+           IF EEC-COMMCODE-SW = "Y"
+               IF SAVE-EEC-COMMCODE = SPACES
+                   IF ARIBAITM-EEC-COMM-CODE = SPACES
+      *                "COMMODITY CODE MUST BE ENTERED"
+                       MOVE WS-COMMCD-MSG1  TO MESSAGE-BUFFER
+                       MOVE "N" TO ITEM-VALID-SW
+                       GO TO 62-PID-X
+                   ELSE
+                       MOVE ARIBAITM-EEC-COMM-CODE TO COMMCODE-ARG
+                     PERFORM 9060-READK-EEC-COMMCD THRU 9060-READK-EXIT
+                     IF FS-RECORD-NOT-FOUND
+      *************  "INVALID COMMODITY CODE"
+                        MOVE WS-COMMCD-MSG2    TO MESSAGE-BUFFER
+                        MOVE "N" TO ITEM-VALID-SW
+                        GO TO 62-PID-X
+                     ELSE
+                         NEXT SENTENCE
+               ELSE
+               IF ARIBAITM-EEC-COMM-CODE > SPACES
+                   MOVE ARIBAITM-EEC-COMM-CODE TO COMMCODE-ARG
+                   PERFORM 9060-READK-EEC-COMMCD THRU 9060-READK-EXIT
+                   IF FS-RECORD-NOT-FOUND
+      *                "INVALID COMMODITY CODE"
+                       MOVE WS-COMMCD-MSG2    TO MESSAGE-BUFFER
+                       MOVE "N" TO ITEM-VALID-SW
+                       GO TO 62-PID-X
+                   ELSE
+                   IF SAVE-EEC-COMMCODE = ARIBAITM-EEC-COMM-CODE
+                       NEXT SENTENCE
+                   ELSE
+      *            "COMMODITY CODE CANNOT BE CHANGED - ORIGINAL REDISPLAYED"
+                   MOVE WS-COMMCD-MSG3    TO MESSAGE-BUFFER
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 62-PID-X
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF SAVE-EEC-COMMCODE = SPACES
+               IF ARIBAITM-EEC-COMM-CODE = SPACES
+                    NEXT SENTENCE
+               ELSE
+               MOVE ARIBAITM-EEC-COMM-CODE TO COMMCODE-ARG
+               PERFORM 9060-READK-EEC-COMMCD THRU 9060-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *        "INVALID COMMODITY CODE"
+                  MOVE WS-COMMCD-MSG2    TO MESSAGE-BUFFER
+                  MOVE "N" TO ITEM-VALID-SW
+                  GO TO 62-PID-X
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF ARIBAITM-EEC-COMM-CODE > SPACES
+               MOVE ARIBAITM-EEC-COMM-CODE TO COMMCODE-ARG
+               PERFORM 9060-READK-EEC-COMMCD THRU 9060-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *        "INVALID COMMODITY CODE"
+                   MOVE WS-COMMCD-MSG2    TO MESSAGE-BUFFER
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 62-PID-X
+               ELSE
+               IF SAVE-EEC-COMMCODE = ARIBAITM-EEC-COMM-CODE
+                   NEXT SENTENCE
+               ELSE
+      *        "COMMODITY CODE CANNOT BE CHANGED"
+                   MOVE WS-COMMCD-MSG3    TO MESSAGE-BUFFER
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 62-PID-X.
+
+       62-EDIT-EEC-COO.
+
+           IF ARIBAITM-EEC-CNTRY-ORIGIN = SPACES
+               GO TO 62-EDIT-TAX-CODE
+           END-IF.
+
+           MOVE "EECCC " TO CVALID-CODE-TYPE.
+           MOVE ARIBAITM-EEC-CNTRY-ORIGIN TO CVALID-CODE-KEY.
+           PERFORM 9070-READK-VALID-DATA THRU 9070-READK-EXIT
+           IF FS-RECORD-NOT-FOUND
+               MOVE BU-DISPLAY-MSG TO MSG-TXT
+               MOVE CVALID-CODE-KEY TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 62-PID-X
+           ELSE
+               IF FS-GOOD-FILE-IO
+                   GO TO 62-EDIT-TAX-CODE
+               ELSE
+                   MOVE WS-EECCOO-MSG1       TO MSG-TXT
+                   MOVE CVALID-CODE-KEY TO MSG-FLD
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 62-PID-X
+               END-IF
+           END-IF.
+DCR01 *****END OF EEC PROCESS **************************************
+
+       62-EDIT-TAX-CODE.
+
+           MOVE ARIBAITM-TAX-CODE TO TAX-ARG.
+           PERFORM 9050-READK-MTAX     THRU 9050-READK-EXIT
+           IF FS-RECORD-NOT-FOUND
+      *      "TAX CODE DOES NOT EXIST"
+              MOVE WS-TAXCD-MSG1        TO MSG-TXT
+              MOVE ARIBAITM-TAX-CODE    TO MSG-FLD
+              MOVE "N" TO ITEM-VALID-SW
+              GO TO 62-PID-X
+           END-IF.
+
+       62-EDIT-COMMENT-NO.
+
+           PERFORM 621-EDIT-COMMENTS  THRU  621-EC-X
+               VARYING SUB1  FROM 1 BY 1
+                   UNTIL SUB1 > 4  OR  ITEM-VALID-SW = "N".
+           IF ITEM-VALID-SW = "N"
+               GO TO 62-PID-X.
+
+       62-EDIT-RCV-COMMENT-NO.
+
+           PERFORM 621-EDIT-RCV-COMMENTS  THRU  621-ERC-X
+               VARYING SUB1  FROM 1 BY 1
+                   UNTIL SUB1 > 4  OR  ITEM-VALID-SW = "N".
+
+       62-PID-X.
+           EXIT.
+
+       620-PCPO-EDITS.
+           IF SAVE-PCPO-SW = "N"
+               GO TO 620-PE-X
+           END-IF.
+
+           IF ARIBAITM-COMPANY = SPACES
+      *    "COMPANY IS A REQUIRED FIELD"
+               MOVE WS-COMPANY-MSG1      TO MSG-TXT
+               MOVE ARIBAITM-COMPANY     TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 620-PE-X
+           ELSE
+           MOVE "CO" TO MVALIDPLT-ARG-1-2
+           MOVE ARIBAITM-COMPANY TO MVALIDPLT-ARG-3-10
+           PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+           IF FS-RECORD-NOT-FOUND
+      *        "COMPANY IS INVALID"
+               MOVE WS-COMPANY-MSG2      TO MSG-TXT
+               MOVE MVALIDPLT-ARG        TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 620-PE-X.
+
+           IF ARIBAITM-PRIME = SPACES
+      *        "PRIME IS A REQUIRED FIELD"
+               MOVE WS-PRIME-MSG1      TO MSG-TXT
+               MOVE MVALIDPLT-ARG      TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 620-PE-X
+           ELSE
+           MOVE "PR" TO MVALIDPLT-ARG-1-2
+           MOVE ARIBAITM-PRIME TO MVALIDPLT-ARG-3-10
+           PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+           IF FS-RECORD-NOT-FOUND
+      *    "PRIME IS INVALID"
+              MOVE WS-PRIME-MSG2      TO MSG-TXT
+              MOVE MVALIDPLT-ARG      TO MSG-FLD
+              MOVE "N" TO ITEM-VALID-SW
+              GO TO 620-PE-X.
+
+           IF ARIBAITM-CLASS = SPACES
+      *    "CLASS IS A REQUIRED FIELD"
+               MOVE WS-CLASS-MSG1      TO MESSAGE-BUFFER
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 620-PE-X
+           ELSE
+           IF ARIBAITM-SUB = "CNS"
+               IF ARIBAITM-CORP-CODE NOT = "NON-STR"
+                   GO TO 620-PE-X
+               ELSE
+               IF ARIBAITM-EXP-NW = "000000" OR SPACES
+                   GO TO 620-PE-X
+               ELSE
+               MOVE "NW" TO MVALIDPLT-ARG-1-2
+               MOVE ARIBAITM-EXP-NW TO MVALIDPLT-ARG-3-10
+               PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *            "EXP/NW IS INVALID FOR CLASS"
+                   MOVE WS-EXPNW-MSG1     TO MSG-TXT
+                   MOVE MVALIDPLT-ARG     TO MSG-FLD
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 620-PE-X
+               ELSE
+               GO TO 620-PE-X
+           ELSE
+           IF ARIBAITM-CORP-CODE = "NON-STR"
+               MOVE SPACES  TO MVALIDPLT-ARG
+               MOVE "EC"    TO MVALIDPLT-ARG-1-2
+               MOVE ARIBAITM-SUB-REDF TO MVALIDPLT-ARG-3-8
+               PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *            "CLASS ENTERED IS INVALID"
+                   MOVE WS-CLASS-MSG2     TO MSG-TXT
+                   MOVE MVALIDPLT-ARG     TO MSG-FLD
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 620-PE-X
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           GO TO 620-PE-X.
+
+           IF ARIBAITM-SUB = "000"
+               MOVE "NW" TO MVALIDPLT-ARG-1-2
+               MOVE ARIBAITM-EXP-NW TO MVALIDPLT-ARG-3-10
+               PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+               IF FS-RECORD-NOT-FOUND
+      *            "EXP/NW ENTERED IS INVALID FOR CLASS"
+                   MOVE WS-EXPNW-MSG1     TO MSG-TXT
+                   MOVE MVALIDPLT-ARG     TO MSG-FLD
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 620-PE-X
+               ELSE
+               GO TO 620-PE-X.
+
+           IF ARIBAITM-SUB NOT < "001"
+               IF ARIBAITM-SUB NOT > "999"
+                   IF ARIBAITM-CORP-CODE NOT = "NC"
+                       GO TO 620-PE-X
+                   ELSE
+                   IF ARIBAITM-EXP-NW = SPACES OR "000000"
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE "NW" TO MVALIDPLT-ARG-1-2
+                   MOVE ARIBAITM-EXP-NW TO MVALIDPLT-ARG-3-10
+               PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT
+                   IF FS-RECORD-NOT-FOUND
+      *               "EXP/NW IS INVALID FOR CLASS"
+                       MOVE WS-EXPNW-MSG1     TO MSG-TXT
+                       MOVE MVALIDPLT-ARG     TO MSG-FLD
+                       MOVE "N" TO ITEM-VALID-SW
+                       GO TO 620-PE-X
+                   ELSE
+                   GO TO 620-PE-X.
+
+           MOVE "NW" TO MVALIDPLT-ARG-1-2.
+           MOVE ARIBAITM-EXP-NW TO MVALIDPLT-ARG-3-10.
+           PERFORM 9010-READK-MVALPLTDTA    THRU 9010-READK-EXIT.
+           IF FS-GOOD-FILE-IO
+               IF ARIBAITM-SUB NOT < "000" AND
+                  ARIBAITM-SUB NOT > "099"
+                   NEXT SENTENCE
+               ELSE
+      *        "CLASS ENTERED IS INVALID"
+               MOVE WS-CLASS-MSG2     TO MSG-TXT
+               MOVE MVALIDPLT-ARG     TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 620-PE-X
+           ELSE
+           IF ARIBAITM-SUB NOT < "000" AND
+              ARIBAITM-SUB NOT > "099"
+      *        "EXP/NW IS INVALID FOR CLASS"
+               MOVE WS-EXPNW-MSG1     TO MSG-TXT
+               MOVE MVALIDPLT-ARG     TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW.
+
+       620-PE-X.
+           EXIT.
+
+      *********************************
+      *
+      *   EDIT STD. INSTRUCTIONS
+      *
+      *********************************
+
+       621-EDIT-COMMENTS.
+
+           IF ARIBAITM-STD-INST (SUB1) = SPACES
+               GO TO 621-EC-X
+           END-IF.
+
+           MOVE ARIBAITM-STD-INST (SUB1) TO BUILD-COM-NO.
+           MOVE "C" TO BUILD-COM-PREFIX.
+           MOVE BUILD-COMMENT-NO TO COMMENT-ARG.
+           PERFORM 9040-READK-MCOMMENT      THRU 9040-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+      *      "INSTRUCTION NUMBER DOES NOT EXIST"
+              MOVE WS-COMMENT-MSG1   TO MSG-TXT
+              MOVE ARIBAITM-STD-INST(SUB1) TO MSG-FLD
+              MOVE "N" TO ITEM-VALID-SW
+           END-IF.
+
+       621-EC-X.
+           EXIT.
+
+      *********************************
+      *
+      *   EDIT RCV. INSTRUCTIONS
+      *
+      *********************************
+
+       621-EDIT-RCV-COMMENTS.
+
+           IF ARIBAITM-RCV-INST (SUB1) = SPACES
+               GO TO 621-ERC-X
+           END-IF.
+
+           MOVE ARIBAITM-RCV-INST (SUB1) TO BUILD-COM-NO.
+           MOVE "R" TO BUILD-COM-PREFIX.
+           MOVE BUILD-COMMENT-NO TO COMMENT-ARG.
+           PERFORM 9040-READK-MCOMMENT      THRU 9040-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+      *      "INSTRUCTION NUMBER DOES NOT EXIST"
+              MOVE WS-COMMENT-MSG1    TO MSG-TXT
+              MOVE ARIBAITM-RCV-INST(SUB1)  TO MSG-FLD
+              MOVE "N" TO ITEM-VALID-SW
+           END-IF.
+
+       621-ERC-X.
+           EXIT.
+
+      *********************************
+      *
+      *   CODED PO EDITS PROCEDURE
+      *
+      *********************************
+
+       621-EDIT-CODED-ITEM.
+
+           MOVE ARIBAITM-CORP-CODE    TO  CODE-ARG.
+           PERFORM 9020-READK-MSTOREROOM    THRU 9020-READK-EXIT.
+DCR04 *---------------------------------------------------------------
+DCR04 *  IF ITEM FOUND IN STOREROOM AND ITS A CODED ITEM FOR THE
+DCR04 *  NAPANEE STOREROOM
+DCR04 *     THEN MOVE ZEROS TO THE EXPENSE CLASS FIELD
+DCR04 *          UPDATE THE ITEM ARRAY PASSED FROM CALLER
+DCR04 *---------------------------------------------------------------
+DCR04      IF FS-GOOD-FILE-IO
+DCR04         IF ARIBAITM-COMPANY = "631"
+DCR04            IF  ARIBAITM-SUB-DETL = SAVE-STR-DEPT
+DCR04                MOVE WS-ZERO-EXP-CLS   TO ARIBAITM-EXP-NW
+DCR04                MOVE BUF-ARIBAPO-DETAIL TO ARIBAITEM-AREA(SUB)
+DCR04            END-IF
+DCR04         END-IF
+DCR04      END-IF.
+
+
+DCR03 *---------------------------------------------------------------
+DCR03 *  IF ITEM NOT FOUND IN STOREROOM AND ITS SUPPOSEDLY A CODED
+DCR03 *  ITEM FOR THE STOREROOM AND EXPENSE CLASS = ZERO OR SPACE
+DCR03 *       THEN  GENERATE AN ERROR MESSAGE (NOT A CODED ITEM)
+DCR03 *---------------------------------------------------------------
+           IF FS-RECORD-NOT-FOUND
+DCR03           MOVE ARIBAITM-EXP-NW  TO WS-FUNKY-EXP-CLS-SW
+                IF  ARIBAITM-SUB-DETL = SAVE-STR-DEPT
+DCR03           AND ZERO-OR-BLANK-EXP-CLS
+      *---------------------------------------------------------
+      *  "MUST BE CODED ITEM FOR STOREROOM DEPT"
+      *---------------------------------------------------------
+                    MOVE WS-STORERM-MSG1     TO MSG-TXT
+                    MOVE ARIBAITM-SUB-DETL   TO MSG-FLD
+                    MOVE "N" TO ITEM-VALID-SW
+                    GO TO 621-ECI-X
+                ELSE
+      *---------------------------------------------------------
+      *  "IF NOT STOREROOM, CHANGE CORP CODE = "NON-STR"
+      *---------------------------------------------------------
+                    MOVE "NON-STR"        TO ARIBAITM-CORP-CODE
+                    MOVE BUF-ARIBAPO-DETAIL TO ARIBAITEM-AREA(SUB)
+                    GO TO 621-ECI-X
+                END-IF
+           END-IF.
+
+
+           IF ARIBAITM-UNIT-MEASURE = STR-UM OR
+                                      STR-UM1 OR
+                                      STR-UM2
+               NEXT SENTENCE
+           ELSE
+      *      "QUANTITY UM IS NOT A STOREROOM UM"
+              MOVE WS-UOM-MSG4        TO MSG-TXT
+              MOVE ARIBAITM-UNIT-MEASURE  TO MSG-FLD
+              MOVE "N" TO ITEM-VALID-SW
+              GO TO 621-ECI-X
+            END-IF.
+
+           IF ARIBAITM-PRICE-UM = STR-UM OR
+                                  STR-UM1 OR
+                                  STR-UM2
+               NEXT SENTENCE
+           ELSE
+      *       "PRICE UM IS NOT A STOREROOM UM"
+               MOVE WS-UOM-MSG5        TO MSG-TXT
+               MOVE ARIBAITM-PRICE-UM  TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 621-ECI-X
+            END-IF.
+
+      *****IF EEC-COMMCODE-SW = "Y"
+      *****    MOVE STR-PREV-CODE       TO  SAVE-EEC-COMMCODE
+      *****END-IF.
+
+       621-ECI-X.
+           EXIT.
+
+      *********************************
+      *
+      *  NON-CODED PO EDITS PROCEDURE
+      *
+      *********************************
+
+       621-EDIT-NONCODED-ITEM.
+           IF ARIBAITM-UNIT-MEASURE = ARIBAITM-PRICE-UM
+               NEXT SENTENCE
+           ELSE
+      *      "QUANTITY AND PRICE UM MUST EQUAL FOR A NON-CODED PO
+               MOVE WS-UOM-MSG6        TO MESSAGE-BUFFER
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 621-ENI-X
+           END-IF.
+
+      ********************************************
+      *
+      *  IF THIS ORDER IS A NON-RECEIVABLE MAKE SURE THE
+      *  ITEMS ARE NON-CODED.  THEY CANNOT CREATE
+      *  CODED NON-RECEIVABLE POs USING THIS
+      *  PROGRAM
+      *
+      ********************************************
+
+           IF NON-RECV-SW = "Y"
+               IF ARIBAITM-CORP-CODE = "NON-STR"
+                   NEXT SENTENCE
+               ELSE
+      **        "NON-RECEIVABLE MUST BE NON-CODED ENTER 'NC' IN CODE"
+                   MOVE WS-NR-MSG1         TO MESSAGE-BUFFER
+                   MOVE "N" TO ITEM-VALID-SW
+                   GO TO 621-ENI-X
+               END-IF
+           END-IF.
+
+
+           IF  ARIBAITM-SUB-DETL = SAVE-STR-DEPT
+      *---------------------------------------------------------
+      *  "MUST BE CODED ITEM FOR STOREROOM DEPT"
+      *---------------------------------------------------------
+               MOVE WS-STORERM-MSG1     TO MSG-TXT
+               MOVE ARIBAITM-SUB-DETL   TO MSG-FLD
+               MOVE "N" TO ITEM-VALID-SW
+               GO TO 621-ENI-X
+           END-IF.
+
+       621-ENI-X.
+           EXIT.
+
+DCR02 *****************************************************************
+DCR02 ***
+DCR02 ***  LINE ITEM EDITS SPECIFIC TO CHANGE CANCEL PROCESSING
+DCR02 ***
+DCR02 *****************************************************************
+DCR02  625-CHG-CNL-EDITS.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 **  MUST HAVE CSIS PO NUMBER
+DCR02 **===============================================================
+DCR02      IF  ARIBAITM-CSISPO-NUMBER OF BUF-ARIBAPO-DETAIL = SPACE
+DCR02          MOVE "N" TO ITEM-VALID-SW
+DCR02          MOVE WS-CC-PO-NBR-MISSING-MSG TO MSG-TXT
+DCR02          MOVE ARIBAITM-ITEM-NUMBER  TO WS-ITEM-ERR-NBR
+DCR02          MOVE WS-ITEM-ERR-MSG       TO MSG-FLD
+DCR02          GO TO 625-CC-EXIT
+DCR02      END-IF.
+
+DCR02      MOVE "P"                    TO  PO-PREFIX.
+DCR02      MOVE ARIBAITM-CSISPO-NUMBER TO  PO-NO.
+DCR02      MOVE ZERO                   TO  PO-REL.
+DCR02      MOVE ZERO                   TO  PO-RCV.
+DCR02      MOVE BUILD-PO-SEARCH        TO  PO2-ARG.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 **  DPOITEM RECORD MUST EXIST
+DCR02 **===============================================================
+DCR02      PERFORM 9080-READK-DPOITEM  THRU 9080-READK-EXIT.
+DCR02      IF FS-RECORD-NOT-FOUND
+DCR02 *      "LINE ITEM RECORD DOES NOT EXIST"
+DCR02         MOVE WS-CC-LINE-ITEM-NFND-MSG TO MSG-TXT
+DCR02         MOVE ARIBAITM-ITEM-NUMBER  TO WS-ITEM-ERR-NBR
+DCR02         MOVE WS-ITEM-ERR-MSG       TO MSG-FLD
+DCR02         MOVE "N" TO ITEM-VALID-SW
+DCR02         GO TO 625-CC-EXIT
+DCR02      END-IF.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 *=  ORDER QTY CAN NOT BE LESS THAN WHATS ALREADY BEEN RECEIVED
+DCR02 **===============================================================
+DCR02      IF  ARIBAITM-QTY-ORDERED < ITM-QTY-DLVR
+DCR02          MOVE WS-CC-ITM-QTY-ERR-MSG1 TO MSG-TXT
+DCR02          MOVE ARIBAITM-ITEM-NUMBER   TO WS-ITEM-ERR-NBR
+DCR02          MOVE WS-ITEM-ERR-MSG        TO MSG-FLD
+DCR02          MOVE "N" TO ITEM-VALID-SW
+DCR02          GO TO 625-CC-EXIT
+DCR02      END-IF.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 *=  UNIT PRICE CAN NOT BE CHANGED AFTER RECEIPT
+DCR02 **===============================================================
+DCR02 **** IF  ARIBAITM-UNIT-PRICE NOT = ITM-UNIT-PRICE
+DCR02 ****     IF  ITM-QTY-DLVR > ZERO
+DCR02 ****         MOVE WS-CC-ITM-PRC-ERR-MSG1 TO MSG-TXT
+DCR02 ****         MOVE ARIBAITM-ITEM-NUMBER   TO WS-ITEM-ERR-NBR
+DCR02 ****         MOVE WS-ITEM-ERR-MSG        TO MSG-FLD
+DCR02 ****         MOVE "N" TO ITEM-VALID-SW
+DCR02 ****         GO TO 625-CC-EXIT
+DCR02 ****     END-IF
+DCR02 **** END-IF.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 *=  UOM CAN'T BE CHANGED AFTER RECEIPT
+DCR02 **===============================================================
+DCR02      IF  ARIBAITM-UNIT-MEASURE NOT = ITM-UM
+DCR02          IF  ITM-QTY-DLVR > ZERO
+DCR02              MOVE WS-CC-ITM-UOM-ERR-MSG1 TO MSG-TXT
+DCR02              MOVE ARIBAITM-ITEM-NUMBER   TO WS-ITEM-ERR-NBR
+DCR02              MOVE WS-ITEM-ERR-MSG        TO MSG-FLD
+DCR02              MOVE "N" TO ITEM-VALID-SW
+DCR02              GO TO 625-CC-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02 **==CHG\CNL======================================================
+DCR02 *=  PRICE UOM CAN'T BE CHANGED AFTER RECEIPT
+DCR02 **===============================================================
+DCR02      IF  ARIBAITM-PRICE-UM  NOT = ITM-PRICE-UM
+DCR02          IF  ITM-QTY-DLVR > ZERO
+DCR02              MOVE WS-CC-ITM-UOM-ERR-MSG2 TO MSG-TXT
+DCR02              MOVE ARIBAITM-ITEM-NUMBER   TO WS-ITEM-ERR-NBR
+DCR02              MOVE WS-ITEM-ERR-MSG        TO MSG-FLD
+DCR02              MOVE "N" TO ITEM-VALID-SW
+DCR02              GO TO 625-CC-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+DCR02 ****************************************************************
+
+DCR02 **==CHG\CNL======================================================
+DCR02 *=  DEPT CAN'T BE CHANGED AFTER RECEIPT
+DCR02 **===============================================================
+DCR02      IF  ARIBAITM-SUB-DETL  NOT = ITM-SUB-DETL
+DCR02          IF  ITM-QTY-DLVR > ZERO
+DCR02              MOVE WS-CC-ITM-DPT-ERR-MSG1 TO MSG-TXT
+DCR02              MOVE ARIBAITM-ITEM-NUMBER   TO WS-ITEM-ERR-NBR
+DCR02              MOVE WS-ITEM-ERR-MSG        TO MSG-FLD
+DCR02              MOVE "N" TO ITEM-VALID-SW
+DCR02              GO TO 625-CC-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02  625-CC-EXIT.
+DCR02      EXIT.
+
+       COPY ZMPLTSUBR   IN COPYLIB.
+
+      *****************************************************************
+      ***  READ BY KEY MVALPLTDTA
+      *****************************************************************
+       9010-READK-MVALPLTDTA.
+
+           INITIALIZE MVALPLTDTA-REC.
+           MOVE  MVALIDPLT-ARG    TO VALDTAKEY OF MVALPLTDTA-REC.
+
+           READ MVALPLTDTA-FILE
+           END-READ.
+
+
+       9010-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY MSTOREROOM
+      *****************************************************************
+       9020-READK-MSTOREROOM.
+
+           INITIALIZE MSTOREROOM-REC.
+           MOVE  CODE-ARG         TO CORPCDE  OF MSTOREROOM-REC.
+
+           READ MSTOREROOM-FILE
+           END-READ.
+
+       9020-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY MVALIDUM
+      *****************************************************************
+       9030-READK-MVALIDUM.
+
+           INITIALIZE MVALIDUM-REC.
+           MOVE  UM-ARG           TO VALIDUM  OF MVALIDUM-REC.
+
+           READ MVALIDUM-FILE
+           END-READ.
+
+
+       9030-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY MCOMMENT
+      *****************************************************************
+       9040-READK-MCOMMENT.
+
+           INITIALIZE MCOMMENT-REC.
+           MOVE  COMMENT-ARG      TO MCOMCOMMNT  OF MCOMMENT-REC.
+
+           READ MCOMMENT-FILE
+           END-READ.
+
+       9040-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY MTAX
+      *****************************************************************
+       9050-READK-MTAX.
+
+           INITIALIZE MTAX-REC.
+           MOVE  TAX-ARG          TO TAXCDE   OF MTAX-REC.
+
+           READ MTAX-FILE
+           END-READ.
+
+       9050-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY EEC COMMODITY CODE FILE
+      *****************************************************************
+       9060-READK-EEC-COMMCD.
+
+           INITIALIZE EEC-COMMCD-REC.
+           MOVE  COMMCODE-ARG     TO EECCOMCODE OF EEC-COMMCD-REC.
+
+           READ EEC-COMMCD-FILE
+           END-READ.
+
+       9060-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY VALID DATA FILE
+      *****************************************************************
+       9070-READK-VALID-DATA.
+
+           INITIALIZE VALID-DATA-REC.
+           MOVE  COMMCODE-ARG     TO VLDCODEKEY     OF VALID-DATA-REC.
+
+           READ VALID-DATA-FILE
+           END-READ.
+
+       9070-READK-EXIT.
+            EXIT.
+DCR02 *****************************************************************
+DCR02 ***  READ BY KEY DPOITEM FILE
+DCR02 *****************************************************************
+DCR02  9080-READK-DPOITEM.
+DCR02
+DCR02      INITIALIZE DPOITEM-REC.
+DCR02      MOVE PO2-ARG          TO ITM-PO-RCV-NO.
+DCR02      MOVE ARIBAITM-ITEM-NUMBER  TO ITM-NUMBER.
+DCR02
+DCR02      READ DPOITEM-FILE
+DCR02      END-READ.
+DCR02
+DCR02  9080-READK-EXIT.
+DCR02       EXIT.
+      *****************************************************************
+      ***                 END  OF  SOURCE  MEMBER
+      *****************************************************************

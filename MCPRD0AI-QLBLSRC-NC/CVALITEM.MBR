@@ -1,0 +1,632 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          CVALITEM.
+       AUTHOR.              BARBARA WINTER.
+       DATE-WRITTEN.        NOVEMBER 1986.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.   THIS SUBPROGRAM VALIDATES ITEMS BEING RECEIVED AT DOCK.
+      *           VARIOUS CHECKS INCLUDE OVERSHIPMENT CHECKS, WARNING
+      *           MESSAGE FOR MINIMUM DELIVERED QUANTITY (90%) IF MARKED
+      *           COMPLETE, VALIDATION OF RECEIVING UM, ETC.
+      *****************************************************************
+      * 08/08/95  JEFF BUNGO
+      *   CORRECTED THE CODED/NONCODED CHECK TO MOVE "C" TO THE
+      *   STATUS VARIABLE INSTEAD OF "Y".  ALL ITEMS WERE BEING
+      *   IDENTIFIED AS NONCODED.
+      *C
+      *C 06/06/96  JEFF BUNGO
+      *C  EXTEND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C  RECOMPILE PROGRAM TO PICK UP FILE FORMAT CHANGES.
+      *C
+      *C 07/24/96  JEFF BUNGO
+      *C  ADDED EDIT FOR UM OF SPACES.
+      *C
+      *C 03/06/97  JIM COFFMAN
+      *C  ADDED MOVE OF QTY-UM TO SD-DE-UM FOR NON-CODED ITEMS TO
+      *C  FIX A PROBLEM WHEREBY THE UNIT OF MEASURE WAS BEING CLEARED
+      *C  OUT OF THE DPOITEM SEGMENT ON A CORRECTION.
+      *C
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+            SELECT MSTORERM
+              ASSIGN TO DATABASE-MCFLCS0201
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+              FILE STATUS IS FILE-STATUS.
+            SELECT DRAWLOT
+              ASSIGN TO DATABASE-MCFLCS4601
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+              FILE STATUS IS FILE-STATUS.
+            SELECT MPLTINFO
+              ASSIGN TO DATABASE-MCFLCS0501
+              ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+              RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+              FILE STATUS IS FILE-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-MCRPCS0200 OF MCFLCS0201.
+       FD  DRAWLOT
+           LABEL RECORDS ARE STANDARD.
+       01  DRAWLOT-REC.
+           COPY DDS-MCRPCS4600 OF MCFLCS4601.
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC.
+           COPY DDS-MCRPCS0500 OF MCFLCS0501.
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X       VALUE SPACES.
+           05  FILE-STATUS-2             PIC X       VALUE SPACES.
+       01  CODED-OVSH                    PIC 9(2)V99 VALUE ZEROES.
+       01  NONCODED-OVSH                 PIC 9(2)V99 VALUE ZEROES.
+       01  CODED-RAW-OVSH                PIC 9(2)V99 VALUE ZEROES.
+       01  PLANT-VALUE                   PIC X(3)  VALUE SPACES.
+       01  DETERMINE-PLANT REDEFINES PLANT-VALUE.
+           05  PLANT-NUM                 PIC X(2).
+               88  AKRON                           VALUE "11".
+           05  PLANT-ONE-NUM REDEFINES PLANT-NUM.
+               07  PLANT-DEFINE          PIC X.
+                   88  KELLY-PLANT                 VALUE "2".
+               07  FILLER                PIC X.
+           05  FILLER                    PIC X.
+
+       01  ITEM-STATUS-WS                PIC X     VALUE "C".
+           88  CODED-ITEM                          VALUE "C".
+           88  NONCODED-ITEM                       VALUE "N".
+
+       01  CALLING-ROUTINE-WS            PIC X     VALUE SPACE.
+           88  CREATE-PROGRAM                      VALUE "N".
+           88  CORRECTION-PROGRAM                  VALUE "C".
+
+       01  DELIVERED-PERCENT             PIC 9(8)V9(4)  VALUE ZEROES.
+       01  CHECK-QTY                     PIC 9(8)V9(4)  VALUE ZEROES.
+       01  MAX-QTY                       PIC 9(12)V9(4) VALUE ZEROES.
+
+       01  AUTOSTORE-AREA             PIC X(12).
+       01  AUTOSTORE-TABLE REDEFINES AUTOSTORE-AREA.
+           02  AUTOSTR-AREA OCCURS 4 TIMES
+                            INDEXED BY I.
+               03  AUTOSTORE-GRP      PIC X(2).
+               03  AUTOSTORE-SW       PIC X.
+       01  STORE-SW                   PIC X.
+
+       COPY TUMCF   IN COPYLIB.
+       COPY TRSHIFT IN COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       01  CODE-ARG                      PIC X(8)  VALUE SPACES.
+       01  DRAWLOT-ARG.
+           05  DRAW-CORP-ARG             PIC X(8)  VALUE SPACES.
+           05  DRAW-LOT-ARG              PIC X(4)  VALUE SPACES.
+           05  DRAW-LOT-9 REDEFINES DRAW-LOT-ARG  PIC 9(4).
+
+       01  DRAWLOT-SEARCH                PIC X(10) VALUE "CORP-LOT;".
+
+       01  BUF-DRAWLOT.
+           05  DRAWLOT-CORP-LOT          PIC X(12)  VALUE SPACES.
+           05  DRAWLOT-PO                PIC X(14)  VALUE SPACES.
+       COPY MPLT0 IN COPYLIB.
+       COPY MPLTOVSH IN COPYLIB.
+       COPY MSTORERM IN COPYLIB.
+       COPY DBMODES IN COPYLIB.
+       COPY DBSTAT  IN COPYLIB.
+      **************************************************************
+      **                L I N K A G E   S E C T I O N             **
+      **************************************************************
+       LINKAGE SECTION.
+       COPY DOCKMISC IN COPYLIB.
+       01  FIELD-NUMBER                  PIC S9(4) COMP-4.
+       01  LANG-SETNUM                   PIC S9(4) COMP-4.
+       01  LANG-MSGNUM                   PIC S9(4) COMP-4.
+       COPY RCVFLAGS IN COPYLIB.
+       COPY DPORECD IN COPYLIB.
+       COPY RCVQTY IN COPYLIB.
+
+       01  ITEM-DATA.
+       COPY RCVITEM IN COPYLIB.
+       01 DOCK-OVERSHIPMENT.
+          05  CODED-OVERSHIPMENT         PIC 99.
+          05  NONCODED-OVERSHIPMENT      PIC 99.
+          05  CODED-RAW-OVERSHIPMENT     PIC 99.
+          05  RAW-MATERIAL-GROUP.
+              07  RM-GROUP OCCURS 6 TIMES PIC X(2).
+
+       PROCEDURE DIVISION USING MISCELLANEOUS-DATA
+                                FIELD-NUMBER, LANG-SETNUM,
+                                LANG-MSGNUM,
+                                PASSED-FLAGS,
+                                BUF-DPORECD,
+                                DE-FIELDS-2, ITEM-DATA,
+                                DOCK-OVERSHIPMENT.
+       00-CVALITEM-MAIN.
+           OPEN INPUT MSTORERM, DRAWLOT, MPLTINFO.
+
+           COMPUTE CODED-OVSH = (100 + CODED-OVERSHIPMENT) / 100.
+           COMPUTE NONCODED-OVSH =
+               (100 + NONCODED-OVERSHIPMENT) / 100.
+           COMPUTE CODED-RAW-OVSH =
+               (100 + CODED-RAW-OVERSHIPMENT) / 100.
+
+           MOVE PLT-NUMBER-PASS          TO  PLANT-VALUE.
+           MOVE CALLING-ROUTINE-FLAG     TO  CALLING-ROUTINE-WS.
+           IF SD-CODE = "NON-STR"
+              MOVE "N"                   TO  ITEM-STATUS-WS
+           ELSE
+              MOVE "C"                   TO  ITEM-STATUS-WS.
+           MOVE ZEROES                   TO  LANG-SETNUM
+                                         LANG-MSGNUM.
+           IF QTY-RAW-YESNO = "YES"
+               IF QTY-RAW-LOT = "S   "
+                   NEXT SENTENCE
+               ELSE
+                   MOVE QTY-RAW-LOT      TO  RS-SHIFT-FLD
+                   CALL "TRSHIFT" USING RS-RET-CODE, RS-SHIFT-FLD
+                   MOVE RS-SHIFT-FLD-5-8 TO  QTY-RAW-LOT
+                   IF QTY-RAW-LOT NOT NUMERIC
+      *                "T47: THIS ENTRY MUST BE NUMERIC"
+                       MOVE 20           TO  LANG-SETNUM
+                       MOVE 47           TO  LANG-MSGNUM
+                       MOVE 59           TO  FIELD-NUMBER
+                       GO TO 09-EXIT
+                   END-IF
+           ELSE
+               MOVE SPACES               TO  QTY-RAW-LOT.
+
+           IF SD-CONTAINER = "*" AND QTY-DLVR > ZERO
+           AND QTY-CONT-DLVR = ZERO
+      *        "QUANTITY MUSTE BE ENTERED FOR CONTAINER
+               MOVE 44                   TO  FIELD-NUMBER
+               MOVE 47                   TO  LANG-SETNUM
+               MOVE 16                   TO  LANG-MSGNUM
+               GO TO 09-EXIT.
+
+           IF SD-CONTAINER = "*" AND QTY-CONT-DLVR > ZERO
+           AND QTY-CONT-UM = SPACES
+      *        "UM MUST BE ENTERED FOR CONTAINER"
+               MOVE 46                   TO  FIELD-NUMBER
+               MOVE 47                   TO  LANG-SETNUM
+               MOVE 17                   TO  LANG-MSGNUM
+               GO TO 09-EXIT.
+
+           IF CREATE-PROGRAM
+              MOVE ZEROES                TO  CORRECTION-RS-PREV-DLVR.
+
+           IF AKRON
+              IF NONCODED-ITEM
+                 PERFORM 300-AKRON-NONCODED-VALIDATION THRU 399-EXIT
+                 GO TO 09-EXIT.
+
+           IF KELLY-PLANT
+              PERFORM 500-KELLY-VALIDATION THRU 599-EXIT
+           ELSE
+              PERFORM 600-VALIDATE-RECEIVER THRU 699-EXIT.
+
+       09-EXIT.
+           CLOSE MSTORERM, DRAWLOT, MPLTINFO.
+           GOBACK.
+
+      ***************************************************************
+      *             AKRON NONCODED VALIDATION CHECKS                *
+      ***************************************************************
+       300-AKRON-NONCODED-VALIDATION.
+           MOVE QTY-DLVR TO SD-PO-QTY-DLVR, SD-STR-QTY-DLVR.
+
+
+      *----------  SKIP OVERSHIPMENT CHECKS FOR MATERIAL CONTROL
+      *            USERS (SHOULD ONLY BE CORRECTIONS PROGRAM)
+           IF PASS-DOCK-TRANS = "MD"
+             GO TO 350-MINIMUM-CHECK.
+
+      *----------   CHECK FOR OVERSHIPMENT
+           IF CREATE-PROGRAM
+              ADD QTY-DLVR, SD-PREV-DLVR  GIVING CHECK-QTY
+           ELSE
+              SUBTRACT CORRECTION-RS-PREV-DLVR FROM
+                 SD-PREV-DLVR GIVING CHECK-QTY ROUNDED
+              ADD QTY-DLVR, CHECK-QTY GIVING CHECK-QTY ROUNDED.
+
+           MULTIPLY SD-QTY-ORD   BY   NONCODED-OVSH
+                             GIVING MAX-QTY ROUNDED.
+
+           IF  QTY-ITM = "9980"
+               GO TO 399-EXIT.
+
+           IF VAL-ACCEPT-OVERSHIPMENT-SW = "Y"
+              MOVE "Y"                   TO  SD-OVERSHIP-SW
+              MOVE "N"                   TO  VAL-ACCEPT-OVERSHIPMENT-SW
+              GO TO 399-EXIT.
+
+            IF CHECK-QTY > MAX-QTY
+            MOVE "Y"                     TO  VAL-ACCEPT-OVERSHIPMENT-SW
+      *        *** OVERSHIPMENT - DEPRESS f2 TO ACCEPT OR CHANGE AMOUNT
+      *            & DEPRESS ENTER ***
+            MOVE  15                     TO  LANG-SETNUM
+            MOVE  14                     TO  LANG-MSGNUM
+            IF CREATE-PROGRAM
+               MOVE 22                   TO  FIELD-NUMBER
+               GO TO 399-EXIT
+            ELSE
+               MOVE 8                    TO  FIELD-NUMBER
+               GO TO 399-EXIT.
+
+       350-MINIMUM-CHECK.
+           PERFORM 800-MINIMUM-DELIVERY-CHECK THRU 809-EXIT.
+
+       399-EXIT.  EXIT.
+
+      ******************************************************************
+      *                 KELLY CODED/NONCODED CHECKS                    *
+      ******************************************************************
+       500-KELLY-VALIDATION.
+      *----------  CAN ONLY RECEIVE IN PO UM FOR KELLY
+            IF QTY-UM NOT = SD-KELLY-PO-UM
+      *          "*** MUST RECEIVE IN PO UM ***"
+            MOVE  13                     TO  LANG-SETNUM
+            MOVE  50                     TO  LANG-MSGNUM
+            IF CREATE-PROGRAM
+               MOVE 25                   TO  FIELD-NUMBER
+               GO TO 599-EXIT
+            ELSE
+               MOVE 10                   TO  FIELD-NUMBER
+               GO TO 599-EXIT.
+
+      *----------  CODED ITEMS:  FIGURE OUT CONVERSION FACTOR AND STORE QTY
+      *            DELIVERED IN STOREROOM UM FOR STOREROOM PROGRAMS
+           MOVE QTY-DLVR TO SD-PO-QTY-DLVR, SD-STR-QTY-DLVR.
+           COMPUTE SD-STR-QTY-DLVR ROUNDED =
+                                 SD-KELLY-CF * QTY-DLVR.
+
+      *----------  KELLY ACCEPTS ALL OVERSHIPMENTS ON BLANKET ORDERS
+           IF PO-BLANKET-INDIC = "B" OR PO-BLANKET-INDIC = "Y"
+              PERFORM 800-MINIMUM-DELIVERY-CHECK THRU 809-EXIT
+              GO TO 510-LOT-NUMBERS.
+
+      *----------  SKIP OVERSHIPMENT CHECKS FOR MATERIAL CONTROL
+      *            USERS (SHOULD ONLY BE CORRECTIONS PROGRAM)
+           IF PASS-DOCK-TRANS = "MD"
+              PERFORM 800-MINIMUM-DELIVERY-CHECK THRU 809-EXIT
+              GO TO 510-LOT-NUMBERS.
+
+      *----------  CHECK FOR OVERSHIPMENT BY ADDING DELIVERED
+      *            TO PREVIOUS DELIVERED
+           IF CREATE-PROGRAM
+              COMPUTE CHECK-QTY = SD-PREV-DLVR / SD-KELLY-CF
+              ADD QTY-DLVR, CHECK-QTY GIVING CHECK-QTY ROUNDED
+           ELSE
+              SUBTRACT CORRECTION-RS-PREV-DLVR FROM
+                 SD-PREV-DLVR GIVING CHECK-QTY ROUNDED
+              ADD QTY-DLVR, CHECK-QTY GIVING CHECK-QTY ROUNDED.
+
+      *----------  DO NOT ACCEPT OVERSHIPMENT ON DIRECT DELIVERIES.
+           IF SD-DIRECT-SW  = "Y"
+              IF CHECK-QTY > SD-PO-QTY-ORD
+      *          "*** CANNOT ACCEPT OVERSHIPMENT ON DIRECT DELIVERY ***"
+            MOVE   3                     TO  LANG-SETNUM
+            MOVE   9                     TO  LANG-MSGNUM
+            IF CREATE-PROGRAM
+               MOVE 26                   TO  FIELD-NUMBER
+               GO TO 599-EXIT
+            ELSE
+               MOVE 8                    TO  FIELD-NUMBER
+               GO TO 599-EXIT.
+
+      *----------   PREPARE FOR OVERSHIPMENT CHECKS
+           IF PO-TYPE = "2"
+             COMPUTE MAX-QTY ROUNDED = SD-PO-QTY-ORD * 1.1
+           ELSE
+            IF CODED-ITEM
+             COMPUTE MAX-QTY ROUNDED = SD-PO-QTY-ORD  * CODED-OVSH
+            ELSE
+             COMPUTE MAX-QTY ROUNDED = SD-PO-QTY-ORD * NONCODED-OVSH.
+
+           PERFORM 800-MINIMUM-DELIVERY-CHECK THRU 809-EXIT.
+           IF LANG-SETNUM = 0
+              PERFORM 810-OVERSHIPMENT-CHECK THRU 819-EXIT.
+
+       510-LOT-NUMBERS.
+
+           IF NOT CREATE-PROGRAM
+              GO TO 599-EXIT.
+           IF SD-RAW-FLAG = "N"
+              GO TO 599-EXIT.
+           IF NONCODED-ITEM
+              GO TO 599-EXIT.
+
+           IF QTY-RAW-LOT = "S   "
+              PERFORM 820-LOT-NUMBER-SYSTEM THRU 829-EXIT
+              MOVE "S"                   TO  SD-SYSTEM-LOT
+           ELSE
+              PERFORM 830-LOT-NUMBER-MANUAL THRU 839-EXIT
+              MOVE SPACES                TO  SD-SYSTEM-LOT.
+
+       599-EXIT.  EXIT.
+
+      *************************************************************
+      *                  ITEM VALIDATION CHECKS                   *
+      *                                                           *
+      *          1.  AKRON CODED ITEMS                            *
+      *          2.  NON-KELLY SUBPLANTS CODED/NONCODED ITEMS     *
+      *************************************************************
+       600-VALIDATE-RECEIVER.
+
+      *----------  NONCODED ITEM; PREPARE TO CHECK FOR OVERSHIPMENT
+           IF NONCODED-ITEM
+             COMPUTE CHECK-QTY ROUNDED =
+                SD-PREV-DLVR + QTY-DLVR - CORRECTION-RS-PREV-DLVR
+              MOVE QTY-DLVR          TO  SD-PO-QTY-DLVR
+              MOVE QTY-UM            TO  SD-DE-UM
+              GO TO 640-COMMON-CHECKS.
+
+      *---------- CODED ITEM: FIND MSTORERM FOR STR UM AND ONORDER QTYS
+           MOVE SD-CODE                  TO  CODE-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC.
+           READ MSTORERM INTO BUF-MSTORERM INVALID KEY
+                MOVE 17                  TO  COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17                   TO  COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99                   TO  COND-WORD.
+           IF NOT GOOD-CALL
+                 MOVE "DBGET MSTORERM -CVALITM  " TO BU-DISPLAY-MSG
+                 MOVE CODE-ARG           TO  BU-DISPLAY-FLD (1)
+                 PERFORM 990-BLOWUP THRU 999-EXIT.
+
+      *------IF CODED, STOREROOM, AUTOSTORE ITEM
+      *------   MAKE SURE CODE IS NOT FROZEN FOR INVENTORY
+           MOVE "N" TO STORE-SW.
+           PERFORM 840-CHECK-AUTOSTORE THRU 840-EXIT.
+           IF STORE-SW = "Y" AND STR-STATE = "F"
+               MOVE 3 TO LANG-SETNUM
+               MOVE 8 TO LANG-MSGNUM
+               IF CREATE-PROGRAM
+                  MOVE 26                   TO  FIELD-NUMBER
+               ELSE
+                  MOVE 8                    TO  FIELD-NUMBER
+               END-IF
+               GO TO 699-EXIT
+           END-IF.
+
+      *---------- VALIDATE RECEIVING UNIT OF MEASURE
+      *------ADDED EDIT OF UM FOR SPACES
+           IF (QTY-UM = STR-UM OR STR-UM1 OR STR-UM2)
+             AND (QTY-UM NOT = SPACES)
+               NEXT SENTENCE
+           ELSE
+      *        "***  INVALID UM  ***"
+            MOVE   9                     TO  LANG-SETNUM
+            MOVE  12                     TO  LANG-MSGNUM
+            IF CREATE-PROGRAM
+               MOVE 25                   TO  FIELD-NUMBER
+               GO TO 699-EXIT
+            ELSE
+               MOVE 10                   TO  FIELD-NUMBER
+               GO TO 699-EXIT.
+
+
+      *----------  DETERMINE DELIVERED AMOUNT IN BOTH PO AND STR UM
+           MOVE "00"                     TO  UMCF-RET-CODE.
+           MOVE SD-UM                    TO  UMCF-DEST-UM.
+           MOVE QTY-UM                   TO  UMCF-SOURCE-UM.
+           MOVE QTY-DLVR                 TO  UMCF-SOURCE-QTY.
+           CALL "TUMCF" USING UMCF-RET-CODE, STR-UM-AREA,
+                              UMCF-QUANTITY-AREA.
+           IF UMCF-RET-CODE NOT = "00"
+              MOVE "CONVERSION ERROR 660 CVALITM" TO BU-DISPLAY-MSG
+              MOVE UMCF-RET-CODE         TO  BU-DISPLAY-FLD (1)
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+           MOVE UMCF-DEST-QTY            TO  SD-PO-QTY-DLVR .
+           MOVE UMCF-QTY-STR-UM-DEC      TO  SD-STR-QTY-DLVR .
+           MOVE SD-UM                    TO  SD-DE-UM  QTY-UM.
+
+      *----------  ADD THIS DELIVERY TO PREVIOUS DELIVERIES
+           COMPUTE CHECK-QTY ROUNDED =
+                SD-PREV-DLVR + SD-PO-QTY-DLVR - CORRECTION-RS-PREV-DLVR.
+
+      *---------- SET A FLAG TO "A" IF QTY RCVD > ORDERED
+           IF CHECK-QTY > SD-QTY-ORD
+              MOVE "A"    TO  SD-TC323-TC-FLAG .
+           IF AKRON
+              IF PO-INTERNAL-ORDER-INDIC = "X"
+                 MOVE "N" TO  SD-TC323-TC-FLAG.
+
+           IF NOT CREATE-PROGRAM
+              GO TO 640-COMMON-CHECKS.
+
+           IF SD-RAW-FLAG = "N"
+              GO TO 640-COMMON-CHECKS.
+
+           IF QTY-RAW-LOT = "S   "
+              PERFORM 820-LOT-NUMBER-SYSTEM THRU 829-EXIT
+              MOVE "S"                   TO  SD-SYSTEM-LOT
+           ELSE
+              PERFORM 830-LOT-NUMBER-MANUAL THRU 839-EXIT
+              MOVE SPACES                TO  SD-SYSTEM-LOT.
+
+       640-COMMON-CHECKS.
+           PERFORM 800-MINIMUM-DELIVERY-CHECK THRU 809-EXIT.
+      *----------  SKIP OVERSHIPMENT CHECKS FOR MATERIAL CONTROL
+      *            USERS (SHOULD ONLY BE CORRECTIONS PROGRAM)
+           IF PASS-DOCK-TRANS = "MD"
+              NEXT SENTENCE
+           ELSE
+              IF LANG-SETNUM = 0
+                 PERFORM 810-OVERSHIPMENT-CHECK THRU 819-EXIT.
+       699-EXIT.  EXIT.
+
+      ****************************************************************
+      *     COMMON PLANT AND CODED/NONCODED CHECKS FOR MINIMUM       *
+      *     DELIVERY AND OVERSHIPMENTS  AND TALLY NUMBERS            *
+      ****************************************************************
+       800-MINIMUM-DELIVERY-CHECK.
+      *----------  CHECK FOR MINIMUM DELIVERY IF MATERIAL IS MARKED COMPLETE
+           IF QTY-MATERIAL-COMPLETE NOT = "X"
+              GO TO 802-TALLY-CHECK.
+
+           COMPUTE DELIVERED-PERCENT ROUNDED = SD-QTY-ORD * .9.
+           IF CHECK-QTY < DELIVERED-PERCENT
+              IF VAL-MARK-FLAG = "C"
+                 MOVE "0"                TO  VAL-MARK-FLAG
+              ELSE
+      *       "MARKED COMPLETE BUT < 90% DELIVERED - F6 IF CORRECT"
+              MOVE  13                   TO  LANG-SETNUM
+              MOVE  39                   TO  LANG-MSGNUM
+              MOVE "1"                   TO  VAL-MARK-FLAG
+              IF CREATE-PROGRAM
+                 MOVE 27                 TO  FIELD-NUMBER
+                 GO TO 809-EXIT
+              ELSE
+                 MOVE 18                 TO  FIELD-NUMBER
+                 GO TO 809-EXIT.
+
+           MOVE "Y"                      TO  SD-MATERIAL-COMPLETE .
+
+      *----------  DO NOT MARK COMPLETE IF DLVR = OR > 100% OF ORDERED
+           IF CHECK-QTY = SD-QTY-ORD
+                 MOVE SPACES             TO  SD-MATERIAL-COMPLETE .
+           IF CHECK-QTY > SD-QTY-ORD
+                 MOVE SPACES             TO  SD-MATERIAL-COMPLETE .
+
+       802-TALLY-CHECK.
+           IF NOT CREATE-PROGRAM
+              GO TO 809-EXIT.
+
+           IF TALLY-CLASS = "XXX"
+              GO TO 809-EXIT.
+
+           IF SD-CLASS = TALLY-CLASS
+              IF QTY-TALLY = SPACES
+      *-----     TALLY NUMBER MUST BE ENTERED FOR NATURALY RUBBER ITEM
+                 MOVE 20                 TO  LANG-SETNUM
+                 MOVE 60                 TO  LANG-MSGNUM
+                 MOVE 52                 TO  FIELD-NUMBER.
+
+       809-EXIT.  EXIT.
+
+       810-OVERSHIPMENT-CHECK.
+      *----------  CHECK FOR OVERSHIPMENT
+           IF NOT KELLY-PLANT
+            IF SD-MAJOR-GROUP = RM-GROUP (1) OR RM-GROUP (2) OR
+                                RM-GROUP (3) OR RM-GROUP (4) OR
+                                RM-GROUP (5) OR RM-GROUP (6)
+             COMPUTE MAX-QTY ROUNDED = SD-QTY-ORD * CODED-RAW-OVSH
+            ELSE
+            IF CODED-ITEM
+             COMPUTE MAX-QTY ROUNDED = SD-QTY-ORD * CODED-OVSH
+            ELSE
+             COMPUTE MAX-QTY ROUNDED = SD-QTY-ORD * NONCODED-OVSH.
+
+      *------  '9980' ITEM IS AN AKRON ONLY ITEM; BYPASS OVERSHIPMENT CHECK
+           IF QTY-ITM NOT = "9980"
+             IF CHECK-QTY > MAX-QTY
+      *        "*** OVERSHIPMENT - CONTACT MATERIALS CONTROL CONCERNING "
+      *        "EXCESS ***"
+               MOVE  15                  TO  LANG-SETNUM
+               MOVE   1                  TO  LANG-MSGNUM
+               MOVE ZEROES TO SD-PO-QTY-DLVR , SD-STR-QTY-DLVR
+               IF CREATE-PROGRAM
+                  MOVE 26                TO  FIELD-NUMBER
+                  GO TO 819-EXIT
+               ELSE
+                  MOVE 8                 TO  FIELD-NUMBER
+                  GO TO 819-EXIT.
+
+               GO TO  819-EXIT.
+       819-EXIT.  EXIT.
+
+      *----------  AUTOMATICALLY ASSIGN THE NUMBER BY INCREMENTING THE
+      *            LAST LOT NUMBER BY 1 UNTIL AN UNUSED NUMBER IS FOUND
+       820-LOT-NUMBER-SYSTEM.
+           MOVE SD-CODE                  TO  DRAW-CORP-ARG.
+           IF SD-LOT-NO NUMERIC
+               MOVE SD-LOT-NO            TO  DRAW-LOT-ARG
+           ELSE
+               MOVE "0000"               TO  DRAW-LOT-ARG.
+            ADD 1                        TO  DRAW-LOT-9.
+       822-GET-LOT.
+           MOVE 0                        TO  COND-WORD.
+           MOVE DRAWLOT-ARG              TO  CORPLOT OF DRAWLOT-REC.
+           READ DRAWLOT INVALID KEY
+               MOVE 17                   TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17               TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+           IF NOT GOOD-CALL
+              MOVE DRAW-LOT-ARG          TO  SD-LOT-NO
+              GO TO 829-EXIT.
+
+           ADD 1                         TO  DRAW-LOT-9.
+           IF DRAW-LOT-9 = 9999
+              MOVE "XXXX"                TO  SD-LOT-NO
+           ELSE
+              GO TO 822-GET-LOT.
+       829-EXIT.  EXIT.
+
+
+      *---------- THE USER HAS MANUALLY SELECTED A LOT NUMBER; CHECK TO
+      *           MAKE SURE IT HAS NOT BEEN USED YET.
+       830-LOT-NUMBER-MANUAL.
+           MOVE SD-CODE                  TO  DRAW-CORP-ARG.
+           MOVE QTY-RAW-LOT              TO  DRAW-LOT-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE DRAWLOT-ARG              TO  CORPLOT OF DRAWLOT-REC.
+           START DRAWLOT KEY = EXTERNALLY-DESCRIBED-KEY INVALID KEY
+               MOVE 17                   TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17               TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+           IF GOOD-CALL
+              MOVE 51                    TO  FIELD-NUMBER
+              MOVE 12                    TO  LANG-SETNUM
+              MOVE  7                    TO  LANG-MSGNUM
+              GO TO 839-EXIT.
+           MOVE QTY-RAW-LOT              TO  SD-LOT-NO.
+       839-EXIT.  EXIT.
+
+       840-CHECK-AUTOSTORE.
+           IF  SD-DIRECT-SW = "Y"
+               MOVE "N"                  TO  STORE-SW
+               GO TO 840-EXIT.
+      *-------  FIND RAW MATERIAL MAJOR GROUPS FOR AUTOSTORE
+           MOVE "OVSH" TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO INVALID KEY
+                 MOVE "N" TO STORE-SW
+                 GO TO 840-EXIT
+           END-READ.
+           MOVE MPLTINFO-RM-STORED-TABLE TO AUTOSTORE-AREA.
+           SET I                         TO  1.
+           SEARCH AUTOSTR-AREA
+                  AT END MOVE "N"        TO  STORE-SW
+                  GO TO 840-EXIT
+                  WHEN AUTOSTORE-GRP (I) = SD-MAJOR-GROUP
+                  GO TO 840-FOUND-GROUP.
+       840-FOUND-GROUP.
+           IF  AUTOSTORE-SW (I) = "Y"
+               MOVE "Y"                  TO  STORE-SW.
+       840-EXIT.
+           EXIT.
+
+       990-BLOWUP.
+           MOVE "CVALITEM"               TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-FLDS.
+       999-EXIT.  EXIT.

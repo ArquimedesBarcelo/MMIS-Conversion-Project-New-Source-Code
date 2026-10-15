@@ -1,0 +1,293 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.       TINVUP.
+       AUTHOR.           C.I.HILLES.
+      *INSTALLATION.     GOODYEAR TIRE & RUBBER CO.
+      *DATE-WRITTEN.     JULY 1985.
+      *DATE-COMPILED.    CURRENT-DATE.
+      *REMARKS.      UPDATE STOREROOM INVENTORY FROM STOREROOM
+      *   INVENTORY WORKSHEET.  THIS PROG UPDATES INV FROM THE WORK-   ET.
+      *   SHEET CREATED BY 'TINVWS'/'TINVRNG'
+      *
+      *C  09/22/1992      DAVE PLUM     REQUEST #6018
+      *C  REVISED PROGRAM TO ALWAYS CREATE TC332, EVEN IF THE
+      *C  ADJUSTMENT QUANTITY IS ZERO (PHYSICAL COUNT =
+      *C  MSTORERM ONHAND).  THE UPDATE OF REQFILE WILL CONTINUE
+      *C  TO BE SKIPPED IF THE ADJUSTMENT QUANTITY IS ZERO.
+      *C
+      *C  10/29/1992      DAVE PLUM     REQUEST #6297
+      *C  REVISED PROGRAM TO ALWAYS CALL TDATECHK PRIOR TO
+      *C  WRITING A TC332 RECORD TO DDAILYTC.  A PROBLEM WAS
+      *C  EXPERIENCED WHEN SOME TC332 RECORDS WERE WRITTEN
+      *C  TO DDAILYTC WITH A DATE OF "0000PU" AND A TIME OF
+      *C  "000000".  (ALL OF THESE RECORDS HAD AN ADJ QTY OF 0).
+      *C
+      *C  11/08/94        JEFF BUNGO
+      *C  REVISED PROGRAM TO ALLOW THE USER PRESS F1 FUNCTION
+      *C  KEY TO ACCEPT THE CURRENT ON HAND AS THE INVENTORY
+      *C  AND TO UPDATE THE LAST INVENTORY DATE.  ALSO ADDED
+      *C  THE FIELD CURRENT ON HAND FOR EACH OF THE STOREROOM
+      *C  LOCATIONS OF THE CODE.
+      *C
+      *C  06/12/96        JEFF BUNGO
+      *C  EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C  INCLUDE CENTURY WITH ACTIVITY AND INVENTORY DATES.
+      *C
+      *C  01/22/97        JEFF BUNGO  97-001
+      *C     MOVED THE CODE THAT ACTUALLY DISPLAYS THE SCREEN
+      *C     OF QUANTITIES AND UPDATES THE ON HANDS TO SUB PROGRAM
+      *C     SINVUP.  THIS PROGRAM NOW ENTERS THE WORKSHEET NUMBER
+      *C     READS THE WORKSHEET FILE AND PASSES EACH CODE FROM
+      *C     THE WORKSHEET TO THE SUB PROGRAM.  SEE SINVUP FOR
+      *C     THE GUTS OF INVENTORY UPDATE.
+      *C
+      *C  08/06/97        JEFF BUNGO
+      *C     CHANGED THE DELETION OF THE WORKSHEET.  WHEN EXITING
+      *C     ITEM WITH F7 OR F3, ONLY DELETE THE WORKSHEET IF
+      *C     EXITING WITH F7.  DO NOT DELETE THE WORKSHEET WITH
+      *C     EXIT OF F3.
+      *C
+      *C  12/05/2002      BRUCE GEISER
+      *C     ADDED NUMERICAL PARMS TO DATA PASSED TO TINVRNG.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.   HP-3000.
+       OBJECT-COMPUTER.   HP-3000.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT INVFILE ASSIGN TO DISK-INVFILE.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZINVUP-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD INVFILE
+           RECORD CONTAINS 7 CHARACTERS
+           DATA RECORD IS INV-RECORD.
+       01  INV-RECORD.
+           05  INV-CODE                  PIC X(7).
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                   PIC X(1500).
+
+       WORKING-STORAGE SECTION.
+
+       01  EXIT-MAIN-SCRN                PIC X(1).
+       01  EXIT-UPDATE-SCRN              PIC X(1).
+       01  FREEZE-CODE                   PIC X(1) VALUE SPACES.
+
+
+      **************************************************************
+      **                                                          **
+      **          S U B P R O G R A M   A R E A S                 **
+      **                                                          **
+      **************************************************************
+       COPY TSHWRDFM   IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY CCHKOBJ    IN COPYLIB.
+
+      *------ PARMS FOR CALL TO 'QCMDEXC': EXECUTE A COMMAND
+       01  COMMAND-WORK                  PIC X(70).
+       01  COMMAND-LEN      PIC S9(10)V9(5) COMP-3 VALUE 70.
+
+       01  OVR-TOFILE.
+           05  FILLER                    PIC X(4)  VALUE "DINV".
+           05  OVRDBF-COMMAND-FNUM       PIC 9(4).
+           05  FILLER                    PIC X(2).
+
+       01  OVR-FROMFILE                  PIC X(7)  VALUE "INVFILE".
+
+      *---------- PARAMETERS FOR CALL TO "TSTRMJOB" - TO STREAM JOB
+       01  STRMJOB-COMAREA.
+           05  STRM-RET-CODE             PIC X(2)  VALUE "00".
+           05  STRM-MODE                 PIC S9(4) COMP-4 VALUE 0.
+           05  STRM-CO-CODE              PIC X(3).
+           05  STRM-PRE-RUN-CARDS.
+               10  STRM-PRE-RUN-CARD1    PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD2    PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD3    PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD4    PIC X(80) VALUE SPACES.
+           05  STRM-RUN-CARD             PIC X(80) VALUE SPACES.
+           05  STRM-JOB-NAME             PIC X(8).
+           05  STRM-ROUTE-DATA           PIC X(80) VALUE SPACES.
+           05  STRM-OPTION-AREA.
+               10  STRM-OPTION-CARD.
+                   15  SF-FREEZE-UNFREEZE PIC X.
+                   15  SF-FREEZE-TYPE    PIC X.
+                   15  SF-SORT-OPTION    PIC X.
+                   15  SF-LOW-VALUE      PIC X(12).
+                   15  SF-HIGH-VALUE     PIC X(12).
+                   15  SF-SPOOL-PRT      PIC 9(2).
+                   15  SF-NUM            PIC 9(4).
+                   15  SF-CLASS-SELECT   PIC X(4).
+                   15  SF-MAX-CODES      PIC 9(4).
+                   15  SF-NUM-MONTHS     PIC 9(2).
+                   15  FILLER            PIC X(37)  VALUE SPACES.
+               10  FILLER                PIC X(81).
+           05  STRM-OPTION-FILLER        PIC X(559) VALUE SPACES.
+           05  STRM-OPTION-CARD2-CTR     PIC X(1)  VALUE "1".
+           05  STRM-OPTION-CARD3         PIC X(80) VALUE SPACES.
+           05  STRM-PRTRPT-AREA.
+               10  STRM-PRTRPT-FLAG      PIC X(1).
+               10  STRM-PRTRPT-FILE      PIC X(17).
+               10  STRM-PRTRPT-SPOOLTYP  PIC X(1).
+               10  STRM-PRTRPT-PRINTER   PIC 9(3).
+
+      *****************************************************************
+      **                                                             **
+      **     D A T A B A S E   W O R K                               **
+      **                                                             **
+      *****************************************************************
+       01  BASE                          PIC X(10) VALUE SPACES.
+       COPY DBSTAT IN COPYLIB.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+      **************************************************************
+      *                      VIEW                                  *
+      **************************************************************
+
+       COPY VCOMAREA   IN COPYLIB.
+
+       01  MESSAGE-BUFFER.
+           05  MESSAGE-BUFFER-1          PIC X(1).
+           05  FILLER                    PIC X(75).
+       01  FIELD-NUMBER                PIC S9(4)   VALUE 1      COMP-4.
+       COPY FUNCTDEF IN COPYLIB.
+
+
+      ************************************************************
+      *             SCREEN BUFFERS                               *
+      ************************************************************
+       01  DE-FIELDS-1.
+           05  DE-WS-NUM                 PIC 9(4).
+           05  DE-COMMAND-LINE-1         PIC X(79).
+           05  DE-MESSAGE-LINE-1         PIC X(79).
+
+       COPY LANGUAGE   IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       0000-START.
+           MOVE 2                        TO  SRF-KEYSET.
+           OPEN I-O DISPLAY-FILE.
+           MOVE "N"                      TO  EXIT-MAIN-SCRN.
+           MOVE 0                        TO  DE-WS-NUM.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X
+             UNTIL EXIT-MAIN-SCRN = "Y".
+           CLOSE DISPLAY-FILE.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "TINVUP"                 TO  BU-PGM-NAME.
+           MOVE INV-CODE                 TO  BU-DISPLAY-FLD (1).
+           MOVE DE-WS-NUM                TO  BU-DISPLAY-FLD (2).
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+             VIEW-COMAREA FILE-STATUS BU-DISPLAY-MSG
+             BU-DISPLAY-FLDS.
+
+       4030-SETERROR.
+           MOVE B"1"                     TO  IND (99).
+           MOVE B"1"                     TO  IND (FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER TO DE-MESSAGE-LINE-1.
+
+       6000-MAIN.
+           MOVE "GETNUM"                 TO  VIEW-NFNAME.
+           MOVE DE-FIELDS-1              TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 9989-WS-X.
+           MOVE DISPLAY-REC              TO  DE-FIELDS-1.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               PERFORM 4030-SETERROR
+               GO TO 6000-MAIN.
+
+           IF VIEW-LASTKEY = EXIT-PROGRAM
+               MOVE "Y"                  TO  EXIT-MAIN-SCRN
+               GO TO 6990-MAIN-X.
+
+           MOVE DE-WS-NUM                TO  OVRDBF-COMMAND-FNUM.
+
+      *------ SEE IF THE WORKSHEET FILE EXISTS ON DISK
+           CALL "CCHKOBJ" USING OVR-TOFILE, CHKOBJ-RETURN-STATUS.
+           IF CHKOBJ-RETURN-STATUS NOT = "00"
+      *        "W16: WORKSHEET NUMBER DOES NOT EXIST"
+               MOVE 23                   TO  LANG-SETNUM
+               MOVE 16                   TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1                    TO  FIELD-NUMBER
+               PERFORM 4030-SETERROR
+               GO TO 6000-MAIN.
+
+      *------ NOW OVERRIDE THE INVENTORY FILE TO THE CORRECT FILENAME
+           PERFORM 9999-OVERRIDE.
+           OPEN INPUT INVFILE.
+           MOVE "N"                      TO  EXIT-UPDATE-SCRN.
+           PERFORM 7000-UPDATE-INVENTORY THRU 7990-UI-X
+             UNTIL EXIT-UPDATE-SCRN = "Y".
+           IF VIEW-LASTKEY = EXIT-PROGRAM
+               MOVE "Y"                  TO  EXIT-MAIN-SCRN.
+           MOVE 0                        TO  DE-WS-NUM.
+
+       6990-MAIN-X.
+           EXIT.
+
+       7000-UPDATE-INVENTORY.
+           READ INVFILE AT END
+               CLOSE INVFILE
+               MOVE "Y"                  TO  EXIT-UPDATE-SCRN
+               MOVE SPACES               TO  COMMAND-WORK
+               STRING "DLTF FILE(", OVR-TOFILE, ")" DELIMITED BY SIZE
+                 INTO COMMAND-WORK
+               CALL "QCMDEXC" USING COMMAND-WORK, COMMAND-LEN
+               GO TO 7990-UI-X.
+           MOVE SPACES TO FREEZE-CODE.
+           CALL "SINVUP" USING INV-CODE FREEZE-CODE VIEW-COMAREA.
+           IF VIEW-LASTKEY = 7 OR EXIT-PROGRAM
+               CLOSE INVFILE
+               IF VIEW-LASTKEY = 7
+                   PERFORM 8000-WIPE-OUT-WORKSHEET
+               END-IF
+               MOVE "Y"                  TO  EXIT-UPDATE-SCRN.
+       7990-UI-X.
+           EXIT.
+
+       8000-WIPE-OUT-WORKSHEET.
+           MOVE "TINVRNG"                TO  STRM-RUN-CARD.
+           MOVE OVRDBF-COMMAND-FNUM      TO  SF-NUM.
+           MOVE "D"                      TO  SF-FREEZE-UNFREEZE.
+           MOVE ZEROS                    TO  SF-MAX-CODES
+                                             SF-NUM-MONTHS.
+           MOVE "BXINVRNG"               TO  STRM-JOB-NAME.
+           CALL "TSTRMJOB" USING STRMJOB-COMAREA.
+      *    CALL "TINVRNG" USING STRM-ROUTE-DATA,
+      *      STRM-OPTION-AREA.
+
+       COPY DISPCALL IN COPYLIB.
+       COPY DISPCAL2 IN COPYLIB.
+       9999-OVERRIDE.
+           MOVE SPACES TO COMMAND-WORK.
+           STRING "OVRDBF FILE(" DELIMITED BY SIZE,
+              OVR-FROMFILE DELIMITED BY SPACES,
+              ") TOFILE(" DELIMITED BY SIZE,
+              OVR-TOFILE DELIMITED BY SPACES,
+              ")" DELIMITED BY SIZE
+            INTO COMMAND-WORK.
+           CALL "QCMDEXC" USING COMMAND-WORK, COMMAND-LEN.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM          TO  CATREAD-MSG-SET
+               MOVE LANG-MSGNUM          TO  CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT         TO  MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

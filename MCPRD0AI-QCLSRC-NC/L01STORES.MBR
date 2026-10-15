@@ -1,0 +1,563 @@
+             PGM
+/*****************************************************************/
+/*** PROGRAM: L01STORES                                        ***/
+/*** PURPOSE: TO ADD AND CHANGE DATABASE FILES (PHYSICAL AND   ***/
+/***          LOGICAL) FOR THE L01 DATABASE RELEASE.           ***/
+/***          THIS WILL HANDLE THE STORES DATABASE.            ***/
+/***                                                           ***/
+/***          THIS PROGRAM CHECKS FOR THE EXISTENCE OF DATA    ***/
+/***          LIBRARY MCPRD* (WHERE "*" IS AN INTEGER THAT IS  ***/
+/***          INITIALLY SET TO 1), UPDATES THIS LIBRARY IF IT  ***/
+/***          EXISTS, THEN INCREMENTS THE DATA LIBRARY NAME    ***/
+/***          BY 1, AND CONTINUES LOOPING UNTIL THE INTEGER    ***/
+/***          EXCEEDS 9, AT WHICH TIME THE PROGRAM ENDS        ***/
+/***                                                           ***/
+/***          FOR CHANGES TO THE DATABASE, THE CHGPF COMMAND   ***/
+/***          WILL BE USED INSTEAD OF THE MANUAL MOVING OF THE ***/
+/***          DATA TO INTERMEDIATE FILES AND BACK AFTER FILE   ***/
+/***          CREATION.  TO USE THIS, LOCATIONS MUST BE AT     ***/
+/***          LEAST ON V3R2, V3R6, OR V3R7.                    ***/
+/***                                                           ***/
+/***          RECOMPILE THIS PROGRAM WITH TARGET RELEASE OF    ***/
+/***          OF V3R2M0 TO ACCOUNT FOR THE CHGPF COMMAND.      ***/
+/*****************************************************************/
+             DCL        VAR(&LIB)    TYPE(*CHAR) LEN(5) VALUE('MCPRD')
+             DCL        VAR(&LIBN) TYPE(*DEC) LEN(1) VALUE(1)
+             DCL        VAR(&LIBC) TYPE(*CHAR) LEN(1)
+             DCL        VAR(&CURLIB) TYPE(*CHAR) LEN(6)
+/*           DCLF       FILE(QTEMP/MTAXINFO)                 */
+
+             CHGJOB     LOG(4 0 *SECLVL) LOGCLPGM(*YES)
+LOOP:
+             CHGVAR     VAR(&LIBC) VALUE(&LIBN)
+             CHGVAR     VAR(&CURLIB) VALUE(&LIB *CAT &LIBC)
+
+/*** CHECK TO SEE IF DATA LIBRARY MCPRD* EXISTS.  IF IT DOES NOT EXIST, ***/
+/*** AND MCPRD9 WAS JUST CHECKED THEN END; OTHERWISE GO BACK TO LOOP.   ***/
+             CHKOBJ     OBJ(QSYS/&CURLIB) OBJTYPE(*LIB)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+                 IF COND(&LIBN *EQ 9) THEN(GOTO CMDLBL(ENDLOOP))
+                 CHGVAR VAR(&LIBN) VALUE(&LIBN + 1)
+                 GOTO CMDLBL(LOOP)
+             ENDDO
+
+             CHGCURLIB  CURLIB(&CURLIB)
+             SNDMSG     MSG('Program L01STORES is now updating  +
+                          CSIS/MMIS data library - ' *CAT &CURLIB) +
+                          TOUSR(*SYSOPR)
+
+/*****************************************************************/
+/**********          STORES REFERENCE FILE        ****************/
+/*****************************************************************/
+             DLTF       FILE(*CURLIB/STORES)
+             MONMSG     MSGID(CPF2105)
+             CRTPF      FILE(*CURLIB/STORES) +
+                          SRCFILE(MCPRD/QDDSSRCDB) SRCMBR(STORES) +
+                          TEXT(*SRCMBRTXT) SIZE(*NOMAX)
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCSAUTH FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCSAUTH) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCSAUTH) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCSAUTH) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLCSAUTH) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCSAUTH) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCSSPRQ FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCSSPRQ) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCSSPRQ) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCSSPRQ) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+             ENDDO
+
+/******************************************************************/
+/************      MCFPCS3700  MTAX CHANGE        *****************/
+/******************************************************************/
+/*** RETREIVE RECORD LENGTH OF MTAX INTO A FILE THEN READ IT      */
+/******************************************************************/
+
+/*           DSPFD FILE(*CURLIB/MCFPCS3700) TYPE(*RCDFMT) +       */
+/*                 OUTPUT(*OUTFILE) OUTFILE(QTEMP/MTAXINFO)       */
+/*           RCVF                                                 */
+
+/*****************************************************************/
+/* MTAXINFO CONTAINS THE RESULT OF THE PREVIOUS DSPFD COMMAND    */
+/* THE RFLEN FIELD CONTAINS THE RECORD LENGTH OF THE MTAX FILE   */
+/* A LENGTH OF 34 MEANS THAT THE FILE HAS ALREADY BEEN CONVERTED */
+/*****************************************************************/
+
+/*           IF COND(&RFLEN *EQ 34) THEN(GOTO CMDLBL(SKIPMTAX))      */
+
+/*           CHGPF      FILE(*CURLIB/MCFPCS3700) +                   */
+/*                      SRCFILE(MCPRD/QDDSSRCDB) LANGID(ENU)         */
+/*           MONMSG     MSGID(CPF0000) EXEC(DO)                      */
+/*             SNDMSG MSG('The CHGPF command on MCFPCS3700 has +     */
+/*                        failed.  Please contact CSIS/MMIS staff.  +*/
+/*                        Processing continues with other database + */
+/*                        changes.') TOUSR(*SYSOPR)                  */
+/*             SNDPGMMSG MSG('The CHGPF command on MCFPCS3700 has +  */
+/*                        failed.  Please contact CSIS/MMIS staff.  +*/
+/*                        Processing continues with other database + */
+/*                        changes.')                                 */
+/*           ENDDO                                                   */
+
+/*****************************************************************/
+/***          RUN THE SQL TO CONVERT TAX PCTS ON MTAX.           */
+/***          Multiply tax percents by 100.                      */
+/*****************************************************************/
+
+/*           RUNSQL     REQUEST('UPDATE MCFPCS3700 SET TAXPCT1 = +     */
+/*                       (TAXPCT1 * 100), TAXPCT2 = (TAXPCT2 * +       */
+/*                       100), TAXPCT3 = (TAXPCT3 * 100), TAXPCT4 +    */
+/*                       = (TAXPCT4 * 100)')                           */
+
+/*           SNDMSG    MSG('The SQL to convert MCFPCS3700 has +        */
+/*                        finished.') TOUSR(*SYSOPR)                   */
+/*           SNDPGMMSG MSG('The SQL to convert MCFPCS3700 has +        */
+/*                        finished.')                                  */
+
+/*           GOTO CMDLBL(NEXTFILE)                                     */
+
+SKIPMTAX:
+/*           SNDMSG    MSG('File MTAX does NOT need to be converted') + */
+/*                     TOUSR(*SYSOPR)                                   */
+/*           SNDPGMMSG MSG('File MTAX does NOT need to be converted')   */
+
+NEXTFILE:
+/*           CLRPFM FILE(QTEMP/MTAXINFO)                                */
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCS6900 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCS6900) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCS6900) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCS6900) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLCS6901) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS6901) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCS7000 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCS7000) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCS7000) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCS7000) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLCS7001) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS7001) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCS7100 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCS7100) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCS7100) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCS7100) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLCS7101) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS7101) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPARPOD  FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPARPOD) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPARPOD) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPARPOD) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLARPOD1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLARPOD1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPARPO2D FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPARPO2D) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPARPO2D) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPARPO2D) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLARPO21) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLARPO21) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPARRSLT FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPARRSLT) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPARRSLT) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPARRSLT) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLARRSL1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLARRSL1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPARRS2T FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPARRS2T) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPARRS2T) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPARRS2T) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLARRS21) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLARRS21) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCODEFT FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCODEFT) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCODEFT) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCODEFT) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLCODEF1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCODEF1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPARVND  FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPARVND) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPARVND) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPARVND) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLARVND1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLARVND1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPCOMCDF FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPCOMCDF) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPCOMCDF) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPCOMCDF) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLCOMCD1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCOMCD1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPDREQLG FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPDREQLG) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPDREQLG) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPDREQLG) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLDREQL1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLDREQL1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPDREQ2G FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPDREQ2G) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPDREQ2G) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPDREQ2G) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLDREQ21) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLDREQ21) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPMCODEF FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPMCODEF) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPMCODEF) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPMCODEF) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLMCODE1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLMCODE1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPPICT   FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPPICT) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPPICT) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPPICT) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLPICT1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLPICT1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             NRCVFILE   FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/NRCVFILE) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/NRCVFILE) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(NRCVFILE) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             TAXFILE    FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/TAXFILE) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/TAXFILE) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(TAXFILE) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+             ENDDO
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********              GENNCHKFL FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/GENNCHKFL) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+             CRTPF      FILE(GENNCHKFL) RCDLEN(133) TEXT('No Check +
+                          Report File') SIZE(*NOMAX)
+             ENDDO
+
+/*****************************************************************/
+/**********             NEW LOGICAL FILE          ****************/
+/**********             MCFLCS0905 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFLCS0905) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTLF      FILE(*CURLIB/MCFLCS0905) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS0905) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********             NEW LOGICAL FILE          ****************/
+/**********             MCFLCS1003 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFLCS1003) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTLF      FILE(*CURLIB/MCFLCS1003) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS1003) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********             NEW LOGICAL FILE          ****************/
+/**********             MCFLCS2902 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFLCS2902) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTLF      FILE(*CURLIB/MCFLCS2902) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS2902) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********             NEW LOGICAL FILE          ****************/
+/**********             MCFLST0805 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFLST0805) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTLF      FILE(*CURLIB/MCFLST0805) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLST0805) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********             NEW LOGICAL FILE          ****************/
+/**********             MCFLST0806 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFLST0806) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTLF      FILE(*CURLIB/MCFLST0806) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLST0806) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/**********             NEW LOGICAL FILE          ****************/
+/**********             MCFLCS1402 FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFLCS1402) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTLF      FILE(*CURLIB/MCFLCS1402) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLCS1402) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/*****************************************************************/
+/***DCR****                NEW FILE               ****************/
+/**********             MCFPFILKY  FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPFILKY) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPFILKY) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPFILKY) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLFILKY1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLFILKY1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+
+/*****************************************************************/
+/***DCR****                NEW FILE               ****************/
+/**********             MCFPDATAQP FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPDATAQP) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPDATAQP) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPDATAQP) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLDATAQ1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLDATAQ1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+
+/*****************************************************************/
+/***DCR****                NEW FILE               ****************/
+/**********             MCFPMONJP  FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPMONJP) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPMONJP) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPMONJP) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLMONJP1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLMONJP1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+
+/*****************************************************************/
+/***DCR****                NEW FILE               ****************/
+/**********             MCFPMONPP  FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPMONPP) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPMONPP) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPMONPP) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLMONPP1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLMONPP1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPRCV1LG FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPRCV1LG) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPRCV1LG) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPRCV1LG) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLRCV1L1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLRCV1L1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+
+/*****************************************************************/
+/**********                NEW FILE               ****************/
+/**********             MCFPRCV2LG FILE           ****************/
+/*****************************************************************/
+             CHKOBJ     OBJ(*CURLIB/MCFPRCV2LG) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+               CRTPF      FILE(*CURLIB/MCFPRCV2LG) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFPRCV2LG) TEXT(*SRCMBRTXT) +
+                          SIZE(*NOMAX) REUSEDLT(*YES)
+               CRTLF      FILE(*CURLIB/MCFLRCV2L1) +
+                          SRCFILE(MCPRD/QDDSSRCDB) +
+                          SRCMBR(MCFLRCV2L1) TEXT(*SRCMBRTXT)
+             ENDDO
+
+/***********************************************************************/
+/*** INCREMENT THE LIBRARY NAME BY 1, AND GO BACK TO THE BEGINNING   ***/
+/*** OF THE PROGRAM.                                                 ***/
+/***********************************************************************/
+
+             SNDMSG     MSG('Program L01STORES completed updating  +
+                          CSIS/MMIS data library - ' *CAT &CURLIB) +
+                          TOUSR(*SYSOPR)
+             IF COND(&LIBN *EQ 9) THEN(GOTO CMDLBL(ENDLOOP))
+             CHGVAR     VAR(&LIBN) VALUE(&LIBN + 1)
+             GOTO CMDLBL(LOOP)
+
+ENDLOOP:
+             SNDMSG     MSG('L01STORES has COMPLETED') +
+                          TOUSR(*SYSOPR)
+/*****************************************************************/
+ENDPGM:
+             ENDPGM

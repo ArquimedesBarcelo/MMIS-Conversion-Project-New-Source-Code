@@ -1,0 +1,473 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TBLOWRPT.
+       AUTHOR.              B. WINTER.
+       DATE-WRITTEN.        DECEMBER 1987.
+       DATE-COMPILED.
+       INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+
+      ***************************************************************
+      *                                                             *
+      *    THIS PROGRAM READS THE FILE DLYBLUP WHICH IS DOWNLOADED  *
+      *    FROM THE MAINFRAME (TRANSACTION TYPE 500).               *
+      *                                                             *
+      *  2/14/1997                                                  *
+      *    THIS PROGRAM WAS CONVERTED FROM THE HP-3000 VERSION TO   *
+      *    THE AS/400 SINCE THE AKRON COMPLEX IS MOVING TO AN       *
+      *    AS/400.  THE DAILY BLOWUP REPORT JOB WILL NOW BE RUN ON  *
+      *    THE AS/400.                                              *
+      *                                                             *
+      *  11/05/2002                                                 *
+      *    REMOVED PAGE ADVANCE SO OUTPUT COULD BE CONVERTED TO HTML*
+      *                                                             *
+      ***************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT PLANT-FILE
+                  ASSIGN TO DATABASE-PLANTCODE1
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DAILY-BLOWUPS
+                  ASSIGN TO DISK-DLYBLUP.
+
+           SELECT ROUTE-FILE
+                  ASSIGN TO DISK-ROUTESLIP.
+
+           SELECT REPORT-FILE
+               ASSIGN TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  PLANT-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  PLANT-FILE-REC.
+           COPY DDS-ALL-FORMATS OF PLANTCODE1.
+
+       FD  DAILY-BLOWUPS.
+       01  DAILY-REC.
+           05  CONTROL-BYTE           PIC X.
+           05  DLY-DATE               PIC X(6).
+           05  DLY-TIME               PIC X(6).
+           05  DLY-TC                 PIC X(3).
+           05  DLY-PLT                PIC X(3).
+           05  DLY-CODE               PIC X(7).
+           05  DLY-SORT               PIC X.
+           05  DLY-REC1.
+               07  DLY-BASE           PIC X(16).
+               07  DLY-PGM-NAME       PIC X(8).
+               07  DLY-COND-WORD      PIC S9(4) BINARY.
+               07  DLY-USER           PIC X(8).
+               07  DLY-FLD-5          PIC X(14).
+               07  DLY-VIEW-STAT      PIC S9(4) BINARY.
+               07  FILLER             PIC X(4).
+           05  DLY-REC2 REDEFINES DLY-REC1.
+               07  DLY-MSG1           PIC X(40).
+               07  DLY-FLD-1          PIC X(14).
+           05  DLY-REC3 REDEFINES DLY-REC1.
+               07  DLY-MSG2           PIC X(20).
+               07  DLY-FLD9-1         PIC S9(8).
+               07  DLY-FLD9-2         PIC S9(8).
+               07  DLY-FLD9-3         PIC S9(8).
+               07  DLY-FLD9-4         PIC S9(8).
+               07  DLY-KSAM           PIC X(2).
+           05  DLY-REC4 REDEFINES DLY-REC1.
+               07  DLY-FLD-2          PIC X(14).
+               07  DLY-FLD-3          PIC X(14).
+               07  DLY-FLD-4          PIC X(14).
+               07  DLY-ACCT           PIC X(8).
+               07  DLY-TERM           PIC X(4).
+
+       FD  ROUTE-FILE.
+       01  ROUTE-FILE-REC             PIC X(25).
+
+       FD  REPORT-FILE
+           DATA RECORD IS REPORT-FILE-REC.
+       01  REPORT-FILE-REC      PIC X(132).
+
+       WORKING-STORAGE SECTION.
+
+       01  FILE-STATUS                 PIC X(2).
+       01  PLANTCODE-BUF.
+           05  PLT-CODE                PIC X(4).
+           05  PLT-NAME                PIC X(16).
+       01  SUB                         PIC 9(2)   VALUE 0.
+       01  PLANT-ARG                   PIC X(4).
+       01  ROUTE-EOF-SW                PIC X      VALUE "N".
+       01  RECORDS-FOUND-SW            PIC X      VALUE "N".
+       01  LINE-NUM                    PIC 9(2)   VALUE 0.
+       01  HOLD-LINE-NUM               PIC 9(2)   VALUE 0.
+
+      **************************************************************
+      **        E R R O R   M E S S A G E   A R E A S             **
+      **************************************************************
+
+       01  BU-DISPLAY-AREA.
+           05  FILLER                 PIC XX    VALUE "**".
+           05  BU-DISPLAY-MSG         PIC X(27) VALUE SPACES.
+           05  FILLER                 PIC XX    VALUE "**".
+           05  BU-DISPLAY-STAT        PIC S9(4) VALUE ZERO.
+           05  FILLER                 PIC XX    VALUE "**".
+           05  BU-DISPLAY-FLD         PIC X(11) VALUE SPACES.
+           05  FILLER                 PIC XX    VALUE "**".
+
+       COPY TDATECHK OF COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **                  V I E W   W O R K                       **
+      **                                                          **
+      **************************************************************
+
+       01  MESSAGE-BUFFER           PIC X(76) VALUE SPACES.
+       01  MSG-BUFFLEN              PIC S9(4) COMP-4 VALUE 76.
+       01  MSG-ACTUALEN             PIC S9(4) COMP-4 VALUE 76.
+
+      **************************************************************
+      **                                                          **
+      **            D A T A B A S E   W O R K                     **
+      **                                                          **
+      **************************************************************
+
+       COPY DBSTAT IN COPYLIB.
+
+       01  PASSED-MSG.
+           05  MSG1                  PIC X(40).
+           05  MSG2                  PIC X(20).
+
+       01  DISPLAY-FLDS.
+           05  BU-DISPLAY-LINE OCCURS 5  TIMES.
+               10  DISPLAY-FLD    PIC X(14).
+               10  DISPLAY-FLD9   PIC S9(8).
+
+      **************************************************************
+      **                                                          **
+      **    H E A D E R / D E T A I L   A R E A S                 **
+      **                                                          **
+      **************************************************************
+
+       01  CURRENT-DATE.
+           05  CUR-YY             PIC 9(2).
+           05  CUR-MM             PIC 9(2).
+           05  CUR-DD             PIC 9(2).
+
+       01  CURRENT-TIME.
+           05  CUR-HR             PIC 9(2).
+           05  CUR-MIN            PIC 9(2).
+           05  CUR-SEC            PIC 9(2).
+
+       01  DATE-LINE.
+           05  PRT-MM             PIC X(2).
+           05  FILLER             PIC X      VALUE "/".
+           05  PRT-DD             PIC X(2).
+           05  FILLER             PIC X      VALUE "/".
+           05  PRT-YY             PIC X(2).
+           05  FILLER             PIC X(5)   VALUE SPACES.
+           05  PRT-HR             PIC X(2).
+           05  FILLER             PIC X      VALUE ":".
+           05  PRT-MIN            PIC X(2).
+           05  FILLER             PIC X      VALUE ":".
+           05  PRT-SEC            PIC X(2).
+
+       01  TSHWRDFM-MESSAGE-LINE.
+           05  FILLER             PIC X(50)  VALUE
+               "IF TSHWRDFM OR SOPENTRM BLOWS UP ON A TERM ERROR, ".
+           05  FILLER             PIC X(50)  VALUE
+               "NOTHING MORE CAN BE DONE PROGRAMMATICALLY TO HELP ".
+           05  FILLER             PIC X(14)  VALUE
+               "THE SITUATION.".
+
+       01  OPTION-LINE.
+           05  FILLER             PIC X(49)  VALUE
+               "DISPLAY BLOWUPS FROM TSHWRDFM AND SOPENTRM?      ".
+           05  PRT-OPTION         PIC X.
+
+       01  TITLE-LINE.
+           05  FILLER             PIC X(70)  VALUE
+               "DAILY BLOWUP REPORT, FOR PAST VERSIONS -> WRKOUTQ PD01".
+
+       01  ASTERISK-LINE          PIC X(79)  VALUE ALL "*".
+
+       01  BLOWUP-HEADING-LINE.
+           05  FILLER             PIC X(7)   VALUE "****   ".
+           05  FILLER             PIC X(10)  VALUE "BLOWUP OF ".
+           05  PRT-PGM-NAME       PIC X(8).
+           05  FILLER             PIC X(4)   VALUE " ** ".
+           05  PRT-DATE           PIC X(8).
+           05  FILLER             PIC X(4)   VALUE " ** ".
+           05  PRT-TIME           PIC X(6).
+           05  FILLER             PIC X(4)   VALUE " ** ".
+           05  PRT-USER           PIC X(8).
+           05  FILLER             PIC X      VALUE ".".
+           05  PRT-ACCOUNT        PIC X(8).
+           05  FILLER             PIC X      VALUE " ".
+           05  PRT-TERM           PIC X(4).
+           05  FILLER             PIC X(6)   VALUE "  ****".
+
+       01  MESSAGE-LINE.
+           05  FILLER             PIC X(9)   VALUE "MESSAGE= ".
+           05  PRT-MESSAGE        PIC X(60).
+           05  FILLER             PIC X(7)   VALUE "PLANT= ".
+           05  PRT-PLT-CODE       PIC X(4).
+
+       01  COND-WORD-LINE.
+           05  FILLER             PIC X(14)  VALUE "COND-WORD =   ".
+           05  PRT-COND-WORD      PIC --------9.
+           05  FILLER             PIC X(46)  VALUE SPACES.
+           05  PRT-PLANT-NAME     PIC X(16).
+
+       01  VIEW-STATUS-LINE.
+           05  FILLER             PIC X(14)  VALUE "VIEW-STATUS = ".
+           05  PRT-VIEW-STAT      PIC --------9.
+           05  FILLER             PIC X(59)  VALUE SPACES.
+
+       01  KSAM-STATUS-LINE.
+           05  FILLER             PIC X(14)  VALUE "KSAM-STATUS = ".
+           05  FILLER             PIC X(3)   VALUE SPACES.
+           05  PRT-KSAM-STATUS    PIC X(2).
+           05  FILLER             PIC X(61)  VALUE SPACES.
+
+       01  FIELD-LINE.
+           05  FILLER             PIC X(6)   VALUE "FIELD ".
+           05  PRT-SUB            PIC X(2).
+           05  FILLER             PIC X(3)   VALUE " = ".
+           05  PRT-FIELD          PIC X(14).
+           05  FILLER             PIC X(55)  VALUE SPACES.
+
+       01  NUM-FIELD-LINE.
+           05  FILLER             PIC X(6)   VALUE "FIELD ".
+           05  PRT-NUM-SUB        PIC X(2).
+           05  FILLER             PIC X(3)   VALUE " = ".
+           05  PRT-NUM-FIELD      PIC --------9.
+           05  FILLER             PIC X(54)  VALUE SPACES.
+
+       01  NO-RECORDS-LINE.
+           05  FILLER             PIC X(50)  VALUE
+               "************* NO BLOWUP RECORDS FOUND ************".
+
+       LINKAGE SECTION.
+
+       01  DISPLAY-TSHWRDFM-BLOWUPS    PIC X(1).
+
+       PROCEDURE DIVISION
+                           USING DISPLAY-TSHWRDFM-BLOWUPS.
+
+       6000-MAIN.
+
+           OPEN INPUT  DAILY-BLOWUPS, PLANT-FILE, ROUTE-FILE
+                OUTPUT REPORT-FILE.
+
+      *----------- GET DATE AND TIME.
+           ACCEPT CURRENT-DATE FROM DATE.
+           ACCEPT CURRENT-TIME FROM TIME.
+           MOVE CUR-MM           TO  PRT-MM.
+           MOVE CUR-DD           TO  PRT-DD.
+           MOVE CUR-YY           TO  PRT-YY.
+           MOVE CUR-HR           TO  PRT-HR.
+           MOVE CUR-MIN          TO  PRT-MIN.
+           MOVE CUR-SEC          TO  PRT-SEC.
+           WRITE REPORT-FILE-REC FROM DATE-LINE.
+           MOVE TITLE-LINE       TO  REPORT-FILE-REC.
+           WRITE REPORT-FILE-REC               AFTER ADVANCING 1 LINES.
+           MOVE SPACES           TO  REPORT-FILE-REC.
+           WRITE REPORT-FILE-REC               AFTER ADVANCING 1 LINES.
+
+           READ ROUTE-FILE
+               AT END MOVE "Y"   TO  ROUTE-EOF-SW.
+           IF ROUTE-EOF-SW NOT = "Y"
+               PERFORM 9200-PRINT-ROUTE-INFO UNTIL ROUTE-EOF-SW = "Y".
+
+           WRITE REPORT-FILE-REC FROM TSHWRDFM-MESSAGE-LINE
+                                               AFTER ADVANCING 1 LINES.
+
+           MOVE DISPLAY-TSHWRDFM-BLOWUPS   TO  PRT-OPTION.
+           WRITE REPORT-FILE-REC FROM OPTION-LINE
+                                               AFTER ADVANCING 1 LINES.
+
+           MOVE SPACES           TO  REPORT-FILE-REC.
+           WRITE REPORT-FILE-REC               AFTER ADVANCING 1 LINES.
+
+           PERFORM 8020-READ-DAILY-BLOWUPS THRU 8999-EXIT.
+
+      *---------- NO RECORDS FOUND.
+           IF RECORDS-FOUND-SW = "N"
+               WRITE REPORT-FILE-REC FROM NO-RECORDS-LINE
+                                               AFTER ADVANCING 2 LINES.
+
+           CLOSE DAILY-BLOWUPS, PLANT-FILE, ROUTE-FILE, REPORT-FILE.
+           GOBACK.
+
+       8020-READ-DAILY-BLOWUPS.
+      *----------  READ RECORD 1 OUT OF 4
+           READ DAILY-BLOWUPS
+               AT END   GO TO 8999-EXIT.
+
+      *----------  SKIP ALL IBM HEADER AND TRAILER RECORDS
+      *            AND CARRAIGE CONTROL TYPE JUNK LINES
+           IF DLY-DATE NOT NUMERIC AND DLY-TIME NOT NUMERIC
+              GO TO 8020-READ-DAILY-BLOWUPS.
+
+      *----------  CATCH ANY RECORDS THE ABOVE CHECK MISSED
+           IF DLY-SORT = "1" OR "2" OR "3" OR "4"
+              NEXT SENTENCE
+           ELSE
+              GO TO 8020-READ-DAILY-BLOWUPS.
+
+           MOVE "Y"                 TO  RECORDS-FOUND-SW.
+
+      *----------  READ RECORD 1  OF 4
+           IF DLY-SORT NOT = "1"
+              GO TO 8030-REC2.
+
+           MOVE DLY-DATE TO           DATE-VALIDATE-IN.
+           MOVE 4 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT        TO  PRT-DATE.
+           MOVE DLY-TIME              TO  PRT-TIME.
+           MOVE DLY-PLT               TO  PRT-PLT-CODE, PLANT-ARG.
+           MOVE DLY-PGM-NAME          TO  PRT-PGM-NAME.
+           MOVE DLY-COND-WORD         TO  PRT-COND-WORD.
+           MOVE DLY-USER              TO  PRT-USER.
+           MOVE DLY-FLD-5             TO  DISPLAY-FLD (5).
+           MOVE DLY-VIEW-STAT         TO  PRT-VIEW-STAT.
+           GO TO 8020-READ-DAILY-BLOWUPS.
+
+      *----------  READ RECORD 2 OF 4
+       8030-REC2.
+           IF DLY-SORT NOT = "2"
+              GO TO 8040-REC3.
+           MOVE DLY-MSG1              TO  MSG1.
+           MOVE DLY-FLD-1             TO  DISPLAY-FLD (1).
+           GO TO 8020-READ-DAILY-BLOWUPS.
+
+      *----------  READ RECORD 3 OF 4
+       8040-REC3.
+           IF DLY-SORT NOT = "3"
+              GO TO 8050-REC4.
+           MOVE DLY-MSG2              TO  MSG2.
+           MOVE PASSED-MSG            TO  PRT-MESSAGE.
+           IF DLY-FLD9-1 NUMERIC
+               MOVE DLY-FLD9-1        TO  DISPLAY-FLD9 (1)
+           ELSE
+               MOVE 0                 TO  DISPLAY-FLD9 (1).
+           IF DLY-FLD9-2 NUMERIC
+               MOVE DLY-FLD9-2        TO  DISPLAY-FLD9 (2)
+           ELSE
+               MOVE 0                 TO  DISPLAY-FLD9 (2).
+           IF DLY-FLD9-3 NUMERIC
+               MOVE DLY-FLD9-3        TO  DISPLAY-FLD9 (3)
+           ELSE
+               MOVE 0                 TO  DISPLAY-FLD9 (3).
+           IF DLY-FLD9-4 NUMERIC
+               MOVE DLY-FLD9-4        TO  DISPLAY-FLD9 (4)
+           ELSE
+               MOVE 0                 TO  DISPLAY-FLD9 (4).
+           MOVE DLY-KSAM              TO  PRT-KSAM-STATUS.
+           GO TO 8020-READ-DAILY-BLOWUPS.
+
+      *----------  READ RECORD 4 OF 4
+       8050-REC4.
+           MOVE DLY-FLD-2             TO  DISPLAY-FLD (2).
+           MOVE DLY-FLD-3             TO  DISPLAY-FLD (3).
+           MOVE DLY-FLD-4             TO  DISPLAY-FLD (4).
+           MOVE DLY-ACCT              TO  PRT-ACCOUNT.
+           MOVE DLY-TERM              TO  PRT-TERM.
+
+           PERFORM 9100-PRINT-BLOWUP THRU 9190-PB-X.
+           GO TO 8020-READ-DAILY-BLOWUPS.
+
+
+       8999-EXIT.  EXIT.
+
+
+       9100-PRINT-BLOWUP.
+           IF DISPLAY-TSHWRDFM-BLOWUPS = "N"
+               IF PASSED-MSG = "5 SHOWFORM ERRORS TSHWRDFM"
+               OR PASSED-MSG = "5 VREADFLDS ERRORS TSHWRDFM"
+               OR PASSED-MSG = "7 ERRORS IN VOPENTERM 1020-O"
+                   GO TO 9190-PB-X.
+
+      *    COMPUTE HOLD-LINE-NUM = LINE-NUM + 7.
+      *    IF LINE-NUM > 50 OR HOLD-LINE-NUM > 52
+      *        MOVE SPACES    TO REPORT-FILE-REC
+      *        WRITE REPORT-FILE-REC AFTER ADVANCING PAGE
+      *        MOVE 0         TO LINE-NUM.
+
+           WRITE REPORT-FILE-REC FROM ASTERISK-LINE AFTER ADVANCING 2.
+
+           WRITE REPORT-FILE-REC FROM BLOWUP-HEADING-LINE
+                                                AFTER ADVANCING 1.
+
+           WRITE REPORT-FILE-REC FROM ASTERISK-LINE AFTER ADVANCING 1.
+
+           WRITE REPORT-FILE-REC FROM MESSAGE-LINE
+                                                AFTER ADVANCING 1 LINE.
+
+      *---------- GET PLANT NAME.
+           MOVE SPACES TO PRT-PLANT-NAME.
+           MOVE PLANT-ARG              TO  PLTCODE OF PLANT-FILE-REC.
+           READ PLANT-FILE INTO PLANTCODE-BUF
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "NO NAME"          TO  PRT-PLANT-NAME
+           ELSE
+               MOVE PLT-NAME           TO  PRT-PLANT-NAME.
+
+           WRITE REPORT-FILE-REC FROM COND-WORD-LINE
+                                                AFTER ADVANCING 1 LINE.
+
+           WRITE REPORT-FILE-REC FROM VIEW-STATUS-LINE
+                                                AFTER ADVANCING 1 LINE.
+
+           WRITE REPORT-FILE-REC FROM KSAM-STATUS-LINE
+                                                AFTER ADVANCING 1 LINE.
+
+           ADD 7                       TO  LINE-NUM.
+           MOVE 0                      TO  SUB.
+
+       6200-DISPLAY-FLD-LOOP.
+           ADD 1  TO  SUB.
+           IF SUB > 5
+               GO TO 9190-PB-X.
+
+      *--------- DISPLAY NON-NUMERIC FIELD.
+           IF DISPLAY-FLD (SUB) = SPACES OR "00000000000000"
+               NEXT SENTENCE
+           ELSE
+               MOVE SUB                 TO  PRT-SUB
+               MOVE DISPLAY-FLD (SUB)   TO  PRT-FIELD
+               WRITE REPORT-FILE-REC FROM FIELD-LINE
+                                              AFTER ADVANCING 1 LINE
+               ADD 1                    TO  LINE-NUM.
+
+           IF SUB = 5
+              GO TO 9190-PB-X.
+
+      *--------- DISPLAY NUMERIC FIELD.
+           IF DISPLAY-FLD9 (SUB) NOT = 0
+               MOVE SUB                 TO  PRT-NUM-SUB
+               MOVE DISPLAY-FLD9 (SUB)  TO  PRT-NUM-FIELD
+               WRITE REPORT-FILE-REC FROM NUM-FIELD-LINE
+                                              AFTER ADVANCING 1 LINE.
+
+           GO TO 6200-DISPLAY-FLD-LOOP.
+
+       9190-PB-X.
+           EXIT.
+
+       9200-PRINT-ROUTE-INFO.
+           WRITE REPORT-FILE-REC FROM ROUTE-FILE-REC
+                                              AFTER ADVANCING 1 LINE.
+           READ ROUTE-FILE
+               AT END MOVE "Y"     TO  ROUTE-EOF-SW.
+

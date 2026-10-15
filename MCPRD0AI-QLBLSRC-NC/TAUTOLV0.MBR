@@ -1,0 +1,785 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TAUTOLV2.
+       INSTALLATION.           GOODYEAR TIRE AND RUBBER CO.
+      *
+      *REMARKS.  *****************************************************
+      *          * ***  THIS PROGRAM CLOSES OPEN LABOR RECORDS AS    *
+      *          *      OF THE WALL TIME THAT THE JOB GETS EXECUTED. *
+      *          *      IF A VALID ZONE IS ENTERED IN THE 'INFO'     *
+      *          *      PARAMETER OF THE RUN COMMAND, ONLY PERSONNEL *
+      *          *      ASSIGNED TO THAT ZONE (EITHER PERMANENTLY OR *
+      *          *      TEMPORARILY) WILL BE LV'D.                   *
+      *          * ***  PROGRAM ALSO CLEARS RESERVATIONS FROM THE    *
+      *          *      QUEUE FILE AND DELETES OUTDATED HOT CODE     *
+      *          *      ENTRIES FROM THE HOT CODE FILE.              *
+      *          * ***  SUBROUTINES CALLED:                          *
+      *          *             TLABUPDT                              *
+      *          *             TGETSHFT                              *
+      *          *             TWOTRACK                              *
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-OPEN-QUEUE
+                  ASSIGN       TO DATABASE-MCFLMM1902
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURRENT-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-HOT-CODE
+                  ASSIGN       TO DATABASE-MCFLMM2001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PRINT-FILE
+                  ASSIGN       TO PRINTER-QPRINT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS ARE STANDARD.
+       01  PER-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  WO-OPEN-QUEUE
+           LABEL RECORDS ARE STANDARD.
+       01  WOQ-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1902.
+
+       FD  CURRENT-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  CLS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1601.
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  EQP-HOT-CODE
+           LABEL RECORDS ARE STANDARD.
+       01  HC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM2001.
+
+       FD  PRINT-FILE
+           LABEL RECORD IS OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC           PIC X(132).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9999  VALUE 1.
+       77  HOT-CODE-SW         PIC 9     VALUE 0.
+       77  TRUE-PRTY           PIC XX.
+       77  Q-BUFFER            PIC X(90).
+       77  STRT-DATE-99        PIC 9(06).
+       77  END-DATE-99         PIC 9(06).
+       77  STRT-TIME-99        PIC 9(04).
+       77  END-TIME-99         PIC 9(04).
+       77  LABOR-HRS-WA        PIC S99V9.
+       77  QUEUE-PRTY          PIC 9.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  ZONE-LINK           PIC X(04).
+       77  ERR-CODE            PIC -9999.
+       77  END-THIS-SHIFT      PIC S9999.
+       77  START-THIS-SHIFT    PIC S9999.
+       77  END-LAST-SHIFT      PIC S9999.
+       77  MIDNITE-SHIFT       PIC 9     VALUE 0.
+       77  ACD-SW              PIC X.
+       77  TCOMP-MIN           PIC S9(4).
+       77  TRECD-MIN           PIC S9(4).
+       77  TSAVE-MIN           PIC S9(4).
+       77  TSTRT-MIN           PIC S9(4).
+       77  JUL-DAY-RECD        PIC S9(8).
+       77  JUL-DAY-STRT        PIC S9(8).
+       77  JUL-DAY-COMP        PIC S9(8).
+       77  JUL-DAYS-LYR        PIC S9(8).
+       77  JUL-DAY-SAVE        PIC S9(8).
+       77  D-PARM              PIC X.
+       77  L-PARM              PIC X.
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X  VALUE "0".
+           05  FILE-STAT-2     PIC X  VALUE "0".
+
+       01  LAST-SHIFT-BUFFER.
+           05  END-LAST-SHIFT-BUF  PIC S9999.
+           05  E-L-S-B             REDEFINES END-LAST-SHIFT-BUF.
+               10  E-L-S-HR        PIC S99.
+               10  E-L-S-MN        PIC S99.
+
+       01  C-START-DATE-TIME.
+           05  C-START-DATE-HOLD   PIC 9(08).
+           05  C-START-TIME-HOLD   PIC 9(04).
+
+       01  CURR-DATE-BUFF.
+           05  CUR-DATE-YY     PIC XX.
+           05  CUR-DATE-MM     PIC XX.
+           05  CUR-DATE-DD     PIC XX.
+
+       01  CURR-DATE-TIME-WA.
+           05  C-DATE.
+               10  CURR-DATE-CC  PIC 99.
+               10  CURR-DATE-YY  PIC 99.
+               10  CURR-DATE-MM  PIC 99.
+               10  CURR-DATE-DD  PIC 99.
+           05  C-TIME.
+               10  CURR-TIME-HR  PIC 99.
+               10  CURR-TIME-MI  PIC 99.
+
+       01  END-DATE-TIME.
+           05  END-DATE.
+               10  END-DATE-CC PIC 99.
+               10  END-DATE-YY PIC 99.
+               10  END-DATE-MM PIC 99.
+               10  END-DATE-DD PIC 99.
+           05  END-TIME.
+               10  END-TIME-HR PIC 99.
+               10  END-TIME-MI PIC 99.
+
+       01  GREG-DATE.
+           05  G-YEAR          PIC XXXX.
+           05  G-MONTH         PIC XX.
+           05  G-DAY           PIC XX.
+
+       01  JUL-SIGN            PIC S9(06).
+       01  JUL-DATE            PIC  X(07).
+       01  JULIAN-DATE         REDEFINES JUL-DATE
+                               PIC  9(07).
+       01  FILLER              REDEFINES JUL-DATE.
+           05  J-YEAR          PIC 9999.
+           05  J-DAY           PIC 999.
+
+       01  TIME-BUFF.
+           05  TIME-HM.
+               10  TIME-HH     PIC XX.
+               10  TIME-MM     PIC XX.
+           05  FILLER          PIC XXXX.
+
+       01  SHIFT-DATA.
+           05  ZONE-BUF        PIC X(04).
+           05  TIME-IN.
+               10  HRS-IN      PIC 99.
+               10  MIN-IN      PIC 99.
+           05  CODE-BUF        PIC X.
+           05  SHIFTS.
+               10  S-1         PIC 9999.
+               10  E-1         PIC 9999.
+               10  S-2         PIC 9999.
+               10  E-2         PIC 9999.
+               10  S-3         PIC 9999.
+               10  E-3         PIC 9999.
+               10  S-4         PIC 9999.
+               10  E-4         PIC 9999.
+           05  CURR-SHIFT      PIC 9.
+
+       01  DB-ERROR.
+           05  DB-FUNC   PIC X(10) VALUE SPACES.
+           05  DB-FILE   PIC X(18) VALUE SPACES.
+           05  FILLER    PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD  PIC XX.
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  EQP-EQUIP-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  HOT-CODE-DATA.
+           COPY DHOTCODE       IN COPYLIB.
+
+       01  LABOR-CURR-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  INFO-DATA           PIC XXXX.
+
+       PROCEDURE DIVISION      USING INFO-DATA.
+       START-PROCESSING.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-EXIT.
+           PERFORM 7-CLEAR-QUEUE-FILE THRU 7-CQF-EXIT.
+           PERFORM 8-CLEAR-HOT-CODES THRU 8-CHC-EXIT.
+
+       END-OF-JOB.
+           CLOSE               WO-OPEN-QUEUE.
+           CLOSE               EQP-HOT-CODE.
+           CLOSE               CURRENT-LABOR.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               WO-BASIC.
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               PRINT-FILE.
+           STOP RUN.
+
+       1-HSK.
+           OPEN I-O            WO-OPEN-QUEUE.
+           OPEN I-O            EQP-HOT-CODE.
+           OPEN I-O            CURRENT-LABOR.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          WO-BASIC.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN OUTPUT         PRINT-FILE.
+
+           MOVE  "*************************************************"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**  MAINTTENANCE MANAGEMENT INFORMATION SYSTEM **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    PROGRAM:  TAUTOLV2                       **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "*************************************************"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    THIS PROGRAM CLOSES OPEN LABOR RECORDS   **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    AT THE END OF A SHIFT AND IS RUN OUT OF  **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    THE SLEEPER PROGRAM.  IF A VALID ZONE    **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    IS ENTERED IN THE `INFO' PARAMETER OF    **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    THE RUN COMMAND, ONLY PERSONNEL FROM     **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    THAT ZONE ARE LV'd.  IF A VALID ZONE IS  **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    NOT SUPPLIED,  A RECORD LABELED `CLRL'   **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    MUST EXIST IN THE SHIFT-STRUCTURE FILE   **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    IN THE DATABASE TO IDENTIFY THE SHIFT    **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    STARTING TIMES FOR THE PLANT.  IN THIS   **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    CASE, ALL PERSONNEL FROM ALL ZONES ARE   **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    `LV'd' FROM ALL WORKORDERS.  IF THIS     **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    RECORD DOES NOT EXIST, THE PROGRAM       **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    ABORTS.  THE STARTING TIMES ARE 1 MINUTE **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    PRIOR TO THE STARTING TIME OF THE NEXT   **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    SHIFT AS IDENTIFIED IN THE `CLRL' RECORD **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    OR VALID ZONE RECORD IN THE              **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    SHIFT-STRUCTURE FILE.                    **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "*************************************************"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    THIS PROGRAM ALSO CLEARS RESERVATIONS    **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    FROM THE QUEUE FILE AND DELETES OLD HOT  **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "**    CODE ENTRIES FROM THE HOT CODE FILE.     **"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE  "*************************************************"
+                               TO PRINT-REC.
+           WRITE               PRINT-REC.
+
+           MOVE SPACES         TO SHIFT-DATA RETURN-BYTE.
+           MOVE "CLRL"         TO ZONE-BUF.
+           IF INFO-DATA NOT = SPACES
+               MOVE INFO-DATA  TO ZONE-BUF.
+
+           ACCEPT CURR-DATE-BUFF FROM DATE.
+           MOVE CUR-DATE-YY    TO CURR-DATE-YY.
+           MOVE CUR-DATE-MM    TO CURR-DATE-MM.
+           MOVE CUR-DATE-DD    TO CURR-DATE-DD.
+           MOVE 20             TO CURR-DATE-CC.
+           IF CURR-DATE-YY > 70
+               MOVE 19         TO CURR-DATE-CC.
+
+           ACCEPT TIME-BUFF    FROM TIME.
+           MOVE TIME-HH        TO CURR-TIME-HR.
+           MOVE TIME-MM        TO CURR-TIME-MI.
+           MOVE SPACES         TO WO-TRACK-DATA.
+           MOVE "SLEEPER "     TO USER-NAME.
+           MOVE "  10"         TO USER-TERM.
+
+           MOVE TIME-HM        TO TIME-IN.
+           CALL "TGETSHFT" USING SHIFT-DATA
+                                 DBPARAMETERS.
+
+           IF SHIFT-DATA = SPACES OR RETURN-BYTE = "X"
+               MOVE "********************************************"
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "FATAL ERROR HAS OCCURRED - PROGRAM TAUTOLV2 "
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               STRING "  RECORD `CLRL' OR VALID ZONE RECORD " ZONE-BUF
+                               DELIMITED BY SIZE INTO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "  IS NOT IN SHIFT-STRUCTURE FILE            "
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "  CONTACT LOCAL MMIS MANAGER OR             "
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "  AKRON PROGRAMMING STAFF!                  "
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "********************************************"
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               GO TO END-OF-JOB.
+
+           IF CURR-SHIFT = 1
+               MOVE S-1        TO START-THIS-SHIFT
+               MOVE C-TIME     TO END-THIS-SHIFT
+           ELSE
+           IF CURR-SHIFT = 2
+               MOVE S-2        TO START-THIS-SHIFT
+               MOVE C-TIME     TO END-THIS-SHIFT
+           ELSE
+           IF CURR-SHIFT = 3
+               MOVE S-3        TO START-THIS-SHIFT
+               MOVE C-TIME     TO END-THIS-SHIFT
+           ELSE
+           IF CURR-SHIFT = 4
+               MOVE S-4        TO START-THIS-SHIFT
+               MOVE C-TIME     TO END-THIS-SHIFT
+           ELSE
+               MOVE "********************************************"
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "FATAL ERROR HAS OCCURRED - PROGRAM TAUTOLV2 "
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "CURRENT SHIFT NOT CALCULATED IN TGETSHFT "
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               STRING "INVALID CURRENT SHIFT IS - " CURR-SHIFT
+                               DELIMITED BY SIZE INTO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "CONTACT AKRON PROGRAMMING STAFF"
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE "********************************************"
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               GO TO END-OF-JOB.
+
+           IF END-THIS-SHIFT < START-THIS-SHIFT
+               MOVE CURR-SHIFT TO MIDNITE-SHIFT.
+
+           IF CURR-SHIFT = 2
+               MOVE E-1        TO END-LAST-SHIFT
+           ELSE
+           IF CURR-SHIFT = 3
+               MOVE E-2        TO END-LAST-SHIFT
+           ELSE
+           IF CURR-SHIFT = 4
+               MOVE E-3        TO END-LAST-SHIFT
+           ELSE
+           IF CURR-SHIFT = 1
+               IF CODE-BUF = 2
+                   MOVE E-2    TO END-LAST-SHIFT
+               ELSE
+               IF CODE-BUF = 3
+                   MOVE E-3    TO END-LAST-SHIFT
+               ELSE
+                   MOVE E-4    TO END-LAST-SHIFT.
+
+           MOVE END-LAST-SHIFT TO END-LAST-SHIFT-BUF.
+           SUBTRACT 15         FROM E-L-S-MN.
+           IF E-L-S-MN < 0
+               ADD 60          TO E-L-S-MN
+               SUBTRACT 1      FROM E-L-S-HR
+               IF E-L-S-HR < 0
+                   ADD 24      TO E-L-S-HR.
+
+           MOVE END-LAST-SHIFT-BUF TO END-LAST-SHIFT.
+
+           IF ZONE-BUF = "CLRL"
+               MOVE SPACES     TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE
+                "  ALL CRAFTSMEN ARE BEING LV'd FROM ALL WORKORDERS."
+                               TO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE SPACES     TO PRINT-REC
+               WRITE           PRINT-REC
+           ELSE
+               MOVE SPACES     TO PRINT-REC
+               WRITE           PRINT-REC
+               STRING
+                "  CRAFTSMEN FROM ZONE " ZONE-BUF " ARE BEING LV'd."
+                               DELIMITED BY SIZE INTO PRINT-REC
+               WRITE           PRINT-REC
+               MOVE SPACES     TO PRINT-REC
+               WRITE           PRINT-REC.
+
+       6-MAIN.
+           READ CURRENT-LABOR  FIRST INTO LABOR-CURR-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00" GO TO 6-MAIN-EXIT.
+           GO TO 6-CONT.
+
+       6-LOOP.
+           READ CURRENT-LABOR  NEXT INTO LABOR-CURR-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00" GO TO 6-MAIN-EXIT.
+           IF EMP-NO = "9999" GO TO 6-LOOP.
+
+       6-CONT.
+           MOVE SPACES         TO WO-PERS-DATA.
+           MOVE EMP-NO         TO PERCCNUM OF PER-PERSONNEL.
+           READ PER-PERSONNEL  INTO WO-PERS-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE ZONE-BUF   TO PER-MAINT-ZONE.
+
+           IF ZONE-BUF = "CLRL"
+               NEXT SENTENCE
+           ELSE
+               IF PER-TEMP-ZONE = SPACES
+                   IF ZONE-BUF = PER-MAINT-ZONE
+                       NEXT SENTENCE
+                   ELSE
+                       GO TO 6-LOOP
+               ELSE
+                   IF ZONE-BUF NOT = PER-TEMP-ZONE
+                       GO TO 6-LOOP.
+
+           STRING "  CC- " EMP-NO " IS LV'd FROM " WO-NO-CLS
+                               DELIMITED BY SIZE INTO PRINT-REC.
+           WRITE               PRINT-REC.
+           MOVE C-START-DATE-CN TO C-START-DATE-HOLD.
+           MOVE C-START-TIME    TO C-START-TIME-HOLD.
+           IF C-START-DATE-TIME > CURR-DATE-TIME-WA GO TO 6-LOOP.
+
+           MOVE CURR-DATE-CC   TO C-COMPL-CC.
+           MOVE CURR-DATE-MM   TO C-COMPL-MM.
+           MOVE CURR-DATE-DD   TO C-COMPL-DD.
+           MOVE CURR-DATE-YY   TO C-COMPL-YY.
+
+           IF CURR-SHIFT = 1
+               MOVE C-TIME     TO C-COMPL-TIME
+           ELSE
+           IF CURR-SHIFT = 2
+               MOVE C-TIME     TO C-COMPL-TIME
+           ELSE
+           IF CURR-SHIFT = 3
+               MOVE C-TIME     TO C-COMPL-TIME
+           ELSE
+           IF CURR-SHIFT = 4
+               MOVE C-TIME     TO C-COMPL-TIME.
+
+           PERFORM 61-SAVE-LABOR-RECORDS THRU 61-SLR-EXIT.
+           DELETE CURRENT-LABOR
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           PERFORM 62-WRITE-TRACKING THRU 62-WT-EXIT.
+           PERFORM 63-WRITE-QUEUE THRU 63-WQ-EXIT.
+           GO TO 6-LOOP.
+
+       6-MAIN-EXIT.    EXIT.
+
+       61-SAVE-LABOR-RECORDS.
+           MOVE 0              TO JUL-DAY-SAVE.
+           MOVE C-COMPL-DATE-CN TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-DAY-COMP.
+           ACCEPT TIME-BUFF    FROM TIME.
+
+           IF C-START-TIME = SPACES
+               IF CURR-SHIFT = 1
+                   MOVE S-1    TO C-START-TIME
+               ELSE
+               IF CURR-SHIFT = 2
+                   MOVE S-2    TO C-START-TIME
+               ELSE
+               IF CURR-SHIFT = 3
+                   MOVE S-3    TO C-START-TIME
+               ELSE
+               IF CURR-SHIFT = 4
+                   MOVE S-4    TO C-START-TIME.
+
+           IF C-START-DATE-CN = SPACES OR ZEROES
+               MOVE C-DATE     TO GREG-DATE
+               MOVE SPACES     TO JUL-DATE D-PARM L-PARM
+               CALL "JULGREG"  USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM
+               MOVE J-DAY      TO JUL-DAY-STRT
+               IF MIDNITE-SHIFT NOT = 0
+                   IF C-START-TIME = START-THIS-SHIFT
+                       SUBTRACT 1        FROM JUL-DAY-STRT
+                       MOVE JUL-DAY-STRT TO JUL-DATE
+                       MOVE J-DAY        TO JUL-SIGN
+                       PERFORM UNTIL JUL-SIGN > 0
+                           ADD 365       TO JUL-SIGN
+                           SUBTRACT 1    FROM J-YEAR
+                       END-PERFORM
+                       MOVE JUL-SIGN     TO J-DAY
+                       MOVE JUL-DATE     TO JUL-DAY-STRT
+                       MOVE SPACES       TO GREG-DATE
+                       CALL "JULGREG"    USING
+                                         GREG-DATE
+                                         JUL-DATE
+                                         D-PARM
+                                         L-PARM
+                       MOVE GREG-DATE    TO C-START-DATE-CN
+                   ELSE
+                       MOVE C-DATE TO C-START-DATE-CN
+               ELSE
+                   MOVE C-DATE TO C-START-DATE-CN
+           ELSE
+               MOVE C-START-DATE-CN TO GREG-DATE
+               MOVE SPACES     TO JUL-DATE D-PARM L-PARM
+               CALL "JULGREG"  USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM
+               MOVE J-DAY      TO JUL-DAY-STRT.
+
+           IF JUL-DAY-COMP < JUL-DAY-STRT
+               MOVE JUL-DAY-STRT TO JUL-DAY-COMP
+               MOVE C-START-DD   TO C-COMPL-DD
+               MOVE C-START-MM   TO C-COMPL-MM
+               MOVE C-START-YY   TO C-COMPL-YY
+               MOVE C-START-CC   TO C-COMPL-CC
+               IF C-COMPL-TIME < C-START-TIME
+                   IF C-COMPL-TIME > "0000" AND < END-THIS-SHIFT
+                       IF C-START-TIME > END-LAST-SHIFT AND < "2400"
+                           MOVE JUL-DAY-COMP TO JUL-DATE
+                           MOVE J-DAY        TO JUL-SIGN
+                           ADD 1             TO JUL-SIGN
+                           PERFORM UNTIL     JUL-SIGN < 366
+                               SUBTRACT 365  FROM JUL-SIGN
+                               ADD 1         TO   J-YEAR
+                           END-PERFORM
+                           MOVE JUL-SIGN     TO J-DAY
+                           MOVE SPACES       TO GREG-DATE
+                           CALL "JULGREG"    USING
+                                             GREG-DATE
+                                             JUL-DATE
+                                             D-PARM
+                                             L-PARM
+                           MOVE GREG-DATE    TO C-COMPL-DATE-CN
+                       ELSE
+                           MOVE TIME-HM TO C-COMPL-TIME
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               NEXT SENTENCE.
+
+           MOVE ZONE-BUF       TO ZONE-LINK.
+           CALL "TLABUPDT" USING DBPARAMETERS
+                                 LABOR-CURR-DATA
+                                 ZONE-LINK.
+
+       61-SLR-EXIT.            EXIT.
+
+       7-CLEAR-QUEUE-FILE.
+           READ WO-OPEN-QUEUE  FIRST INTO WO-QUEUE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 7-CQF-EXIT.
+
+       7-CLEAR-Q-FILE-CONT.
+           READ WO-OPEN-QUEUE  NEXT INTO WO-QUEUE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 7-CQF-EXIT.
+
+           IF Q-CC-NUM = "9999"
+               GO TO 7-CLEAR-Q-FILE-CONT.
+
+           IF QUEUE-FACTOR < 17 AND Q-CHKOUT = "  "
+               GO TO 7-CLEAR-Q-FILE-CONT.
+
+           IF Q-CW-LINK = "CW"
+               DELETE WO-OPEN-QUEUE
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-DELETE
+               IF FILE-STAT NOT = "00"
+                   GO TO 7-CLEAR-Q-FILE-CONT.
+
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE SPACES         TO Q-RESERVE Q-CW-LINK Q-CHKOUT.
+           REWRITE WOQ-REC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           GO TO 7-CLEAR-Q-FILE-CONT.
+
+       7-CQF-EXIT.             EXIT.
+
+       8-CLEAR-HOT-CODES.
+           READ EQP-HOT-CODE   FIRST INTO HOT-CODE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 8-CHC-EXIT.
+           GO TO 8-CLEAR-HC-FILE-CONT.
+
+       8-CLEAR-HC-FILE-LOOP.
+           READ EQP-HOT-CODE   NEXT INTO HOT-CODE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 8-CHC-EXIT.
+
+       8-CLEAR-HC-FILE-CONT.
+           MOVE HC-END-DATE-CN TO END-DATE.
+           MOVE HC-END-TIME    TO END-TIME.
+           IF CURR-DATE-TIME-WA < END-DATE-TIME
+               GO TO 8-CLEAR-HC-FILE-LOOP.
+           DELETE EQP-HOT-CODE
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 8-CHC-EXIT.
+           GO TO 8-CLEAR-HC-FILE-LOOP.
+
+       8-CHC-EXIT.             EXIT.
+
+       62-WRITE-TRACKING.
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TAUTOLV2 "     TO PROGRAM-NAME.
+           MOVE WO-NO-CLS      TO WO-NUM-TRACK.
+           MOVE CURR-DATE-TIME-WA TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+           MOVE SPACES         TO WO-TYPE-STATUS.
+           MOVE SPACES         TO USER-ID.
+           MOVE LCS-EMPL-NUM   TO CLOCK-CARD.
+           MOVE "IP"           TO WO-STATUS-TRACK.
+           MOVE "LV"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+       62-WT-EXIT.             EXIT.
+
+       63-WRITE-QUEUE.
+           MOVE WO-NO-CLS      TO WONUM OF WO-BASIC.
+           READ WO-BASIC       INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 63-WQ-EXIT.
+
+           IF WO-STATUS = "CW" OR "DW"
+               GO TO 63-WQ-EXIT.
+
+           MOVE EQUIP-NUM      TO EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO EQP-EQUIP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 63-WQ-EXIT.
+
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE ZONE           TO Q-ZONE.
+           MOVE "1 "           TO Q-PRTY.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE EQUIP-DOWN     TO Q-EQP-DOWN.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE EQUIP-NUM      TO Q-EQUIP-NUM.
+           MOVE DESCRIPTION-1  TO Q-DESCRIPTION.
+           MOVE CRAFTS-REQD-1  TO Q-SKILL-1.
+           MOVE CRAFTS-REQD-2  TO Q-SKILL-2.
+           MOVE CRAFTS-REQD-3  TO Q-SKILL-3.
+           IF PRIORITY = "1 "  MOVE 9 TO QUEUE-PRTY.
+           IF PRIORITY = "2 "  MOVE 6 TO QUEUE-PRTY.
+           IF PRIORITY = "3 "  MOVE 4 TO QUEUE-PRTY.
+           IF PRIORITY = "4 "  MOVE 2 TO QUEUE-PRTY.
+           IF PRIORITY = "5 "  MOVE 1 TO QUEUE-PRTY.
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+           MOVE "A"            TO QUEUE-SW.
+
+           CALL "TQUPDAT2" USING DBPARAMETERS
+                                 WO-QUEUE-DATA
+                                 QUEUE-SW
+                                 QUEUE-ERROR
+                                 LABOR-CURR-DATA.
+
+       63-WQ-EXIT.             EXIT.
+

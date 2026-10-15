@@ -1,0 +1,295 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SCALCBGT.
+       AUTHOR.        CA YODER.
+       DATE-WRITTEN.  MAY 1998.
+
+      ***************************************************************
+      *                                                             *
+      *D  S C A L C B G T                                           *
+      *                                                             *
+      *D  THIS SUB PROGRAM CALCULATES A BUDGET AMOUNT, GIVEN PO     *
+      *D  QUANTITY, PRICE, AND TAX CODE.                            *
+      *                                                             *
+      ***************************************************************
+      *C*
+      *C*  06/07/99   CA YODER   (DECATUR REQUEST)
+      *C*    RE-COMPILED TO PICK UP MTAX DATABASE CHANGE TO
+      *C*    EXPAND TAX RATE PERCENTAGE FROM 2 DECIMAL PLACES TO 4.
+      *C*
+      ***************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT TAXGST-FILE        ASSIGN TO DISK-TAXGST
+                                     FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MTAX-I
+               ASSIGN TO DATABASE-MCFLCS3701
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  TAXGST-FILE
+           RECORD CONTAINS 80 CHARACTERS.
+       01  TAXGST-RECORD             PIC X(80).
+
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MTAX-I
+           LABEL RECORDS ARE STANDARD.
+       01  MTAX-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS3701.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  GST-TAX-SW                  PIC X(1).
+           88  DONT-TAX-ON-GST                       VALUE "1".
+           88  TAX-ON-GST                            VALUE "2".
+
+       01  COUNTERS BINARY.
+           05  BUDGET-AMT-SAVED      PIC S9(11)      VALUE ZERO.
+           05  TOTAL-MTAX-PERCENT    PIC S9(4)V9(5)  VALUE ZERO.
+           05  ITEM-EXTENSION-SAVED  PIC S9(11)V9(4) VALUE ZERO.
+           05  ITEM-TAX              PIC S9(11)      VALUE ZERO.
+           05  GST-TAX               PIC S9(11)V9(4) VALUE ZERO.
+           05  GST-ENTRY             PIC S9          VALUE ZERO.
+
+       01  SUB                       PIC 99.
+       01  TAX-ARG                   PIC X(2)  VALUE SPACES.
+       01  PLT-ARG                   PIC X(4)  VALUE SPACES.
+
+      **************************************************************
+      **                DATABASE I/O BUFFER AREA                  **
+      **************************************************************
+
+       COPY MPLTINFO IN COPYLIB.
+
+       COPY MTAX IN COPYLIB.
+
+       COPY DBSTAT IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+      **************************************************************
+      **                LINKAGE SECTION                           **
+      **************************************************************
+
+       LINKAGE SECTION.
+
+       01  PASSED-PARAMETERS.
+           05  PO-QTY                   PIC S9(11)V9(4).
+           05  PO-PRICE                 PIC S9(11)V9(4).
+           05  PO-TAX-CODE              PIC XX.
+           05  PO-BUDGET                PIC S9(11)V9(4).
+
+       PROCEDURE DIVISION USING  PASSED-PARAMETERS.
+
+       BEGIN-HERE.
+           OPEN INPUT   MPLTINFO-PK-I
+                        MTAX-I.
+
+           PERFORM 1-HSK  THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           CLOSE        MPLTINFO-PK-I
+                        MTAX-I.
+
+           GOBACK.
+
+      ******************************************************
+      **   HOUSEKEEPING                                   **
+      ******************************************************
+
+       1-HSK.
+
+           INITIALIZE COUNTERS.
+
+      *
+      * FIND THE ENTRY THAT CONTAINS THE GST INFORMATION
+      *
+           MOVE 0 TO GST-ENTRY.
+           MOVE "PTX1" TO PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF NOT GOOD-CALL
+             MOVE "GETKEY MPLTINFO 1-HSK" TO BU-DISPLAY-MSG
+             MOVE PLT-ARG TO BU-DISPLAY-FLD(1)
+             PERFORM 2-BLOWUP
+           END-IF.
+           PERFORM VARYING SUB FROM 1 BY 1
+                   UNTIL GST-ENTRY > 0 OR
+                         SUB > 2
+
+             IF MPLTINFO-TAX-DISTRICT(SUB) = "GST"
+               MOVE SUB TO GST-ENTRY
+             END-IF
+
+           END-PERFORM.
+
+           IF GST-ENTRY EQUAL ZERO
+
+             MOVE "PTX2" TO PLT-ARG
+             PERFORM 9999-GETKEY-MPLTINFO-PK-I
+             IF NOT GOOD-CALL
+               MOVE "GETKEY MPLTINFO 1-HSK" TO BU-DISPLAY-MSG
+               MOVE PLT-ARG TO BU-DISPLAY-FLD(1)
+               PERFORM 2-BLOWUP
+             END-IF
+             PERFORM VARYING SUB FROM 1 BY 1
+                     UNTIL GST-ENTRY > 0 OR
+                           SUB > 2
+
+               IF MPLTINFO-TAX-DISTRICT(SUB) = "GST"
+                 COMPUTE GST-ENTRY = SUB + 2
+               END-IF
+
+             END-PERFORM
+
+           END-IF.
+
+      *
+      * CHECK FOR EXISTENCE OF TAXGST FILE
+      *  IF IT EXISTS THIS MEANS TO APPLY TAXES OTHER THAN GST
+      *  ON BASE + GST ( DOUBLE TAXATION )
+      *
+           OPEN INPUT TAXGST-FILE.
+           IF FILE-STATUS NOT EQUAL ZERO
+             SET DONT-TAX-ON-GST TO TRUE
+           ELSE
+             SET TAX-ON-GST TO TRUE
+           END-IF.
+           CLOSE TAXGST-FILE.
+
+       1-H-X.
+           EXIT.
+
+
+      ******************************************************
+      **   BLOWUP ROUTINE                                 **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "SCALCBGT"             TO  BU-DISPLAY-FLD (5).
+           MOVE PO-TAX-CODE            TO  BU-DISPLAY-FLD (4).
+           GOBACK.
+
+
+       6-MAIN.
+
+           IF PO-QTY NOT NUMERIC
+               MOVE 0          TO  PO-QTY.
+           IF PO-PRICE NOT NUMERIC
+               MOVE 0          TO  PO-PRICE.
+
+           MULTIPLY PO-QTY BY  PO-PRICE  GIVING
+             BUDGET-AMT-SAVED ROUNDED, ITEM-EXTENSION-SAVED ROUNDED.
+
+           IF PO-TAX-CODE = SPACES
+               MOVE 0          TO  ITEM-TAX
+               GO TO 6-END.
+
+           MOVE PO-TAX-CODE    TO  TAX-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE TAX-ARG TO TAXCDE OF MTAX-REC-I.
+           READ MTAX-I INTO BUF-MTAX
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ MTAX * 6-MAIN" TO BU-DISPLAY-MSG
+               MOVE TAX-ARG TO  BU-DISPLAY-FLD (2)
+               PERFORM 2-BLOWUP.
+
+           MOVE ZEROS TO TOTAL-MTAX-PERCENT.
+           IF GST-ENTRY = 0
+
+      *
+      * THERE IS NO GST TAX ENTRY FOR THIS PLANT
+      *
+             MOVE ZERO TO GST-TAX
+             PERFORM VARYING SUB FROM 1 BY 1
+                     UNTIL SUB > 4
+
+               IF MTAX-PAY-INDIC(SUB) EQUAL "P"
+                 ADD MTAX-PERCENT(SUB) TO TOTAL-MTAX-PERCENT
+               END-IF
+
+             END-PERFORM
+
+           ELSE
+
+      *
+      * GST WAS FOUND FOR THIS PLANT
+      *
+             PERFORM VARYING SUB FROM 1 BY 1
+                     UNTIL SUB > 4
+
+               IF MTAX-PAY-INDIC(SUB) EQUAL "P" AND
+                  SUB NOT EQUAL GST-ENTRY
+                 ADD MTAX-PERCENT(SUB) TO TOTAL-MTAX-PERCENT
+               END-IF
+
+             END-PERFORM
+             COMPUTE GST-TAX ROUNDED = ITEM-EXTENSION-SAVED *
+               ( MTAX-PERCENT(GST-ENTRY) / 100.00000000 )
+
+           END-IF.
+
+      *
+      * IF NO GST ENTRY WAS FOUND FOR THIS PLANT THEN
+      * TAX-ON-GST WILL BE FALSE, OTHERWISE IT DEPENDS
+      * ON THE EXISTENCE OF TAXGST FILE IN MCPRDn.
+      *
+           IF TAX-ON-GST
+
+             COMPUTE ITEM-TAX ROUNDED = GST-TAX +
+               (( ITEM-EXTENSION-SAVED + GST-TAX ) *
+                ( TOTAL-MTAX-PERCENT / 100.00000000 ))
+
+           ELSE
+
+             COMPUTE ITEM-TAX ROUNDED = GST-TAX +
+               (( ITEM-EXTENSION-SAVED ) *
+                ( TOTAL-MTAX-PERCENT / 100.00000000 ))
+
+           END-IF.
+
+       6-END.
+           ADD BUDGET-AMT-SAVED, ITEM-TAX GIVING PO-BUDGET.
+
+       6-M-X.
+           EXIT.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                   TO BU-MSG-AREA
+               PERFORM 2-BLOWUP.
+

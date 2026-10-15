@@ -1,0 +1,812 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TLVWORK.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+      *C****************************************************************
+      *C 09/29/94  WILL MCINTYRE  REQUEST #94-040
+      *C    REVISED TLVWORK TO EXECUTE SUB PROGRAM SASBCEXP TO CHECK
+      *C    EQUIPMENT ON WORKORDER FOR ASBESTOS FLAG.  IF SO, SASBCEXP
+      *C    WILL COLLECT DATA ON ASBESTOS HANDLING PROCEDURES.
+      *C 10/29/02  BRUCE GEISER
+      *C    CHECK NEW LOCAL PROCESSING SWITCH TO SEE IF COMMENTS ARE
+      *C    OPTIONAL WHEN LV'ING A WORKORDER.  LAWTON REQUEST.
+      *C****************************************************************
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT BASIC-WO-I
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PLANNED-WO-I
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT BASIC-WO-O
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PLANNED-WO-O
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT LAST-WO-FILE
+                  ASSIGN       TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS PFKEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURRENT-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZCFTHELP-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  BASIC-WO-I
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  PLANNED-WO-I
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  BASIC-WO-O
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-OUT.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  PLANNED-WO-O
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-OUT.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  LAST-WO-FILE
+           LABEL RECORDS       ARE STANDARD.
+       01  LAST-WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  CURRENT-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  LC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1601.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  EQUIP-TYPE          PIC X(08)   VALUE SPACES.
+       77  LABOR-WRITE-SW      PIC X       VALUE SPACE.
+           88  LABOR-NOT-WRITTEN           VALUE SPACE.
+       77  RQ-SW               PIC X       VALUE SPACE.
+       77  FILE-SW             PIC X       VALUE "B".
+           88  BASIC-FILE                  VALUE "B".
+       77  LABOR-HRS-WA        PIC S99V9.
+       77  QUEUE-PRTY          PIC 9.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  UPDATE-SW           PIC X       VALUE "A".
+       77  UPDATE-ERROR        PIC X(76).
+       77  ZONE-LINK           PIC XXXX.
+       77  HOLD-CRAFT          PIC XX      VALUE SPACES.
+       77  TCOMP-MIN           PIC S9(4).
+       77  TSAVE-MIN           PIC S9(4).
+       77  TSTRT-MIN           PIC S9(4).
+       77  TRUE-VAL            PIC 1       VALUE B"1".
+       77  CALL-PGM            PIC X(01).
+       77  PASS-EQPNUM         PIC X(06)   VALUE SPACES.
+       77  PASS-WONUM          PIC X(10)   VALUE SPACES.
+       77  PASS-RESP           PIC X(01)   VALUE SPACES.
+       77  PFKEY               PIC 9(8).
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TLVWORK ".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                   "ALLOWS CRAFTSMEN TO LEAVE A WO".
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                   "RKORDER (LV STATUS) FOR ANY OF".
+               10  PROG-DESC-B1    PIC X(30) VALUE
+                   "FOUR REASONS.  CALLED FROM f3 ".
+               10  PROG-DESC-B2    PIC X(30) VALUE
+                   "KEY OF CRAFTSMAN's FUNCTIONS. ".
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+
+       01  FILE-STAT.
+           05  F-STAT-1        PIC X.
+           05  F-STAT-2        PIC X.
+
+       01  TRACKING-PROGRAM-ID.
+           05  FILLER          PIC X(07) VALUE "TLVWORK".
+           05  LEAVE-TYPE      PIC X     VALUE SPACE.
+
+       01  CUR-DATE-CN.
+           05  CUR-DATE-CC     PIC XX.
+           05  CUR-DATE-WA.
+               10  CUR-DATE-YY PIC XX.
+               10  CUR-DATE-MM PIC XX.
+               10  CUR-DATE-DD PIC XX.
+
+       01  TIME-BUFF.
+           02  TIME-HM.
+               03  TIME-HRS    PIC 99.
+               03  TIME-MINS   PIC 99.
+           02  FILLER          PIC XXXX.
+
+       01  SCREEN-DATA.
+           05  WOLV            PIC X(10).
+           05  E-NUM           PIC X(06).
+           05  Z-NUM           PIC XXXX.
+           05  D-NUM           PIC XXXX.
+           05  P-NUM           PIC XX.
+           05  D1              PIC X(30).
+           05  D2              PIC X(66).
+           05  D3              PIC X(66).
+           05  SCREEN-MESSAGE  PIC X(40).
+           05  REQ-OPT-SIGN    PIC X(10).
+           05  COMMENTS-BUFFER.
+               10  CMTS-1      PIC X(70).
+               10  CMTS-2      PIC X(70).
+               10  CMTS-3      PIC X(70).
+               10  CMTS-4      PIC X(70).
+               10  CMTS-5      PIC X(70).
+           05  CMDMSG          PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+       01  COMM-BUFF.
+           05  CMTS-1-B        PIC X(70).
+           05  CMTS-2-B        PIC X(70).
+           05  CMTS-3-B        PIC X(70).
+           05  CMTS-4-B        PIC X(70).
+           05  CMTS-5-B        PIC X(70).
+
+       01  CAT-READ-BUF-1.
+           05  FILLER          PIC X(37).
+           05  C-TEXT-1        PIC X(02).
+           05  FILLER          PIC X.
+
+       01  CAT-READ-BUF-2.
+           05  FILLER          PIC X(27).
+           05  C-TEXT-2        PIC X(10).
+           05  FILLER          PIC X(03).
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+       01  EQUIP-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-LABOR.
+           COPY DWOLABOR       IN COPYLIB.
+
+       01  LAST-WO-BUF.
+           COPY MLASTWO IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  MESSAGE-DATA.
+           COPY DWOMSG         IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF        PIC XXXX.
+           05  CNAM-BUF        PIC X(16).
+
+       01  LV-BUF-DATA.
+           05  LV-DATA.
+               10  LV-SKILL    PIC XX.
+               10  LV-NS-FLAG  PIC X.
+               10  FILLER      PIC X(07).
+           05  LV-SW           PIC 9.
+
+       01  RESERVE-SW          PIC S9(4) COMP-4.
+
+       01  LABOR-CURR-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               CNUM-BUFFER
+                               LV-BUF-DATA
+                               RESERVE-SW
+                               LABOR-CURR-DATA
+                               WO-TRACK-DATA.
+
+       BEGIN.
+           PERFORM HOUSEKEEPING THRU HSK-EXIT.
+           GO TO 61-SHOWFORM.
+
+       END-OF-JOB.
+           CLOSE               BASIC-WO-I.
+           CLOSE               BASIC-WO-O.
+           CLOSE               PLANNED-WO-I.
+           CLOSE               PLANNED-WO-O.
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               LAST-WO-FILE.
+           CLOSE               CURRENT-LABOR.
+           CLOSE               DISPLAY-FILE.
+           GOBACK.
+
+       HOUSEKEEPING.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          BASIC-WO-I.
+           OPEN I-O            BASIC-WO-O.
+           OPEN INPUT          PLANNED-WO-I.
+           OPEN I-O            PLANNED-WO-O.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          LAST-WO-FILE.
+           OPEN I-O            CURRENT-LABOR.
+
+           MOVE LV-SW          TO LEAVE-TYPE.
+           ACCEPT CUR-DATE-WA  FROM DATE.
+           MOVE "20"           TO CUR-DATE-CC.
+           IF CUR-DATE-YY > "70"
+               MOVE "19"       TO CUR-DATE-CC.
+           MOVE CUR-DATE-CN    TO DATE-INIT-CN.
+
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE "CLVCOMM"      TO SCREEN-NAME.
+           MOVE SPACES         TO SCREEN-DATA EQUIP-TYPE HOLD-CRAFT.
+           MOVE SPACE          TO LABOR-WRITE-SW RQ-SW.
+           MOVE WO-NO-CLS      TO WOLV.
+           MOVE "A"            TO UPDATE-SW.
+           MOVE "B"            TO FILE-SW.
+      *-----SAVE RETURN-BYTE TO CHECK FOR CALL FROM SUPERVISOR
+      *-----RETURN-BYTE WILL EQUAL "S" IF THIS PGM CALLED FROM SUPER
+           MOVE RETURN-BYTE TO CALL-PGM.
+
+           MOVE LCS-WO-NUM     TO WONUM OF BASIC-WO-I
+                                  WONUM OF PLANNED-WO-I.
+           READ BASIC-WO-I     INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STAT = "23"
+               GO TO FIND-WO-PLANNED
+           ELSE
+               STRING
+               "WO-BASIC READ ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF LCS-WO-NUM = WO-NUM
+               GO TO CONTINUE-PROC.
+
+       FIND-WO-PLANNED.
+           READ PLANNED-WO-I   INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STAT = "23"
+               GO TO END-OF-JOB
+           ELSE
+           IF FILE-STAT NOT = ZEROS
+               STRING
+               "WO-PLANNED READ ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF LCS-WO-NUM = WO-NUM-PLANNED
+               MOVE "P"        TO FILE-SW
+           ELSE
+               GO TO END-OF-JOB.
+
+       CONTINUE-PROC.
+           IF BASIC-FILE
+               MOVE EQUIP-NUM  TO E-NUM
+               MOVE ZONE       TO Z-NUM
+               MOVE DEPT       TO D-NUM
+               MOVE PRIORITY   TO P-NUM
+               MOVE DESCRIPTION-1   TO D1
+               MOVE DESCRIPTION-2-1 TO D2
+               MOVE DESCRIPTION-2-2 TO D3
+           ELSE
+               MOVE EQUIP-NUM-P TO E-NUM
+               MOVE ZONE-P     TO Z-NUM
+               MOVE DEPT-P     TO D-NUM
+               MOVE PRIORITY-P TO P-NUM
+               MOVE DESCRIPTION-1-P   TO D1
+               MOVE DESCRIPTION-2-1-P TO D2
+               MOVE DESCRIPTION-2-2-P TO D3.
+
+           IF LV-SW = 1
+               MOVE "R"        TO RQ-SW
+               MOVE "(Required)" TO REQ-OPT-SIGN
+      **********************************************************************
+      **    MESSAGE 038/008:
+      ** LEAVE WORKORDER NOT COMPLETED
+      **********************************************************************
+               MOVE 38008      TO CATREAD-MSG-NUMBER
+               CALL "CCATREAD" USING CATREAD-PARMS
+               MOVE CATREAD-MSG-TEXT TO SCREEN-MESSAGE
+           ELSE
+           IF LV-SW = 2
+               MOVE "R"        TO RQ-SW
+               MOVE "(Required)" TO REQ-OPT-SIGN
+      **********************************************************************
+      **    MESSAGE 038/009:
+      ** LEAVE WORKORDER NEW SKILL REQUIRED - XX
+      **********************************************************************
+               MOVE 38009      TO CATREAD-MSG-NUMBER
+               CALL "CCATREAD" USING CATREAD-PARMS
+               MOVE CATREAD-MSG-TEXT TO CAT-READ-BUF-1
+               MOVE LV-SKILL   TO C-TEXT-1
+               MOVE CAT-READ-BUF-1 TO SCREEN-MESSAGE
+           ELSE
+           IF LV-SW = 3
+               MOVE "R"        TO RQ-SW
+               MOVE "(Required)" TO REQ-OPT-SIGN
+      **********************************************************************
+      **    MESSAGE 038/010:
+      ** LEAVE WORKORDER HOLD FOR MATERIALS - HM
+      **********************************************************************
+               MOVE 38010      TO CATREAD-MSG-NUMBER
+               CALL "CCATREAD" USING CATREAD-PARMS
+               MOVE CATREAD-MSG-TEXT TO SCREEN-MESSAGE
+           ELSE
+           IF LV-SW = 4
+               MOVE "O"        TO RQ-SW
+               MOVE "(Optional)" TO REQ-OPT-SIGN
+      **********************************************************************
+      **    MESSAGE 045/007:
+      ** START IP ON NEW WORK ORDER NUMBER XXXXXXXXXX
+      **********************************************************************
+               MOVE 45007      TO CATREAD-MSG-NUMBER
+               CALL "CCATREAD" USING CATREAD-PARMS
+               MOVE CATREAD-MSG-TEXT TO CAT-READ-BUF-2
+               MOVE LV-DATA    TO C-TEXT-2
+               MOVE CAT-READ-BUF-2 TO SCREEN-MESSAGE.
+
+      **********************************************************************
+      ** CHECK LOCAL PROCESSING FILE (MM0800) FOR OPTIONAL COMMENTS SWITCH
+      **********************************************************************
+           MOVE 1              TO PFKEY.
+           READ LAST-WO-FILE   INTO LAST-WO-BUF
+            INVALID KEY        GO TO END-OF-JOB.
+
+           IF N-SWITCH = "O"
+               MOVE "O"        TO RQ-SW
+               MOVE "(Optional)" TO REQ-OPT-SIGN.
+
+       HSK-EXIT.               EXIT.
+
+       61-SHOWFORM.
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+           IF KEY-HIT > 0
+               GO TO 61-SHOWFORM.
+
+           IF RQ-SW = "R"
+               IF COMMENTS-BUFFER = SPACES
+      **********************************************************************
+      **    MESSAGE 029/025:
+      ** COMMENT IS REQUIRED
+      **********************************************************************
+                   MOVE 29025  TO CATREAD-MSG-NUMBER
+                   CALL "CCATREAD" USING CATREAD-PARMS
+                   MOVE CATREAD-MSG-TEXT TO ERRMSG
+                   MOVE TRUE-VAL TO IND (1) IND (99)
+                   GO TO 61-SHOWFORM.
+
+       63-UPDATE-FILE.
+           ACCEPT CUR-DATE-WA  FROM DATE.
+           MOVE "20"           TO CUR-DATE-CC.
+           IF CUR-DATE-YY > "70"
+               MOVE "19"       TO CUR-DATE-CC.
+           MOVE CUR-DATE-CN    TO DATE-INIT-CN.
+           ACCEPT TIME-BUFF    FROM TIME.
+           MOVE TIME-HM        TO TIME-INIT.
+
+           IF FILE-SW = "B"
+               MOVE ZONE       TO ZONE-LINK
+           ELSE
+               MOVE ZONE-P     TO ZONE-LINK.
+
+           IF LABOR-NOT-WRITTEN
+               CALL "TLABUPDT" USING DBPARAMETERS
+                               LABOR-CURR-STAT
+                               ZONE-LINK
+               MOVE "Y"        TO LABOR-WRITE-SW.
+
+           MOVE ZONE-LINK      TO HOLD-CRAFT.
+           MOVE CNUM-BUF       TO PERCCNUM OF CURRENT-LABOR.
+           READ  CURRENT-LABOR INTO LABOR-CURR-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "23"
+               GO TO 63-UPDATE-CONT
+           ELSE
+           IF FILE-STAT NOT = ZEROS
+               STRING
+               "LABOR-CURR-STAT READ ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF CNUM-BUF NOT = LCS-EMPL-NUM
+               GO TO 63-UPDATE-CONT.
+
+           DELETE              CURRENT-LABOR
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+       63-UPDATE-CONT.
+           IF BASIC-FILE
+               PERFORM 63-UPDATE-BASIC-FILE THRU 63-UBF-EXIT
+           ELSE
+               PERFORM 63-UPDATE-PLANNED-FILE THRU 63-UPF-EXIT.
+           GO TO END-OF-JOB.
+
+       63-UPDATE-BASIC-FILE.
+           MOVE LCS-WO-NUM     TO WONUM OF BASIC-WO-O.
+           READ  BASIC-WO-O    INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               STRING
+               "READ BASIC-WO-O ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF DATE-STRT = SPACES
+               MOVE "IP"         TO WO-STATUS
+               MOVE C-START-DATE-CN TO DATE-STRT-CN
+               MOVE C-START-TIME TO TIME-STRT
+               MOVE EMP-NO       TO CRAFTSMEN-1.
+
+           IF RESERVE-SW > 0
+               IF CRAFTSMEN-2 = SPACES
+                   MOVE EMP-NO TO CRAFTSMEN-2
+               ELSE
+               IF CRAFTSMEN-3 = SPACES
+                   MOVE EMP-NO TO CRAFTSMEN-3.
+
+           IF LV-SW = 2 THEN   PERFORM 64-MOVE-CRAFT.
+           IF LV-SW = 3 THEN   MOVE "HM" TO WO-STATUS.
+
+           REWRITE VWO-OUT     FROM WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               STRING
+               "REWRITE BASIC-WO-O ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF LV-SW = 3
+               IF COMMENTS-BUFFER NOT = SPACES
+                   MOVE "1"    TO RETURN-BYTE
+                   MOVE COMMENTS-BUFFER TO COMM-BUFF
+                   CALL "TPRINTWO" USING WO-BASIC-DATA DBPARAMETERS
+                                     COMM-BUFF.
+
+           IF LV-SW = 2
+               IF LV-NS-FLAG = "1"
+                   MOVE "1"    TO RETURN-BYTE
+                   MOVE ZONE   TO ZONE-LINK
+                   MOVE LV-SKILL TO ZONE
+                   MOVE COMMENTS-BUFFER TO COMM-BUFF
+                   CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS COMM-BUFF
+                   MOVE ZONE-LINK TO ZONE.
+
+           IF COMMENTS-BUFFER = SPACES
+               GO TO 63-CONTINUE-UBF.
+
+           MOVE CNUM-BUF       TO FROM-CC.
+           MOVE "CRAFTSMAN FUNCTIONS - LV  " TO FROM-SIGNON.
+           MOVE LCS-WO-NUM     TO TO-WO.
+           MOVE "9999"         TO TO-CC.
+           MOVE COMMENTS-BUFFER TO MESSAGES-1-5.
+
+           CALL "TUPDATEM"     USING MESSAGE-DATA
+                               UPDATE-SW
+                               UPDATE-ERROR.
+           IF UPDATE-ERROR NOT = SPACES
+               DISPLAY "ADD TO MESSAGE FILE NOT COMPLETED:"
+               DISPLAY UPDATE-ERROR.
+
+       63-CONTINUE-UBF.
+           MOVE EQUIP-NUM      TO EQPNUM OF EQP-EQUIPMENT.
+           READ  EQP-EQUIPMENT INTO EQUIP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF EQUIP-NUM NOT = EQPNUM OF EQP-EQUIPMENT
+               STRING
+               "DATABASE ERROR:  EQUIPMENT - " EQUIP-NUM
+               " NOT FOUND." DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE ZONE           TO Q-ZONE.
+           MOVE PRIORITY       TO Q-PRTY.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE EQUIP-DOWN     TO Q-EQP-DOWN.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE EQUIP-NUM      TO Q-EQUIP-NUM.
+           MOVE DESCRIPTION-1  TO Q-DESCRIPTION.
+           MOVE CRAFTS-REQD-1  TO Q-SKILL-1.
+           MOVE CRAFTS-REQD-2  TO Q-SKILL-2.
+           MOVE CRAFTS-REQD-3  TO Q-SKILL-3.
+           IF PRIORITY = "1 "  MOVE 9 TO QUEUE-PRTY.
+           IF PRIORITY = "2 "  MOVE 6 TO QUEUE-PRTY.
+           IF PRIORITY = "3 "  MOVE 4 TO QUEUE-PRTY.
+           IF PRIORITY = "4 "  MOVE 2 TO QUEUE-PRTY.
+           IF PRIORITY = "5 "  MOVE 1 TO QUEUE-PRTY.
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+           MOVE "A"            TO QUEUE-SW.
+           IF LV-SW NOT = 3
+               CALL "TQUPDATE" USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE TRACKING-PROGRAM-ID TO PROGRAM-NAME.
+           MOVE WO-NUM         TO WO-NUM-TRACK.
+           MOVE CUR-DATE-CN    TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS.
+           MOVE CNUM-BUF       TO USER-ID CLOCK-CARD.
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+           MOVE "LV"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+      *-----CHECK CALL-PGM FOR CALL FROM SUPERVISOR. IF SO, SKIP
+      *-----CALL TO SASBCEXP SUB-PROGRAM
+            IF CALL-PGM = "S"
+               GO TO 63-UBF-EXIT.
+      *-----CALL SASBCEXP TO DETERMINE IF WORKORDER INVOLVED ASBESTOS
+           MOVE WO-NO-CLS      TO PASS-WONUM.
+           MOVE E-NUM          TO PASS-EQPNUM.
+           MOVE SPACES         TO PASS-RESP.
+           CALL "SASBCEXP"     USING PASS-EQPNUM, PASS-WONUM, PASS-RESP.
+      *-----IF RESPONSE PARM IS NOT BLANK, ASBESTOS INVOLVED, PRINT WO
+           IF PASS-RESP = SPACES
+              GO TO 63-UBF-EXIT
+           ELSE
+              MOVE PASS-RESP TO  RETURN-BYTE.
+           MOVE COMMENTS-BUFFER TO COMM-BUFF.
+           MOVE ZONE TO ZONE-LINK.
+           MOVE "ABST" TO ZONE.
+           CALL "TPRINTWO" USING WO-BASIC-DATA
+                           DBPARAMETERS COMM-BUFF.
+           MOVE ZONE-LINK TO ZONE.
+
+       63-UBF-EXIT.            EXIT.
+
+       63-UPDATE-PLANNED-FILE.
+           MOVE LCS-WO-NUM     TO WONUM OF PLANNED-WO-O.
+           READ  PLANNED-WO-O  INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               STRING
+               "READ PLANNED-WO-O ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF LV-SW = 3
+               IF WO-STATUS-P NOT = "SW"
+                   MOVE "HM"   TO WO-STATUS-P.
+
+           REWRITE PWO-OUT     FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               STRING
+               "REWRITE PLANNED-WO-O ERROR:  " FILE-STAT
+               DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF LV-SW NOT = 3
+               GO TO 63-CONTINUE-UPF.
+
+           MOVE SPACES         TO WO-BASIC-DATA.
+           MOVE WO-NUM-PLANNED TO WO-NUM.
+           MOVE WO-STATUS-P    TO WO-STATUS.
+           MOVE WO-START-STATUS TO WO-STRT-STATUS.
+           MOVE DATE-RECD-P-CN TO DATE-RECD-CN.
+           MOVE TIME-RECD-P    TO TIME-RECD.
+           MOVE APPROVAL-CODE-P TO APPROVAL-CODE.
+           MOVE REQUESTER-P    TO REQUESTER-B.
+           MOVE EQUIP-NUM-P    TO EQUIP-NUM.
+           MOVE EQUIP-NAME-P   TO EQUIP-NAME.
+           MOVE TYPE-NUM-P     TO TYPE-NUM.
+           MOVE DEPT-P         TO DEPT.
+           MOVE ZONE-PRIORITY-P TO ZONE-PRIORITY.
+           MOVE LOCATION-P     TO LOCATION.
+           MOVE EQUIP-DOWN-P   TO EQUIP-DOWN.
+           MOVE EXP-CLASS-P    TO EXP-CLASS.
+           MOVE DESCRIPTION-1-P TO DESCRIPTION-1.
+           MOVE DESCRIPTION-2-1-P TO DESCRIPTION-2-1.
+           MOVE DESCRIPTION-2-2-P TO DESCRIPTION-2-2.
+           MOVE DATE-STRT-P-CN TO DATE-STRT-CN.
+           MOVE TIME-STRT-P    TO TIME-STRT.
+           MOVE DATE-COMP-P-CN TO DATE-COMP-CN.
+           MOVE TIME-COMP-P    TO TIME-COMP.
+           MOVE ALL "*"        TO CRAFTS-REQD-1.
+           MOVE ALL "*"        TO CRAFTS-REQD-2.
+           MOVE ALL "*"        TO CRAFTS-REQD-3.
+           MOVE ALL "*"        TO CRAFTSMEN-1.
+           MOVE ALL "*"        TO CRAFTSMEN-2.
+           MOVE ALL "*"        TO CRAFTSMEN-3.
+           MOVE COMMENTS-BUFFER TO COMM-BUFF.
+           MOVE "1"            TO RETURN-BYTE.
+           CALL "TPRINTWO"     USING WO-BASIC-DATA DBPARAMETERS
+                               COMM-BUFF.
+
+       63-CONTINUE-UPF.
+           IF COMMENTS-BUFFER = SPACES
+               GO TO 63-CONTINUE-UPF-2.
+
+           MOVE CNUM-BUF       TO FROM-CC.
+           MOVE "CRAFTSMAN FUNCTIONS - LV  " TO FROM-SIGNON.
+           MOVE LCS-WO-NUM     TO TO-WO.
+           MOVE "9999"         TO TO-CC.
+           MOVE COMMENTS-BUFFER TO MESSAGES-1-5.
+
+           CALL "TUPDATEM"     USING MESSAGE-DATA
+                               UPDATE-SW
+                               UPDATE-ERROR.
+           IF UPDATE-ERROR NOT = SPACES
+               DISPLAY "ADD TO MESSAGE FILE NOT COMPLETED:"
+               DISPLAY UPDATE-ERROR.
+
+       63-CONTINUE-UPF-2.
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE TRACKING-PROGRAM-ID TO PROGRAM-NAME.
+           MOVE WO-NUM-PLANNED TO WO-NUM-TRACK.
+           MOVE CUR-DATE-CN    TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+           MOVE WO-START-STATUS TO WO-TYPE-STATUS.
+           MOVE CNUM-BUF       TO USER-ID CLOCK-CARD.
+           MOVE WO-STATUS-P    TO WO-STATUS-TRACK.
+           MOVE "LV"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+      *-----CHECK CALL-PGM FOR CALL FROM SUPERVISOR. IF SO, SKIP
+      *-----CALL TO SASBCEXP SUB-PROGRAM
+            IF CALL-PGM = "S"
+               GO TO 63-UPF-EXIT.
+      *-----CALL SASBCEXP TO DETERMINE IF WORKORDER INVOLVED ASBESTOS
+           MOVE WO-NO-CLS      TO PASS-WONUM.
+           MOVE E-NUM          TO PASS-EQPNUM.
+           MOVE SPACES         TO PASS-RESP.
+           CALL "SASBCEXP"     USING PASS-EQPNUM, PASS-WONUM, PASS-RESP.
+      *-----IF RESPONSE PARM IS NOT BLANK, ASBESTOS INVOLVED, PRINT WO
+           IF PASS-RESP = SPACES
+              GO TO 63-UPF-EXIT
+           ELSE
+              MOVE PASS-RESP TO RETURN-BYTE.
+           MOVE COMMENTS-BUFFER TO COMM-BUFF.
+           MOVE "ABST" TO ZONE.
+           CALL "TPRINTWO" USING WO-BASIC-DATA
+                           DBPARAMETERS COMM-BUFF.
+
+       63-UPF-EXIT.            EXIT.
+
+       64-MOVE-CRAFT.
+           IF HOLD-CRAFT = CRAFTS-REQD-1
+               MOVE SPACES     TO CRAFTS-REQD-1
+           ELSE
+           IF HOLD-CRAFT = CRAFTS-REQD-2
+               MOVE SPACES     TO CRAFTS-REQD-2
+           ELSE
+           IF HOLD-CRAFT = CRAFTS-REQD-3
+               MOVE SPACES     TO CRAFTS-REQD-3.
+
+           IF CRAFTS-REQD-1 = SPACES
+               MOVE CRAFTS-REQD-2 TO CRAFTS-REQD-1
+               MOVE CRAFTS-REQD-3 TO CRAFTS-REQD-2
+               MOVE SPACES        TO CRAFTS-REQD-3.
+
+           IF CRAFTS-REQD-2 = SPACES
+               MOVE CRAFTS-REQD-3 TO CRAFTS-REQD-2
+               MOVE SPACES        TO CRAFTS-REQD-3.
+
+           IF LV-SKILL = CRAFTS-REQD-3
+               MOVE SPACES     TO HOLD-CRAFT
+           ELSE
+               MOVE CRAFTS-REQD-3 TO HOLD-CRAFT.
+
+           MOVE CRAFTS-REQD-2 TO CRAFTS-REQD-3.
+           MOVE CRAFTS-REQD-1 TO CRAFTS-REQD-2.
+           MOVE LV-SKILL      TO CRAFTS-REQD-1.
+
+           IF CRAFTS-REQD-1 = CRAFTS-REQD-2
+               MOVE CRAFTS-REQD-3 TO CRAFTS-REQD-2
+               MOVE HOLD-CRAFT    TO CRAFTS-REQD-3.
+
+           IF CRAFTS-REQD-1 = CRAFTS-REQD-3
+               MOVE HOLD-CRAFT    TO CRAFTS-REQD-3.
+
+           IF CRAFTS-REQD-2 = CRAFTS-REQD-3
+               MOVE HOLD-CRAFT    TO CRAFTS-REQD-3.
+

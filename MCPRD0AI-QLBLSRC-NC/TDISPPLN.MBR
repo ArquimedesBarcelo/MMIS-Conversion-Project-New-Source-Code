@@ -1,0 +1,2508 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TDISPPLN.
+       INSTALLATION.  GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.   THIS PROGRAM DISPLAYS A WORK ORDER;
+      *                   SOFT KEY F1 CONTINUES AN EXISTING DISPLAY,
+      *                   SOFT KEY F2 REQUESTS NEW WORK ORDER NUMBER,
+      *               SOFT KEY F3 DISPLAYS PLANNED WORK ORDER,
+      *               SOFT KEY F4 DISPLAYS MATERIALS USED,
+      *               SOFT KEY F5 DISPLAYS MATERIALS ORDERED,
+      *               SOFT KEY F6 DISPLAYS LABOR USED,
+      *                   SOFT KEY F7 CAUSES SCREEN TO BE PRINTED,
+      *                   SOFT KEY F8 EXITS PROGRAM.
+      *          SUBROUTINES CALLED:
+      *              TALWONO
+      *              TSCRNPRT
+      *              ****.
+      *C
+      *C 09/10/96  JEFF BUNGO
+      *C   EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C   RECOMPILE TO PICK UP COPYLIB CHANGES.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    AS400.
+       OBJECT-COMPUTER.    AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZDISPLAY-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT JOBFILE
+               ASSIGN TO DATABASE-JOBFI
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS ACT-KEYJ
+               FILE STATUS IS JOBF-STATUS.
+           SELECT JOBPLAN-FILE
+               ASSIGN TO DATABASE-MCFLMM1801
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS JF-STATUS.
+           SELECT LBRFILE
+               ASSIGN TO DATABASE-LBRFI
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS ACT-KEYL
+               FILE STATUS IS LBRF-STATUS.
+           SELECT MATFILE
+               ASSIGN TO DATABASE-MATFI
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS ACT-KEYM
+               FILE STATUS IS MATF-STATUS.
+           SELECT PERSONNEL-FILE
+               ASSIGN TO DATABASE-MCFPMM0300
+               ORGANIZATION IS SEQUENTIAL
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS PF-STATUS.
+           SELECT WO-LABOR-FILE
+               ASSIGN TO DATABASE-MCFLMM1301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WLF-STATUS.
+           SELECT WO-LAST-NUM-USED
+               ASSIGN TO DATABASE-MCFPMM0800
+               ORGANIZATION IS RELATIVE
+               ACCESS MODE IS RANDOM
+               RELATIVE KEY IS ARG-NO
+               FILE STATUS IS WOLN-STATUS.
+           SELECT WO-PARTS-FILE
+               ASSIGN TO DATABASE-MCFLMM1201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WPF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                   PIC X(2000).
+       FD  JOBFILE
+           RECORD CONTAINS 90 CHARACTERS
+           LABEL RECORD IS OMITTED
+           DATA RECORD IS JOBREC.
+       01  JOBREC.
+           05  ACT-KEYJ                         PIC 9(4).
+           05  JOBREC-REC                       PIC X(86).
+       FD  JOBPLAN-FILE
+           LABEL RECORD IS STANDARD
+           DATA RECORD IS JOBPF.
+       01  JOBPF.
+           COPY DD-MCRPMM1800 OF MCFLMM1801.
+       FD  LBRFILE
+           RECORD CONTAINS 92 CHARACTERS
+           LABEL RECORD IS OMITTED
+           DATA RECORD IS LBRREC.
+       01  LBRREC.
+           05  ACT-KEYL                         PIC 9(4).
+           05  LBRREC-REC                       PIC X(88).
+       FD  MATFILE
+           RECORD CONTAINS 840 CHARACTERS
+           LABEL RECORD IS OMITTED
+           DATA RECORD IS MATF.
+       01  MATF.
+           05  ACT-KEYM                         PIC 9(4).
+           05  MATREC-REC                       PIC X(836).
+       FD  PERSONNEL-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PFREC.
+       01  PFREC.
+           COPY DD-MCRPMM0300 OF MCFPMM0300.
+       FD  WO-LABOR-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WOLABF.
+       01  WOLABF.
+           COPY DD-MCRPMM1300 OF MCFLMM1301.
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLNU.
+       01  WLNU.
+           COPY DD-MCRPMM0800 OF MCFPMM0800.
+       FD  WO-PARTS-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WOPARF.
+       01  WOPARF.
+           COPY DD-MCRPMM1200 OF MCFLMM1201.
+       WORKING-STORAGE SECTION.
+       77  CRFT-SUBSC                           PIC S9(4) COMP-4.
+       77  JOB-REC-CHECK                        PIC S9(4) COMP-4.
+       77  JOBPLAN-EST-TIME-WORK                PIC 9999V9.
+       77  LBR-REC-CHECK                        PIC S9(4) COMP-4.
+       77  PLANT-LABOR-RATE                     PIC 99V99.
+       77  SAVE-JOBSEQ                          PIC XXX.
+       77  SUB                                  PIC S9(4) COMP-4.
+       77  TMP-LBR-CST                          PIC S9(12)V99.
+       77  TMP-MTL-CENTS                        PIC S99.
+       01  ACT-KEYJ-WA                          PIC 9(4).
+       01  ACT-KEYL-WA                          PIC 9(4).
+       01  ACT-KEYM-WA                          PIC 9(4).
+       01  ARG-NO                               PIC 9(9).
+       01  ARGUMENT-DEFN.
+           05  ARG-DEFN                         PIC X(10).
+       01  BASIC-WO-TOTALS.
+           05  LABOR-EST-TOTAL                  PIC 9(12)V99.
+           05  LABOR-ACT-TOTAL                  PIC 9(12)V99.
+           05  STORES-EST-TOTAL                 PIC 9(12)V99.
+           05  STORES-ACT-TOTAL                 PIC 9(12)V99.
+           05  PURCH-EST-TOTAL                  PIC 9(12)V99.
+           05  PURCH-ACT-TOTAL                  PIC 9(12)V99.
+           05  TOTAL-EST-TOTAL                  PIC 9(12)V99.
+           05  TOTAL-ACT-TOTAL                  PIC 9(12)V99.
+       01  BLOWUP-BASE                          PIC X(16).
+       01  BUFFER-DEFINITION.
+           05  BUFFER                           PIC X(1136).
+      *
+      *    BUFFER-2
+      *
+           05  BUFFER-DEFN-2  REDEFINES  BUFFER.
+               10  WO-NUM-BUF2                  PIC X(10).
+               10  WO-STATUS-BUF2               PIC XX.
+               10  WO-CURR-STAT-BUF2            PIC XX.
+               10  DATE-RECD-BUF2               PIC X(6).
+               10  TIME-RECD-BUF2               PIC X(4).
+               10  APPROVAL-CODE-BUF2           PIC X.
+               10  REQUESTER-BUF2               PIC X(16).
+               10  EQUIP-NUM-BUF2               PIC X(6).
+               10  EQUIP-NAME-BUF2              PIC X(50).
+               10  TYPE-NUM-BUF2                PIC X(8).
+               10  DEPT-BUF2                    PIC X(4).
+               10  ZONE-BUF2                    PIC X(4).
+               10  LOCATION-BUF2                PIC X(8).
+               10  PRIORITY-BUF2                PIC X.
+               10  RIME-BUF2                    PIC XX.
+               10  EQUIP-DOWN-BUF2              PIC X.
+               10  EXP-CLASS-BUF2               PIC X(8).
+               10  DATE-REQD-BUF2               PIC X(6).
+               10  TIME-REQD-BUF2.
+                   15  TIME-REQD-HH-BUF2        PIC 99.
+                   15  TIME-REQD-MD-BUF2        PIC 99.
+               10  DESCRIPTION-1-BUF2           PIC X(30).
+               10  DESCRIPTION-2-BUF2           PIC X(66).
+               10  DESCRIPTION-3-BUF2           PIC X(66).
+               10  DESCRIPTION-4-BUF2           PIC X(66).
+               10  DESCRIPTION-5-BUF2           PIC X(66).
+               10  SPECL-INSTR-1-BUF2           PIC X(66).
+               10  SPECL-INSTR-2-BUF2           PIC X(66).
+               10  SPECL-EQUIP-BUF2             PIC X(66).
+               10  SAFETY-NOTE-BUF2             PIC X(66).
+               10  ENGINEER-BUF2                PIC X(4).
+               10  ENGR-RESP-IND-BUF2           PIC XX.
+               10  PLANNER-BUF2                 PIC X(4).
+               10  PLNR-RESP-IND-BUF2           PIC XX.
+               10  SCHEDULER-BUF2               PIC X(4).
+               10  SCHD-RESP-IND-BUF2           PIC XX.
+               10  DATE-SCHD-BUF2               PIC X(6).
+               10  TIME-SCHD-BUF2               PIC X(4).
+               10  BUDGET-NO-BUF2               PIC X(16).
+               10  REQUEST-NO-BUF2              PIC X(12).
+               10  DATE-STRT-BUF2               PIC X(6).
+               10  TIME-STRT-BUF2               PIC X(4).
+               10  FAILURE-CODE-BUF2.
+                   15  FAIL-CODE-REASON-BUF2    PIC XX.
+                   15  FAIL-CODE-SUBSYS-BUF2    PIC XXXX.
+               10  JOBPLAN-NAME                 PIC X(10).
+               10  DATE-COMP-BUF2               PIC X(6).
+               10  TIME-COMP-BUF2               PIC X(4).
+               10  MASTER-SCHED-NAME            PIC X(10).
+               10  LABOR-EST-TOTAL-EDIT         PIC Z(9).99.
+               10  STORES-EST-TOTAL-EDIT        PIC Z(9).99.
+               10  PURCH-EST-TOTAL-EDIT         PIC Z(9).99.
+               10  TOTAL-EST-TOTAL-EDIT         PIC Z(9).99.
+               10  LABOR-ACT-TOTAL-EDIT         PIC Z(9).99.
+               10  STORES-ACT-TOTAL-EDIT        PIC Z(9).99.
+               10  PURCH-ACT-TOTAL-EDIT         PIC Z(9).99.
+               10  TOTAL-ACT-TOTAL-EDIT         PIC Z(9).99.
+               10  MESSAGE-BUF2                 PIC X(79).
+               10  BUFFER-CMD-LINE              PIC X(79).
+               10  BUFFER-ERR-LINE              PIC X(79).
+       COPY CATREAD  IN COPYLIB.
+       COPY CMANREQ  IN COPYLIB.
+       01  COST-WORKAREA.
+           05  UC-SIGNED                        PIC S9(12)V9(4).
+           05  UC-S REDEFINES UC-SIGNED.
+               10  UC-DOLS-S                    PIC 9(12).
+               10  UC-CENTS-S                   PIC S9(4).
+           05  UNITCST-CENTS                    PIC 9999.
+           05  UCST-CENTS REDEFINES UNITCST-CENTS.
+               10  UCST-CENTS-1-2               PIC 99.
+               10  UCST-CENTS-3-4               PIC 99.
+       01  COUNTERS.
+           05  LBR-REC-CNT                      PIC S9(4) COMP-4.
+           05  LOOP-CNT                         PIC S9(4) COMP-4.
+           05  CNT-LIMIT                        PIC S9(4) COMP-4.
+           05  LINE-CNT                         PIC S9(4) COMP-4.
+           05  WO-PLANNED-REC-CNT               PIC S9(4) COMP-4.
+           05  JOBP-REC-CNT                     PIC S9(4) COMP-4.
+           05  MA-MATRL-REC-CNT                 PIC S9(4) COMP-4 SYNC.
+       COPY CPYIND   IN COPYLIB.
+       COPY TDATESUB IN COPYLIB.
+       01  DBPARMS-STORES.
+           05  FILLER                           PIC X(50).
+       01  ERROR-BUFFER.
+           05  ERR-1.
+               10  FILLER                       PIC X(14).
+               10  ERR-WO                       PIC X(10).
+               10  FILLER                       PIC X(54).
+           05  ERR-2 REDEFINES ERR-1.
+               10  FILLER                       PIC X(70).
+               10  ERR-COND                     PIC 9(4).
+               10  ERR-DELAY                    PIC X(4).
+           05  ERR-3 REDEFINES ERR-1.
+               10  ERROR-76                     PIC X(76).
+               10  FILLER                       PIC XX.
+       COPY ESCNAME IN COPYLIB.
+       01  FATAL-ERR-SW                         PIC X.
+       01  FILE-STATUSES.
+           05  DSPLY-STATUS                     PIC XX.
+           05  JF-STATUS                        PIC XX.
+           05  JOBF-STATUS                      PIC XX.
+           05  LBRF-STATUS                      PIC XX.
+           05  MATF-STATUS                      PIC XX.
+           05  PF-STATUS                        PIC XX.
+           05  PBF-STATUS                       PIC XX.
+           05  WLF-STATUS                       PIC XX.
+           05  WOLN-STATUS                      PIC XX.
+           05  WPF-STATUS                       PIC XX.
+       COPY IOFEEDBACK IN COPYLIB.
+       01  JOBP-KEY.
+           05  JOBP-WO-NO                       PIC X(10).
+           05  JOBP-SEQ-NO                      PIC 999.
+           05  FILLER                           PIC X.
+       01  JOBPLAN-BUFFER.                    COPY DJOBPLAN OF COPYLIB.
+       01  JOBPLAN-DATA.
+           05  JOB-CURR-DATE                    PIC X(8).
+           05  JOB-TIME-HH                      PIC XX.
+           05  JOB-SEMICOLON                    PIC X.
+           05  JOB-TIME-MM                      PIC XX.
+           05  JOB-LINE-3-WO-NUM-PRIM           PIC X(7).
+           05  JOB-LINE-3-WO-NUM-SUFF           PIC XXX.
+           05  JOB-LINE-3-WO-DESC               PIC X(30).
+           05  JOB-LINE-3-STATUS                PIC XX.
+           05  JOB-EQPNUM                       PIC X(6).
+           05  JOB-DEPT                         PIC X(4).
+           05  JOB-CHARGE                       PIC X(8).
+           05  JOB-ZONE                         PIC X(4).
+           05  JOB-PRTY                         PIC X.
+           05  JOB-RIME                         PIC XX.
+           05  JOB-DATE                         PIC X(6).
+           05  JOB-HRS                          PIC XX.
+           05  JOB-MINS                         PIC XX.
+           05  JOBPLAN-PLAN.
+               10  JOBP-LINE-DATA OCCURS 12 TIMES.
+                   15  JOB-SEQ                  PIC XXX.
+                   15  FILLER                   PIC X.
+                   15  JOB-DESC                 PIC X(50).
+                   15  FILLER                   PIC X.
+                   15  JOB-DT-TIME.
+                       20  JOB-DT-HRS           PIC ZZ9.
+                       20  JOB-DT-DOT           PIC X.
+                       20  JOB-DT-PART          PIC 9.
+                   15  FILLER                   PIC X.
+                   15  JOB-CRAFT                PIC XX.
+                   15  FILLER                   PIC X.
+                   15  JOB-MEN                  PIC XX.
+                   15  FILLER                   PIC X.
+                   15  JOB-EST-TIME.
+                       20  JOB-EST-HRS          PIC ZZ9.
+                       20  JOB-EST-DOT          PIC X.
+                       20  JOB-EST-PART         PIC 9.
+                   15  FILLER                   PIC X.
+                   15  JOB-PM-LVL               PIC XX.
+                   15  FILLER                   PIC X.
+                   15  JOB-PM-FLG               PIC XX.
+                   15  FILLER                   PIC X.
+               10  JOBP-DEPRESS-LINE            PIC X(79).
+               10  JOBP-CMD-LINE                PIC X(79).
+               10  JOBP-ERR-LINE                PIC X(79).
+       01  LABOR-LINES.
+           05  LL-DATE                          PIC X(8).
+           05  LL-TIME-HH                       PIC XX.
+           05  LL-SEMICOLON                     PIC X.
+           05  LL-TIME-MM                       PIC XX.
+           05  LL-WO                            PIC X(10).
+           05  LL-CRF-MEN OCCURS 12 TIMES       PIC XX.
+           05  LL-EST-MEN OCCURS 12 TIMES       PIC XX.
+           05  LL-ACT-MEN OCCURS 12 TIMES       PIC XX.
+           05  LL-HRS-EST OCCURS 12 TIMES.
+               10  LL-HRSE                      PIC ZZZ9.9.
+           05  LL-HRS-ACT OCCURS 12 TIMES.
+               10  LL-HRSA                      PIC ZZZ9.9.
+           05  LL-TOT-COST                      PIC -------------9.99.
+           05  LL-DATA-LINES.
+               10  LL-DATA OCCURS 10 TIMES.
+                   15  LL-CRAFTSMAN             PIC X(4).
+                   15  FILLER                   PIC XX.
+                   15  LL-CRAFTSMAN-NAME        PIC X(16).
+                   15  FILLER                   PIC XX.
+                   15  LL-CRAFT                 PIC XX.
+                   15  FILLER                   PIC X(3).
+                   15  LL-SHIFT                 PIC X.
+                   15  FILLER                   PIC X(2).
+                   15  LL-DATE-ST               PIC X(6).
+                   15  FILLER                   PIC XX.
+                   15  LL-TIME-ST-HH            PIC XX.
+                   15  LL-TIME-ST-MM            PIC XX.
+                   15  FILLER                   PIC XX.
+                   15  LL-DATE-CO               PIC X(6).
+                   15  FILLER                   PIC XX.
+                   15  LL-TIME-CO-HH            PIC XX.
+                   15  LL-TIME-CO-MM            PIC XX.
+                   15  FILLER                   PIC XX.
+                   15  LL-HRS1-99               PIC --9.
+                   15  LL-HRS-DEC               PIC X.
+                   15  LL-HRS2-9                PIC X.
+                   15  FILLER                   PIC X.
+                   15  LL-CST-DOLLR-9           PIC ---------9.
+                   15  LL-CST-DEC               PIC X.
+                   15  LL-CST-CENTS-9           PIC XX.
+               10  LL-DEPRESS-LINE              PIC X(79).
+               10  LL-CMD-LINE                  PIC X(79).
+               10  LL-ERR-LINE                  PIC X(79).
+       01  LABOR-WORK-AREA.
+           05  LA-CRAFT-CNT                     PIC 9(4).
+           05  LA-CRAFT-REQ-WA.
+               10  LA-CRAFT-REQ-I  OCCURS  20  TIMES.
+                   15  LA-CRAFT-REQ             PIC XX.
+           05  LA-MEN-EST-WA.
+               10  LA-MEN-EST-I  OCCURS  20  TIMES.
+                   15  LA-MEN-EST               PIC 99.
+           05  LA-MEN-ACT-WA.
+               10  LA-MEN-ACT-I  OCCURS  20  TIMES.
+                   15  LA-MEN-ACT               PIC 99.
+           05  LA-HRS-EST-WA.
+               10  LA-HRS-EST-I  OCCURS  20  TIMES.
+                   15  LA-HRS-EST               PIC 9999V9.
+           05  LA-HRS-ACT-WA.
+               10  LA-HRS-ACT-I  OCCURS  20  TIMES.
+                   15  LA-HRS-ACT               PIC 9999V9.
+           05  LA-TOTAL-COST-WA                 PIC 9(12)V99.
+           05  LA-TOT-CRF-CST-WA.
+               10  LA-TOT-CRF-CST-I  OCCURS  20  TIMES.
+                   15  LA-TOT-CRF-CST           PIC S9(12)V99.
+           05  LA-SUM-CRF-CST-WA.
+               10  LA-SUM-CRF-CST-I  OCCURS  20 TIMES.
+                   15  LA-SUM-CRF-CST           PIC S9(12)V99.
+       COPY LANGSUB  IN COPYLIB.
+       01  LAST-WO-BUFF.                      COPY MLASTWO  OF COPYLIB.
+       01  MATREC.
+           05  MATREC-DB-REC.
+               10  MAT-WO-NU.
+                   15  MAT-WO-NUM-PRIM          PIC X(7).
+                   15  MAT-WO-NUM-SUFFIX        PIC XXX.
+               10  MAT-ITEM-NO                  PIC X(4).
+               10  MAT-STATUS.
+                   15  MAT-STATUS-1             PIC X.
+                   15  MAT-STATUS-2             PIC X.
+               10  MAT-EST-QTY.
+                   15  MAT-EST-QTY-9            PIC S9(8).
+               10  MAT-NUM.
+                   15  MAT-NUM-7                PIC X(7).
+                   15  FILLER                   PIC X.
+               10  MAT-UNIT-MEAS                PIC XX.
+               10  MAT-UNIT-COST.
+                   15  MAT-UNIT-COST-DOLLR      PIC 9(12).
+                   15  MAT-UNIT-COST-CENTS      PIC 9(4).
+               10  M-UNIT-COST REDEFINES MAT-UNIT-COST
+                                                PIC S9(12)V9999.
+               10  MAT-PRIME.
+                   15  MAT-PRIME-1-3            PIC XXX.
+                   15  FILLER                   PIC X.
+               10  MAT-SUB.
+                   15  MAT-SUB-1-3              PIC XXX.
+                   15  FILLER                   PIC X.
+               10  MAT-STAGE                    PIC X(4).
+               10  MAT-ORIGINATOR               PIC X(4).
+               10  MAT-DATE-USED-CN.
+                   15  MAT-DATE-USED-CC         PIC 99.
+                   15  MAT-DATE-USED.
+                       20  MAT-DATE-USED-YY     PIC 99.
+                       20  MAT-DATE-USED-MM     PIC 99.
+                       20  MAT-DATE-USED-DD     PIC 99.
+               10  MAT-ADDL-INFO                PIC X(14).
+               10  MAT-SUGG-VENDOR              PIC X(30).
+               10  MAT-REQ-NO                   PIC X(12).
+               10  MAT-DESC                     PIC X(80).
+               10  MAT-DESC-2                   PIC X(80).
+               10  MAT-DESC-3                   PIC X(80).
+               10  MAT-DESC-4                   PIC X(80).
+               10  MAT-DESC-5                   PIC X(80).
+               10  MAT-REMARKS                  PIC X(80).
+               10  MAT-REMARKS-2                PIC X(80).
+               10  MAT-EST-COST.
+                   15  MAT-EST-COST-DOLLR       PIC 9(14).
+                   15  MAT-EST-COST-CENTS       PIC 99.
+               10  M-EST-COST REDEFINES MAT-EST-COST    PIC S9(14)V99.
+               10  MAT-ACT-QTY.
+                   15  MAT-ACT-QTY-9            PIC S9(8).
+               10  MAT-ACT-COST.
+                   15  MAT-ACT-COST-DOLLR       PIC 9(14).
+                   15  MAT-ACT-COST-CENTS       PIC 99.
+               10  M-ACT-COST REDEFINES MAT-ACT-COST    PIC S9(14)V99.
+               10  MAT-PO-NO                    PIC X(10).
+               10  MAT-EST-QTY-FLAG             PIC X.
+               10  MAT-DELETE-FLAG              PIC X.
+               10  MAT-LEVEL                    PIC XX.
+               10  MAT-FLAG                     PIC XX.
+               10  MAT-SS                       PIC X(4).
+               10  MAT-PAD2                     PIC X(4).
+           05  MATREC-REQ-QTY.
+               10  MATREC-REQ-QTY-9             PIC 9(8).
+           05  MATREC-PUR-QTY.
+               10  MATREC-PUR-QTY-9             PIC 9(8).
+           05  MATREC-RCV-QTY.
+               10  MATREC-RCV-QTY-9             PIC 9(8).
+           05  MATREC-INV-QTY.
+               10  MATREC-INV-QTY-9             PIC 9(8).
+           05  MATREC-REQ-UNIT-PRICE.
+               10  MATREC-REQ-UP-DOLS           PIC 9(12).
+               10  MATREC-REQ-UP-CTS            PIC 9(4).
+           05  MATREC-REQ-UP REDEFINES MATREC-REQ-UNIT-PRICE
+                                                PIC 9(12)V9(4).
+           05  MATREC-PO-UNIT-PRICE.
+               10  MATREC-PO-UP-DOLS            PIC 9(12).
+               10  MATREC-PO-UP-CTS             PIC 9(4).
+           05  MATREC-PO-UP REDEFINES MATREC-PO-UNIT-PRICE
+                                                PIC 9(12)V9(4).
+           05  MATREC-INV-UNIT-PRICE.
+               10  MATREC-INV-UP-DOLS           PIC 9(12).
+               10  MATREC-INV-UP-CTS            PIC 9(4).
+           05  MATREC-INV-UP REDEFINES MATREC-INV-UNIT-PRICE
+                                                PIC 9(12)V9(4).
+           05  FILLER                           PIC XX.
+       01  MATL-LINES.
+           05  MRA-LINE-1-CURR-DATE             PIC X(8).
+           05  MRA-LINE-1-TIME-HH               PIC XX.
+           05  MRA-LINE-1-SEMICOLON             PIC X.
+           05  MRA-LINE-1-TIME-MM               PIC XX.
+           05  MRA-LINE-3-WO-NUM.
+               10  MRA-LINE-3-WO-NUM-PRIM       PIC X(7).
+               10  MRA-LINE-3-WO-NUM-SUFF       PIC XXX.
+           05  MRA-LINE-3-WO-DESC               PIC X(30).
+           05  MRA-LINE-3-STATUS                PIC XX.
+           05  MRA-EQPNUM                       PIC X(6).
+           05  MRA-DEPT                         PIC X(4).
+           05  MRA-CHARGE                       PIC X(8).
+           05  MRA-ZONE                         PIC X(4).
+           05  MRA-PRTY                         PIC X.
+           05  MRA-RIME                         PIC XX.
+           05  MRA-DATE                         PIC X(6).
+           05  MRA-HRS                          PIC XX.
+           05  MRA-MINS                         PIC XX.
+           05  MATERIAL-LINES.
+               10  MM-LINES.
+                   15  MM-LINES-DATA.
+                       20  MLINE-1.
+                           25  MRA-ITM              PIC 9999.
+                           25  VAR-MATL-DATA        PIC X(20).
+                           25  MRA-REQ-DATE         PIC X(8).
+                           25  FILLER               PIC X.
+                           25  MRA-STAG             PIC X(4).
+                           25  FILLER               PIC XX.
+                           25  MRA-EST-LIT          PIC X(4).
+                           25  MRA-QTY              PIC ZZZZ9.
+                           25  MRA-QTY-FLAG         PIC X.
+                           25  FILLER               PIC X.
+                           25  MRA-UNIT-COST.
+                               30  MRA-UNITCST-DOLS PIC ZZZZZZZZZZ9.
+                               30  MRA-UNITCST-DEC  PIC X.
+                               30  MRA-UNITCST-CTS  PIC 99.
+                           25  MUC REDEFINES MRA-UNIT-COST
+                                                    PIC ZZZZZZZZZZ9.99.
+                           25  FILLER               PIC X.
+                           25  MRA-TOTAL-COST.
+                               30  MRA-TOTALCST-DOLS  PIC ZZZZZZZZZZ9.
+                               30  MRA-TOTALCST-DEC   PIC X.
+                               30  MRA-TOTALCST-CENTS PIC 99.
+                           25  MTC REDEFINES MRA-TOTAL-COST
+                                                    PIC ZZZZZZZZZZ9.99.
+                       20  MLINE-2 OCCURS 4 TIMES.
+                           25  MRA-REQ-PO-LIT       PIC X(16).
+                           25  MRA-REQ-PO           PIC X(10).
+                           25  FILLER               PIC X(13).
+                           25  MRA-ACT-LIT          PIC X(4).
+                           25  MRA-ACT-QTY          PIC ZZZZ9.
+                           25  FILLER               PIC XX.
+                           25  MRA-ACTUNIT-DOLS     PIC ZZZZZZZZZZ9.
+                           25  MRA-ACTUNIT-DEC      PIC X.
+                           25  MRA-ACTUNIT-CENTS    PIC 99.
+                           25  FILLER               PIC X.
+                           25  MRA-ACTTOT-DOLS      PIC ZZZZZZZZZZ9.
+                           25  MRA-ACTTOT-DEC       PIC X.
+                           25  MRA-ACTTOT-CENTS     PIC 99.
+                       20  MLINE-6-12.
+                           25  MRA-DESC-1           PIC X(79).
+                           25  MRA-DESC-2           PIC X(79).
+                           25  MRA-DESC-3           PIC X(79).
+                           25  MRA-DESC-4           PIC X(79).
+                           25  MRA-DESC-5           PIC X(79).
+                           25  MRA-REMARKS-1        PIC X(79).
+                           25  MRA-REMARKS-2        PIC X(79).
+                       20  MLINE-13.
+                           25  MRA-PM-LIT           PIC X(17).
+                           25  MRA-PM-LEV-LIT       PIC X(6).
+                           25  MRA-PM-LEVEL         PIC XX.
+                           25  FILLER               PIC XX.
+                           25  MRA-PM-FLAG-LIT      PIC X(5).
+                           25  MRA-PM-FLAG          PIC XX.
+                           25  FILLER               PIC XX.
+                           25  MRA-PM-SUBS-LIT      PIC X(10).
+                           25  MRA-PM-SUBS          PIC X(4).
+                           25  FILLER               PIC X(29).
+               10  MM-DEPRESS-LINE                  PIC X(79).
+               10  MM-CMD-LINE                      PIC X(79).
+               10  MM-ERR-LINE                      PIC X(79).
+       01  MATL-WORK-AREA.
+           05  CODED-MATL-DATA.
+               10  FILLER                       PIC X.
+               10  MRA-CODE                     PIC X(7).
+               10  FILLER                       PIC X.
+               10  MRA-STAT                     PIC XX.
+               10  FILLER                       PIC X.
+               10  MRA-UM                       PIC XX.
+               10  FILLER                       PIC X.
+               10  MRA-ORIG                     PIC X(4).
+               10  FILLER                       PIC X.
+       01  MSG-AREA.
+           05  CNUM-MSG                         PIC X(04).
+           05  WONUM-MSG                        PIC X(10).
+           05  MSG-BUFFER                       PIC X(76).
+       01  PASSED-BASE                          PIC X(10).
+       01  PASSED-SPOOL-PRT             PIC S9(2) VALUE ZERO  COMP-4.
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TDISPPLN".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "RE".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A     PIC X(60) VALUE
+             " DISPLAY PLANNED W/O ORDER INFORMATION                  ".
+               10  PROG-DESC-B     PIC X(60) VALUE SPACES.
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  PERSONNEL-DATA.                    COPY MPERSONL OF COPYLIB.
+       01  READ-BUFFER.
+           05  READ-ITEM.
+               10  READ-I  OCCURS 4 TIMES       PIC X.
+           05  READ-ITEM-9 REDEFINES READ-ITEM  PIC 9999.
+           05  READ-REQNO                       PIC X(12).
+           05  READ-CMD-LINE                    PIC X(79).
+           05  READ-ERR-LINE                    PIC X(79).
+       01  RETURN-CODE.
+           05  RET-CODE                         PIC X.
+           05  FILLER                           PIC X.
+       01  SCREEN-BUFFER.
+           05  SCREEN-CMD-LINE                  PIC X(79).
+           05  SCREEN-ERR-LINE                  PIC X(79).
+       COPY DBSTAT   IN COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       01  STORES-DATA.
+           05  CSIS-CODE                        PIC X(8).
+           05  RET-CODE-INFO                    PIC XX.
+           05  UNIT-COST                        PIC S9(11)V9(4).
+           05  UNIT-OF-MEAS                     PIC XX.
+           05  STORES-DESCRIP-DATA.
+               10  DESCRIP-1.
+                   15  DESC-1 OCCURS 80         PIC X.
+               10  DESCRIP-2.
+                   15  DESC-2 OCCURS 80         PIC X.
+               10  DESCRIP-3.
+                   15  DESC-3 OCCURS 80         PIC X.
+           05  EST-LT                           PIC 9(4).
+       01  SWITCHES.
+           05  RETURN-SW                        PIC X.
+           05  RETURN-SW-2                      PIC X.
+       01  TMP-DATE-AREA.
+           05  T-D-DEF1-1.
+               10  FILLER                       PIC X(4).
+               10  T-D-DEF1-YY                  PIC XX.
+           05  CRAFT-DESIRED                    PIC XX.
+           05  TMP-CONV-AREA.
+               10  UNITS-POSITION               PIC 999.
+               10  TENTHS-POSITION              PIC 9.
+           05  T-C-A  REDEFINES  TMP-CONV-AREA.
+               10  DECIMAL-NUM                  PIC 999V9.
+           05  TMP-LOOP-CNT.
+               10  TMP-L-C-FIELD1               PIC 9999999.
+       01  TMP-TIME-AREA.
+           05  TTA-HRS                          PIC XX.
+           05  TTA-MIN                          PIC XX.
+           05  FILLER                           PIC XX.
+       01  TRUE-VAL                             PIC 1 VALUE B"1".
+       01  WO-LABOR-DATA.                     COPY DWOLABOR OF COPYLIB.
+       01  WO-PARTS-DATA.                     COPY DWOPARTS OF COPYLIB.
+       COPY WSCONTROL IN COPYLIB.
+       LINKAGE SECTION.
+       01  DBPARAMETERS.                      COPY DBPARMS  OF COPYLIB.
+       01  WO-PLANNED-DATA.                   COPY DWOPLAN  OF COPYLIB.
+       COPY VCOMLINK OF COPYLIB.
+       PROCEDURE DIVISION USING DBPARAMETERS WO-PLANNED-DATA
+                            VIEW-COMAREA.
+       BEGIN-PROCESSING.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN UNTIL RETURN-SW = "2".
+       2-EOJ.
+           CLOSE DISPLAY-FILE.
+           CLOSE MATFILE LBRFILE JOBFILE WO-LAST-NUM-USED.
+           GOBACK.
+       1-HSK.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               MOVE "  PWORD" TO BLOWUP-BASE
+               MOVE "FAILED PASSWORD CHECK - TDISPPLN"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           MOVE "0"          TO RETURN-SW.
+           MOVE DATE-FLAG    TO  DATE-CODE.
+           MOVE ZEROS TO BASIC-WO-TOTALS.
+           OPEN I-O DISPLAY-FILE.
+           OPEN I-O MATFILE.
+           OPEN I-O LBRFILE.
+           OPEN I-O JOBFILE.
+           OPEN INPUT WO-LAST-NUM-USED.
+           OPEN INPUT JOBPLAN-FILE.
+           OPEN INPUT PERSONNEL-FILE.
+           OPEN INPUT WO-LABOR-FILE.
+           OPEN INPUT WO-PARTS-FILE.
+           MOVE 1 TO ARG-NO.
+           MOVE 0 TO COND-WORD.
+           READ WO-LAST-NUM-USED INTO LAST-WO-BUFF
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 35074 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (99).
+           MOVE SPACES TO DBPARMS-STORES.
+      ****************************************************************
+      *    MAIN LOGIC                                                *
+      ****************************************************************
+       6-MAIN.
+           PERFORM 63-READ-DB-AND-SAVE-DATA.
+           MOVE "0" TO RETURN-SW.
+           PERFORM 65-DISPLAY-CONTROL
+               UNTIL RETURN-SW = "1" OR "2".
+      *****************************************************************
+      *    READ DATA BASE MMISA AND SAVE DATA                               *
+      *****************************************************************
+       63-READ-DB-AND-SAVE-DATA.
+           MOVE ZERO TO LBR-REC-CNT.
+           MOVE ZEROES TO BASIC-WO-TOTALS.
+           MOVE +0001 TO WO-PLANNED-REC-CNT.
+      *
+      *    GET LABOR DATA
+      *
+           MOVE SPACES TO LA-CRAFT-REQ-WA.
+           MOVE ZEROES TO LA-CRAFT-CNT LA-MEN-EST-WA LA-MEN-ACT-WA
+               LA-HRS-EST-WA LA-HRS-ACT-WA LA-TOTAL-COST-WA
+               LA-TOT-CRF-CST-WA LA-SUM-CRF-CST-WA.
+           MOVE "0" TO RET-CODE.
+           MOVE 0 TO ACT-KEYL-WA.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUM-PLANNED TO WONUM-MM OF WOLABF.
+           START WO-LABOR-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY.
+           IF WLF-STATUS = "23"
+               NEXT SENTENCE
+           ELSE
+           IF WLF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 0
+               PERFORM 633-READ-AND-SAVE-1-LBR-REC
+                   UNTIL RET-CODE = "1".
+      *
+      *    GET MATERIAL USED DATA
+      *
+           MOVE ZERO TO MA-MATRL-REC-CNT.
+           MOVE 0 TO ACT-KEYM-WA.
+           MOVE "0" TO RET-CODE.
+           MOVE SPACES TO MATREC.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUM-PLANNED TO WONUM-MM OF WOPARF.
+           START WO-PARTS-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY.
+           IF WPF-STATUS = "23"
+               NEXT SENTENCE
+           ELSE
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 0
+               PERFORM 634-READ-AND-SAVE-1-MAT-REC
+                   UNTIL RET-CODE = "1".
+      *
+      *    RETRIEVE JOBPLAN INFORMATION
+      *
+           MOVE 0 TO ACT-KEYJ-WA.
+           MOVE ZERO TO JOBP-REC-CNT SAVE-JOBSEQ.
+           MOVE SPACES TO JOBP-KEY.
+           MOVE WO-NUM-PLANNED TO JOBP-WO-NO.
+           MOVE 000 TO JOBP-SEQ-NO.
+           MOVE 0 TO COND-WORD.
+           MOVE JOBP-KEY TO JOBPWOSEQ-MM OF JOBPF.
+           START JOBPLAN-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               NEXT SENTENCE
+           ELSE
+           PERFORM 635-READ-AND-SAVE-JOBPLAN-DATA THRU 635-RASJD-EXIT.
+       633-READ-AND-SAVE-1-LBR-REC.
+           MOVE 0 TO COND-WORD.
+           READ WO-LABOR-FILE PRIOR INTO WO-LABOR-DATA
+               AT END    MOVE 14 TO COND-WORD.
+           IF LBR-WO-NUM NOT = WO-NUM-PLANNED MOVE 14 TO COND-WORD.
+           IF COND-WORD = 14
+               MOVE "1" TO RET-CODE
+           ELSE
+           IF COND-WORD = 0
+               ADD +0001 TO LBR-REC-CNT
+               MOVE LBR-HRS1-99 TO UNITS-POSITION
+               MOVE LBR-HRS2-9 TO TENTHS-POSITION
+               DIVIDE LBR-CST-CENTS-9 BY 100
+                   GIVING TMP-LBR-CST
+               ADD LBR-CST-DOLLR-9 TO TMP-LBR-CST
+               ADD TMP-LBR-CST TO LABOR-ACT-TOTAL
+               ADD TMP-LBR-CST TO TOTAL-ACT-TOTAL
+               IF LBR-CRAFT = "  "
+                   ADD 1 TO ACT-KEYL-WA
+                   MOVE ACT-KEYL-WA TO ACT-KEYL
+                   MOVE WO-LABOR-DATA TO LBRREC-REC
+                   WRITE LBRREC     INVALID KEY
+                        MOVE 27031 TO CATREAD-MSG-NUMBER
+                        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                        MOVE TRUE-VAL TO INDS (99)
+               ELSE
+               PERFORM 6331-SET-LA-CRAFT-REQ
+               ADD 1 TO ACT-KEYL-WA
+               MOVE ACT-KEYL-WA TO ACT-KEYL
+               MOVE WO-LABOR-DATA TO LBRREC-REC
+               WRITE LBRREC     INVALID KEY
+                   MOVE 27031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (99).
+       6331-SET-LA-CRAFT-REQ.
+           MOVE LBR-CRAFT TO CRAFT-DESIRED.
+           PERFORM 63310-DET-CRAFT-SUBSCRIPT.
+       63310-DET-CRAFT-SUBSCRIPT.
+           IF LA-CRAFT-CNT = ZERO
+               MOVE +0001 TO CRFT-SUBSC
+               MOVE +0001 TO LA-CRAFT-CNT
+               MOVE CRAFT-DESIRED TO LA-CRAFT-REQ (CRFT-SUBSC)
+               ADD 1 TO LA-MEN-ACT (CRFT-SUBSC)
+               ADD DECIMAL-NUM TO LA-HRS-ACT (CRFT-SUBSC)
+               ADD TMP-LBR-CST TO LA-TOTAL-COST-WA
+           ELSE
+           MOVE ZERO TO CRFT-SUBSC
+           PERFORM 633100-LOOP-TABLE
+               VARYING LOOP-CNT FROM 1 BY 1
+               UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+           IF CRFT-SUBSC = ZERO
+               ADD +0001 TO LA-CRAFT-CNT
+               MOVE LA-CRAFT-CNT TO CRFT-SUBSC
+               MOVE CRAFT-DESIRED TO LA-CRAFT-REQ (CRFT-SUBSC)
+               ADD 1 TO LA-MEN-ACT (CRFT-SUBSC)
+               ADD DECIMAL-NUM TO LA-HRS-ACT (CRFT-SUBSC)
+               ADD TMP-LBR-CST TO LA-TOTAL-COST-WA.
+       633100-LOOP-TABLE.
+           IF LA-CRAFT-REQ (LOOP-CNT) = CRAFT-DESIRED
+               MOVE LOOP-CNT TO CRFT-SUBSC
+               ADD 1 TO LA-MEN-ACT (CRFT-SUBSC)
+               ADD DECIMAL-NUM TO LA-HRS-ACT (CRFT-SUBSC)
+               ADD TMP-LBR-CST TO LA-TOTAL-COST-WA.
+       634-READ-AND-SAVE-1-MAT-REC.
+           MOVE 0 TO COND-WORD.
+           READ WO-PARTS-FILE PRIOR INTO WO-PARTS-DATA
+               AT END MOVE 14 TO COND-WORD.
+           IF PRT-WO-NU NOT = WO-NUM-PLANNED MOVE 14 TO COND-WORD.
+           IF COND-WORD = 14
+               MOVE "1" TO RET-CODE.
+           IF PRT-DELETE-FLAG = "D" GO TO 634-READ-AND-SAVE-1-MAT-REC.
+           IF COND-WORD = 0
+               MOVE SPACES TO MATREC-DB-REC MATREC-REQ-QTY
+                 MATREC-PUR-QTY MATREC-RCV-QTY MATREC-INV-QTY
+                 MATREC-REQ-UNIT-PRICE MATREC-PO-UNIT-PRICE
+                 MATREC-INV-UNIT-PRICE
+               PERFORM 6341-RAS1MR THRU 6341-RAS1MR-EXIT
+      *        IF MAT-EST-QTY-FLAG = "*"
+      *            IF K-SWITCH = " "
+      *                IF M-ACT-COST > 0
+      *                    IF MAT-PO-NO = SPACES
+      *                        ADD +0001 TO MA-MATRL-REC-CNT
+      *                        ADD 1 TO ACT-KEYM-WA
+      *                        MOVE ACT-KEYM-WA TO ACT-KEYM
+      *                        MOVE MATREC TO MATREC-REC
+      *                        WRITE MATF     INVALID KEY
+      *                          MOVE 45039 TO CATREAD-MSG-NUMBER
+      *                          PERFORM 999-CATREAD THRU
+      *                                          999-CATREAD-EXIT
+      *                          MOVE TRUE-VAL TO INDS (99)
+      *                    ELSE
+      *                    ADD +0001 TO MA-MATRL-REC-CNT
+      *                    ADD M-ACT-COST TO PURCH-ACT-TOTAL
+      *                    ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+      *                    ADD 1 TO ACT-KEYM-WA
+      *                    MOVE ACT-KEYM-WA TO ACT-KEYM
+      *                    MOVE MATREC TO MATREC-REC
+      *                    WRITE MATF     INVALID KEY
+      *                        MOVE 45039 TO CATREAD-MSG-NUMBER
+      *                        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *                        MOVE TRUE-VAL TO INDS (99)
+      *                ELSE
+      *                ADD +0001 TO MA-MATRL-REC-CNT
+      *                ADD 1 TO ACT-KEYM-WA
+      *                MOVE ACT-KEYM-WA TO ACT-KEYM
+      *                MOVE MATREC TO MATREC-REC
+      *                WRITE MATF    INVALID KEY
+      *                    MOVE 45039 TO CATREAD-MSG-NUMBER
+      *                    PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *                    MOVE TRUE-VAL TO INDS (99)
+      *            ELSE
+      *            IF "M" = MAT-STATUS-1 OR MAT-STATUS-2
+      *                ADD +0001 TO MA-MATRL-REC-CNT
+      *                ADD M-EST-COST TO PURCH-EST-TOTAL
+      *                ADD M-EST-COST TO TOTAL-EST-TOTAL
+      *                ADD M-ACT-COST TO PURCH-ACT-TOTAL
+      *                ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+      *                ADD 1 TO ACT-KEYM-WA
+      *                MOVE ACT-KEYM-WA TO ACT-KEYM
+      *                MOVE MATREC TO MATREC-REC
+      *                WRITE MATF    INVALID KEY
+      *                    MOVE 45039 TO CATREAD-MSG-NUMBER
+      *                    PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *                    MOVE TRUE-VAL TO INDS (99)
+      *            ELSE
+      *            IF "X" = MAT-STATUS-1 OR MAT-STATUS-2
+      *                AND MAT-NUM-7 = "       "
+      *                ADD +0001 TO MA-MATRL-REC-CNT
+      *                ADD M-EST-COST TO PURCH-EST-TOTAL
+      *                ADD M-EST-COST TO TOTAL-EST-TOTAL
+      *                ADD M-ACT-COST TO PURCH-ACT-TOTAL
+      *                ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+      *                ADD 1 TO ACT-KEYM-WA
+      *                MOVE ACT-KEYM-WA TO ACT-KEYM
+      *                MOVE MATREC TO MATREC-REC
+      *                WRITE MATF    INVALID KEY
+      *                    MOVE 45039 TO CATREAD-MSG-NUMBER
+      *                    PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *                    MOVE TRUE-VAL TO INDS (99)
+      *            ELSE
+      *            IF "X" = MAT-STATUS-1 OR MAT-STATUS-2
+      *                MOVE SPACES TO STORES-DATA
+      *                MOVE MAT-NUM TO CSIS-CODE
+      *                CALL "TCODINFO" USING STORES-DATA DBPARMS-STORES
+      *                IF RET-CODE-INFO = "NS"
+      *                    ADD +0001 TO MA-MATRL-REC-CNT
+      *                    ADD M-EST-COST TO PURCH-EST-TOTAL
+      *                    ADD M-EST-COST TO TOTAL-EST-TOTAL
+      *                    ADD M-ACT-COST TO PURCH-ACT-TOTAL
+      *                    ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+      *                    ADD 1 TO ACT-KEYM
+      *                    WRITE MATF FROM MATREC
+      *                        INVALID KEY GO TO 2-EOJ
+      *                ELSE
+      *                ADD +0001 TO MA-MATRL-REC-CNT
+      *                ADD M-EST-COST TO STORES-EST-TOTAL
+      *                ADD M-EST-COST TO TOTAL-EST-TOTAL
+      *                ADD M-ACT-COST TO STORES-ACT-TOTAL
+      *                ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+      *                ADD 1 TO ACT-KEYM
+      *                WRITE MATF FROM MATREC
+      *                    INVALID KEY GO TO 2-EOJ
+      *            ELSE
+      *            ADD +0001 TO MA-MATRL-REC-CNT
+      *            ADD M-EST-COST TO STORES-EST-TOTAL
+      *            ADD M-EST-COST TO TOTAL-EST-TOTAL
+      *            ADD M-ACT-COST TO STORES-ACT-TOTAL
+      *            ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+      *            ADD 1 TO ACT-KEYM-WA
+      *            MOVE ACT-KEYM-WA TO ACT-KEYM
+      *            MOVE MATREC TO MATREC-REC
+      *            WRITE MATF    INVALID KEY
+      *                MOVE 45039 TO CATREAD-MSG-NUMBER
+      *            PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *            MOVE TRUE-VAL TO INDS (99)
+      *        ELSE
+               IF "M" = MAT-STATUS-1 OR MAT-STATUS-2
+                   AND MAT-NUM-7 = "       "
+                   ADD +0001 TO MA-MATRL-REC-CNT
+                   ADD M-EST-COST TO PURCH-EST-TOTAL
+                   ADD M-EST-COST TO TOTAL-EST-TOTAL
+                   ADD M-ACT-COST TO PURCH-ACT-TOTAL
+                   ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+                   ADD 1 TO ACT-KEYM-WA
+                   MOVE ACT-KEYM-WA TO ACT-KEYM
+                   MOVE MATREC TO MATREC-REC
+                   WRITE MATF    INVALID KEY
+                       MOVE 45039 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE TRUE-VAL TO INDS (99)
+               ELSE
+               IF "X" = MAT-STATUS-1 OR MAT-STATUS-2
+                   MOVE SPACES TO STORES-DATA
+                   MOVE MAT-NUM TO CSIS-CODE
+                   CALL "TCODINFO" USING STORES-DATA DBPARMS-STORES
+                   IF RET-CODE-INFO = "NS"
+                       ADD +0001 TO MA-MATRL-REC-CNT
+                       ADD M-EST-COST TO PURCH-EST-TOTAL
+                       ADD M-EST-COST TO TOTAL-EST-TOTAL
+                       ADD M-ACT-COST TO PURCH-ACT-TOTAL
+                       ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+                       ADD 1 TO ACT-KEYM-WA
+                       MOVE ACT-KEYM-WA TO ACT-KEYM
+                       MOVE MATREC    TO MATREC-REC
+                       WRITE MATF
+                           INVALID KEY GO TO 2-EOJ
+                   ELSE
+                   ADD +0001 TO MA-MATRL-REC-CNT
+                   ADD M-EST-COST TO STORES-EST-TOTAL
+                   ADD M-EST-COST TO TOTAL-EST-TOTAL
+                   ADD M-ACT-COST TO STORES-ACT-TOTAL
+                   ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+                   ADD 1 TO ACT-KEYM-WA
+                   MOVE ACT-KEYM-WA TO ACT-KEYM
+                   MOVE MATREC    TO MATREC-REC
+                   WRITE MATF
+                       INVALID KEY GO TO 2-EOJ
+               ELSE
+               ADD +0001 TO MA-MATRL-REC-CNT
+               ADD M-EST-COST TO STORES-EST-TOTAL
+               ADD M-EST-COST TO TOTAL-EST-TOTAL
+               ADD M-ACT-COST TO STORES-ACT-TOTAL
+               ADD M-ACT-COST TO TOTAL-ACT-TOTAL
+               ADD 1 TO ACT-KEYM-WA
+               MOVE ACT-KEYM-WA TO ACT-KEYM
+               MOVE MATREC TO MATREC-REC
+               WRITE MATF    INVALID KEY
+                   MOVE 45039 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (99).
+       6341-RAS1MR.
+           MOVE WO-PARTS-DATA TO MATREC-DB-REC.
+           IF MAT-EST-COST = SPACES
+               MOVE ZEROES TO M-EST-COST.
+           IF MAT-ACT-COST = SPACES
+               MOVE ZEROES TO M-ACT-COST.
+           MOVE 0                 TO  MATREC-REQ-QTY-9
+                                      MATREC-PUR-QTY-9
+                                      MATREC-RCV-QTY-9
+                                      MATREC-INV-QTY-9
+                                      MATREC-REQ-UP
+                                      MATREC-PO-UP
+                                      MATREC-INV-UP.
+           IF MAT-REQ-NO = SPACES OR "CANCEL"
+               GO TO 6341-RAS1MR-EXIT.
+           MOVE SPACES TO CMR-DATA CMR-DESC CMR-REMARKS
+               CMR-RETURNED-DATA CMR-MISC-PARMS BU-DISPLAY-MSG.
+           MOVE "IN" TO CMR-CALL-MODE.
+           MOVE MAT-REQ-NO TO CMR-REQ-NUMBER.
+           MOVE MAT-WO-NU TO CMR-WO-NUMBER.
+           CALL "CMANINQ" USING PASSED-BASE
+                                CMR-CALL-MODE
+                                CMR-DATA
+                                CMR-DESC
+                                CMR-REMARKS
+                                CMR-RETURNED-DATA
+                                CMR-MISC-PARMS
+                                LANGUAGE-PARMS
+                                ESC-NAME
+                                STATUS-AREA
+                                BU-DISPLAY-MSG.
+           IF CMR-RETURN-STATUS = "OK"
+               NEXT SENTENCE
+           ELSE
+           MOVE 0                     TO  MATREC-REQ-QTY-9
+                                          MATREC-PUR-QTY-9
+                                          MATREC-RCV-QTY-9
+                                          MATREC-INV-QTY-9
+                                          MATREC-REQ-UP
+                                          MATREC-PO-UP
+                                          MATREC-INV-UP
+           GO TO 6341-RAS1MR-EXIT.
+           MOVE CMR-CORP-CODE         TO  MAT-NUM-7.
+           MOVE CMR-UM                TO  MAT-UNIT-MEAS.
+           MOVE CMR-REQ-ORIG          TO  MAT-ORIGINATOR.
+           MOVE CMR-QTY               TO  MATREC-REQ-QTY-9.
+           MOVE CMR-EST-UNIT-PRICE    TO  MATREC-REQ-UP.
+           MOVE CMR-SUB               TO  MAT-SUB.
+           MOVE CMR-SUGGESTED-VENDOR  TO  MAT-SUGG-VENDOR.
+           MOVE CMR-WO-ITEM-NUMBER    TO  MAT-ITEM-NO.
+           MOVE CMR-ADDTL-INFO        TO  MAT-ADDL-INFO.
+      *************************************************************
+      *    THE FOLLOWING CHECK FOR MAT-DELETE-FLAG WAS ADDED      *
+      *    ON 1-13-88 TO MAKE THE USER AWARE OF AN ITEM THAT      *
+      *    HAD BEEN DELETED AFTER THE W/O HAD BEEN APPROVED       *
+      *    BUT NEEDED TO BE RETAINED FOR ESTIMATE ACCURACY        *
+      *************************************************************
+           IF MAT-DELETE-FLAG = "D"
+               MOVE SPACES TO MAT-DESC MAT-DESC-2 MAT-DESC-3
+                   MAT-DESC-4 MAT-DESC-5
+               MOVE MAT-REMARKS-2 TO MAT-DESC
+               MOVE SPACES TO MAT-REMARKS MAT-REMARKS-2
+           ELSE
+           MOVE CMR-DESC-LINE (1)      TO  MAT-DESC
+           MOVE CMR-DESC-LINE (2)      TO  MAT-DESC-2
+           MOVE CMR-DESC-LINE (3)      TO  MAT-DESC-3
+           MOVE CMR-DESC-LINE (4)      TO  MAT-DESC-4
+           MOVE CMR-DESC-LINE (5)      TO  MAT-DESC-5
+           MOVE CMR-REMARK-1           TO  MAT-REMARKS
+           MOVE CMR-REMARK-2           TO  MAT-REMARKS-2.
+           MOVE CMR-PO-NO-AND-REL      TO  MAT-PO-NO.
+           IF PRT-EST-QTY = SPACES
+               MOVE ZEROES             TO  PRT-EST-QTY-9.
+           MOVE PRT-EST-QTY-9          TO  MAT-EST-QTY-9.
+           MOVE CMR-PO-QTY-DLVR        TO  MATREC-RCV-QTY.
+           MOVE SPACES                 TO  MAT-PAD2.
+           MOVE CMR-QTY                TO  MAT-ACT-QTY-9.
+           MOVE CMR-PO-QTY-ORD         TO  MATREC-PUR-QTY.
+           MOVE CMR-PO-UNIT-PRICE      TO  MATREC-PO-UP.
+           MOVE CMR-PO-QTY-PAID        TO  MATREC-INV-QTY.
+           MOVE CMR-INV-UNIT-PRICE     TO  MATREC-INV-UP.
+           IF MATREC-INV-QTY-9 > MATREC-REQ-QTY-9
+               MOVE MATREC-REQ-QTY-9 TO MATREC-INV-QTY-9.
+           IF MATREC-PUR-QTY-9 > MATREC-REQ-QTY-9
+               MOVE MATREC-REQ-QTY-9 TO MATREC-PUR-QTY-9.
+           IF MATREC-RCV-QTY-9 > MATREC-REQ-QTY-9
+               MOVE MATREC-REQ-QTY-9 TO MATREC-RCV-QTY-9.
+           IF MATREC-INV-QTY-9 > 0
+               IF MATREC-INV-UP > 0
+                   MULTIPLY MATREC-INV-QTY-9 BY MATREC-INV-UP
+                       GIVING M-ACT-COST
+                   GO TO 6341-RAS1MR-CONT
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF MATREC-INV-QTY-9 = 0
+               IF MATREC-INV-UP > 0
+                   MOVE MATREC-INV-UP  TO M-ACT-COST
+                   GO TO 6341-RAS1MR-CONT.
+           IF MATREC-PUR-QTY-9 > 0
+               IF MATREC-PO-UP > 0
+                   MULTIPLY MATREC-PUR-QTY-9 BY MATREC-PO-UP
+                       GIVING M-ACT-COST.
+       6341-RAS1MR-CONT.
+           IF PLANT-IDENT NOT = "126 "
+               MOVE CMR-STAGING-AREA   TO  MAT-STAGE.
+       6341-RAS1MR-EXIT.    EXIT.
+       635-READ-AND-SAVE-JOBPLAN-DATA.
+           MOVE 0 TO COND-WORD.
+           READ JOBPLAN-FILE NEXT INTO JOBPLAN-BUFFER
+               AT END MOVE 15 TO COND-WORD.
+           IF JOBPLAN-WO-NO NOT = JOBP-WO-NO MOVE 15 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               GO TO 635-RASJD-EXIT
+           ELSE
+           IF JOBP-DESCRIP-3 = "&&&"
+               GO TO 635-READ-AND-SAVE-JOBPLAN-DATA
+           ELSE
+           IF JOBP-DESCRIP-3 = "$  "
+               GO TO 635-READ-AND-SAVE-JOBPLAN-DATA
+           ELSE
+           MOVE 0 TO SUB
+           ADD 1 TO JOBP-REC-CNT
+           PERFORM 6351-SET-LABOR-RATE THRU 6351-SLR-EXIT
+           PERFORM 6352-SAVE-EST-LABOR-DATA THRU 6352-SELD-EXIT
+           ADD 1 TO ACT-KEYJ-WA
+           MOVE ACT-KEYJ-WA TO ACT-KEYJ
+           MOVE JOBPLAN-BUFFER TO JOBREC-REC
+           WRITE JOBREC INVALID KEY MOVE 17 TO COND-WORD.
+           GO TO 635-READ-AND-SAVE-JOBPLAN-DATA.
+       635-RASJD-EXIT.    EXIT.
+       6351-SET-LABOR-RATE.
+           IF JOBPLAN-CRAFT = "  " GO TO 6351-SLR-EXIT.
+           IF JOBPLAN-CRAFT = PER-CRAFT
+               MOVE PER-LABOR-RATE TO PLANT-LABOR-RATE
+               GO TO 6351-SLR-EXIT.
+           MOVE 0 TO COND-WORD.
+           READ PERSONNEL-FILE INTO PERSONNEL-DATA
+               AT END MOVE 15 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               CLOSE PERSONNEL-FILE
+               OPEN INPUT PERSONNEL-FILE
+               GO TO 6351-SLR-EXIT.
+           IF JOBPLAN-CRAFT NOT = PER-CRAFT GO TO 6351-SET-LABOR-RATE.
+           MOVE PER-LABOR-RATE TO PLANT-LABOR-RATE.
+       6351-SLR-EXIT.    EXIT.
+       6352-SAVE-EST-LABOR-DATA.
+           ADD 1 TO SUB.
+           IF SUB > 12
+               MOVE 0 TO SUB
+               PERFORM 63520-SET-EST-DATA THRU 63520-SED-EXIT
+               GO TO 6352-SELD-EXIT.
+           IF JOBPLAN-CRAFT = "  " AND JOBPLAN-EST = "    "
+               GO TO 6352-SELD-EXIT.
+           IF JOBPLAN-MEN-X = "  " MOVE 0 TO JOBPLAN-MEN.
+           IF JOBPLAN-CRAFT = LA-CRAFT-REQ (SUB)
+               IF LA-MEN-EST-I (SUB) = "  "
+                   IF LA-MEN-ACT-I (SUB) = "  "
+                       GO TO 6352-SAVE-EST-LABOR-DATA
+                   ELSE
+                   ADD JOBPLAN-MEN TO LA-MEN-EST (SUB)
+                   MULTIPLY JOBPLAN-MEN BY JOBPLAN-EST-TIME
+                       GIVING JOBPLAN-EST-TIME-WORK ROUNDED
+                   ADD JOBPLAN-EST-TIME-WORK TO LA-HRS-EST (SUB)
+                   MULTIPLY JOBPLAN-EST-TIME-WORK BY PLANT-LABOR-RATE
+                       GIVING TMP-LBR-CST
+                   ADD TMP-LBR-CST TO LABOR-EST-TOTAL
+                   ADD TMP-LBR-CST TO TOTAL-EST-TOTAL
+                   GO TO 6352-SELD-EXIT
+               ELSE
+               ADD JOBPLAN-MEN TO LA-MEN-EST (SUB)
+               MULTIPLY JOBPLAN-MEN BY JOBPLAN-EST-TIME
+                   GIVING JOBPLAN-EST-TIME-WORK ROUNDED
+               ADD JOBPLAN-EST-TIME-WORK TO LA-HRS-EST (SUB)
+               MULTIPLY JOBPLAN-EST-TIME-WORK BY PLANT-LABOR-RATE
+                   GIVING TMP-LBR-CST
+               ADD TMP-LBR-CST TO LABOR-EST-TOTAL
+               ADD TMP-LBR-CST TO TOTAL-EST-TOTAL
+               GO TO 6352-SELD-EXIT
+           ELSE
+           GO TO 6352-SAVE-EST-LABOR-DATA.
+       6352-SELD-EXIT.    EXIT.
+       63520-SET-EST-DATA.
+           ADD 1 TO SUB.
+           IF SUB > 12
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE "JOBPLAN ESTIMATE TABLE OVERFLOW * TDISPPLN *"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           IF LA-CRAFT-REQ (SUB) = "  "
+               NEXT SENTENCE
+           ELSE
+           GO TO 63520-SET-EST-DATA.
+           MOVE JOBPLAN-CRAFT TO LA-CRAFT-REQ (SUB).
+           MOVE JOBPLAN-MEN TO LA-MEN-EST (SUB).
+           MULTIPLY JOBPLAN-MEN BY JOBPLAN-EST-TIME
+               GIVING JOBPLAN-EST-TIME-WORK ROUNDED.
+           MOVE JOBPLAN-EST-TIME-WORK TO LA-HRS-EST (SUB).
+           MULTIPLY JOBPLAN-EST-TIME-WORK BY PLANT-LABOR-RATE
+               GIVING TMP-LBR-CST.
+           ADD TMP-LBR-CST TO LABOR-EST-TOTAL.
+           ADD TMP-LBR-CST TO TOTAL-EST-TOTAL.
+           ADD 1 TO LA-CRAFT-CNT.
+       63520-SED-EXIT.    EXIT.
+      *****************************************************************
+      *    LOGIC CONTROL OF DISPLAY                                   *
+      *****************************************************************
+       65-DISPLAY-CONTROL.
+           MOVE "0" TO RET-CODE.
+           MOVE 0 TO ACT-KEYJ-WA ACT-KEYL-WA ACT-KEYM-WA.
+           IF VIEW-LASTKEY = 0
+               MOVE "FDISPMEN" TO VIEW-CFNAME
+               MOVE SPACES TO SCREEN-BUFFER
+               MOVE 49059 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-CMD-LINE
+               MOVE SPACES TO ERROR-BUFFER
+               MOVE SCREEN-BUFFER TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+           ELSE
+           IF VIEW-LASTKEY = 1
+               MOVE SPACES TO JOBPLAN-DATA
+               CLOSE JOBFILE
+               OPEN I-O JOBFILE
+               MOVE SPACES TO LABOR-LINES
+               CLOSE LBRFILE
+               OPEN I-O LBRFILE
+               MOVE SPACES TO MATL-LINES
+               CLOSE MATFILE
+               OPEN I-O MATFILE
+               MOVE "2" TO RETURN-SW
+           ELSE
+           IF VIEW-LASTKEY = 2
+               MOVE SPACES TO JOBPLAN-DATA
+               CLOSE JOBFILE
+               OPEN I-O JOBFILE
+               MOVE SPACES TO LABOR-LINES
+               CLOSE LBRFILE
+               OPEN I-O LBRFILE
+               MOVE SPACES TO MATL-LINES
+               CLOSE MATFILE
+               OPEN I-O MATFILE
+               MOVE "2" TO RETURN-SW
+           ELSE
+           IF VIEW-LASTKEY = 4
+               PERFORM 651-WRITE-WO-PLANNED
+           ELSE
+           IF VIEW-LASTKEY = 5
+               IF MA-MATRL-REC-CNT > 10
+                   PERFORM 652-PREREAD-CMATLS-ORDERED THRU 652-PCO-EXIT
+                   PERFORM 652-WRITE-WO-MATERIALS-USED
+               ELSE
+               PERFORM 652-WRITE-WO-MATERIALS-USED
+           ELSE
+           IF VIEW-LASTKEY = 6
+               IF MA-MATRL-REC-CNT > 10
+                   PERFORM 653-PREREAD-UMATLS-ORDERED THRU 653-PUO-EXIT
+                   PERFORM 653-WRITE-WO-MATERIALS-ORDERED
+               ELSE
+               PERFORM 653-WRITE-WO-MATERIALS-ORDERED
+           ELSE
+           IF VIEW-LASTKEY = 7
+               PERFORM 654-WRITE-WO-LABOR-USED
+           ELSE
+           IF VIEW-LASTKEY = 8
+               IF WO-START-STATUS = "AA" OR "AR"
+                   MOVE "0"    TO RETURN-SW-2
+                   MOVE 0      TO VIEW-LASTKEY
+               ELSE
+                   PERFORM 655-WRITE-JOBPLAN
+           ELSE
+           IF VIEW-LASTKEY = 3
+               MOVE "2" TO RETURN-SW
+           ELSE
+           MOVE 35126 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE TRUE-VAL TO INDS (99)
+           MOVE 0 TO VIEW-LASTKEY.
+      *****************************************************************
+      *    DISPLAY PLANNED WORK ORDER                                   *
+      *****************************************************************
+       651-WRITE-WO-PLANNED.
+           PERFORM 6511-MOVE-WO-PLANNED-TO-BUF2.
+           PERFORM 6512-DISP-DATA-ON-FORM THRU 6512-DDOF-EXIT.
+           MOVE "0" TO RETURN-SW-2.
+           PERFORM 6513-GET-NEXT-INST
+               UNTIL RETURN-SW-2 = "1".
+       6511-MOVE-WO-PLANNED-TO-BUF2.
+           MOVE SPACES TO BUFFER MSG-AREA.
+           MOVE WO-NUM-PLANNED       TO WO-NUM-BUF2 WONUM-MSG.
+           MOVE WO-STATUS-P          TO WO-STATUS-BUF2.
+           MOVE WO-START-STATUS      TO WO-CURR-STAT-BUF2.
+           MOVE DATE-RECD-P          TO T-D-DEF1-1.
+           MOVE T-D-DEF1-YY          TO T-D-DEF1-YY.
+           MOVE 4                    TO DATE-MODE.
+           MOVE DATE-RECD-P          TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT             TO DATE-RECD-BUF2.
+           MOVE TIME-RECD-P          TO TIME-RECD-BUF2.
+           MOVE APPROVAL-CODE-P      TO APPROVAL-CODE-BUF2.
+           MOVE REQUESTER-P          TO REQUESTER-BUF2.
+           MOVE EQUIP-NUM-P          TO EQUIP-NUM-BUF2.
+           MOVE EQUIP-NAME-P         TO EQUIP-NAME-BUF2.
+           MOVE TYPE-NUM-P           TO TYPE-NUM-BUF2.
+           MOVE DEPT-P               TO DEPT-BUF2.
+           MOVE ZONE-P               TO ZONE-BUF2.
+           MOVE LOCATION-P           TO LOCATION-BUF2.
+           MOVE PRIORITY-P           TO PRIORITY-BUF2.
+           MOVE EQUIP-DOWN-P         TO EQUIP-DOWN-BUF2.
+           MOVE EXP-CLASS-P          TO EXP-CLASS-BUF2.
+           MOVE RIME-P               TO RIME-BUF2.
+           IF DATE-REQD = "      "
+               MOVE DATE-REQD        TO DATE-REQD-BUF2
+           ELSE
+           MOVE 4                    TO DATE-MODE
+           MOVE DATE-REQD            TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-OUT             TO DATE-REQD-BUF2.
+           IF TIME-REQD = "    "
+               MOVE TIME-REQD        TO TIME-REQD-BUF2
+           ELSE
+           MOVE TIME-REQD-P-HH       TO TIME-REQD-HH-BUF2
+           MOVE TIME-REQD-P-MM       TO TIME-REQD-MD-BUF2.
+           MOVE DESCRIPTION-1-P      TO DESCRIPTION-1-BUF2.
+           MOVE DESCRIPTION-2-1-P    TO DESCRIPTION-2-BUF2.
+           MOVE DESCRIPTION-2-2-P    TO DESCRIPTION-3-BUF2.
+           MOVE DESCRIPTION-3-1-P    TO DESCRIPTION-4-BUF2.
+           MOVE DESCRIPTION-3-2-P    TO DESCRIPTION-5-BUF2.
+           MOVE SPECL-INSTR-1        TO SPECL-INSTR-1-BUF2.
+           MOVE SPECL-INSTR-2        TO SPECL-INSTR-2-BUF2.
+           MOVE SPECL-EQUIP          TO SPECL-EQUIP-BUF2.
+           MOVE SAFETY-NOTE          TO SAFETY-NOTE-BUF2.
+           MOVE ENGINEER-P           TO ENGINEER-BUF2.
+           IF ENGR-RESP-IND NOT = "  "
+               MOVE ENGR-RESP-IND    TO ENGR-RESP-IND-BUF2.
+           MOVE PLANNER-P            TO PLANNER-BUF2.
+           IF PLNR-RESP-IND NOT = "  "
+               MOVE PLNR-RESP-IND    TO PLNR-RESP-IND-BUF2.
+           MOVE SCHEDULER-P          TO SCHEDULER-BUF2.
+           IF SCHD-RESP-IND NOT = "  "
+               MOVE SCHD-RESP-IND    TO SCHD-RESP-IND-BUF2.
+           MOVE DATE-SCHD            TO T-D-DEF1-1.
+           MOVE T-D-DEF1-YY          TO T-D-DEF1-YY.
+           IF DATE-SCHD = "      "
+               MOVE DATE-SCHD        TO DATE-SCHD-BUF2
+           ELSE
+           MOVE 4                    TO DATE-MODE
+           MOVE DATE-SCHD            TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-OUT             TO DATE-SCHD-BUF2.
+           MOVE TIME-SCHD            TO TIME-SCHD-BUF2.
+           MOVE BUDGET-NO            TO BUDGET-NO-BUF2.
+           MOVE REQUEST-NO           TO REQUEST-NO-BUF2.
+           MOVE DATE-STRT-P          TO T-D-DEF1-1.
+           MOVE T-D-DEF1-YY          TO T-D-DEF1-YY.
+           IF DATE-STRT-P = "      "
+               MOVE DATE-STRT-P      TO DATE-STRT-BUF2
+           ELSE
+           MOVE 4                    TO DATE-MODE
+           MOVE DATE-STRT-P          TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-OUT             TO DATE-STRT-BUF2.
+           MOVE TIME-STRT-P          TO TIME-STRT-BUF2.
+           MOVE FAIL-CODE-REASON-P   TO FAIL-CODE-REASON-BUF2.
+           MOVE FAIL-CODE-SUBSYS-P   TO FAIL-CODE-SUBSYS-BUF2.
+           MOVE PM-JOBPLAN-KEY       TO JOBPLAN-NAME.
+           MOVE DATE-COMP-P          TO T-D-DEF1-1.
+           MOVE T-D-DEF1-YY          TO T-D-DEF1-YY.
+           IF DATE-COMP-P = "      "
+               MOVE DATE-COMP-P      TO DATE-COMP-BUF2
+           ELSE
+           MOVE 4                    TO DATE-MODE
+           MOVE DATE-COMP-P          TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-OUT             TO DATE-COMP-BUF2.
+           MOVE TIME-COMP-P          TO TIME-COMP-BUF2.
+           MOVE PM-SCHEDULE-KEY     TO MASTER-SCHED-NAME.
+           MOVE 42017 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MESSAGE-BUF2.
+       6512-DISP-DATA-ON-FORM.
+      *
+      *    DISPLAY DATE AND WORK ORDER NUMBER
+      *
+           MOVE LABOR-EST-TOTAL TO LABOR-EST-TOTAL-EDIT.
+           MOVE LABOR-ACT-TOTAL TO LABOR-ACT-TOTAL-EDIT.
+           MOVE STORES-EST-TOTAL TO STORES-EST-TOTAL-EDIT.
+           MOVE STORES-ACT-TOTAL TO STORES-ACT-TOTAL-EDIT.
+           MOVE PURCH-EST-TOTAL TO PURCH-EST-TOTAL-EDIT.
+           MOVE PURCH-ACT-TOTAL TO PURCH-ACT-TOTAL-EDIT.
+           MOVE TOTAL-EST-TOTAL TO TOTAL-EST-TOTAL-EDIT.
+           MOVE TOTAL-ACT-TOTAL TO TOTAL-ACT-TOTAL-EDIT.
+           MOVE "FDISPPLN" TO VIEW-CFNAME.
+           MOVE 66044 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO BUFFER-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO BUFFER.
+       6512-DDOF-EXIT.    EXIT.
+
+       6513-GET-NEXT-INST.
+           IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RETURN-SW-2
+           ELSE
+           IF VIEW-LASTKEY = 4
+               CALL "TDISPMES" USING DBPARAMETERS
+                                     MSG-AREA
+               MOVE MSG-BUFFER TO BUFFER-CMD-LINE
+               MOVE BUFFER TO DSPLY-REC
+               MOVE TRUE-VAL TO INDS (98)
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               MOVE 42017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MESSAGE-BUF2
+               MOVE 66044 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO BUFFER-CMD-LINE
+               MOVE BUFFER TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               GO TO 6513-GET-NEXT-INST
+           ELSE
+           MOVE "1" TO RETURN-SW-2.
+      *****************************************************************
+      *    DISPLAY MATERIALS USED ON WORK ORDER                       *
+      *****************************************************************
+       652-PREREAD-CMATLS-ORDERED.
+           MOVE "FDISPITM" TO VIEW-CFNAME.
+           MOVE SPACES TO READ-BUFFER.
+           MOVE READ-BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO READ-BUFFER.
+       652-PCO-READ.
+           IF READ-BUFFER = SPACES GO TO 652-PCO-EXIT.
+           MOVE 0 TO ACT-KEYM-WA.
+       652-PCO-LOOP.
+           ADD 1 TO ACT-KEYM-WA.
+           IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+               IF READ-ITEM NOT = SPACES
+                   MOVE 35110 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO READ-CMD-LINE
+                   MOVE TRUE-VAL TO INDS (98)
+                   MOVE READ-BUFFER TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   PERFORM 98A-SCREEN-READ
+                   MOVE DSPLY-REC TO READ-BUFFER
+                   MOVE SPACES TO READ-BUFFER
+                   MOVE 0 TO ACT-KEYM-WA
+                   GO TO 652-PCO-READ
+               ELSE
+               IF READ-REQNO NOT = SPACES
+                   MOVE 44011 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO READ-ERR-LINE
+                   MOVE TRUE-VAL TO INDS (98)
+                   MOVE READ-BUFFER TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   PERFORM 98A-SCREEN-READ
+                   MOVE READ-BUFFER TO DSPLY-REC
+                   MOVE SPACES TO READ-BUFFER
+                   MOVE 0 TO ACT-KEYM-WA
+                   GO TO 652-PCO-READ
+               ELSE
+               GO TO 652-PCO-EXIT.
+           PERFORM 6521000-READ-MATFILE.
+           IF MAT-STATUS-1 = "M" GO TO 652-PCO-LOOP.
+           IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+                GO TO 652-PCO-LOOP.
+           IF READ-ITEM = "    "
+               NEXT SENTENCE
+           ELSE
+           PERFORM 6520-RIGHT-JUSTIFY-ITEM THRU 6520-RJI-EXIT
+           IF READ-ITEM-9 = ACT-KEYM-WA
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6521000-READ-MATFILE-PRIOR THRU 6521000-RMP-EXIT
+               GO TO 652-PCO-EXIT
+           ELSE
+           GO TO 652-PCO-LOOP.
+           IF READ-REQNO = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF READ-REQNO = MAT-REQ-NO
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6521000-READ-MATFILE-PRIOR THRU 6521000-RMP-EXIT
+               GO TO 652-PCO-EXIT
+           ELSE
+           GO TO 652-PCO-LOOP.
+       652-PCO-EXIT.    EXIT.
+       6520-RIGHT-JUSTIFY-ITEM.
+           IF READ-I (4) = " "
+               IF READ-I (3) = " "
+                   IF READ-I (2) = " "
+                        MOVE READ-I (1) TO READ-I (4)
+                        MOVE " " TO READ-I (1)
+                   ELSE
+                   MOVE READ-I (2) TO READ-I (4)
+                   MOVE READ-I (1) TO READ-I (3)
+                   MOVE " " TO READ-I (2) READ-I (1)
+               ELSE
+               MOVE READ-I (3) TO READ-I (4)
+               MOVE READ-I (2) TO READ-I (3)
+               MOVE READ-I (1) TO READ-I (2)
+               MOVE " " TO READ-I (3) READ-I (2) READ-I (1).
+           IF READ-I (4) = " " MOVE "0" TO READ-I (4).
+           IF READ-I (3) = " " MOVE "0" TO READ-I (3).
+           IF READ-I (2) = " " MOVE "0" TO READ-I (2).
+           IF READ-I (1) = " " MOVE "0" TO READ-I (1).
+       6520-RJI-EXIT.    EXIT.
+       652-WRITE-WO-MATERIALS-USED.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO MRA-LINE-1-CURR-DATE.
+           ACCEPT TMP-TIME-AREA FROM TIME.
+           MOVE TTA-HRS TO MRA-LINE-1-TIME-HH.
+           MOVE ":" TO MRA-LINE-1-SEMICOLON.
+           MOVE TTA-MIN TO MRA-LINE-1-TIME-MM.
+           MOVE WO-NUM-P TO MRA-LINE-3-WO-NUM-PRIM.
+           MOVE WO-NUM-SUFF-P TO MRA-LINE-3-WO-NUM-SUFF.
+           MOVE DESCRIPTION-1-P TO MRA-LINE-3-WO-DESC.
+           MOVE WO-STATUS-P TO MRA-LINE-3-STATUS.
+           MOVE EQUIP-NUM-P TO MRA-EQPNUM.
+           MOVE DEPT-P TO MRA-DEPT.
+           MOVE EXP-CLASS-P TO MRA-CHARGE.
+           MOVE ZONE-P TO MRA-ZONE.
+           MOVE PRIORITY-P TO MRA-PRTY.
+           MOVE RIME-P TO MRA-RIME.
+           MOVE 4 TO DATE-MODE.
+           MOVE DATE-SCHD TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO MRA-DATE.
+           MOVE TIME-SCHD-P-HH TO MRA-HRS.
+           MOVE TIME-SCHD-P-MM TO MRA-MINS.
+           IF MA-MATRL-REC-CNT = 0
+               MOVE 48003 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+               MOVE 50001 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MM-CMD-LINE
+               MOVE "FDISPMAT" TO VIEW-CFNAME
+               MOVE MATL-LINES TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO MATL-LINES
+               MOVE "0" TO RETURN-SW-2
+           ELSE
+           PERFORM 6520-WRITE-MATERIAL.
+       6520-WRITE-MATERIAL.
+           MOVE "0" TO RET-CODE.
+           PERFORM 652100-WRITE-CMATL-LINES THRU 652100-WCL-CONT
+               UNTIL RET-CODE = "1".
+           MOVE 0 TO ACT-KEYM-WA.
+       652100-WRITE-CMATL-LINES.
+           ADD 1 TO ACT-KEYM-WA.
+           IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+               MOVE "1" TO RET-CODE
+               GO TO 652100-WCL-CONT
+           ELSE
+           PERFORM 6521000-READ-MATFILE
+           IF MAT-STATUS-1 = "M"
+               GO TO 652100-WRITE-CMATL-LINES
+           ELSE
+           IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+               GO TO 652100-WRITE-CMATL-LINES.
+           MOVE SPACES TO MM-LINES.
+           MOVE ACT-KEYM-WA TO MRA-ITM.
+           MOVE SPACES TO MATL-WORK-AREA.
+           IF MAT-NUM-7 = "NON-STR" MOVE SPACES TO MAT-NUM-7.
+           MOVE MAT-NUM TO MRA-CODE.
+           MOVE MAT-STATUS TO MRA-STAT.
+           MOVE MAT-UNIT-MEAS TO MRA-UM.
+           MOVE MAT-ORIGINATOR TO MRA-ORIG.
+           MOVE CODED-MATL-DATA TO VAR-MATL-DATA.
+           PERFORM 652102-MOVE-DATES.
+           MOVE MAT-STAGE TO MRA-STAG.
+           MOVE "EST" TO MRA-EST-LIT.
+           MOVE M-UNIT-COST TO UC-SIGNED.
+           MOVE UC-DOLS-S TO MRA-UNITCST-DOLS.
+           MOVE "." TO MRA-UNITCST-DEC.
+           MOVE UC-CENTS-S TO UNITCST-CENTS.
+           MOVE UCST-CENTS-1-2 TO MRA-UNITCST-CTS.
+           MOVE MAT-EST-COST-DOLLR TO MRA-TOTALCST-DOLS.
+           MOVE "." TO MRA-TOTALCST-DEC.
+           MOVE MAT-EST-COST-CENTS TO TMP-MTL-CENTS.
+           MOVE TMP-MTL-CENTS TO MRA-TOTALCST-CENTS.
+           IF MAT-EST-QTY = SPACES
+               MOVE 0 TO MAT-EST-QTY-9
+           ELSE
+           MOVE MAT-EST-QTY-9 TO MRA-QTY.
+           MOVE MAT-EST-QTY-FLAG TO MRA-QTY-FLAG.
+           IF MAT-EST-QTY-9 = 0 MOVE ZEROES TO MUC MTC.
+           MOVE "ACT" TO MRA-ACT-LIT (1).
+           MOVE SPACES TO MLINE-2 (2) MLINE-2 (3) MLINE-2 (4).
+           MOVE MAT-DESC TO MRA-DESC-1.
+           MOVE MAT-DESC-2 TO MRA-DESC-2.
+           MOVE MAT-DESC-3 TO MRA-DESC-3.
+           MOVE MAT-DESC-4 TO MRA-DESC-4.
+           MOVE MAT-DESC-5 TO MRA-DESC-5.
+           MOVE MAT-REMARKS TO MRA-REMARKS-1.
+           MOVE MAT-REMARKS-2 TO MRA-REMARKS-2.
+           IF MAT-ACT-QTY = "        " MOVE 0 TO MAT-ACT-QTY-9.
+           IF MAT-ACT-QTY-9 > 0
+               MOVE MAT-ACT-QTY-9 TO MRA-ACT-QTY (1)
+               DIVIDE M-ACT-COST BY MAT-ACT-QTY-9 GIVING UC-SIGNED
+               MOVE UC-DOLS-S TO MRA-ACTUNIT-DOLS (1)
+               MOVE "." TO MRA-ACTUNIT-DEC (1)
+               MOVE UC-CENTS-S TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2 TO MRA-ACTUNIT-CENTS (1)
+               MOVE MAT-ACT-COST-DOLLR TO MRA-ACTTOT-DOLS (1)
+               MOVE "." TO MRA-ACTTOT-DEC (1)
+               MOVE MAT-ACT-COST-CENTS TO TMP-MTL-CENTS
+               MOVE TMP-MTL-CENTS TO MRA-ACTTOT-CENTS (1)
+           ELSE
+           MOVE 0 TO MRA-ACT-QTY (1)
+           MOVE 0 TO MRA-ACTUNIT-DOLS (1)
+           MOVE "." TO MRA-ACTUNIT-DEC (1)
+           MOVE 0 TO MRA-ACTUNIT-CENTS (1)
+           MOVE 0 TO MRA-ACTTOT-DOLS (1)
+           MOVE "." TO MRA-ACTTOT-DEC (1)
+           MOVE 0 TO MRA-ACTTOT-CENTS (1).
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE SPACES TO MLINE-13
+               MOVE "PM INFORMATION - " TO MRA-PM-LIT
+               MOVE "LEVEL:" TO MRA-PM-LEV-LIT
+               MOVE MAT-LEVEL TO MRA-PM-LEVEL
+               MOVE "FLAG:" TO MRA-PM-FLAG-LIT
+               MOVE MAT-FLAG TO MRA-PM-FLAG
+               MOVE "SUBSYSTEM:" TO MRA-PM-SUBS-LIT
+               MOVE MAT-SS TO MRA-PM-SUBS
+           ELSE
+           MOVE SPACES TO MLINE-13.
+       652100-WCL-CONT.
+           IF RET-CODE = "0"
+               MOVE 42017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+           ELSE
+           MOVE 31088 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO MM-DEPRESS-LINE.
+           MOVE "FDISPMAT" TO VIEW-CFNAME.
+           MOVE 50001 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MM-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE MATL-LINES TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO MATL-LINES.
+           IF VIEW-LASTKEY = 2
+               SUBTRACT 2 FROM ACT-KEYM-WA
+               MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+               PERFORM 6521000-READ-MATFILE-PRIOR THRU 6521000-RMP-EXIT
+                   2 TIMES
+           ELSE
+           IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RET-CODE
+           ELSE
+           IF VIEW-LASTKEY = 5
+               MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+           ELSE
+           MOVE "1" TO RET-CODE.
+       6521000-READ-MATFILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           IF ACT-KEYM = 1
+               READ MATFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+           READ MATFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               MOVE "1" TO RET-CODE
+           ELSE
+           MOVE MATREC-REC TO MATREC.
+       6521000-RM-CONT.
+           IF ACT-KEYM-WA = 0 GO TO 6521000-RM-EXIT.
+           IF MAT-STATUS-1 = "M"
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               GO TO 6521000-READ-MATFILE
+           ELSE
+           IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               GO TO 6521000-READ-MATFILE.
+           SUBTRACT 1 FROM ACT-KEYM-WA.
+       6521000-RM-EXIT.    EXIT.
+       6521000-READ-MATFILE-PRIOR.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           READ MATFILE PRIOR AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               MOVE "1" TO RET-CODE
+           ELSE
+           MOVE MATREC-REC TO MATREC-DB-REC.
+       6521000-RMP-CONT.
+           IF ACT-KEYM-WA = 0 GO TO 6521000-RMP-EXIT.
+           IF MAT-STATUS-1 = "M"
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               GO TO 6521000-READ-MATFILE-PRIOR
+           ELSE
+           IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               GO TO 6521000-READ-MATFILE-PRIOR.
+       6521000-RMP-EXIT.    EXIT.
+       652102-MOVE-DATES.
+           MOVE 4 TO DATE-MODE.
+           MOVE MAT-DATE-USED TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO MRA-REQ-DATE.
+      ****************************************************************
+      *    DISPLAY WORK ORDER MATERIALS ORDERED                      *
+      ****************************************************************
+       653-PREREAD-UMATLS-ORDERED.
+           MOVE "FDISPITM" TO VIEW-CFNAME.
+           MOVE SPACES TO READ-BUFFER.
+           MOVE READ-BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO READ-BUFFER.
+       653-PUO-READ.
+           IF READ-BUFFER = SPACES GO TO 653-PUO-EXIT.
+           MOVE 0 TO ACT-KEYM-WA.
+       653-PUO-LOOP.
+           ADD 1 TO ACT-KEYM-WA.
+           IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+               IF READ-ITEM NOT = SPACES
+                   MOVE 35111 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO READ-ERR-LINE
+                   MOVE TRUE-VAL TO INDS (98)
+                   MOVE READ-BUFFER TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   PERFORM 98A-SCREEN-READ
+                   MOVE DSPLY-REC TO READ-BUFFER
+                   MOVE SPACES TO READ-BUFFER
+                   MOVE 0 TO ACT-KEYM-WA
+                   GO TO 653-PUO-READ
+               ELSE
+               IF READ-REQNO NOT = SPACES
+                   MOVE 44011 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO READ-ERR-LINE
+                   MOVE TRUE-VAL TO INDS (98)
+                   MOVE READ-BUFFER TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   PERFORM 98A-SCREEN-READ
+                   MOVE DSPLY-REC TO READ-BUFFER
+                   MOVE SPACES TO READ-BUFFER
+                   MOVE 0 TO ACT-KEYM-WA
+                   GO TO 653-PUO-READ
+               ELSE
+               GO TO 653-PUO-EXIT.
+           PERFORM 6531000-READ-MATFILE.
+           IF MAT-STATUS-1 = "S" GO TO 653-PUO-LOOP.
+           IF MAT-STATUS-1 = "X"
+               IF MAT-NUM-7 = "       "
+                   NEXT SENTENCE
+               ELSE
+               GO TO 653-PUO-LOOP.
+           IF READ-ITEM = "    "
+               NEXT SENTENCE
+           ELSE
+           PERFORM 6530-RIGHT-JUSTIFY-ITEM THRU 6530-RJI-EXIT
+           IF READ-ITEM-9 = ACT-KEYM-WA
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6531000-READ-MATFILE-PRIOR THRU 6531000-RMP-EXIT
+               GO TO 653-PUO-EXIT
+           ELSE
+           GO TO 653-PUO-LOOP.
+           IF READ-REQNO = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF READ-REQNO = MAT-REQ-NO
+               SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6531000-READ-MATFILE-PRIOR THRU 6531000-RMP-EXIT
+               GO TO 653-PUO-EXIT
+           ELSE
+           GO TO 653-PUO-LOOP.
+       653-PUO-EXIT.    EXIT.
+       6530-RIGHT-JUSTIFY-ITEM.
+           IF READ-I (4) = " "
+               IF READ-I (3) = " "
+                   IF READ-I (2) = " "
+                        MOVE READ-I (1) TO READ-I (4)
+                        MOVE " " TO READ-I (1)
+                   ELSE
+                   MOVE READ-I (2) TO READ-I (4)
+                   MOVE READ-I (1) TO READ-I (3)
+                   MOVE " " TO READ-I (2) READ-I (1)
+               ELSE
+               MOVE READ-I (3) TO READ-I (4)
+               MOVE READ-I (2) TO READ-I (3)
+               MOVE READ-I (1) TO READ-I (2)
+               MOVE " " TO READ-I (3) READ-I (2) READ-I (1).
+           IF READ-I (4) = " " MOVE "0" TO READ-I (4).
+           IF READ-I (3) = " " MOVE "0" TO READ-I (3).
+           IF READ-I (2) = " " MOVE "0" TO READ-I (2).
+           IF READ-I (1) = " " MOVE "0" TO READ-I (1).
+       6530-RJI-EXIT.    EXIT.
+       653-WRITE-WO-MATERIALS-ORDERED.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO MRA-LINE-1-CURR-DATE.
+           ACCEPT TMP-TIME-AREA FROM TIME.
+           MOVE TTA-HRS TO MRA-LINE-1-TIME-HH.
+           MOVE ":" TO MRA-LINE-1-SEMICOLON.
+           MOVE TTA-MIN TO MRA-LINE-1-TIME-MM.
+           MOVE WO-NUM-P TO MRA-LINE-3-WO-NUM-PRIM.
+           MOVE WO-NUM-SUFF-P TO MRA-LINE-3-WO-NUM-SUFF.
+           MOVE DESCRIPTION-1-P TO MRA-LINE-3-WO-DESC.
+           MOVE WO-STATUS-P TO MRA-LINE-3-STATUS.
+           MOVE EQUIP-NUM-P TO MRA-EQPNUM.
+           MOVE DEPT-P TO MRA-DEPT.
+           MOVE EXP-CLASS-P TO MRA-CHARGE.
+           MOVE ZONE-P TO MRA-ZONE.
+           MOVE PRIORITY-P TO MRA-PRTY.
+           MOVE RIME-P TO MRA-RIME.
+           MOVE 4 TO DATE-MODE.
+           MOVE DATE-SCHD TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO MRA-DATE.
+           MOVE TIME-SCHD-P-HH TO MRA-HRS.
+           MOVE TIME-SCHD-P-MM TO MRA-MINS.
+           IF MA-MATRL-REC-CNT = 0
+               MOVE 48003 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+               MOVE 50002 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MM-CMD-LINE
+               MOVE "FDISPUNC" TO VIEW-CFNAME
+               MOVE MATL-LINES TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO MATL-LINES
+               MOVE "0" TO RETURN-SW-2
+           ELSE
+           PERFORM 6530-WRITE-UNCODED.
+       6530-WRITE-UNCODED.
+           MOVE "0" TO RET-CODE.
+           PERFORM 653100-WRITE-UMATL-LINES THRU 653100-WUL-CONT
+               UNTIL RET-CODE = "1".
+           MOVE 0 TO ACT-KEYM-WA.
+       653100-WRITE-UMATL-LINES.
+           ADD 1 TO ACT-KEYM-WA.
+           IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+               MOVE "1" TO RET-CODE
+               GO TO 653100-WUL-CONT
+           ELSE
+           PERFORM 6531000-READ-MATFILE
+           IF MAT-STATUS-1 = "M"
+               NEXT SENTENCE
+           ELSE
+           IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+               NEXT SENTENCE
+           ELSE
+           GO TO 653100-WRITE-UMATL-LINES.
+           MOVE SPACES TO MM-LINES.
+           MOVE ACT-KEYM-WA TO MRA-ITM.
+           MOVE SPACES TO MATL-WORK-AREA.
+           IF MAT-NUM-7 = "NON-STR" MOVE SPACES TO MAT-NUM-7.
+           MOVE MAT-NUM TO MRA-CODE.
+           MOVE MAT-STATUS TO MRA-STAT.
+           MOVE MAT-UNIT-MEAS TO MRA-UM.
+           MOVE MAT-ORIGINATOR TO MRA-ORIG.
+           MOVE CODED-MATL-DATA TO VAR-MATL-DATA.
+           PERFORM 653102-MOVE-DATES.
+           MOVE MAT-STAGE TO MRA-STAG.
+           MOVE "EST" TO MRA-EST-LIT.
+           MOVE M-UNIT-COST TO UC-SIGNED.
+           MOVE UC-DOLS-S TO MRA-UNITCST-DOLS.
+           MOVE "." TO MRA-UNITCST-DEC.
+           MOVE UC-CENTS-S TO UNITCST-CENTS.
+           MOVE UCST-CENTS-1-2 TO MRA-UNITCST-CTS.
+           MOVE MAT-EST-COST-DOLLR TO MRA-TOTALCST-DOLS.
+           MOVE "." TO MRA-TOTALCST-DEC.
+           MOVE MAT-EST-COST-CENTS TO TMP-MTL-CENTS.
+           MOVE TMP-MTL-CENTS TO MRA-TOTALCST-CENTS.
+           MOVE MAT-EST-QTY-9 TO MRA-QTY.
+           MOVE MAT-EST-QTY-FLAG TO MRA-QTY-FLAG.
+           IF MAT-EST-QTY-9 = 0 MOVE ZEROES TO MUC MTC.
+           PERFORM 653103-MOVE-REQ-PO VARYING SUB FROM 1 BY 1
+               UNTIL SUB > 4.
+           MOVE MAT-DESC TO MRA-DESC-1.
+           MOVE MAT-DESC-2 TO MRA-DESC-2.
+           MOVE MAT-DESC-3 TO MRA-DESC-3.
+           MOVE MAT-DESC-4 TO MRA-DESC-4.
+           MOVE MAT-DESC-5 TO MRA-DESC-5.
+           MOVE MAT-REMARKS TO MRA-REMARKS-1.
+           MOVE MAT-REMARKS-2 TO MRA-REMARKS-2.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE SPACES TO MLINE-13
+               MOVE "PM INFORMATION - " TO MRA-PM-LIT
+               MOVE "LEVEL:" TO MRA-PM-LEV-LIT
+               MOVE MAT-LEVEL TO MRA-PM-LEVEL
+               MOVE "FLAG:" TO MRA-PM-FLAG-LIT
+               MOVE MAT-FLAG TO MRA-PM-FLAG
+               MOVE "SUBSYSTEM:" TO MRA-PM-SUBS-LIT
+               MOVE MAT-SS TO MRA-PM-SUBS
+           ELSE
+           MOVE SPACES TO MLINE-13.
+       653100-WUL-CONT.
+           IF RET-CODE = "0"
+               MOVE 42017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+           ELSE
+           MOVE 31088 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO MM-DEPRESS-LINE.
+           MOVE "FDISPUNC" TO VIEW-CFNAME.
+           MOVE 50002 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MM-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE MATL-LINES TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO MATL-LINES.
+           IF VIEW-LASTKEY = 2
+               SUBTRACT 2 FROM ACT-KEYM-WA
+               MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+               PERFORM 6531000-READ-MATFILE-PRIOR THRU 6531000-RMP-EXIT
+                   2 TIMES
+           ELSE
+           IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RET-CODE
+           ELSE
+           IF VIEW-LASTKEY = 6
+               MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+           ELSE
+           MOVE "1" TO RET-CODE.
+       6531000-READ-MATFILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           IF ACT-KEYM = 1
+               READ MATFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+           READ MATFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               MOVE "1" TO RET-CODE
+           ELSE
+           MOVE MATREC-REC TO MATREC.
+       6531000-RM-CONT.
+           IF ACT-KEYM-WA = 0 GO TO 6531000-RM-EXIT.
+           IF MAT-STATUS = "M"
+               NEXT SENTENCE
+           ELSE
+           IF MAT-STATUS = "X" AND MAT-NUM-7 = "       "
+               NEXT SENTENCE
+           ELSE
+           SUBTRACT 1 FROM ACT-KEYM-WA
+           GO TO 6531000-READ-MATFILE.
+           SUBTRACT 1 FROM ACT-KEYM-WA.
+       6531000-RM-EXIT.    EXIT.
+       6531000-READ-MATFILE-PRIOR.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           READ MATFILE PRIOR AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+      *        MOVE "1" TO RET-CODE
+               GO TO 6531000-RMP-EXIT
+           ELSE
+           MOVE MATREC-REC TO MATREC-DB-REC.
+       6531000-RMP-CONT.
+           IF ACT-KEYM-WA = 0 GO TO 6531000-RMP-EXIT.
+           IF MAT-STATUS = "M"
+               NEXT SENTENCE
+           ELSE
+           IF MAT-STATUS = "X" AND MAT-NUM-7 = "       "
+               NEXT SENTENCE
+           ELSE
+           SUBTRACT 1 FROM ACT-KEYM-WA
+           GO TO 6531000-READ-MATFILE-PRIOR.
+       6531000-RMP-EXIT.    EXIT.
+       653102-MOVE-DATES.
+           MOVE 4 TO DATE-MODE.
+           MOVE MAT-DATE-USED TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO MRA-REQ-DATE.
+       653103-MOVE-REQ-PO.
+           IF SUB = 1
+               MOVE "ACT" TO MRA-ACT-LIT (SUB)
+               PERFORM 6531030-SET-ACT
+               IF MAT-REQ-NO = SPACES OR "CANCEL"
+                   MOVE SPACES TO MRA-REQ-PO-LIT (SUB)
+                                  MRA-REQ-PO (SUB)
+               ELSE
+               MOVE "CSIS REQ NUMBER:" TO MRA-REQ-PO-LIT (SUB)
+               MOVE MAT-REQ-NO TO MRA-REQ-PO (SUB)
+           ELSE
+           IF SUB = 2
+               MOVE "PUR" TO MRA-ACT-LIT (SUB)
+               PERFORM 6531031-SET-PUR
+               IF MAT-PO-NO = SPACES
+                   MOVE SPACES TO MLINE-2 (SUB)
+               ELSE
+               MOVE "CSIS PO  NUMBER:" TO MRA-REQ-PO-LIT (SUB)
+               MOVE MAT-PO-NO TO MRA-REQ-PO (SUB)
+           ELSE
+           IF SUB = 3
+               MOVE "RCV" TO MRA-ACT-LIT (SUB)
+               PERFORM 6531032-SET-RCV
+               IF MATREC-RCV-QTY-9 > 0
+                   NEXT SENTENCE
+               ELSE
+               IF MATREC-INV-UP > 0
+                   NEXT SENTENCE
+               ELSE
+               MOVE SPACES TO MLINE-2 (SUB)
+           ELSE
+           IF SUB = 4
+               MOVE "INV" TO MRA-ACT-LIT (SUB)
+               PERFORM 6531033-SET-INV
+               IF MATREC-INV-QTY-9 > 0
+                   NEXT SENTENCE
+               ELSE
+               IF MATREC-INV-UP > 0
+                   NEXT SENTENCE
+               ELSE
+               MOVE SPACES TO MLINE-2 (SUB).
+       6531030-SET-ACT.
+           IF MATREC-REQ-QTY = "        " MOVE 0 TO MAT-ACT-QTY-9.
+           IF MATREC-REQ-QTY-9 > 0
+               MOVE MATREC-REQ-QTY-9 TO MRA-ACT-QTY (SUB)
+               MOVE MATREC-REQ-UP-DOLS TO MRA-ACTUNIT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+               MOVE MATREC-REQ-UP-CTS  TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+               MULTIPLY MATREC-REQ-QTY-9 BY MATREC-REQ-UP
+                   GIVING UC-SIGNED
+               MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+               MOVE UC-CENTS-S         TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+           ELSE
+           MOVE 0 TO MRA-ACT-QTY (SUB)
+           MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+           MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+           MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+           MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+           MOVE "." TO MRA-ACTTOT-DEC (SUB)
+           MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+       6531031-SET-PUR.
+           IF MATREC-PUR-QTY = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF MATREC-PUR-QTY-9 > 0
+               MOVE MATREC-PUR-QTY-9   TO MRA-ACT-QTY (SUB)
+               MOVE MATREC-PO-UP-DOLS  TO MRA-ACTUNIT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+               MOVE MATREC-PO-UP-CTS   TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+               MULTIPLY MATREC-PUR-QTY-9 BY MATREC-PO-UP
+                   GIVING UC-SIGNED
+               MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+               MOVE UC-CENTS-S         TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+           ELSE
+           MOVE 0 TO MRA-ACT-QTY (SUB)
+           MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+           MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+           MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+           MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+           MOVE "." TO MRA-ACTTOT-DEC (SUB)
+           MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+       6531032-SET-RCV.
+           IF MATREC-RCV-QTY = SPACES
+               MOVE ZEROES TO MATREC-RCV-QTY
+           ELSE
+           IF MATREC-RCV-QTY-9 > 0
+               MOVE MATREC-RCV-QTY-9   TO MRA-ACT-QTY (SUB)
+               MOVE MATREC-PO-UP-DOLS  TO MRA-ACTUNIT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+               MOVE MATREC-PO-UP-CTS   TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+               MULTIPLY MATREC-RCV-QTY-9 BY MATREC-PO-UP
+                   GIVING UC-SIGNED
+               MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+               MOVE UC-CENTS-S         TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+           ELSE
+           MOVE 0 TO MRA-ACT-QTY (SUB)
+           MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+           MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+           MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+           MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+           MOVE "." TO MRA-ACTTOT-DEC (SUB)
+           MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+       6531033-SET-INV.
+           IF MATREC-INV-QTY = SPACES OR ZEROES
+               IF MATREC-INV-UP > 0
+                   MOVE ZEROES TO MATREC-INV-QTY
+                   MOVE MATREC-INV-QTY-9   TO MRA-ACT-QTY (SUB)
+                   MOVE MATREC-INV-UP-DOLS TO MRA-ACTUNIT-DOLS (SUB)
+                   MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+                   MOVE MATREC-INV-UP-CTS  TO UNITCST-CENTS
+                   MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+                   MOVE MATREC-INV-UP-DOLS TO MRA-ACTTOT-DOLS (SUB)
+                   MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+                   MOVE MATREC-INV-UP-CTS  TO UNITCST-CENTS
+                   MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF MATREC-INV-QTY-9 > 0
+               MOVE MATREC-INV-QTY-9   TO MRA-ACT-QTY (SUB)
+               MOVE MATREC-INV-UP-DOLS TO MRA-ACTUNIT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+               MOVE MATREC-INV-UP-CTS  TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+               MULTIPLY MATREC-INV-QTY-9 BY MATREC-INV-UP
+                   GIVING UC-SIGNED
+               MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+               MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+               MOVE UC-CENTS-S         TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+           ELSE
+           MOVE 0 TO MRA-ACT-QTY (SUB)
+           MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+           MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+           MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+           MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+           MOVE "." TO MRA-ACTTOT-DEC (SUB)
+           MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+      *****************************************************************
+      *    DISPLAY LABOR USED ON WORK ORDER                           *
+      *****************************************************************
+       654-WRITE-WO-LABOR-USED.
+           IF LBR-REC-CNT = 0
+               MOVE SPACES TO LABOR-LINES
+               MOVE 1 TO DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO LL-DATE
+               ACCEPT TMP-TIME-AREA FROM TIME
+               MOVE TTA-HRS TO LL-TIME-HH
+               MOVE ":" TO LL-SEMICOLON
+               MOVE TTA-MIN TO LL-TIME-MM
+               MOVE WO-NUM-P TO LL-WO
+               PERFORM 65400-MOVE-CRAFT-REQD-DATA
+                   VARYING LOOP-CNT FROM 1 BY 1
+                   UNTIL LOOP-CNT GREATER THAN LA-CRAFT-CNT
+               PERFORM 65401-MOVE-MEN-REQD-DATA
+                   VARYING LOOP-CNT FROM 1 BY 1
+                   UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+               PERFORM 65404-MOVE-MEN-ACT-DATA
+                   VARYING LOOP-CNT FROM 1 BY 1
+                   UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+               PERFORM 65402-MOVE-HRS-EST-DATA
+                   VARYING LOOP-CNT FROM 1 BY 1
+                   UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+               PERFORM 65403-MOVE-HRS-ACT-DATA
+                   VARYING LOOP-CNT FROM 1 BY 1
+                   UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+               MOVE LA-TOTAL-COST-WA TO LL-TOT-COST
+               MOVE  40010 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO LL-DEPRESS-LINE
+               MOVE "FDISPLAB" TO VIEW-CFNAME
+               MOVE 52010 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO LL-CMD-LINE
+               MOVE SPACES TO ERROR-BUFFER
+               MOVE LABOR-LINES TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO LABOR-LINES
+               MOVE "0" TO RETURN-SW-2
+           ELSE
+           MOVE 0 TO COND-WORD
+           PERFORM 6540-WRITE-LABOR.
+       6540-WRITE-LABOR.
+           MOVE SPACES TO LABOR-LINES.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO LL-DATE.
+           ACCEPT TMP-TIME-AREA FROM TIME.
+           MOVE TTA-HRS TO LL-TIME-HH.
+           MOVE ":" TO LL-SEMICOLON.
+           MOVE TTA-MIN TO LL-TIME-MM.
+           MOVE WO-NUM-PLANNED TO LL-WO.
+           PERFORM 65400-MOVE-CRAFT-REQD-DATA
+               VARYING LOOP-CNT FROM 1 BY 1
+               UNTIL LOOP-CNT GREATER THAN LA-CRAFT-CNT.
+           PERFORM 65401-MOVE-MEN-REQD-DATA
+               VARYING LOOP-CNT FROM 1 BY 1
+               UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+           PERFORM 65404-MOVE-MEN-ACT-DATA
+               VARYING LOOP-CNT FROM 1 BY 1
+               UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+           PERFORM 65402-MOVE-HRS-EST-DATA
+               VARYING LOOP-CNT FROM 1 BY 1
+               UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+           PERFORM 65403-MOVE-HRS-ACT-DATA
+               VARYING LOOP-CNT FROM 1 BY 1
+               UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+           MOVE LA-TOTAL-COST-WA TO LL-TOT-COST.
+           MOVE "0" TO RET-CODE.
+           MOVE LBR-REC-CNT TO LBR-REC-CHECK.
+           PERFORM 65411-ZERO-LA-SUM-CRF-CST
+               VARYING LINE-CNT FROM 1 BY 1
+               UNTIL LINE-CNT IS GREATER THAN 10.
+           MOVE +0001 TO LINE-CNT.
+           MOVE +0010 TO CNT-LIMIT.
+           MOVE ZERO TO ACT-KEYL-WA.
+           PERFORM 65410-LOOP-SCREENS
+               UNTIL RET-CODE = "1".
+       65400-MOVE-CRAFT-REQD-DATA.
+           IF LOOP-CNT > 12
+               NEXT SENTENCE
+           ELSE
+           MOVE LA-CRAFT-REQ (LOOP-CNT) TO
+               LL-CRF-MEN (LOOP-CNT).
+       65401-MOVE-MEN-REQD-DATA.
+           IF LA-MEN-EST-I (LOOP-CNT) NOT = SPACES
+               IF LOOP-CNT > 12
+                   NEXT SENTENCE
+               ELSE
+               MOVE LA-MEN-EST (LOOP-CNT) TO
+                   LL-EST-MEN (LOOP-CNT).
+       65402-MOVE-HRS-EST-DATA.
+           IF LA-HRS-EST-I (LOOP-CNT) NOT = SPACES
+               IF LOOP-CNT > 12
+                   NEXT SENTENCE
+               ELSE
+               MOVE LA-HRS-EST (LOOP-CNT) TO
+                   LL-HRSE (LOOP-CNT).
+       65403-MOVE-HRS-ACT-DATA.
+           IF LA-HRS-ACT-I (LOOP-CNT) NOT = SPACES
+               IF LOOP-CNT > 12
+                   NEXT SENTENCE
+               ELSE
+               MOVE LA-HRS-ACT (LOOP-CNT) TO
+                   LL-HRSA (LOOP-CNT).
+       65404-MOVE-MEN-ACT-DATA.
+           IF LA-MEN-ACT-I (LOOP-CNT) NOT = SPACES
+               IF LOOP-CNT > 12
+                   NEXT SENTENCE
+               ELSE
+               MOVE LA-MEN-ACT (LOOP-CNT) TO
+                   LL-ACT-MEN (LOOP-CNT).
+       65410-LOOP-SCREENS.
+           IF CNT-LIMIT IS GREATER THAN LBR-REC-CHECK
+               MOVE LBR-REC-CHECK TO CNT-LIMIT
+               MOVE "1" TO RET-CODE.
+           PERFORM 654100-WRITE-ONE-LINE CNT-LIMIT TIMES.
+           IF RET-CODE = "1"
+               MOVE  31088 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO LL-DEPRESS-LINE
+           ELSE
+           MOVE  42017 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO LL-DEPRESS-LINE.
+           MOVE "FDISPLAB" TO VIEW-CFNAME.
+           MOVE 52010 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO LL-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE LABOR-LINES TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO LABOR-LINES.
+           MOVE "0" TO RETURN-SW-2.
+           PERFORM 654101-GET-NEXT-INST UNTIL RETURN-SW-2 = "1".
+           MOVE 1 TO LINE-CNT.
+           IF LBR-REC-CHECK > 10
+               SUBTRACT 10 FROM LBR-REC-CHECK.
+       654100-WRITE-ONE-LINE.
+           ADD 1 TO ACT-KEYL-WA.
+           IF ACT-KEYL-WA = 1
+               READ LBRFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+           READ LBRFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF LBRF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               MOVE "1" TO RET-CODE
+           ELSE
+           MOVE LBRREC-REC TO WO-LABOR-DATA.
+           IF ACT-KEYL-WA = LBR-REC-CNT
+               MOVE "1" TO RET-CODE.
+           MOVE LBRREC-REC TO WO-LABOR-DATA.
+           MOVE SPACES TO LL-DATA (LINE-CNT).
+           MOVE LINE-CNT TO TMP-L-C-FIELD1.
+           MOVE LBR-EMPL-NUM TO LL-CRAFTSMAN (LINE-CNT).
+           MOVE LBR-EMPL-NAME TO LL-CRAFTSMAN-NAME (LINE-CNT).
+           MOVE LBR-CRAFT TO LL-CRAFT (LINE-CNT).
+           MOVE LBR-HRS1-99 TO LL-HRS1-99 (LINE-CNT).
+           MOVE "." TO LL-HRS-DEC (LINE-CNT).
+           MOVE LBR-HRS2-9 TO LL-HRS2-9 (LINE-CNT).
+           MOVE LBR-SHIFT-1 TO LL-SHIFT (LINE-CNT).
+           MOVE LBR-CST-DOLLR-9 TO LL-CST-DOLLR-9 (LINE-CNT).
+           MOVE "." TO LL-CST-DEC (LINE-CNT).
+           MOVE LBR-CST-CENTS-9 TO LL-CST-CENTS-9 (LINE-CNT).
+           MOVE LBR-CRAFT TO CRAFT-DESIRED.
+      *    PERFORM 6320-DET-CRAFT-SUBSCRIPT.
+           COMPUTE LA-SUM-CRF-CST (CRFT-SUBSC) =
+               LA-SUM-CRF-CST (CRFT-SUBSC) +
+               LBR-CST-DOLLR-9 + LBR-CST-CENTS-9 / 100.
+      *    IF LA-SUM-CRF-CST (CRFT-SUBSC) = LA-TOT-CRF-CST (CRFT-SUBSC)
+      *        MOVE LA-SUM-CRF-CST (CRFT-SUBSC) TO LRA-SUM-CRF-CST.
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO LL-DATE-ST (LINE-CNT).
+           MOVE LBR-START-TIME-HH TO LL-TIME-ST-HH (LINE-CNT).
+           MOVE LBR-START-TIME-MM TO LL-TIME-ST-MM (LINE-CNT).
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO LL-DATE-CO (LINE-CNT).
+           MOVE LBR-COMPL-TIME-HH TO LL-TIME-CO-HH (LINE-CNT).
+           MOVE LBR-COMPL-TIME-MM TO LL-TIME-CO-MM (LINE-CNT).
+           ADD 1 TO LINE-CNT.
+       654101-GET-NEXT-INST.
+           IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RETURN-SW-2
+               MOVE "1" TO RET-CODE
+           ELSE
+           IF VIEW-LASTKEY = 7
+               IF LBR-REC-CHECK < 10
+                   MOVE "1" TO RETURN-SW-2
+                   MOVE "1" TO RET-CODE
+               ELSE
+               MOVE SPACES TO LL-DATA-LINES LL-DEPRESS-LINE
+               MOVE "1" TO RETURN-SW-2
+           ELSE
+           MOVE "1" TO RET-CODE
+           MOVE "1" TO RETURN-SW-2.
+       65411-ZERO-LA-SUM-CRF-CST.
+           MOVE ZERO TO LA-SUM-CRF-CST (LINE-CNT).
+       655-WRITE-JOBPLAN.
+           ACCEPT JOB-CURR-DATE FROM DATE.
+           ACCEPT TMP-TIME-AREA FROM TIME.
+           MOVE TTA-HRS TO JOB-TIME-HH.
+           MOVE ":" TO JOB-SEMICOLON.
+           MOVE TTA-MIN TO JOB-TIME-MM.
+           MOVE WO-NUM-P TO JOB-LINE-3-WO-NUM-PRIM.
+           MOVE WO-NUM-SUFF-P TO JOB-LINE-3-WO-NUM-SUFF.
+           MOVE DESCRIPTION-1-P TO JOB-LINE-3-WO-DESC.
+           MOVE WO-STATUS-P TO JOB-LINE-3-STATUS.
+           MOVE EQUIP-NUM-P TO JOB-EQPNUM.
+           MOVE DEPT-P TO JOB-DEPT.
+           MOVE EXP-CLASS-P TO JOB-CHARGE.
+           MOVE ZONE-P TO JOB-ZONE.
+           MOVE PRIORITY-P TO JOB-PRTY.
+           MOVE RIME-P TO JOB-RIME.
+           MOVE 4 TO DATE-MODE.
+           MOVE DATE-SCHD TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO JOB-DATE.
+           MOVE TIME-SCHD-P-HH TO JOB-HRS.
+           MOVE TIME-SCHD-P-MM TO JOB-MINS.
+           IF JOBP-REC-CNT = 0
+               MOVE "FDISPJOB" TO VIEW-CFNAME
+               MOVE 40047 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO JOBP-DEPRESS-LINE
+               MOVE 66046 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO JOBP-CMD-LINE
+               MOVE SPACES TO ERROR-BUFFER
+               MOVE JOBPLAN-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO JOBPLAN-DATA
+               MOVE "0" TO RETURN-SW-2
+           ELSE
+           MOVE 0 TO COND-WORD
+           PERFORM 6550-WRITE-JOBPLAN.
+       6550-WRITE-JOBPLAN.
+           MOVE "0" TO RET-CODE.
+           MOVE JOBP-REC-CNT TO JOB-REC-CHECK.
+           MOVE +0001 TO LINE-CNT.
+           MOVE +0012 TO CNT-LIMIT.
+           MOVE ZERO TO ACT-KEYJ-WA.
+           PERFORM 65510-LOOP-SCREENS UNTIL RET-CODE = "1".
+       65510-LOOP-SCREENS.
+           IF CNT-LIMIT > JOB-REC-CHECK
+               MOVE JOB-REC-CHECK TO CNT-LIMIT
+               MOVE "1" TO RET-CODE.
+           PERFORM 655100-WRITE-ONE-LINE CNT-LIMIT TIMES.
+           IF RET-CODE = "0"
+               MOVE  42069 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO JOBP-DEPRESS-LINE
+           ELSE
+           MOVE  31088 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO JOBP-DEPRESS-LINE.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE "FDISPJPM" TO VIEW-CFNAME
+               MOVE 66046 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO JOBP-CMD-LINE
+               MOVE SPACES TO ERROR-BUFFER
+               MOVE JOBPLAN-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO JOBPLAN-DATA
+               MOVE "0" TO RETURN-SW-2
+               PERFORM 655101-GET-NEXT-INST UNTIL RETURN-SW-2 = "1"
+               MOVE 1 TO LINE-CNT
+           ELSE
+           MOVE "FDISPJOB" TO VIEW-CFNAME
+           MOVE 66046 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO JOBP-CMD-LINE
+           MOVE SPACES TO ERROR-BUFFER
+           MOVE JOBPLAN-DATA TO DSPLY-REC
+           PERFORM 99-SCREEN-WRITE
+           PERFORM 98-SCREEN-READ
+           MOVE DSPLY-REC TO JOBPLAN-DATA
+           MOVE "0" TO RETURN-SW-2.
+           PERFORM 655101-GET-NEXT-INST UNTIL RETURN-SW-2 = "1".
+           MOVE 1 TO LINE-CNT.
+           IF JOB-REC-CHECK > 12
+               SUBTRACT 12 FROM JOB-REC-CHECK.
+       655100-WRITE-ONE-LINE.
+           ADD 1 TO ACT-KEYJ-WA.
+           IF ACT-KEYJ-WA = 1
+               READ JOBFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+           READ JOBFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF JOBF-STATUS NOT = "00" MOVE "1" TO RET-CODE.
+           IF ACT-KEYJ-WA = JOBP-REC-CNT MOVE "1" TO RET-CODE.
+           IF COND-WORD = 15
+               MOVE "1" TO RET-CODE
+           ELSE
+           MOVE JOBREC-REC TO JOBPLAN-BUFFER.
+           MOVE SPACES TO JOBP-LINE-DATA (LINE-CNT).
+           IF JOBPLAN-SEQ-NO-1-3 = SAVE-JOBSEQ
+               MOVE SPACES TO JOB-SEQ (LINE-CNT)
+           ELSE
+           MOVE JOBPLAN-SEQ-NO-1-3 TO JOB-SEQ (LINE-CNT) SAVE-JOBSEQ.
+           MOVE JOBPLAN-DESCRIP TO JOB-DESC (LINE-CNT).
+           IF JOBPLAN-DT = SPACES
+               MOVE SPACES TO JOB-DT-TIME (LINE-CNT)
+           ELSE
+           MOVE JOBPLAN-DT-HRS TO JOB-DT-HRS (LINE-CNT)
+           MOVE "." TO JOB-DT-DOT (LINE-CNT)
+           MOVE JOBPLAN-DT-PARTIAL TO JOB-DT-PART (LINE-CNT).
+           MOVE JOBPLAN-CRAFT TO JOB-CRAFT (LINE-CNT).
+           MOVE JOBPLAN-MEN TO JOB-MEN (LINE-CNT).
+           IF JOBPLAN-EST = SPACES
+               MOVE SPACES TO JOB-EST-TIME (LINE-CNT)
+           ELSE
+           MOVE JOBPLAN-EST-HRS TO JOB-EST-HRS (LINE-CNT)
+           MOVE "." TO JOB-EST-DOT (LINE-CNT)
+           MOVE JOBPLAN-EST-PARTIAL TO JOB-EST-PART (LINE-CNT).
+           IF WO-START-STATUS = "AA" OR "AR"
+               IF JOB-SEQ (LINE-CNT) = SPACES
+                   MOVE SPACES TO JOB-PM-LVL (LINE-CNT)
+                   MOVE SPACES TO JOB-PM-FLG (LINE-CNT)
+               ELSE
+               MOVE JOBP-LEVEL TO JOB-PM-LVL (LINE-CNT)
+               MOVE JOBP-FLAG  TO JOB-PM-FLG (LINE-CNT).
+           ADD 1 TO LINE-CNT.
+       655101-GET-NEXT-INST.
+           IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RETURN-SW-2
+               MOVE "1" TO RET-CODE
+           ELSE
+           IF VIEW-LASTKEY = 0
+               IF JOB-REC-CHECK < 10
+                   MOVE "1" TO RETURN-SW-2
+                   MOVE "1" TO RET-CODE
+               ELSE
+               MOVE SPACES TO JOBPLAN-PLAN JOBP-DEPRESS-LINE
+               MOVE "1" TO RETURN-SW-2
+           ELSE
+           MOVE "1" TO RET-CODE
+           MOVE "1" TO RETURN-SW-2.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+           MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       98A-SCREEN-READ.
+           READ DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDIC IS INDICS
+                  NO DATA MOVE DSPLY-STATUS TO DSPLY-STATUS.
+           MOVE ALL B"0" TO INDICS.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+       998-BLOWUP.
+           MOVE "TDISPPLN" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+                            VIEW-COMAREA DUMMY-KSAM-STAT
+                            BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

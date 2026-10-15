@@ -1,0 +1,1856 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TMODLABR.
+      *REMARKS.    THIS PROGRAM IS CALLED BY TMODEXES (THE MODIFY
+      *            EXECUTIVE PROGRAM) TO HANDLE MAINTENANCE AGAINST
+      *            THE WORK ORDER LABOR FILE. RECORDS MAY BE ADDED,
+      *            DELETED, AND/OR CHANGED.
+      *            THE TERMINAL IS USED AS BOTH THE INPUT AND THE
+      *            OUTPUT DEVICE. ALL TERMINAL FUNCTIONS ARE
+      *            HANDLED BY HP'S VIEW SOFTWARE.
+      *C   3/09/93.     M.L. MITCHELL
+      *C   REPLACED A SECTION OF CODE IN 64-READ-SCREEN THAT CAUSED
+      *C   THE PROGRAM TO BLOWUP WHEN THE USER ENTERED A START DATE
+      *C   THAT WAS EQUAL TO SPACES.  THE PROGRAM NOW DISPLAYS AN
+      *C   ERROR MESSAGE AND ALLOWS THE USER TO CONTINUE.
+      *C   04/18/1995     CA ZUBEK
+      *C     ADDED LOGIC TO CHECK FOR NUMERIC ITEM NUMBER IN ORDER TO
+      *C     PREVENT DATA DECIMAL ERRORS.  ALSO ADDED CHECKS FOR NUMERIC
+      *C     DATE AND TIME ON THE CHANGE SCREEN.
+      *C
+      *C   SEPTEMBER 1996  JE COFFMAN  REQ# 6619
+      *C     EXPANDED DATE FIELDS FOR YEAR 2000 COMPLIANCE
+      *C
+      *C   MAY 2000        JE COFFMAN
+      *C     REPAIRED A PROBLEM THAT CROPPED UP AFTER PLANTS MIGRATED
+      *C     TO 12 HOUR SHIFTS WITH CHANGING LABOR TIMES.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.   AS400.
+       OBJECT-COMPUTER.   AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZMODIFY-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT PERSONNEL-FILE
+               ASSIGN TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS PF-STATUS.
+           SELECT WO-BASIC-FILE
+               ASSIGN TO DATABASE-MCFLMM1001
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WBF-STATUS.
+           SELECT WO-LABOR-FILE
+               ASSIGN TO DATABASE-MCFLMM1301
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WLF-STATUS.
+           SELECT WO-LAST-NUM-USED
+               ASSIGN TO DATABASE-MCFPMM0800
+               ORGANIZATION IS RELATIVE
+               ACCESS MODE IS RANDOM
+               RELATIVE KEY IS ARG-NUM
+               FILE STATUS IS WLNU-STATUS.
+           SELECT WO-PLANNED-FILE
+               ASSIGN TO DATABASE-MCFLMM1101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WPF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                         PIC X(2000).
+       FD  PERSONNEL-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PERSREC.
+       01  PERSREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+       FD  WO-BASIC-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WBFREC.
+       01  WBFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+       FD  WO-LABOR-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLFREC.
+       01  WLFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1301.
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLNUREC.
+       01  WLNUREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+       FD  WO-PLANNED-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WPFREC.
+       01  WPFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+       WORKING-STORAGE SECTION.
+       77  ARG-NUM                          PIC 9(9).
+       77  B-OR-P-SW                        PIC 9.
+       77  CHAIN-CTR                        PIC 999.
+       77  COTM-MINS                        PIC S9(4).
+       77  DATE-SW                          PIC 9 VALUE 0.
+       77  ERR-SW                           PIC 9.
+       77  MIN-DIFF                         PIC S9(4).
+       77  SC-SW                            PIC X.
+       77  SHIFT-END                        PIC 9(4).
+       77  SHIFT-STRT                       PIC 9(4).
+       77  SUB                              PIC S9(4) COMP-4.
+       77  SUB1                             PIC S9(4) COMP-4.
+       77  SUB2                             PIC S9(4) COMP-4.
+       77  STTM-MINS                        PIC S9(4).
+       77  TIME-END-COMP                    PIC S9999.
+       77  TIME-STRT-COMP                   PIC S9999.
+       01  BLOWUP-BASE                      PIC X(16).
+       COPY CATREAD IN COPYLIB.
+       COPY CPYIND  IN COPYLIB.
+       01  CUR-DATE-CN.
+           05  CUR-DATE-CC                  PIC XX.
+           05  CUR-DATE.
+               10  CUR-DATE-YY              PIC XX.
+               10  CUR-DATE-MM              PIC XX.
+               10  CUR-DATE-DD              PIC XX.
+       01  CURR-LABOR-STAT.     COPY DCURRLBR OF COPYLIB.
+       01  CURRENT-DATE-WA-CN.
+           05  CURRENT-DATE-WA-CC           PIC XX.
+           05  CURRENT-DATE-WA.
+               10  CURRENT-DATE-WA-YY       PIC XX.
+               10  CURRENT-DATE-WA-MM       PIC XX.
+               10  CURRENT-DATE-WA-DD       PIC XX.
+       01  CURRENT-TIME.
+           05  CUR-TIME                     PIC X(4).
+           05  FILLER                       PIC 99.
+       COPY TDATESUB OF COPYLIB.
+       01  DATE-HOLD.
+           05  HOLD-CC                      PIC 99.
+           05  HOLD-YY                      PIC 99.
+           05  HOLD-MD                      PIC 99.
+           05  HOLD-DM                      PIC 99.
+       01  DATE-SAVE.
+           05  SAVE-CC                      PIC 99.
+           05  SAVE-YY                      PIC 99.
+           05  SAVE-MD                      PIC 99.
+           05  SAVE-DM                      PIC 99.
+       01  DAY-DIGIT                        PIC X.
+       01  EDIT-ERROR                       PIC X(80).
+       01  ERROR-BUFFER.
+           02  CAT-READ-AREA.
+               03  CAT-READ-BUF1.
+                   04  FILLER               PIC X(30).
+                   04  CAT-TEXT1A           PIC X(10).
+                   04  FILLER               PIC X(24).
+                   04  CAT-TEXT1B           PIC X(15).
+               03  CAT-READ-BUF2 REDEFINES CAT-READ-BUF1.
+                   04  FILLER               PIC X(21).
+                   04  CAT-TEXT2A           PIC X(4).
+                   04  FILLER               PIC X(4).
+                   04  CAT-TEXT2B           PIC X(16).
+                   04  FILLER               PIC X(34).
+               03  CAT-READ-BUF3 REDEFINES CAT-READ-BUF1.
+                   04  FILLER               PIC X(39).
+                   04  CAT-TEXT3A           PIC X(10).
+                   04  FILLER               PIC X(19).
+                   04  CAT-TEXT3B           PIC X(11).
+               03  CAT-READ-BUF4 REDEFINES CAT-READ-BUF1.
+                   04  FILLER               PIC X(17).
+                   04  CAT-TEXT4A           PIC X(4).
+                   04  FILLER               PIC X(47).
+                   04  CAT-TEXT4B           PIC X(11).
+       01  ERROR-SWITCH                     PIC 9(4).
+       01  FILE-STATUSES.
+           05  DSPLY-STATUS                 PIC XX.
+           05  PF-STATUS                    PIC XX.
+           05  WBF-STATUS                   PIC XX.
+           05  WLF-STATUS                   PIC XX.
+           05  WLNU-STATUS                  PIC XX.
+           05  WPF-STATUS                   PIC XX.
+       01  GREG-DATE.
+           05  GREG-CC                      PIC X(2).
+           05  GREG-YMD.
+               10  GREG-YY                  PIC X(2).
+               10  GREG-MM                  PIC X(2).
+               10  GREG-DD                  PIC X(2).
+       COPY IOFEEDBACK IN COPYLIB.
+       01  ITEM-BUFFER.
+           05  ITEM-BUFF-9                  PIC 9(4).
+           05  ITEM-CMD-LINE                PIC X(79).
+           05  ITEM-ERR-LINE                PIC X(79).
+       01  ITEM-WA.
+           05  IT-BYTES.
+               10  ITB OCCURS 4             PIC X.
+           05  IT-BYTES-9 REDEFINES IT-BYTES    PIC 9(4).
+       01  JULIAN-DATE.
+           05  J-CC                         PIC 99.
+           05  J-YY                         PIC 99.
+           05  J-DDD                        PIC 9(3).
+       01  JULIAN-DATE-9 REDEFINES JULIAN-DATE  PIC 9(7).
+       01  JUL-COMP-DATE                    PIC 9(7).
+       01  JUL-START-DATE                   PIC 9(7).
+       01  JUL-WORK-DATE                    PIC 9(7).
+       01  LAST-WO-BUFF.       COPY MLASTWO OF COPYLIB.
+       01  LEAP-YEAR-FLAG                   PIC X.
+       01  LINK-DATA.
+           05  ZONE-BUF                     PIC X(04).
+           05  TIME-IN.
+               10  HRS-IN                   PIC 99.
+               10  MIN-IN                   PIC 99.
+           05  CODE-BUF                     PIC X.
+           05  SHIFTS.
+               10  S-1                      PIC 9999.
+               10  E-1                      PIC 9999.
+               10  S-2                      PIC 9999.
+               10  E-2                      PIC 9999.
+               10  S-3                      PIC 9999.
+               10  E-3                      PIC 9999.
+               10  S-4                      PIC 9999.
+               10  E-4                      PIC 9999.
+           05  CURR-SHIFT                   PIC 9.
+       01  PASSED-SPOOL-PRT             PIC S9(2) VALUE ZERO  COMP.
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TMODLABR".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A.
+                   15  FILLER      PIC X(14) VALUE " LABOR MODIFY ".
+                   15  FILLER      PIC X(16) VALUE "PROGRAM - ALLOWS".
+                   15  FILLER      PIC X(14) VALUE " USER TO ADD, ".
+                   15  FILLER      PIC X(16) VALUE "CHANGE, DELETE, ".
+               10  PROG-DESC-B.
+                   15  FILLER      PIC X(15) VALUE "AND LIST LABOR ".
+                   15  FILLER      PIC X(13) VALUE "ENTRIES ON A ".
+                   15  FILLER      PIC X(32) VALUE "WORK ORDER  ".
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  PERSONNEL-DATA.     COPY MPERSONL OF COPYLIB.
+       01  PRT-LINE1.
+           05  P-REQ-DATA                   PIC X(18).
+           05  PLINE OCCURS 15 TIMES.
+               10  P-CTR                    PIC 9999.
+               10  FILLER                   PIC X.
+               10  P-LABR-NUM               PIC X(4).
+               10  FILLER                   PIC X.
+               10  P-LABR-NAME              PIC X(16).
+               10  FILLER                   PIC X.
+               10  P-LABR-CRAFT             PIC XX.
+               10  FILLER                   PIC XX.
+               10  P-LABR-SHIFT             PIC Z.
+               10  FILLER                   PIC XX.
+               10  P-LABR-STDATE            PIC X(6).
+               10  FILLER                   PIC X.
+               10  P-LABR-STTM              PIC X(4).
+               10  FILLER                   PIC X.
+               10  P-LABR-CODATE            PIC X(6).
+               10  FILLER                   PIC X.
+               10  P-LABR-COTM              PIC X(4).
+               10  FILLER                   PIC XX.
+               10  P-LABR-HRS               PIC Z9.
+               10  P-LABR-HRS-DEC           PIC X.
+               10  P-LABR-PARTIAL-HRS       PIC 9.
+               10  FILLER                   PIC XX.
+               10  P-LABR-DOLS              PIC ZZZZZZZZZ9.
+               10  P-LABR-DOLS-DEC          PIC X.
+               10  P-LABR-CENTS             PIC 99.
+               10  FILLER                   PIC X.
+           05  P-DEPRESS-LINE               PIC X(79).
+           05  P-CMD-LINE                   PIC X(79).
+           05  P-MSG-LINE                   PIC X(79).
+       01  REQUIRED-INPUT.
+           02  REQ-DATE-WO.
+               03  REQ-DATE                 PIC X(8).
+               03  REQ-WO                   PIC X(10).
+           02  REQUIRED-DATA.
+               03  REQ-SEQ                  PIC 9999.
+               03  REQ-SEQ-X REDEFINES REQ-SEQ PIC XXXX.
+               03  FILLER                   PIC X(58).
+           02  REQUIRED-LIT REDEFINES REQUIRED-DATA.
+               03  FILLER                   PIC XXXX.
+               03  EMPLOYEE-NUM             PIC X(4).
+               03  EMPLOYEE-NAME            PIC X(16).
+               03  EMPLOYEE-CRAFT           PIC XX.
+               03  EMPLOYEE-SHIFT           PIC X.
+               03  EMPLOYEE-START-DATE.
+                   04  E-STDT-MD            PIC 99.
+                   04  E-STDT-DM            PIC 99.
+                   04  E-STDT-YY            PIC 99.
+               03  EMPLOYEE-STTM.
+                   04  EMP-STTM-HH          PIC 99.
+                   04  EMP-STTM-MI          PIC 99.
+               03  EMPLOYEE-COMPL-DATE.
+                   04  E-CODT-MD            PIC 99.
+                   04  E-CODT-DM            PIC 99.
+                   04  E-CODT-YY            PIC 99.
+               03  EMPLOYEE-COTM.
+                   04  EMP-COTM-HH          PIC 99.
+                   04  EMP-COTM-MI          PIC 99.
+               03  EMPLOYEE-HRS.
+                   04  E-HRS                PIC 99.
+                   04  E-PARTIAL-HRS        PIC 9.
+               03  EMPLOYEE-HRS-WORKED REDEFINES EMPLOYEE-HRS
+                                            PIC 99V9.
+               03  EMPLOYEE-COST.
+                   04  E-COST-DOLS          PIC 9(10).
+                   04  E-COST-CENTS         PIC 99.
+               03  EMP-COST REDEFINES EMPLOYEE-COST  PIC 9(10)V99.
+           02  RET-LINE                     PIC X(79).
+           02  REQ-CMD-LINE                 PIC X(79).
+           02  REQ-ERR-LINE                 PIC X(79).
+       01  SCREEN-CMD-ERR.
+           05  SCREEN-CMD-LINE          PIC X(79).
+           05  SCREEN-ERR-LINE          PIC X(79).
+       01  SCREEN-PRINT-PARMS.
+           05  PRINTCNTL                PIC S9(4) VALUE ZERO  COMP.
+           05  PAGECNTL                 PIC S9(4) VALUE 49    COMP.
+           05  SPOOLFIL-OPEN-SW         PIC X   VALUE "N".
+       COPY DBSTAT OF COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       01  TIME-HOLD                        PIC X(4).
+       01  TIME-SAVE                        PIC X(4).
+       01  TRUE-VAL                         PIC 1 VALUE B"1".
+       01  WO-BASIC-DATA.      COPY DWOBASIC OF COPYLIB.
+       01  WO-LABOR-DATA.      COPY DWOLABOR OF COPYLIB.
+       01  WO-PLANNED-DATA.    COPY DWOPLAN OF COPYLIB.
+       COPY WSCONTROL IN COPYLIB.
+       01  ZONE-LINK                        PIC X(4).
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS OF COPYLIB.
+       01  WO-NUMBER-BUF                    PIC X(10).
+       COPY VCOMLINK OF COPYLIB.
+       PROCEDURE DIVISION USING DBPARAMETERS WO-NUMBER-BUF
+                            VIEW-COMAREA.
+       BEGIN-PROCESSING.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN UNTIL VIEW-LASTKEY = 3.
+       2-EOJ.
+           CLOSE DISPLAY-FILE.
+           CLOSE PERSONNEL-FILE.
+           CLOSE WO-BASIC-FILE.
+           CLOSE WO-LABOR-FILE.
+           CLOSE WO-LAST-NUM-USED.
+           CLOSE WO-PLANNED-FILE.
+           GOBACK.
+       1-HSK.
+           OPEN I-O   DISPLAY-FILE.
+           OPEN INPUT PERSONNEL-FILE.
+           OPEN INPUT WO-BASIC-FILE.
+           OPEN I-O   WO-LABOR-FILE.
+           OPEN INPUT WO-LAST-NUM-USED.
+           OPEN INPUT WO-PLANNED-FILE.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               MOVE "  PWORD" TO BLOWUP-BASE
+               MOVE "FAILED PASSWORD CHECK - TMODLABR"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           MOVE 0 TO COND-WORD.
+           MOVE 1 TO ARG-NUM.
+           READ WO-LAST-NUM-USED INTO LAST-WO-BUFF
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WLNU-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 1 TO DATE-FLAG
+           ELSE
+           MOVE DATE-FLAG-SW TO DATE-FLAG.
+           ACCEPT CURRENT-DATE-WA FROM DATE.
+           IF CURRENT-DATE-WA-YY > "70"
+               MOVE "19" TO CURRENT-DATE-WA-CC
+           ELSE
+           MOVE "20" TO CURRENT-DATE-WA-CC.
+           MOVE CURRENT-DATE-WA-CN TO CUR-DATE-CN.
+           MOVE DATE-FLAG TO DATE-CODE.
+           MOVE 4 TO DATE-MODE.
+           MOVE CUR-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE SPACES TO REQUIRED-INPUT.
+           MOVE ZEROS TO EMPLOYEE-START-DATE
+                         EMPLOYEE-STTM
+                         EMPLOYEE-COMPL-DATE
+                         EMPLOYEE-COTM
+                         EMPLOYEE-HRS
+                         EMPLOYEE-COST.
+           MOVE SPACES TO WO-BASIC-DATA WO-PLANNED-DATA.
+           PERFORM 1-START-WO-BASIC-FILE.
+           IF COND-WORD = 0
+               PERFORM 1-READ-WO-BASIC-FILE.
+           IF COND-WORD = 17
+               MOVE SPACES TO WO-BASIC-DATA
+               PERFORM 1-START-WO-PLANNED-FILE
+               IF COND-WORD = 17
+                   MOVE 29020 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (1) INDS (99)
+               ELSE
+               PERFORM 1-READ-WO-PLANNED-FILE
+               IF COND-WORD = 15
+                   MOVE 29020 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (1) INDS (99)
+               ELSE
+               MOVE ZONE-P           TO ZONE
+               MOVE DATE-TIME-RECD-P TO DATE-TIME-RECD
+               MOVE DATE-STRT-P-CN   TO DATE-STRT-CN
+               MOVE TIME-STRT-P      TO TIME-STRT
+               MOVE DATE-COMP-P-CN   TO DATE-COMP-CN
+               MOVE TIME-COMP-P      TO TIME-COMP.
+           MOVE ZONE TO ZONE-BUF.
+           MOVE 0 TO VIEW-LASTKEY.
+       1-START-WO-BASIC-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER-BUF TO WONUM OF WBFREC.
+           START WO-BASIC-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WBF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+       1-READ-WO-BASIC-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE 0 TO B-OR-P-SW.
+           READ WO-BASIC-FILE INTO WO-BASIC-DATA
+               INVALID KEY    MOVE 15 TO COND-WORD.
+           IF WBF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+       1-START-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER-BUF TO WONUM OF WPFREC.
+           START WO-PLANNED-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+       1-READ-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE 1 TO B-OR-P-SW.
+           READ WO-PLANNED-FILE INTO WO-PLANNED-DATA
+               INVALID KEY    MOVE 15 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+       6-MAIN.
+           IF VIEW-LASTKEY > 0
+               NEXT SENTENCE
+           ELSE
+           MOVE "FMODLABR" TO VIEW-CFNAME
+           ACCEPT CURRENT-TIME FROM TIME
+           MOVE 66066 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO SCREEN-CMD-LINE
+           MOVE EDIT-ERROR TO SCREEN-ERR-LINE
+           MOVE SCREEN-CMD-ERR TO DSPLY-REC
+           PERFORM 99-SCREEN-WRITE
+           PERFORM 98-SCREEN-READ
+           MOVE SPACES TO ERROR-BUFFER EDIT-ERROR
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+      **************************************************************
+      *     PROCESS THE FUNCTION CHOSEN BY THE USER                *
+      *                                                            *
+      *     F2 - ADD    LABOR ENTRIES                              *
+      *     F4 - CHANGE LABOR ENTRIES                              *
+      *     F5 - DELETE LABOR ENTRIES                              *
+      *     F6 - LIST   LABOR ENTRIES                              *
+      *                                                            *
+      **************************************************************
+           IF VIEW-LASTKEY = 2
+               MOVE 0 TO CHAIN-CTR ERR-SW SUB
+               MOVE SPACES TO REQUIRED-INPUT
+               MOVE ZEROS TO EMPLOYEE-START-DATE
+                             EMPLOYEE-STTM
+                             EMPLOYEE-COMPL-DATE
+                             EMPLOYEE-COTM
+                             EMPLOYEE-HRS
+                             EMPLOYEE-COST
+               MOVE WO-NUMBER-BUF TO REQ-WO
+               MOVE DATE-SLASH-OUT TO REQ-DATE
+               PERFORM 66-RETRIEVE-DATA THRU 66-RD-EXIT
+      **************************************************************
+      *    ADDED THE ABOVE LINE TO SET THE ENTRY NUMBER            *
+      *               11-25-86                                     *
+      **************************************************************
+               PERFORM 62-ADD-LABOR THRU 62-AL-EXIT
+           ELSE
+           IF VIEW-LASTKEY = 4
+               PERFORM 64-CHANGE-LABOR THRU 64-CL-EXIT
+           ELSE
+           IF VIEW-LASTKEY = 5
+               PERFORM 65-DELETE-LABOR THRU 65-DL-EXIT
+           ELSE
+           IF VIEW-LASTKEY = 6
+               MOVE 0 TO CHAIN-CTR ERR-SW SUB
+               MOVE SPACES TO REQUIRED-INPUT
+               MOVE ZEROS TO EMPLOYEE-START-DATE
+                             EMPLOYEE-STTM
+                             EMPLOYEE-COMPL-DATE
+                             EMPLOYEE-COTM
+                             EMPLOYEE-HRS
+                             EMPLOYEE-COST
+               MOVE WO-NUMBER-BUF TO REQ-WO
+               MOVE DATE-SLASH-OUT TO REQ-DATE
+               PERFORM 66-RETRIEVE-DATA THRU 66-RD-EXIT
+           ELSE
+           MOVE 35126 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE TRUE-VAL TO INDS (99)
+           MOVE 0 TO VIEW-LASTKEY.
+       62-ADD-LABOR.
+           IF B-OR-P-SW = 1
+               IF EXP-CLASS-P = "        "
+                   MOVE 31075 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (99)
+                   MOVE 0 TO VIEW-LASTKEY
+                   GO TO 62-AL-EXIT
+               ELSE
+               IF APPROVAL-CODE-P = "U"
+                   MOVE 38011 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (99)
+                   MOVE 0 TO VIEW-LASTKEY
+                   GO TO 62-AL-EXIT.
+       62-READ-SCREEN.
+           MOVE "FMODLADD" TO VIEW-CFNAME.
+           IF INDS (99) = TRUE-VAL
+               MOVE EDIT-ERROR TO REQ-ERR-LINE
+               MOVE SPACES     TO RET-LINE
+           ELSE
+           MOVE 35115 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO RET-LINE
+           ADD 1 TO CHAIN-CTR
+           MOVE CHAIN-CTR TO REQ-SEQ.
+           MOVE 66067 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO REQ-CMD-LINE.
+           MOVE REQUIRED-INPUT TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO REQUIRED-INPUT.
+           MOVE SPACES TO ERROR-BUFFER EDIT-ERROR.
+           MOVE 0 TO DATE-SW.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY NOT = 0 GO TO 62-AL-EXIT.
+           MOVE 0 TO COND-WORD.
+           MOVE EMPLOYEE-NUM TO PERCCNUM OF PERSREC.
+           START PERSONNEL-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 35047 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE EMPLOYEE-NUM TO CAT-TEXT1A
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 62-READ-SCREEN.
+           READ PERSONNEL-FILE NEXT INTO PERSONNEL-DATA
+               AT END    MOVE 15 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           MOVE PER-EMP-NAME TO EMPLOYEE-NAME.
+           IF EMPLOYEE-SHIFT NOT NUMERIC
+               MOVE 35107 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (5) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF EMPLOYEE-SHIFT < "1" OR > "4"
+               MOVE 35108 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (5) INDS (99)
+               GO TO 62-READ-SCREEN.
+           MOVE ZEROES TO TIME-IN.
+           CALL "TGETSHFT" USING LINK-DATA DBPARAMETERS.
+           IF EMPLOYEE-SHIFT = "1"
+               MOVE S-1 TO SHIFT-STRT
+               MOVE E-1 TO SHIFT-END
+               IF SHIFT-END < SHIFT-STRT
+                   ADD 2400 TO SHIFT-END
+               END-IF
+           ELSE
+           IF EMPLOYEE-SHIFT = "2"
+               MOVE S-2 TO SHIFT-STRT
+               MOVE E-2 TO SHIFT-END
+               IF SHIFT-END < SHIFT-STRT
+                   ADD 2400 TO SHIFT-END
+               END-IF
+           ELSE
+           IF EMPLOYEE-SHIFT = "3"
+               MOVE S-3 TO SHIFT-STRT
+               MOVE E-3 TO SHIFT-END
+               IF SHIFT-END < SHIFT-STRT
+                   ADD 2400 TO SHIFT-END
+               END-IF
+           ELSE
+           MOVE S-4 TO SHIFT-STRT
+           MOVE E-4 TO SHIFT-END
+           IF SHIFT-END < SHIFT-STRT
+               ADD 2400 TO SHIFT-END.
+      *--- CHECK TO SEE IF MONTH, DAY, AND YEAR ARE NUMERIC.  04/18/1995
+           IF E-STDT-MD NOT NUMERIC
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF E-STDT-DM NOT NUMERIC
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF E-STDT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF DATE-FLAG = 3
+               IF E-STDT-MD > 31
+                   MOVE 35030 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (6) INDS (99)
+                   GO TO 62-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-STDT-MD > 12
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF DATE-FLAG = 3
+               IF E-STDT-DM > 12
+                   MOVE 35031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (6) INDS (99)
+                   GO TO 62-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-STDT-DM > 31
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF E-STDT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN.
+      *--- CHECK FOR NUMERIC TIME.      04/18/1995
+           IF EMPLOYEE-STTM NOT NUMERIC
+               MOVE 46009 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF EMP-STTM-MI > 59
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF EMPLOYEE-STTM > 2259
+               MOVE EMPLOYEE-STTM TO TIME-STRT-COMP
+               SUBTRACT 2360 FROM TIME-STRT-COMP
+           ELSE
+           MOVE EMPLOYEE-STTM TO TIME-STRT-COMP.
+           IF EMPLOYEE-STTM < SHIFT-STRT
+               IF EMPLOYEE-STTM < SHIFT-END
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF EMPLOYEE-STTM > SHIFT-END
+               IF TIME-STRT-COMP < 0
+                    NEXT SENTENCE
+               ELSE
+               MOVE 35017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF DATE-FLAG = 3
+               MOVE E-STDT-YY TO HOLD-YY
+               MOVE E-STDT-MD TO HOLD-DM
+               MOVE E-STDT-DM TO HOLD-MD
+           ELSE
+           MOVE E-STDT-YY     TO HOLD-YY
+           MOVE E-STDT-MD     TO HOLD-MD
+           MOVE E-STDT-DM     TO HOLD-DM.
+           IF HOLD-YY > "70"
+               MOVE "19"      TO HOLD-CC
+           ELSE
+           MOVE "20"          TO HOLD-CC.
+           IF DATE-RECD-CN = SPACES
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE "W/O HAS NO RECEIVED DATE - NO LABOR CAN BE WRITTEN"
+                   TO BU-DISPLAY-MSG
+               MOVE "W/O = " TO BU-DISPLAY-FLD (1)
+               MOVE WO-NUMBER-BUF TO BU-DISPLAY-FLD (2)
+               PERFORM 998-BLOWUP.
+           MOVE DATE-RECD-YY    TO SAVE-YY
+           MOVE DATE-RECD-MM    TO SAVE-MD
+           MOVE DATE-RECD-DD    TO SAVE-DM.
+           IF SAVE-YY > "70"
+               MOVE "19"        TO SAVE-CC
+           ELSE
+           MOVE "20"            TO SAVE-CC.
+           MOVE EMPLOYEE-STTM   TO TIME-HOLD.
+           MOVE TIME-RECD       TO TIME-SAVE.
+           MOVE "S" TO SC-SW.
+           PERFORM 62-3-DATE-EDIT THRU 62-3-DT-EXIT.
+           IF DATE-SW = 1
+               GO TO 62-READ-SCREEN.
+           IF DATE-SW = 2
+               GO TO 62-READ-SCREEN.
+      *--- CHECK FOR NUMERIC MONTH, DAY, AND YEAR.   04/18/1995
+           IF E-CODT-MD NOT NUMERIC
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF E-CODT-DM NOT NUMERIC
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF E-CODT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF DATE-FLAG = 3
+               IF E-CODT-MD > 31
+                   MOVE 35030 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (8) INDS (99)
+                   GO TO 62-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-CODT-MD > 12
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF DATE-FLAG = 3
+               IF E-CODT-DM > 12
+                   MOVE 35031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (8) INDS (99)
+                   GO TO 62-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-CODT-DM > 31
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF E-CODT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 62-READ-SCREEN.
+      *--- CHECK FOR NUMERIC TIME.      04/18/1995
+           IF EMPLOYEE-COTM NOT NUMERIC
+               MOVE 46009 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF EMP-COTM-MI > 59
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF EMPLOYEE-COTM > 2259
+               MOVE EMPLOYEE-COTM TO TIME-END-COMP
+               SUBTRACT 2360 FROM TIME-END-COMP
+           ELSE
+           MOVE EMPLOYEE-COTM TO TIME-END-COMP
+           IF TIME-END-COMP > 0 AND < 700
+               ADD 2400 TO TIME-END-COMP.
+           IF EMPLOYEE-COTM < SHIFT-STRT
+               IF EMPLOYEE-COTM NOT > SHIFT-END
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35018 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF EMPLOYEE-COTM > SHIFT-END
+               IF TIME-END-COMP < 0
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35018 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF DATE-FLAG = 3
+               MOVE E-CODT-YY TO HOLD-YY
+               MOVE E-CODT-MD TO HOLD-DM
+               MOVE E-CODT-DM TO HOLD-MD
+           ELSE
+           MOVE E-CODT-YY     TO HOLD-YY
+           MOVE E-CODT-MD     TO HOLD-MD
+           MOVE E-CODT-DM     TO HOLD-DM.
+           IF HOLD-YY > "70"
+               MOVE "19"      TO HOLD-CC
+           ELSE
+           MOVE "20"          TO HOLD-CC.
+           IF DATE-STRT-CN = SPACES
+               MOVE 49062 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 62-READ-SCREEN.
+           MOVE DATE-STRT-YY    TO SAVE-YY
+           MOVE DATE-STRT-MM    TO SAVE-MD
+           MOVE DATE-STRT-DD    TO SAVE-DM.
+           IF SAVE-YY > "70"
+               MOVE "19"        TO SAVE-CC
+           ELSE
+           MOVE "20"            TO SAVE-CC.
+           MOVE EMPLOYEE-COTM   TO TIME-HOLD.
+           MOVE TIME-STRT       TO TIME-SAVE.
+           MOVE "C" TO SC-SW.
+           PERFORM 62-3-DATE-EDIT THRU 62-3-DT-EXIT.
+           IF DATE-SW = 1
+               DISPLAY "XHJDATE ERROR - SW 1 FOUND@@@"
+               GO TO 62-READ-SCREEN.
+           IF DATE-SW = 2
+               DISPLAY "XHJDATEA ERROR - SW 2 FOUND@@@"
+               GO TO 62-READ-SCREEN.
+      *    PERFORM 69-MATCH-SEQUENCE THRU 69-MS-EXIT.
+           MOVE EMPLOYEE-NUM TO LBR-EMPL-NUM.
+           MOVE PER-EMP-NAME TO LBR-EMPL-NAME.
+           MOVE PER-CRAFT TO LBR-CRAFT.
+           MOVE SPACES TO LBR-HRS.
+           MOVE 3 TO DATE-MODE.
+           MOVE EMPLOYEE-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB TO LBR-START-DATE.
+           IF LBR-START-DATE-YY > "70"
+               MOVE "19" TO LBR-START-DATE-CC
+           ELSE
+           MOVE "20" TO LBR-START-DATE-CC.
+           MOVE EMPLOYEE-STTM TO LBR-START-TIME.
+           MOVE 3 TO DATE-MODE.
+           MOVE EMPLOYEE-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB TO LBR-COMPL-DATE LBR-DATE.
+           IF LBR-COMPL-DATE-YY > "70"
+               MOVE "19" TO LBR-COMPL-DATE-CC, LBR-DATE-CC
+           ELSE
+           MOVE "20" TO LBR-COMPL-DATE-CC, LBR-DATE-CC.
+           MOVE EMPLOYEE-COTM TO LBR-COMPL-TIME.
+           MOVE 0 TO MIN-DIFF.
+           IF DATE-FLAG = 3
+               MOVE E-STDT-MD TO GREG-DD
+               MOVE E-STDT-DM TO GREG-MM
+           ELSE
+           MOVE E-STDT-MD TO GREG-MM
+           MOVE E-STDT-DM TO GREG-DD.
+           MOVE E-STDT-YY TO GREG-YY.
+           IF GREG-YY > "70"
+               MOVE "19"  TO GREG-CC
+           ELSE
+           MOVE "20"      TO GREG-CC.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE JULIAN-DATE-9 TO JUL-START-DATE.
+           IF DATE-FLAG = 3
+               MOVE E-CODT-MD TO GREG-DD
+               MOVE E-CODT-DM TO GREG-MM
+           ELSE
+           MOVE E-CODT-MD TO GREG-MM
+           MOVE E-CODT-DM TO GREG-DD.
+           MOVE E-CODT-YY TO GREG-YY.
+           IF GREG-YY > "70"
+               MOVE "19"  TO GREG-CC
+           ELSE
+           MOVE "20"      TO GREG-CC.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE JULIAN-DATE-9 TO JUL-COMP-DATE.
+           IF JUL-COMP-DATE < JUL-START-DATE
+               MOVE 30015 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 62-READ-SCREEN
+           ELSE
+           IF JUL-COMP-DATE > JUL-START-DATE
+               SUBTRACT JUL-START-DATE FROM JUL-COMP-DATE
+                   GIVING JUL-WORK-DATE
+               IF JUL-WORK-DATE > 1
+                   MOVE 35029 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (99)
+                   GO TO 62-READ-SCREEN
+               ELSE
+                   IF TIME-STRT-COMP < 0 AND
+                      TIME-END-COMP > -1
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE 35029 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (99)
+                   GO TO 62-READ-SCREEN
+           ELSE
+           IF TIME-STRT-COMP < 0 AND
+                      TIME-END-COMP > -1
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 62-READ-SCREEN.
+           IF TIME-END-COMP < TIME-STRT-COMP
+               MOVE 46021 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 62-READ-SCREEN.
+           MOVE EMPLOYEE-NUM    TO LCS-EMPL-NUM.
+           MOVE REQ-WO          TO LCS-WO-NUM.
+           MOVE 3               TO DATE-MODE.
+           MOVE EMPLOYEE-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB         TO LCS-START-DATE.
+           IF LCS-START-DATE-YY > "70"
+               MOVE "19"        TO LCS-START-DATE-CC
+           ELSE
+           MOVE "20"            TO LCS-START-DATE-CC.
+           MOVE EMPLOYEE-STTM   TO LCS-START-TIME.
+           MOVE 3               TO DATE-MODE.
+           MOVE EMPLOYEE-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB         TO LCS-COMP-DATE.
+           IF LCS-COMP-DATE-YY > "70"
+               MOVE "19"        TO LCS-COMP-DATE-CC
+           ELSE
+           MOVE "20"            TO LCS-COMP-DATE-CC.
+           MOVE EMPLOYEE-COTM   TO LCS-COMP-TIME.
+           IF B-OR-P-SW = 0
+               MOVE ZONE        TO ZONE-LINK
+           ELSE
+           MOVE ZONE-P          TO ZONE-LINK.
+           CALL "TLABUPDT" USING DBPARAMETERS
+                                 CURR-LABOR-STAT
+                                 ZONE-LINK.
+           MOVE 38001 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE LBR-EMPL-NUM TO CAT-TEXT2A.
+           MOVE LBR-EMPL-NAME TO CAT-TEXT2B.
+           MOVE TRUE-VAL TO INDS (98).
+           MOVE ERROR-BUFFER TO REQ-CMD-LINE.
+           MOVE REQUIRED-INPUT TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98A-SCREEN-READ.
+           CALL "CLPAUSE2".
+       62-AL-EXIT.    EXIT.
+       64-CHANGE-LABOR.
+           MOVE "FMODLCHG" TO VIEW-CFNAME.
+           IF EDIT-ERROR = SPACES
+               MOVE SPACES TO ITEM-BUFFER.
+           MOVE 66068 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO ITEM-CMD-LINE.
+           MOVE EDIT-ERROR TO ITEM-ERR-LINE.
+           MOVE ITEM-BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO ITEM-BUFFER.
+           MOVE SPACES TO ERROR-BUFFER EDIT-ERROR.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY NOT = 0 GO TO 64-CL-EXIT.
+           IF ITEM-BUFF-9 NUMERIC
+               NEXT SENTENCE
+           ELSE
+      *--- MAKE SURE ITEM NUMBER IS NUMERIC.
+               MOVE ITEM-BUFFER TO ITEM-WA
+               PERFORM 68-RIGHT-ADJUST-ITEMNO THRU 68-RAI-EXIT
+               IF IT-BYTES-9 NOT NUMERIC
+                   MOVE 66104 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (1) INDS (99)
+                   GO TO 64-CHANGE-LABOR
+               ELSE
+                   MOVE IT-BYTES-9 TO ITEM-BUFF-9.
+           MOVE SPACES TO WO-LABOR-DATA.
+           PERFORM 69-MATCH-SEQUENCE THRU 69-MS-EXIT.
+           IF ERR-SW = 1
+               MOVE 35078 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE REQ-SEQ-X TO CAT-TEXT1A
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 64-CHANGE-LABOR.
+           IF ERR-SW = 2
+               GO TO 64-CHANGE-LABOR.
+           MOVE ITEM-BUFF-9 TO REQ-SEQ.
+           MOVE LBR-EMPL-NUM TO EMPLOYEE-NUM.
+           MOVE LBR-EMPL-NAME TO EMPLOYEE-NAME.
+           MOVE LBR-CRAFT TO EMPLOYEE-CRAFT.
+           MOVE LBR-SHIFT-1 TO EMPLOYEE-SHIFT.
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO EMPLOYEE-START-DATE.
+           MOVE LBR-START-TIME    TO EMPLOYEE-STTM.
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO EMPLOYEE-COMPL-DATE.
+           MOVE LBR-COMPL-TIME    TO EMPLOYEE-COTM.
+           MOVE LBR-HRS1-99 TO E-HRS.
+           MOVE LBR-HRS2-9 TO E-PARTIAL-HRS.
+           MOVE LBR-CST-DOLLR-9 TO E-COST-DOLS.
+           MOVE LBR-CST-CENTS-9 TO E-COST-CENTS.
+           IF E-COST-CENTS > 50 ADD 1 TO E-COST-DOLS.
+           MOVE 0 TO COND-WORD.
+           MOVE EMPLOYEE-NUM TO PERCCNUM OF PERSREC.
+           START PERSONNEL-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 35047 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE EMPLOYEE-NUM TO CAT-TEXT1A
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (17) INDS (99)
+               GO TO 64-READ-SCREEN.
+           READ PERSONNEL-FILE NEXT INTO PERSONNEL-DATA
+               AT END MOVE 15 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+       64-READ-SCREEN.
+           MOVE "FMODLCH2" TO VIEW-CFNAME.
+           MOVE 66068 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO REQ-CMD-LINE.
+           MOVE EDIT-ERROR TO REQ-ERR-LINE.
+           MOVE REQUIRED-INPUT TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE SPACES TO ERROR-BUFFER EDIT-ERROR.
+           MOVE DSPLY-REC TO REQUIRED-INPUT.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY NOT = 0 GO TO 64-CL-EXIT.
+           IF EMPLOYEE-SHIFT NOT NUMERIC
+               MOVE 35107 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (5) INDS (99)
+               GO TO 64-READ-SCREEN.
+           MOVE ZEROES TO TIME-IN.
+           CALL "TGETSHFT" USING LINK-DATA DBPARAMETERS.
+           IF EMPLOYEE-SHIFT < "1" OR > "4"
+               MOVE 35108 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (5) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF EMPLOYEE-SHIFT = "1"
+               MOVE S-1 TO SHIFT-STRT
+               MOVE E-1 TO SHIFT-END
+               IF SHIFT-END < SHIFT-STRT
+                   ADD 2400 TO SHIFT-END
+               END-IF
+           ELSE
+           IF EMPLOYEE-SHIFT = "2"
+               MOVE S-2 TO SHIFT-STRT
+               MOVE E-2 TO SHIFT-END
+               IF SHIFT-END < SHIFT-STRT
+                   ADD 2400 TO SHIFT-END
+               END-IF
+           ELSE
+           IF EMPLOYEE-SHIFT = "3"
+               MOVE S-3 TO SHIFT-STRT
+               MOVE E-3 TO SHIFT-END
+               IF SHIFT-END < SHIFT-STRT
+                   ADD 2400 TO SHIFT-END
+               END-IF
+           ELSE
+           MOVE S-4 TO SHIFT-STRT
+           MOVE E-4 TO SHIFT-END
+           IF SHIFT-END < SHIFT-STRT
+               ADD 2400 TO SHIFT-END.
+      *--- CHECK TO SEE IF MONTH, DAY, AND YEAR ARE NUMERIC.  04/18/1995
+           IF E-STDT-MD NOT NUMERIC
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF E-STDT-DM NOT NUMERIC
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF E-STDT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF DATE-FLAG = 3
+               IF E-STDT-MD > 31
+                   MOVE 35030 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (6) INDS (99)
+                   GO TO 64-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-STDT-MD > 12
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF DATE-FLAG = 3
+               IF E-STDT-DM > 12
+                   MOVE 35031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (6) INDS (99)
+                   GO TO 64-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-STDT-DM > 31
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF E-STDT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 64-READ-SCREEN.
+      *--- CHECK FOR NUMERIC TIME.      04/18/1995
+           IF EMPLOYEE-STTM NOT NUMERIC
+               MOVE 46009 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF EMP-STTM-MI > 59
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF EMPLOYEE-STTM > 2259
+               MOVE EMPLOYEE-STTM TO TIME-STRT-COMP
+               SUBTRACT 2360 FROM TIME-STRT-COMP
+           ELSE
+           MOVE EMPLOYEE-STTM TO TIME-STRT-COMP.
+           IF EMPLOYEE-STTM < SHIFT-STRT
+               IF EMPLOYEE-STTM < SHIFT-END
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF EMPLOYEE-STTM > SHIFT-END
+               IF TIME-STRT-COMP < 0
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35017 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF DATE-FLAG = 3
+               MOVE E-STDT-YY TO HOLD-YY
+               MOVE E-STDT-MD TO HOLD-DM
+               MOVE E-STDT-DM TO HOLD-MD
+           ELSE
+           MOVE E-STDT-YY     TO HOLD-YY
+           MOVE E-STDT-MD     TO HOLD-MD
+           MOVE E-STDT-DM     TO HOLD-DM.
+           IF HOLD-YY > "70"
+               MOVE "19"      TO HOLD-CC
+           ELSE
+           MOVE "20"          TO HOLD-CC.
+           IF DATE-RECD-CN = SPACES
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE "W/O HAS NO RECEIVE DATE - NO LABOR CAN BE WRITTEN"
+                   TO BU-DISPLAY-MSG
+               MOVE "W/O = " TO BU-DISPLAY-FLD (1)
+               MOVE WO-NUMBER-BUF TO BU-DISPLAY-FLD (2)
+               PERFORM 998-BLOWUP.
+           MOVE DATE-RECD-YY    TO SAVE-YY
+           MOVE DATE-RECD-MM    TO SAVE-MD
+           MOVE DATE-RECD-DD    TO SAVE-DM.
+           IF SAVE-YY > "70"
+               MOVE "19"        TO SAVE-CC
+           ELSE
+           MOVE "20"            TO SAVE-CC.
+           MOVE EMPLOYEE-STTM   TO TIME-HOLD.
+           MOVE TIME-RECD       TO TIME-SAVE.
+           MOVE "S" TO SC-SW.
+           PERFORM 62-3-DATE-EDIT THRU 62-3-DT-EXIT.
+           IF DATE-SW = 1
+               GO TO 64-READ-SCREEN.
+           IF DATE-SW = 2
+               GO TO 64-READ-SCREEN.
+      *--- CHECK FOR NUMERIC MONTH, DAY, AND YEAR.   04/18/1995
+           IF E-CODT-MD NOT NUMERIC
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF E-CODT-DM NOT NUMERIC
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF E-CODT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF DATE-FLAG = 3
+               IF E-CODT-MD > 31
+                   MOVE 35030 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (8) INDS (99)
+                   GO TO 64-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-CODT-MD > 12
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF DATE-FLAG = 3
+               IF E-CODT-DM > 12
+                   MOVE 35031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (8) INDS (99)
+                   GO TO 64-READ-SCREEN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF E-CODT-DM > 31
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF E-CODT-YY NOT NUMERIC
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 64-READ-SCREEN.
+      *--- CHECK FOR NUMERIC TIME.      04/18/1995
+           IF EMPLOYEE-COTM NOT NUMERIC
+               MOVE 46009 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF EMP-COTM-MI > 59
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF EMPLOYEE-COTM > 2259
+               MOVE EMPLOYEE-COTM TO TIME-END-COMP
+               SUBTRACT 2360 FROM TIME-END-COMP
+           ELSE
+           MOVE EMPLOYEE-COTM TO TIME-END-COMP
+           IF EMPLOYEE-COMPL-DATE > EMPLOYEE-START-DATE
+               IF EMPLOYEE-COTM < EMPLOYEE-STTM
+                   ADD 2400 TO TIME-END-COMP.
+           IF EMPLOYEE-COTM < SHIFT-STRT
+               IF EMPLOYEE-COTM NOT > SHIFT-END
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35018 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF EMPLOYEE-COTM > SHIFT-END
+               IF TIME-END-COMP < 0
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35018 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF DATE-FLAG = 3
+               MOVE E-CODT-YY TO HOLD-YY
+               MOVE E-CODT-MD TO HOLD-DM
+               MOVE E-CODT-DM TO HOLD-MD
+           ELSE
+           MOVE E-CODT-YY     TO HOLD-YY
+           MOVE E-CODT-MD     TO HOLD-MD
+           MOVE E-CODT-DM     TO HOLD-DM.
+           IF HOLD-YY > "70"
+               MOVE "19"      TO HOLD-CC
+           ELSE
+           MOVE "20"          TO HOLD-CC.
+           IF DATE-STRT-CN = SPACES
+               MOVE 49062 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 62-READ-SCREEN.
+           MOVE DATE-STRT-YY    TO SAVE-YY
+           MOVE DATE-STRT-MM    TO SAVE-MD
+           MOVE DATE-STRT-DD    TO SAVE-DM.
+           IF SAVE-YY > "70"
+               MOVE "19"        TO SAVE-CC
+           ELSE
+           MOVE "20"            TO SAVE-CC.
+           MOVE EMPLOYEE-COTM   TO TIME-HOLD.
+           MOVE TIME-STRT       TO TIME-SAVE.
+           MOVE "C" TO SC-SW.
+           PERFORM 62-3-DATE-EDIT THRU 62-3-DT-EXIT.
+           IF DATE-SW = 1
+               GO TO 64-READ-SCREEN.
+           IF DATE-SW = 2
+               GO TO 64-READ-SCREEN.
+      *    PERFORM 69-MATCH-SEQUENCE THRU 69-MS-EXIT.
+           MOVE EMPLOYEE-NUM TO LBR-EMPL-NUM.
+           MOVE EMPLOYEE-NAME TO LBR-EMPL-NAME.
+           MOVE EMPLOYEE-CRAFT TO LBR-CRAFT.
+           MOVE SPACES TO LBR-SHIFT.
+           MOVE EMPLOYEE-SHIFT TO LBR-SHIFT-1.
+           MOVE 3 TO DATE-MODE.
+           MOVE EMPLOYEE-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB TO LBR-START-DATE.
+           IF LBR-START-DATE-YY > "70"
+               MOVE "19" TO LBR-START-DATE-CC
+           ELSE
+           MOVE "20" TO LBR-START-DATE-CC.
+           MOVE EMPLOYEE-STTM TO LBR-START-TIME.
+           MOVE 3 TO DATE-MODE.
+           MOVE EMPLOYEE-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB TO LBR-COMPL-DATE LBR-DATE.
+           IF LBR-COMPL-DATE-YY > "70"
+               MOVE "19" TO LBR-COMPL-DATE-CC, LBR-DATE-CC
+           ELSE
+           MOVE "20" TO LBR-COMPL-DATE-CC, LBR-DATE-CC.
+           MOVE EMPLOYEE-COTM TO LBR-COMPL-TIME.
+           MOVE 0 TO MIN-DIFF.
+           IF DATE-FLAG = 3
+               MOVE E-STDT-MD TO GREG-DD
+               MOVE E-STDT-DM TO GREG-MM
+           ELSE
+           MOVE E-STDT-MD TO GREG-MM
+           MOVE E-STDT-DM TO GREG-DD.
+           MOVE E-STDT-YY TO GREG-YY.
+           IF GREG-YY > "70"
+               MOVE "19"  TO GREG-CC
+           ELSE
+           MOVE "20"      TO GREG-CC.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE JULIAN-DATE-9 TO JUL-START-DATE.
+           IF DATE-FLAG = 3
+               MOVE E-CODT-MD TO GREG-DD
+               MOVE E-CODT-DM TO GREG-MM
+           ELSE
+           MOVE E-CODT-MD TO GREG-MM
+           MOVE E-CODT-DM TO GREG-DD.
+           MOVE E-CODT-YY TO GREG-YY.
+           IF GREG-YY > "70"
+               MOVE "19"  TO GREG-CC
+           ELSE
+           MOVE "20"      TO GREG-CC.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE JULIAN-DATE-9 TO JUL-COMP-DATE.
+           IF JUL-COMP-DATE < JUL-START-DATE
+               MOVE 30015 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 64-READ-SCREEN
+           ELSE
+           IF JUL-COMP-DATE > JUL-START-DATE
+               SUBTRACT JUL-START-DATE FROM JUL-COMP-DATE
+                   GIVING JUL-WORK-DATE
+               IF JUL-WORK-DATE > 1
+                   MOVE 46010 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (99)
+                   GO TO 64-READ-SCREEN
+               ELSE
+                   IF TIME-STRT-COMP < 0 AND
+                      TIME-END-COMP > -1
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE 35029 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO EDIT-ERROR
+                   MOVE TRUE-VAL TO INDS (99)
+                   GO TO 64-READ-SCREEN
+           ELSE
+           IF TIME-STRT-COMP < 0 AND
+                      TIME-END-COMP > -1
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF TIME-END-COMP < TIME-STRT-COMP
+               MOVE 46021 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 64-READ-SCREEN.
+           IF E-HRS NOT = LBR-HRS1-99
+               MOVE E-HRS TO LBR-HRS1-99
+               MOVE E-PARTIAL-HRS TO LBR-HRS2-9
+           ELSE
+           MULTIPLY EMP-STTM-HH BY 60 GIVING STTM-MINS
+           ADD EMP-STTM-MI TO STTM-MINS
+           MULTIPLY EMP-COTM-HH BY 60 GIVING COTM-MINS
+           ADD EMP-COTM-MI TO COTM-MINS
+           IF STTM-MINS > COTM-MINS
+               ADD 1440 TO COTM-MINS.
+      *    IF STTM-MINS > 1379 AND COTM-MINS < 421
+      *        SUBTRACT 1440 FROM STTM-MINS.
+           SUBTRACT STTM-MINS FROM COTM-MINS.
+           ADD COTM-MINS TO MIN-DIFF.
+           DIVIDE MIN-DIFF BY 60 GIVING EMPLOYEE-HRS-WORKED ROUNDED.
+           MOVE E-HRS TO LBR-HRS1-99.
+           MOVE E-PARTIAL-HRS TO LBR-HRS2-9.
+           MULTIPLY PER-LABOR-RATE BY EMPLOYEE-HRS-WORKED
+               GIVING EMP-COST ROUNDED.
+           MOVE E-COST-DOLS TO LBR-CST-DOLLR-9.
+           MOVE E-COST-CENTS TO LBR-CST-CENTS-9.
+           MOVE WO-NUMBER-BUF TO LBR-WO-NUM.
+           REWRITE WLFREC FROM WO-LABOR-DATA
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 29060 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE LBR-EMPL-NUM TO CAT-TEXT4A
+               MOVE ERROR-BUFFER TO REQ-CMD-LINE
+               MOVE TRUE-VAL TO INDS (98)
+               MOVE REQUIRED-INPUT TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               GO TO 64-CL-EXIT.
+           MOVE 38002 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE LBR-EMPL-NUM TO CAT-TEXT2A.
+           MOVE LBR-EMPL-NAME TO CAT-TEXT2B.
+           MOVE TRUE-VAL TO INDS (98).
+           MOVE ERROR-BUFFER TO REQ-CMD-LINE.
+           MOVE REQUIRED-INPUT TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98A-SCREEN-READ.
+           CALL "CLPAUSE2".
+           IF B-OR-P-SW = 0 GO TO 64-CL-EXIT.
+       64-CL-EXIT.    EXIT.
+       62-3-DATE-EDIT.
+           MOVE 0 TO DATE-SW.
+           IF DATE-HOLD > CUR-DATE-CN
+               MOVE 30023 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE 1 TO DATE-SW
+               GO TO 62-3-DT-EXIT.
+           IF DATE-HOLD = CUR-DATE-CN AND
+                   TIME-HOLD > CUR-TIME
+               MOVE 46015 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE 2 TO DATE-SW
+               GO TO 62-3-DT-EXIT.
+           IF DATE-HOLD < DATE-SAVE AND
+                      SC-SW = "S"
+               MOVE 30021 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE 1 TO DATE-SW
+               GO TO 62-3-DT-EXIT.
+           IF DATE-HOLD < DATE-SAVE AND
+                      SC-SW = "C"
+               MOVE 30024 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE 1 TO DATE-SW
+               GO TO 62-3-DT-EXIT.
+           IF DATE-HOLD = DATE-SAVE AND
+                   TIME-HOLD < TIME-SAVE AND
+                            SC-SW = "S"
+               MOVE 46023 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE 2 TO DATE-SW
+               GO TO 62-3-DT-EXIT.
+           IF DATE-HOLD = DATE-SAVE AND
+                   TIME-HOLD < TIME-SAVE AND
+                            SC-SW = "C"
+               MOVE 46022 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE 2 TO DATE-SW
+               GO TO 62-3-DT-EXIT.
+       62-3-DT-EXIT.    EXIT.
+       65-DELETE-LABOR.
+           MOVE "FMODLDEL" TO VIEW-CFNAME.
+           IF EDIT-ERROR = SPACES
+                MOVE SPACES TO ITEM-BUFFER.
+           MOVE 66069 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO ITEM-CMD-LINE.
+           MOVE EDIT-ERROR TO ITEM-ERR-LINE.
+           MOVE ITEM-BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE SPACES TO ERROR-BUFFER EDIT-ERROR.
+           MOVE DSPLY-REC TO ITEM-BUFFER.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY NOT = 0 GO TO 65-DL-EXIT.
+           MOVE ITEM-BUFFER TO ITEM-WA.
+           PERFORM 68-RIGHT-ADJUST-ITEMNO THRU 68-RAI-EXIT.
+      *--- CHECK TO SEE IF ITEM NUMBER IS NUMERIC.  04/18/1995
+           IF IT-BYTES-9 NOT NUMERIC
+               MOVE 66104 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 65-DELETE-LABOR
+           ELSE
+               MOVE IT-BYTES-9 TO ITEM-BUFF-9.
+           MOVE SPACES TO WO-LABOR-DATA.
+           PERFORM 69-MATCH-SEQUENCE THRU 69-MS-EXIT.
+           IF ERR-SW = 1
+               MOVE 35078 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 65-DELETE-LABOR.
+           IF ERR-SW = 2
+               MOVE 0 TO COND-WORD ERR-SW CHAIN-CTR
+               GO TO 65-DELETE-LABOR.
+           MOVE SPACES TO REQUIRED-DATA RET-LINE.
+           MOVE ITEM-BUFF-9 TO REQ-SEQ.
+           MOVE LBR-EMPL-NUM TO EMPLOYEE-NUM.
+           MOVE LBR-EMPL-NAME TO EMPLOYEE-NAME.
+           MOVE LBR-CRAFT TO EMPLOYEE-CRAFT.
+           MOVE LBR-SHIFT-1 TO EMPLOYEE-SHIFT.
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO EMPLOYEE-START-DATE.
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO EMPLOYEE-COMPL-DATE.
+           MOVE LBR-START-TIME TO EMPLOYEE-STTM.
+           MOVE LBR-COMPL-TIME TO EMPLOYEE-COTM.
+           MOVE LABOR-HRS TO EMPLOYEE-HRS-WORKED.
+           MOVE LABOR-COST TO EMP-COST.
+       65-DL-CONT.
+           MOVE "FMODLDE2" TO VIEW-CFNAME.
+           MOVE 66069 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO REQ-CMD-LINE.
+           MOVE EDIT-ERROR TO REQ-ERR-LINE.
+           MOVE REQUIRED-INPUT TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE SPACES TO ERROR-BUFFER EDIT-ERROR.
+           MOVE DSPLY-REC TO REQUIRED-INPUT.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY NOT = 0 GO TO 65-DL-EXIT.
+           DELETE WO-LABOR-FILE RECORD    INVALID KEY
+               MOVE 17 TO COND-WORD.
+           IF WLF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE "DBDELETE FAILURE * TMODLABR *"
+                   TO BU-DISPLAY-MSG
+               MOVE "WO LABOR FILE" TO BU-DISPLAY-FLD (1)
+               PERFORM 998-BLOWUP.
+           MOVE 38003 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE LBR-EMPL-NUM TO CAT-TEXT2A.
+           MOVE LBR-EMPL-NAME TO CAT-TEXT2B.
+           MOVE TRUE-VAL TO INDS (98).
+           MOVE ERROR-BUFFER TO REQ-CMD-LINE.
+           MOVE REQUIRED-INPUT TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98A-SCREEN-READ.
+           CALL "CLPAUSE2".
+           IF B-OR-P-SW = 0 GO TO 65-DL-EXIT.
+       65-DL-EXIT.    EXIT.
+       66-RETRIEVE-DATA.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER-BUF TO WONUM OF WLFREC.
+           START WO-LABOR-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WLF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 40010 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (98)
+               MOVE EDIT-ERROR TO SCREEN-CMD-LINE
+               MOVE SCREEN-CMD-ERR TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               MOVE 0 TO VIEW-LASTKEY
+               GO TO 66-RD-EXIT.
+           MOVE SPACES TO PRT-LINE1.
+       66-RD-LOOP.
+           READ WO-LABOR-FILE PRIOR INTO WO-LABOR-DATA
+               AT END    MOVE 14 TO COND-WORD.
+           IF WLF-STATUS NOT = "00" MOVE 14 TO COND-WORD.
+           IF LBR-WO-NUM NOT = WO-NUMBER-BUF
+      *        IF VIEW-LASTKEY = 2
+      *            MOVE 15 TO COND-WORD
+      *            REWRITE WLFREC    INVALID KEY MOVE 15 TO COND-WORD
+      *        ELSE
+               MOVE 14 TO COND-WORD.
+           IF COND-WORD = 14 AND VIEW-LASTKEY = 6
+               AND CHAIN-CTR LESS THAN 1
+               MOVE 40010 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (98)
+               MOVE EDIT-ERROR TO SCREEN-CMD-LINE
+               MOVE SCREEN-CMD-ERR TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               MOVE 0 TO VIEW-LASTKEY
+               GO TO 66-RD-EXIT.
+           IF COND-WORD = 14 AND VIEW-LASTKEY = 6
+               MOVE REQ-DATE-WO TO P-REQ-DATA
+               MOVE 30077 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO P-DEPRESS-LINE
+               MOVE 66057 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO P-CMD-LINE
+               MOVE "FMODLIST" TO VIEW-CFNAME
+               MOVE PRT-LINE1 TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO PRT-LINE1
+               IF VIEW-LASTKEY = 1 OR 3
+                   GO TO 2-EOJ.
+           IF COND-WORD = 14 GO TO 66-RD-EXIT.
+           ADD 1 TO CHAIN-CTR.
+           IF VIEW-LASTKEY NOT = 6 GO TO 66-RD-LOOP.
+           ADD 1 TO SUB.
+           MOVE CHAIN-CTR TO P-CTR (SUB).
+           MOVE LBR-EMPL-NUM TO P-LABR-NUM (SUB).
+           MOVE LBR-EMPL-NAME TO P-LABR-NAME (SUB).
+           MOVE LBR-CRAFT TO P-LABR-CRAFT (SUB).
+           MOVE LBR-SHIFT-1 TO P-LABR-SHIFT (SUB).
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-START-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO P-LABR-STDATE (SUB).
+           MOVE LBR-START-TIME    TO P-LABR-STTM (SUB).
+           MOVE 4 TO DATE-MODE.
+           MOVE LBR-COMPL-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO P-LABR-CODATE (SUB).
+           MOVE LBR-COMPL-TIME    TO P-LABR-COTM (SUB).
+           MOVE LBR-HRS1-99 TO P-LABR-HRS (SUB).
+           MOVE LBR-HRS2-9 TO P-LABR-PARTIAL-HRS (SUB).
+           MOVE LBR-CST-DOLLR-9 TO P-LABR-DOLS (SUB).
+           MOVE LBR-CST-CENTS-9 TO P-LABR-CENTS (SUB).
+           MOVE "." TO P-LABR-HRS-DEC (SUB) P-LABR-DOLS-DEC (SUB).
+           IF SUB NOT = 15
+               GO TO 66-RD-LOOP
+           ELSE
+           MOVE 0 TO SUB
+           MOVE "FMODLIST" TO VIEW-CFNAME
+           MOVE REQ-DATE-WO TO P-REQ-DATA
+           MOVE 30077 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO P-DEPRESS-LINE
+           MOVE 66057 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO P-CMD-LINE
+           MOVE PRT-LINE1 TO DSPLY-REC
+           PERFORM 99-SCREEN-WRITE
+           PERFORM 98-SCREEN-READ
+           MOVE DSPLY-REC TO PRT-LINE1
+           IF VIEW-LASTKEY = 1 OR 3
+               GO TO 2-EOJ
+           ELSE
+           IF VIEW-LASTKEY = 6
+               MOVE SPACES TO PRT-LINE1
+               MOVE REQ-DATE-WO TO P-REQ-DATA
+               MOVE 0 TO SUB
+               GO TO 66-RD-LOOP
+           ELSE
+           MOVE 0 TO COND-WORD
+           MOVE 0 TO SUB.
+       66-RD-EXIT.    EXIT.
+       68-RIGHT-ADJUST-ITEMNO.
+           MOVE 4 TO SUB1, SUB2.
+           IF ITB (SUB1) NOT = " " GO TO 68-ZEROFILL-FIELD.
+       68-RAI-FIRST.
+           IF ITB (SUB1) NOT = " " GO TO 68-MOVE-BYTE.
+           IF SUB1 = 1 GO TO 68-ZEROFILL-FIELD.
+           SUBTRACT 1 FROM SUB1.
+           GO TO 68-RAI-FIRST.
+       68-MOVE-BYTE.
+           IF ITB (SUB1) = " " GO TO 68-ZEROFILL-FIELD.
+           MOVE ITB (SUB1) TO ITB (SUB2).
+           MOVE " " TO ITB (SUB1).
+           IF SUB1 = 1 GO TO 68-ZEROFILL-FIELD.
+           SUBTRACT 1 FROM SUB1, SUB2.
+           GO TO 68-MOVE-BYTE.
+      *--- CHANGE SUBSCRIPTS IN THIS PARAGRAPH BECAUSE THE LOGIC WAS
+      *--- BACKWARDS.    04/18/1995
+       68-ZEROFILL-FIELD.
+           IF ITB (1) = " "
+               IF ITB (2) = " "
+                   IF ITB (3) = " "
+                       IF ITB (4) = " "
+                           MOVE "0" TO ITB (1) ITB (2)
+                              ITB (3) ITB (4)
+                       ELSE
+                       MOVE "0" TO ITB (1) ITB (2) ITB (3)
+                   ELSE
+                   MOVE "0" TO ITB (1) ITB (2)
+               ELSE
+               MOVE "0" TO ITB (1).
+       68-RAI-EXIT.    EXIT.
+       69-MATCH-SEQUENCE.
+           MOVE 0 TO CHAIN-CTR ERR-SW COND-WORD.
+           MOVE WO-NUMBER-BUF TO WONUM OF WLFREC.
+           START WO-LABOR-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WLF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 1 TO ERR-SW
+               GO TO 69-MS-EXIT.
+       69-MS-LOOP.
+           READ WO-LABOR-FILE PRIOR INTO WO-LABOR-DATA
+               AT END MOVE 15 TO COND-WORD.
+           IF WLF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF LBR-WO-NUM NOT = WO-NUMBER-BUF MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               MOVE 1 TO ERR-SW
+               GO TO 69-MS-EXIT.
+           ADD 1 TO CHAIN-CTR.
+           IF CHAIN-CTR NOT = ITEM-BUFF-9 GO TO 69-MS-LOOP.
+       69-MS-EXIT.    EXIT.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+           MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       98A-SCREEN-READ.
+           READ DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDIC IS INDICS
+                  NO DATA MOVE DSPLY-STATUS TO DSPLY-STATUS.
+           MOVE ALL B"0" TO INDICS.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+       998-BLOWUP.
+           MOVE "TMODLABR" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+                            VIEW-COMAREA DUMMY-KSAM-STAT
+                            BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.    EXIT.

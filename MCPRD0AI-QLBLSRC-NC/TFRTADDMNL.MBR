@@ -1,0 +1,766 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TFRTADDMNL.
+       AUTHOR.               KALMAN.
+       DATE-WRITTEN.         APRIL 1994.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D* THIS IS AN ONLINE SUBRTN THAT WILL ALLOW THE USER
+      *D* TO ENTER AND MANUALLY APPLY A PAID FREIGHT BILL (MANL).
+      *D*
+      *D* THIS SUBRTN CALLS SFRTAPPLY TO ACTUALLY APPLY THE CHARGES TO
+      *D* DTRANS. IF THERE IS AN ERROR IN SFRTAPPLY, TBLOWUP WILL BE
+      *D* CALLED. CONTROL WILL NOT BE PASSED BACK TO THIS PROGRAM.
+      *D*
+      *C* CHANGES.
+      *C*
+      *C* 20DEC1994    CA ZUBEK
+      *C* CHANGED PROGRAM NAME PASSED TO TBLOWUP IN PARAGRAPH 9999-
+      *C* BLOWUP.  IT WAS ERRONEOUSLY MOVING "TFRTPROC," SO IT WAS
+      *C* CHANGED TO THE CORRECT VALUE OF "TFRTADDMNL."
+      *C*
+      *C* 13JUN1996    CA YODER
+      *C* MODIFIED FOR DATABASE CENTURY CHANGES.
+      *C*
+      *C* 01/08/2004    CA YODER
+      *C* INCREASED RELATIVE RECORD NUMBER FIELD SIZE FROM 4 TO 5.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.      I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+      ******************************************************************
+       INPUT-OUTPUT SECTION.
+      ******************************************************************
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZFREIGHT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+           SELECT DAPPLFRT-PCP-O
+                  ASSIGN TO DATABASE-MCFLCA1103
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DAPPLFRT-RRN-O
+                  ASSIGN TO DATABASE-MCFPCA1100
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE IS DYNAMIC
+                  RELATIVE KEY IS DAPPLFRT-IX
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DRCVITEM-PO-I
+                  ASSIGN TO DATABASE-MCFLCS1201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPOITEM-PO-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MACCOUNT-INFO-KEY-I
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+      ******************************************************************
+       DATA DIVISION.
+      ******************************************************************
+
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(1000).
+
+       FD  DAPPLFRT-PCP-O
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-PCP-REC-O.
+           COPY DDS-MCRPCA1100  OF MCFLCA1103.
+
+       FD  DAPPLFRT-RRN-O
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-RRN-REC-O.
+           COPY DDS-MCRPCA1100  OF MCFPCA1100.
+
+       FD  DRCVITEM-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-PO-REC-I.
+           COPY DDS-MCRPCS1200  OF MCFLCS1201.
+
+       FD  DPOITEM-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-PO-REC-I.
+           COPY DDS-MCRPCS1000  OF MCFLCS1002.
+
+       FD  MACCOUNT-INFO-KEY-I
+           LABEL RECORDS ARE STANDARD.
+       01  MACCOUNT-INFO-KEY-REC-I.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+      ******************************************************************
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+      *-----------------------------------------------------------------
+      *  B U F F E R S
+      *-----------------------------------------------------------------
+
+       01  BUF-SCREEN1.
+           05  S1-APPLMSG         PIC X(7).
+           05  S1-PO              PIC X(7).
+           05  S1-RLSE            PIC X(3).
+           05  S1-RCVR            PIC X(3).
+           05  S1-PAIDDT.
+               10  S1-PDDT-YYYY   PIC X(4).
+               10  S1-PDDT-MM     PIC X(2).
+               10  S1-PDDT-DD     PIC X(2).
+           05  S1-SHIPDT.
+               10  S1-SHDT-YYYY   PIC X(4).
+               10  S1-SHDT-MM     PIC X(2).
+               10  S1-SHDT-DD     PIC X(2).
+           05  S1-CAR             PIC X(10).
+           05  S1-TERMS           PIC X(2).
+           05  S1-PCARR           PIC X(4).
+           05  S1-RCARR           PIC X(4).
+           05  S1-PPRONUM         PIC X(16).
+           05  S1-RPRONUM         PIC X(16).
+           05  S1-PCHARGES.
+               10  S1-PCHG-AMT    PIC 9(10)V99.
+               10  S1-PCHG-SIGN   PIC X.
+           05  S1-RCHARGES        PIC S9(10)V99.
+           05  S1-PTAXES          PIC S9(10)V99.
+           05  S1-PCHGAPPDT       PIC X(10).
+           05  S1-RCHGAPPDT       PIC X(10).
+           05  S1-PRCVDDT         PIC X(10).
+           05  S1-RRCVDDT         PIC X(10).
+           05  S1-STATUS          PIC X(10).
+           05  S1-STATDT          PIC X(10).
+           05  S1-MSG-LINE        PIC X(79).
+
+       COPY DAPPLFRT IN COPYLIB.
+
+       COPY DPOITEM  IN COPYLIB.
+
+       COPY FREIGHT  IN COPYLIB.
+
+       COPY MACTINFO IN COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  M I S C E L L A N E O U S   D A T E   &   T I M E   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  CUR-DATE.
+           05  CUR-DATE-CC                PIC X(2).
+           05  CUR-SYSTEM-DATE.
+               10  CUR-DATE-YY            PIC X(2).
+               10  CUR-DATE-MM            PIC X(2).
+               10  CUR-DATE-DD            PIC X(2).
+
+       01  CUR-TIME                       PIC X(6).
+
+       01  CONV-DATE                      PIC X(10).
+
+      *-----------------------------------------------------------------
+      *  A R G U M E N T   V A L U E S
+      *-----------------------------------------------------------------
+
+       01  RECNUM-ARG               PIC 9(5) COMP-4.
+
+       01  PO-14-ARG                          VALUE SPACES.
+           05  PO-11-ARG.
+               10  PO-PREFIX-ARG    PIC X.
+               10  PO-10-ARG.
+                   15  PO-NUM-ARG   PIC X(7).
+                   15  PO-RLS-ARG   PIC X(3).
+           05  PO-RCVR-ARG          PIC X(3).
+       01  PO-14-ARG-DUP            REDEFINES PO-14-ARG.
+           05  PO-PREFIX-ARG-DUP    PIC X.
+           05  PO-13-ARG            PIC X(13).
+
+       01  RAIL-CAR-ARG             PIC X(10).
+       01  ITEM-ARG                 PIC X(4).
+
+       01  DATE-ARG.
+           05  DATE-CC              PIC X(2).
+           05  DATE-YY              PIC X(2).
+           05  DATE-MM              PIC X(2).
+           05  DATE-DD              PIC X(2).
+
+       01  MACCT-ARG                PIC X(4).
+
+      *-----------------------------------------------------------------
+      *  F L A G S   A N D   S W I T C H E S
+      *-----------------------------------------------------------------
+
+       01  DAPPLFRT-EOF             PIC X.
+
+       01  FRT-REC-APPLIED          PIC X.
+
+       01  FRT-REC-ENTERED          PIC X.
+
+       01  FROM-PGM-NAME            PIC X(10) VALUE "TFRTADDMNL".
+
+       01  APPLY-FLAG               PIC X.
+           88  APPLYING-MANUAL                VALUE "Y".
+           88  NOT-APPLYING-MANUAL            VALUE "N".
+
+       01  SAVE-AVG-COST-CALC-SW              PIC X.
+
+      *-----------------------------------------------------------------
+      *  I N D E X E S
+      *-----------------------------------------------------------------
+
+       01  DAPPLFRT-IX              PIC 9(5) COMP-4.
+
+      *-----------------------------------------------------------------
+      *  A C C U M U L A T O R S
+      *-----------------------------------------------------------------
+       01  TAXES-PAID               PIC S9(12)V99.
+       01  AMT-TO-APPLY             PIC S9(12)V99.
+       01  PAID-AMT                 PIC S9(12)V99.
+      *-----------------------------------------------------------------
+      *  S A V E   F I E L D S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  T A B L E S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       COPY DBCSACCT OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+       01  IOFEEDBACK.
+           05  IO-OFFSET                       PIC S9(4) COMP-4.
+           05  IO-OUT-COUNT                    PIC S9(8) COMP-4.
+           05  IO-GET-COUNT                    PIC S9(8) COMP-4.
+           05  IO-PUT-GET-COUNT                PIC S9(8) COMP-4.
+           05  IO-OTHER-COUNT                  PIC S9(8) COMP-4.
+           05  FILLER                          PIC X.
+           05  IO-OPERATION                    PIC X.
+           05  IO-FORMAT                       PIC X(10).
+           05  IO-DEV-CLASS                    PIC X(2).
+           05  IO-PGM-DEVICE                   PIC X(10).
+           05  IO-REC-LEN                      PIC S9(8) COMP-4.
+           05  IO-RTG-DTA                      PIC X(80).
+           05  IO-BLK-REC                      PIC S9(4) COMP-4.
+           05  IO-RESV                         PIC X(4).
+           05  IO-BLK-CNT                      PIC S9(8) COMP-4.
+           05  FILLER                          PIC X(8).
+
+           05  FEEDBACK-SIZE                   PIC S9(8) COMP-4.
+           05  JOIN-LOGICAL                    PIC X(4).
+           05  KEY-OFFSET                      PIC S9(4) COMP-4.
+           05  LOCKED-RECORDS                  PIC S9(4) COMP-4.
+           05  MAX-FIELDS                      PIC S9(4) COMP-4.
+           05  FIELD-MAPPING-OFFSET            PIC S9(8) COMP-4.
+           05  CURRENT-FILE-POSITION           PIC X(1).
+           05  CURRENT-RECORD-DELETE           PIC X(1).
+           05  NO-OF-KEYS                      PIC S9(4) COMP-4.
+           05  RESERVED-FIELD                  PIC X(4).
+           05  KEY-LENGTH                      PIC S9(4) COMP-4.
+           05  DATA-MEMBER-NO                  PIC S9(4) COMP-4.
+           05  IO-RECNUM                       PIC S9(8) COMP-4.
+
+      *-----------------------------------------------------------------
+      *  T E M P O R A R Y   F I L E   P A R M S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY VCOMAREA OF COPYLIB.
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY CATREAD OF COPYLIB.
+
+       01  WS-CONTROL.
+           05  FUNCTION-KEY       PIC XX.
+               88  ENTER-KEY-USED                       VALUE "00".
+               88  F1-KEY-USED                          VALUE "01".
+               88  F2-KEY-USED                          VALUE "02".
+               88  F3-KEY-USED                          VALUE "03".
+               88  F4-KEY-USED                          VALUE "04".
+               88  F5-KEY-USED                          VALUE "05".
+               88  F6-KEY-USED                          VALUE "06".
+               88  F7-KEY-USED                          VALUE "07".
+               88  F8-KEY-USED                          VALUE "08".
+               88  F9-KEY-USED                          VALUE "09".
+               88  F10-KEY-USED                         VALUE "10".
+               88  F11-KEY-USED                         VALUE "11".
+               88  F12-KEY-USED                         VALUE "12".
+           05  TERMINAL-ID        PIC X(10).
+           05  FORMAT-NAME        PIC X(10).
+
+       01  DISPLAY-STATUS         PIC X(2).
+
+       01  SRF-INDICATORS.
+           05  IND                PIC 1
+                                  OCCURS 99 TIMES
+                                  INDICATOR 1.
+               88  IND-OFF        VALUE B"0".
+               88  IND-ON         VALUE B"1".
+
+       01  OFF-SWITCH             PIC 1  VALUE B"0".
+       01  ON-SWITCH              PIC 1  VALUE B"1".
+
+      ******************************************************************
+       PROCEDURE DIVISION.
+      ******************************************************************
+
+      *-----------------------------------------------------------------
+         MAIN SECTION.
+      *-----------------------------------------------------------------
+
+       000-CONTROL.
+
+           PERFORM 100-HSK.
+
+           PERFORM 600-MAIN THRU 600-MAIN-X.
+
+           PERFORM 200-EOJ.
+
+           GOBACK.
+
+       100-HSK.
+
+           OPEN INPUT      DRCVITEM-PO-I           DPOITEM-PO-I
+                           MACCOUNT-INFO-KEY-I.
+           OPEN I-O        DISPLAY-FILE            DAPPLFRT-RRN-O
+                           DAPPLFRT-PCP-O.
+
+      *----AS OF MAR 93 THE CENTURY IS NOT AVAILABLE FROM THE SYSTEM.
+      *----UNTIL THE SITUATION CHANGES, THE FOLLOWING CODING IS A
+      *----TEMPORARY MEASURE. THIS CODING IS USED FOR ALL DATES IN
+      *----THIS PROGRAM THAT NEED CONVERSION.
+
+           ACCEPT CUR-SYSTEM-DATE FROM DATE.
+           IF CUR-DATE-YY < "70"
+              MOVE "20" TO CUR-DATE-CC
+           ELSE
+              MOVE "19" TO CUR-DATE-CC.
+
+      *----CHECK IF AVG COST HAS BEEN RUN.
+
+           MOVE "MTED" TO MACCT-ARG.
+           PERFORM 9999-READ-MACCOUNT-INFO-KEY-I.
+
+
+       200-EOJ.
+
+           CLOSE           DISPLAY-FILE            DAPPLFRT-RRN-O
+                           DRCVITEM-PO-I           DPOITEM-PO-I
+                           MACCOUNT-INFO-KEY-I     DAPPLFRT-PCP-O.
+
+       600-MAIN.
+
+           MOVE "N" TO FRT-REC-APPLIED, FRT-REC-ENTERED.
+           INITIALIZE BUF-SCREEN1, DAPPLFRT-EOF, APPLY-FLAG.
+
+      *----INITIALIZE SCREEN 1.
+
+           MOVE "YYYYMMDD" TO S1-PAIDDT, S1-SHIPDT.
+           MOVE "+" TO S1-PCHG-SIGN.
+           MOVE CUR-DATE     TO DATE-ARG.
+           PERFORM 9999-CONV-DATE.
+           MOVE CONV-DATE    TO S1-PRCVDDT.
+
+       602-SHOW-SCREEN1.
+
+           IF MACCT-AVG-COST-CALC-SW NOT = SPACES
+      *       ***  CANNOT UPDATE UNTIL CLOSING IS COMPLETE  ***
+              MOVE 03614 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND (06)
+              MOVE "X" TO FRT-REC-APPLIED, FRT-REC-ENTERED
+           ELSE
+           IF FRT-REC-APPLIED = "Y"
+              MOVE "APPLIED" TO S1-APPLMSG
+              MOVE ON-SWITCH TO IND (04), IND (06)
+           ELSE
+           IF FRT-REC-ENTERED = "Y"
+              MOVE "ENTERED" TO S1-APPLMSG
+              MOVE ON-SWITCH TO IND (04), IND (06)
+           ELSE
+              MOVE ON-SWITCH TO IND (05).
+
+      *----DISPLAY SCREEN1.
+
+           WRITE DISPLAY-REC FROM BUF-SCREEN1
+                 FORMAT IS "FRTADDMNL"
+                 INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           IF DISPLAY-STATUS NOT = ZERO
+              MOVE "WRITE SCREEN1 FAILED*602-SS" TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 9999-BLOWUP.
+
+      *----READ USER INPUT.
+
+           READ DISPLAY-FILE INTO BUF-SCREEN1
+                FORMAT IS "FRTADDMNL"
+                INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "READ SCREEN1 FAILED*602-SS" TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 9999-BLOWUP.
+
+       603-TAKE-INDICATED-ACTION.
+
+           IF ENTER-KEY-USED
+              IF FRT-REC-APPLIED = "N" AND FRT-REC-ENTERED = "N"
+                 PERFORM 6030-EDIT-INPUT THRU 6030-EDIT-INPUT-X
+                 PERFORM 6031-WRITE-MANUAL
+                 PERFORM 6032-APPLY-FRT  THRU 6032-APPLY-FRT-X
+                 PERFORM 6033-LOAD-SCREEN1
+              END-IF
+              GO TO 602-SHOW-SCREEN1.
+
+           IF F3-KEY-USED
+              GO TO 600-MAIN-X.
+
+           IF F8-KEY-USED
+              GO TO 600-MAIN.
+
+       6030-EDIT-INPUT.
+
+           IF S1-PAIDDT NOT NUMERIC
+      *       ***  PAID DATE IS REQUIRED  ***
+              MOVE 16164 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(2)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-SHIPDT NOT NUMERIC
+      *       ***  SHIP DATE IS REQUIRED  ***
+              MOVE 19043 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(3)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-TERMS NOT = SPACES AND "C" AND "P"
+      *       ***  TERMS MUST BE BLANK, (C)OLLECT OR (P)REPAID  ***
+              MOVE 20072 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(7)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-PCARR = SPACES
+      *       ***  CARRIER IS REQUIRED  ***
+              MOVE 03616 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(8)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-PPRONUM = SPACES
+      *       ***  PRO NUMBER IS REQUIRED  ***
+              MOVE 16165 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(9)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-PCHG-AMT = 0
+      *       ***  FREIGHT CHARGES CAN NOT BE ZERO  ***
+              MOVE 06035 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(10)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-PCHG-AMT NOT NUMERIC
+      *       ***  THIS FIELD MUST BE NUMERIC  ***
+              MOVE 20063 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(10)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-PCHG-SIGN NOT = "+" AND "-"
+      *       ***  VALID SIGN CHARACTERS "+" OR "-" ARE REQUIRED  ***
+              MOVE 66258 TO CATREAD-MSG-NUMBER
+              PERFORM 9999-CATREAD
+              MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+              MOVE ON-SWITCH TO IND(99), IND(11)
+              GO TO 602-SHOW-SCREEN1.
+
+           IF S1-PO = SPACES
+              SET NOT-APPLYING-MANUAL TO TRUE
+              GO TO 6030-EDIT-INPUT-X.
+
+           IF S1-RLSE = SPACES
+              MOVE "000" TO S1-RLSE.
+           IF S1-RCVR = SPACES
+              MOVE "000" TO S1-RCVR.
+
+           MOVE "P"        TO PO-PREFIX-ARG.
+           MOVE S1-PO      TO PO-NUM-ARG.
+           MOVE S1-RLSE    TO PO-RLS-ARG.
+           MOVE S1-RCVR    TO PO-RCVR-ARG.
+
+           IF PO-RCVR-ARG NOT = "000"
+              PERFORM 9999-START-DRCVITEM-I-EQ-PO
+              IF FILE-STATUS-1 = "2"
+      *          ***  PO-RCVR DOES NOT EXIST  ***
+                 MOVE 16154 TO CATREAD-MSG-NUMBER
+                 PERFORM 9999-CATREAD
+                 MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+                 MOVE ON-SWITCH TO IND(99), IND(1)
+                 GO TO 602-SHOW-SCREEN1.
+
+           IF PO-RCVR-ARG = "000"
+              PERFORM 9999-START-DPOITEM-I-EQ-PO
+              IF FILE-STATUS-1 = "2"
+      *          ***  PURCHASE ORDER DOES NOT EXIST  ***
+                 MOVE 16045 TO CATREAD-MSG-NUMBER
+                 PERFORM 9999-CATREAD
+                 MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+                 MOVE ON-SWITCH TO IND(99), IND(1)
+                 GO TO 602-SHOW-SCREEN1
+              END-IF
+
+              MOVE "0001" TO ITEM-ARG
+              PERFORM 9999-READ-DPOITEM-PO-I
+              IF FILE-STATUS-1 = "2"
+      *          ***  PO MUST HAVE ITEM 0001  ***
+                 MOVE 16155 TO CATREAD-MSG-NUMBER
+                 PERFORM 9999-CATREAD
+                 MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+                 MOVE ON-SWITCH TO IND(99), IND(1)
+                 GO TO 602-SHOW-SCREEN1
+              END-IF
+
+              IF ITM-CORP-CODE NOT = "NON-STR"
+      *          ***  ITEM 0001 MUST BE "NON-STR"  ***
+                 MOVE 09106 TO CATREAD-MSG-NUMBER
+                 PERFORM 9999-CATREAD
+                 MOVE CATREAD-MSG-TEXT TO S1-MSG-LINE
+                 MOVE ON-SWITCH TO IND(99), IND(1)
+                 GO TO 602-SHOW-SCREEN1
+              END-IF.
+
+       6030-EDIT-INPUT-X.
+           EXIT.
+
+       6031-WRITE-MANUAL.
+           INITIALIZE BUF-DAPPLFRT.
+           IF S1-PO > SPACES
+              MOVE "P"          TO DAPPL-PO-PREFIX
+              MOVE S1-PO        TO DAPPL-PO-NUM
+              MOVE S1-RLSE      TO DAPPL-PO-RLS
+              MOVE S1-RCVR      TO DAPPL-PO-RCVR.
+           MOVE S1-PAIDDT    TO DAPPL-TIS-PAID-DATE.
+           MOVE S1-SHIPDT    TO DAPPL-TIS-SHIP-DATE.
+           MOVE S1-CAR       TO DAPPL-RAIL-CAR.
+           MOVE S1-TERMS     TO DAPPL-TERMS.
+           MOVE S1-PCARR     TO DAPPL-PAID-CARRIER.
+           MOVE S1-PPRONUM   TO DAPPL-PAID-PRO-NO.
+           IF S1-PCHG-SIGN = "-"
+              MULTIPLY S1-PCHG-AMT BY -1 GIVING DAPPL-PAID-AMT
+           ELSE
+              MOVE S1-PCHG-AMT TO DAPPL-PAID-AMT.
+           MOVE CUR-DATE     TO DAPPL-PAID-RCV-DATE.
+           MOVE "U"          TO DAPPL-STATUS-2.
+
+           PERFORM 9999-WRITE-DAPPLFRT-PCP-O.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+      *    DISPLAY "WRITE RRN = " IO-RECNUM.
+           MOVE IO-RECNUM TO RECNUM-ARG.
+
+           MOVE "Y" TO FRT-REC-ENTERED.
+
+       6032-APPLY-FRT.
+           IF NOT-APPLYING-MANUAL
+              GO TO 6032-APPLY-FRT-X.
+
+           PERFORM 9999-READ-DAPPLFRT-RRN-O.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+      *    DISPLAY "READ RRN = " IO-RECNUM.
+
+      *----SET UP PARMS TO CALL SFRTAPPLY.
+
+           MOVE "02" TO FREIGHT-TRAN-CODE.
+           MOVE "P"  TO FREIGHT-REC-TYPE.
+           INITIALIZE   FREIGHT-MODE-CODE.
+           MOVE DAPPL-PO-14         TO FREIGHT-PO-14.
+           MOVE DAPPL-PAID-PRO-NO   TO FREIGHT-FB-NUM.
+           MOVE DAPPL-TIS-SHIP-DATE TO FREIGHT-SHIP-DATE.
+           MOVE DAPPL-RAIL-CAR      TO FREIGHT-VEHICLE-NUM.
+           MOVE DAPPL-PAID-CARRIER  TO FREIGHT-PAY-CARR
+                                       FREIGHT-DELV-CARR.
+           MOVE DAPPL-PAID-AMT      TO FREIGHT-CHARGES
+                                       AMT-TO-APPLY, PAID-AMT.
+           MOVE DAPPL-TIS-PAID-DATE TO FREIGHT-PAID-DATE.
+           MOVE DAPPL-TERMS         TO FREIGHT-TERMS.
+           INITIALIZE                  TAXES-PAID.
+
+           IF AMT-TO-APPLY NOT = ZERO
+              CALL "SFRTAPPLY" USING BUF-FREIGHT, AMT-TO-APPLY,
+                                  PAID-AMT, TAXES-PAID, FROM-PGM-NAME.
+
+      *----UPDATE DAPPLFRT.
+
+           MOVE TAXES-PAID TO DAPPL-PAID-TAX.
+           MOVE CUR-DATE   TO DAPPL-PAID-APPL-DATE.
+           ACCEPT CUR-TIME    FROM TIME.
+           MOVE CUR-TIME   TO DAPPL-PAID-APPL-TIME.
+
+           PERFORM 9999-REWRITE-DAPPLFRT-RRN-O.
+
+           MOVE "Y" TO FRT-REC-APPLIED.
+           CALL "SFRTSTAMP".
+
+       6032-APPLY-FRT-X.
+           EXIT.
+
+       6033-LOAD-SCREEN1.
+           MOVE DAPPL-PAID-TAX           TO  S1-PTAXES.
+
+           MOVE DAPPL-PAID-APPL-DATE TO DATE-ARG.
+           PERFORM 9999-CONV-DATE.
+           MOVE CONV-DATE                TO S1-PCHGAPPDT.
+
+           MOVE "ACTIVE"                 TO S1-STATUS.
+
+       600-MAIN-X.
+           EXIT.
+
+      *-----------------------------------------------------------------
+       9999-UTILITY SECTION.
+      *-----------------------------------------------------------------
+
+       9999-BLOWUP.
+           MOVE "TFRTADDMNL" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+       9999-CONV-DATE.
+
+           IF DATE-ARG NOT = SPACES
+              STRING DATE-ARG (1:4) DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DATE-ARG (5:2) DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DATE-ARG (7:2) DELIMITED BY SIZE INTO CONV-DATE
+           ELSE
+              MOVE SPACES TO CONV-DATE.
+
+       9999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+
+      *---------------------------------
+      * DAPPLFRT
+      *---------------------------------
+
+      *-RRN-----------------------------
+
+       9999-READ-DAPPLFRT-RRN-O.
+           MOVE RECNUM-ARG TO DAPPLFRT-IX.
+           READ DAPPLFRT-RRN-O INTO BUF-DAPPLFRT
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "READ DAPPLFRT*9999-RDO" TO BU-DISPLAY-MSG
+                 MOVE RECNUM-ARG      TO BU-DISPLAY-FLD (1)
+                 PERFORM 9999-BLOWUP.
+
+       9999-REWRITE-DAPPLFRT-RRN-O.
+           MOVE RECNUM-ARG TO DAPPLFRT-IX.
+           REWRITE DAPPLFRT-RRN-REC-O FROM BUF-DAPPLFRT
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "WRITE DAPPLFRT*9999-WDRO" TO BU-DISPLAY-MSG
+              MOVE RECNUM-ARG      TO BU-DISPLAY-FLD (1)
+              PERFORM 9999-BLOWUP.
+
+      *-PCP-----------------------------
+
+       9999-WRITE-DAPPLFRT-PCP-O.
+           WRITE DAPPLFRT-PCP-REC-O FROM BUF-DAPPLFRT
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "WRITE DAPPLFRT*9999-WDPO" TO BU-DISPLAY-MSG
+              MOVE DAPPL-PAID-CARRIER     TO BU-DISPLAY-FLD (1)
+              MOVE DAPPL-PAID-PRO-NO      TO BU-DISPLAY-FLD (2)
+              PERFORM 9999-BLOWUP.
+
+      *---------------------------------
+      * DRCVITEM
+      *---------------------------------
+
+       9999-START-DRCVITEM-I-EQ-PO.
+           MOVE PO-14-ARG TO PORCVNO OF DRCVITEM-PO-REC-I.
+           START DRCVITEM-PO-I KEY = PORCVNO OF DRCVITEM-PO-REC-I
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "START DRCVITEM*9999-SDIEP" TO BU-DISPLAY-MSG
+                 MOVE PO-14-ARG       TO BU-DISPLAY-FLD (2)
+                 PERFORM 9999-BLOWUP.
+
+      *---------------------------------
+      * DPOITEM
+      *---------------------------------
+
+       9999-START-DPOITEM-I-EQ-PO.
+           MOVE PO-14-ARG TO PORCVNO OF DPOITEM-PO-REC-I.
+           START DPOITEM-PO-I KEY = PORCVNO OF DPOITEM-PO-REC-I
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "START DPOITEM*9999-SDIEP" TO BU-DISPLAY-MSG
+                 MOVE PO-14-ARG       TO BU-DISPLAY-FLD (1)
+                 PERFORM 9999-BLOWUP.
+
+       9999-READ-DPOITEM-PO-I.
+           MOVE PO-14-ARG TO PORCVNO OF DPOITEM-PO-REC-I.
+           MOVE ITEM-ARG  TO ITEMNO  OF DPOITEM-PO-REC-I.
+           READ DPOITEM-PO-I INTO BUF-DPOITEM
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "READ DPOITEM*9999-RDPI" TO BU-DISPLAY-MSG
+                 MOVE PO-14-ARG       TO BU-DISPLAY-FLD (1)
+                 MOVE ITEM-ARG        TO BU-DISPLAY-FLD (2)
+                 PERFORM 9999-BLOWUP.
+
+      *---------------------------------
+      * MACCOUNT-INFO
+      *---------------------------------
+
+       9999-READ-MACCOUNT-INFO-KEY-I.
+           MOVE MACCT-ARG TO INFOKEY OF MACCOUNT-INFO-KEY-REC-I.
+           READ MACCOUNT-INFO-KEY-I INTO BUF-MACCT-INFO
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ MACCOUNT-INFO*9999-RMIKO" TO BU-DISPLAY-MSG
+              MOVE MACCT-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+

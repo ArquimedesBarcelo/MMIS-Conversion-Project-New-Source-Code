@@ -1,0 +1,694 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     TARIBACAT.
+       AUTHOR.         EXLTECH, LLC - DAN RAUCH
+
+      ***************************************************************
+      **                    T A R I B A C A T
+      ***************************************************************
+      **            ARIBA VENDOR CATALOG UPDATE PROGRAM
+      **         -----------------------------------------
+      ** READ ARIBA STAGING FILE BY VENDOR AND LOAD CATALOG DATA
+      ***************************************************************
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      ***------------------------------------------------------------***
+      *   NOV 14, 2003       D.RAUCH     DCR01    PER DAVE PLUM
+      *                      ADDED CODE TO CHECK FOR BLANK UOM         'G
+      ***------------------------------------------------------------***
+      *   APR 08, 2003       D.RAUCH     DCR02
+      *                      ADDED CODE FOR SAP VENDOR NBR CONVERSION  'G
+      ***------------------------------------------------------------***
+                                                                       *
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *================================================================
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT CATALOG-FILE-IN    ASSIGN TO DATABASE-MCFLAB2101
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT CATALOG-FILE-OUT   ASSIGN TO DATABASE-MCFLAB2001
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT CATALOG-FILE-READK ASSIGN TO DATABASE-MCFLAB2005
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT STOREROOM-FILE     ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT CATALOG-RESULT-FILE  ASSIGN TO DATABASE-MCFLAB1301
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT CATALOG-RESULT-FILE2 ASSIGN TO DATABASE-MCFLAB1401
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+      *============================================================    ====
+       DATA DIVISION.
+      *============================================================    ====
+       FILE SECTION.
+
+       FD  CATALOG-FILE-IN.
+       01  CATALOG-REC-IN.
+       COPY DDS-ALL-FORMATS OF MCFLAB2101.
+       COPY DARIBACIF   IN COPYLIB.
+
+       FD  CATALOG-FILE-OUT.
+       01  CATALOG-REC-OUT.
+       COPY DDS-ALL-FORMATS OF MCFLAB2001.
+       COPY DARIBACAT   IN COPYLIB.
+
+       FD  CATALOG-FILE-READK.
+       01  CATALOG-REC-READK.
+       COPY DDS-ALL-FORMATS OF MCFLAB2005.
+       COPY DARIBACAT2  IN COPYLIB.
+
+       FD  STOREROOM-FILE.
+       01  STOREROOM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0201.
+       COPY MSTORERM    IN COPYLIB.
+
+       FD  CATALOG-RESULT-FILE.
+       01  CATALOG-RESULT-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB1301.
+
+       FD  CATALOG-RESULT-FILE2.
+       01  CATALOG-RESULT-REC2.
+       COPY DDS-ALL-FORMATS OF MCFLAB1401.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      * FILE STATUS AREA
+      *****************************************************************
+       COPY FILESTATUS  IN COPYLIB.
+       COPY DTSPARMS2   IN COPYLIB.
+       COPY ZMPLTWS     IN COPYLIB.
+
+      *********************************************************************
+      *  JUST WORK FIELDS
+      *********************************************************************
+       01  WS-PROGRAM-MESSAGES.
+
+           03  WS-RESULT-MESSAGES.
+
+               05  WS-GOODTOGO-MSG    PIC X(80)       VALUE
+               "ITEM SUCCESSFULLY ADDED TO CSIS VENDOR CATALOG   ".
+
+               05  WS-STOREROOM-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - ITEM NFND IN STOREROOM              ".
+
+               05  WS-NOCCHM-MSG      PIC X(80)       VALUE
+               "CATLOD ERR - HOME CURRENCY CODE REC(MPLTINFO) NFND".
+
+               05  WS-CURCNV-MSG      PIC X(80)       VALUE
+               "CATLOD ERR - ERROR CONVERTING TO HOME CURRENCY    ".
+
+               05  WS-NOPLNT-MSG      PIC X(80)       VALUE
+               "CATLOD ERR - PLANT CODE REC(MPLTINFO) NFND       ".
+
+               05  WS-BADPLNT-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - PLANT CODE NOT VALID FOR THIS PLANT ".
+
+DCR01          05  WS-BLNKUOM-MSG     PIC X(80)       VALUE
+DCR01          "CATLOD ERR - INPUT UoM CAN NOT BE BLANK          ".
+
+               05  WS-CNVUOM1-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - STOREROOM UoM1 CNV FACTOR = 0        ".
+
+               05  WS-CNVUOM2-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - STOREROOM UoM2 CNV FACTOR = 0        ".
+
+               05  WS-CNVUOMX-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - ERROR CONVERTING CATALOG UoM        ".
+
+               05  WS-CNVCURR-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - ERROR CONVERTING TO HOME CURRENCY   ".
+
+               05  WS-VPRZERO-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - VENDOR PRICE = 0                    ".
+
+               05  WS-DUPEREC-MSG     PIC X(80)       VALUE
+               "CATLOD ERR - THIS CATALOG RECORD ALREADY EXISTS  ".
+
+
+      *************************************************************    ****
+      *  JUST WORK FIELDS
+      *************************************************************    ****
+       01  WS-MISCELLANEOUS-FIELDS.
+
+           03  WS-VEN-PRICE       PIC S9(11)V9999 COMP-3   VALUE +0.
+           03  WS-NEW-PRICE       PIC S9(11)V9999 COMP-3   VALUE +0.
+
+           03  WS-CATDLT-PGM      PIC X(10)       VALUE "DLTVNDCAT".
+           03  WS-PLANT-KEY       PIC X(04)            VALUE "P 01".
+           03  WS-CURR-KEY        PIC X(04)            VALUE "CCHM".
+
+           03  WS-HOME-CURR-CODE  PIC X(02)            VALUE SPACE.
+           03  WS-PLANT-CODE      PIC X(04)            VALUE SPACE.
+
+DCR02      03  WS-INP-VENDOR-CODE  PIC X(10)    VALUE SPACE.
+DCR02      03  WS-CNV-VENDOR-CODE  PIC X(10)    VALUE SPACE.
+
+           03  WS-START-VENDOR-CODE  PIC X(10)    VALUE SPACE.
+           03  WS-SAVE-VENDOR-CD  PIC X(10)       VALUE HIGH-VALUES.
+
+           03  WS-SAVE-CORPCODE   PIC X(08)       VALUE HIGH-VALUES.
+           03  WS-LOG-MSSG        PIC X(80)       VALUE SPACE.
+           03  WS-EDIT-ERRORS-SW  PIC X(01)       VALUE SPACE.
+               88  THERE-ARE-ERRORS-NO            VALUE "N".
+               88  THERE-ARE-ERRORS-YES           VALUE "Y".
+
+           03  WS-SUCCESS-SW      PIC X(01)            VALUE SPACE.
+               88  SUCCESS-YES                    VALUE "S".
+               88  FAILURE-YES                    VALUE "F".
+
+
+       COPY CATRSLT     IN COPYLIB.
+       COPY CATRSLT2    IN COPYLIB.
+
+
+       01  BASE                          PIC X(10).
+       COPY SCURCONV   IN COPYLIB.
+       COPY DBSTAT     IN COPYLIB.
+       01  BU-DISPLAY-MSG.
+           05  BU-DISPLAY-MSG-1         PIC X(1).
+           05  FILLER                   PIC X(59).
+
+       01  BU-DISPLAY-FLDS.
+           05  BU-DISPLAY-LINE  OCCURS 5 TIMES.
+               10  BU-DISPLAY-FLD       PIC X(14).
+               10  BU-DISPLAY-FLD9      PIC S9(8).
+
+      *=============================================================== ==
+      *===        P R O C E D U R E    D I V I S I O N              == =
+      *=============================================================== =
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           OPEN INPUT  STOREROOM-FILE
+                       CATALOG-FILE-READK
+                  I-O  CATALOG-FILE-IN
+                       CATALOG-FILE-OUT
+                       CATALOG-RESULT-FILE
+                       CATALOG-RESULT-FILE2.
+
+
+           PERFORM 0010-INITIALIZE   THRU 0010-EXIT.
+           PERFORM 1000-MAIN-LOGIC   THRU 1000-EXIT
+                        UNTIL FS-END-OF-FILE.
+
+
+           CLOSE       CATALOG-FILE-IN
+                       STOREROOM-FILE
+                       CATALOG-FILE-READK
+                       CATALOG-FILE-OUT
+                       CATALOG-RESULT-FILE
+                       CATALOG-RESULT-FILE2.
+
+         0000-PROGRAM-END.
+             GOBACK.
+
+      ***************************************************************  *
+      * PROGRAM INIT ROUTINE
+      ***************************************************************  *
+       0010-INITIALIZE.
+
+
+      *=---------------------------------------------------------------=
+      *= GET THE COMPANY CODE                                          =
+      *=---------------------------------------------------------------=
+           MOVE WS-PLANT-KEY       TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-FILE-STATUS  TO WS-FILE-STATUS.
+           IF  FS-GOOD-FILE-IO
+               MOVE WS-ZMPLT-PLTINFODTA(1:3) TO WS-PLANT-CODE
+           ELSE
+               MOVE WS-NOPLNT-MSG     TO  WS-LOG-MSSG
+               GO TO 0010-ERROR
+           END-IF.
+
+      *=---------------------------------------------------------------=
+      *= GET THE HOME CURRENCY                                         =
+      *=---------------------------------------------------------------=
+           MOVE WS-CURR-KEY        TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-FILE-STATUS  TO WS-FILE-STATUS.
+           IF  FS-GOOD-FILE-IO
+               MOVE WS-ZMPLT-PLTINFODTA(1:2) TO WS-HOME-CURR-CODE
+           ELSE
+               MOVE WS-NOCCHM-MSG     TO  WS-LOG-MSSG
+               GO TO 0010-ERROR
+           END-IF.
+
+           PERFORM 9000-START-CATALOG-IN   THRU 9000-START-EXIT.
+           PERFORM 9000-READN-CATALOG-IN   THRU 9000-READN-EXIT.
+
+           GO TO 0010-EXIT.
+
+       0010-ERROR.
+
+           INITIALIZE CATALOG-REC-IN.
+
+           SET  THERE-ARE-ERRORS-YES TO TRUE.
+           PERFORM 8000-LOG-RESULT-TRANS   THRU 8000-LOG-EXIT.
+           SET  FS-END-OF-FILE  TO TRUE.
+
+       0010-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * MAIN LOGIC ROUTINE
+      ***************************************************************  **
+       1000-MAIN-LOGIC.
+
+           PERFORM 1100-EDIT-CIF-RECORD    THRU 1100-EXIT.
+           IF  THERE-ARE-ERRORS-NO
+               PERFORM 3000-BUILD-CATALOG  THRU 3000-EXIT
+           END-IF.
+
+           PERFORM 9000-DELET-CATALOG-IN   THRU 9000-DELET-EXIT.
+           PERFORM 9000-READN-CATALOG-IN   THRU 9000-READN-EXIT.
+
+       1000-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * EDIT CIF INPUT RECORD
+      ***************************************************************  **
+       1100-EDIT-CIF-RECORD.
+
+           SET  SUCCESS-YES   TO TRUE.
+           SET  THERE-ARE-ERRORS-NO  TO TRUE.
+           MOVE SPACE             TO  WS-LOG-MSSG.
+
+           IF   ARIBACIF-VENDOR-CODE NOT = WS-SAVE-VENDOR-CD
+                PERFORM 2000-DELETE-CATALOG  THRU 2000-EXIT
+           END-IF.
+
+      **%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      * DUPLICATE RECORDS - SHOULD NEVER HAPPEN - THIS CHECK IS HERE
+      * TO PREVENT DUPLICATES ON UNIQUELY KEYED LOGICAL MCFLAB2005
+      * ------------------- UNIQUE KEY FIELDS -----------------------
+      *      MANUF NAME\MANUF PART\VENDOR\VENDOR PART\VENDOR AUXID
+      * -------------------------------------------------------------
+      **%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+           PERFORM 9001-READK-CATALOG-OUT    THRU 9001-READK-EXIT.
+           IF  FS-GOOD-FILE-IO
+               MOVE WS-DUPEREC-MSG    TO  WS-LOG-MSSG
+               GO TO 1100-ERROR
+           END-IF.
+
+      * VALIDATE THE PLANT CODE
+           IF  ARIBACIF-PLANT NOT = WS-PLANT-CODE
+               MOVE WS-BADPLNT-MSG    TO  WS-LOG-MSSG
+               GO TO 1100-ERROR
+           END-IF.
+
+
+DCR01 * UNIT OF MEASURE CAN'T BE BLANK
+DCR01      IF  ARIBACIF-UM = SPACE
+DCR01          MOVE WS-BLNKUOM-MSG    TO  WS-LOG-MSSG
+DCR01          GO TO 1100-ERROR
+DCR01      END-IF.
+
+
+      * USE CORPCODE TO RETRIEVE STOREROOM REC
+           PERFORM 9002-READK-STOREROOM      THRU 9002-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               MOVE WS-STOREROOM-MSG    TO  WS-LOG-MSSG
+               GO TO 1100-ERROR
+           END-IF.
+
+
+      * VENDOR PRICE MUST BE > 0
+           IF  ARIBACIF-VENDOR-PRICE = 0
+               MOVE WS-VPRZERO-MSG      TO  WS-LOG-MSSG
+               GO TO 1100-ERROR
+           END-IF.
+
+
+           COMPUTE WS-VEN-PRICE = ARIBACIF-VENDOR-PRICE.
+
+
+      * UOM CONVERSION
+           EVALUATE TRUE
+           WHEN  ARIBACIF-UM  = STR-UM
+                 PERFORM 1110-CONVERT-UM0  THRU 1110-EXIT
+           WHEN  ARIBACIF-UM  = STR-UM1
+                 PERFORM 1111-CONVERT-UM1  THRU 1111-EXIT
+           WHEN  ARIBACIF-UM  = STR-UM2
+                 PERFORM 1112-CONVERT-UM2  THRU 1112-EXIT
+           WHEN OTHER
+                 PERFORM 1113-UOM-ERROR    THRU 1113-EXIT
+           END-EVALUATE.
+
+      * CHECK FOR UOM CONV ERRORS
+           IF THERE-ARE-ERRORS-YES
+              GO TO 1100-ERROR
+           END-IF.
+
+      * CHECK FOR HOME CURRENCY
+           IF  ARIBACIF-CURR-CODE  NOT = WS-HOME-CURR-CODE
+               PERFORM 4000-CONVERT-CURRENCY   THRU 4000-EXIT
+               IF BU-DISPLAY-MSG-1 NOT = SPACES
+                  MOVE WS-CNVCURR-MSG     TO  WS-LOG-MSSG
+                  GO TO 1100-ERROR
+               END-IF
+           END-IF.
+
+           GO TO 1100-EXIT.
+
+       1100-ERROR.
+
+           SET  THERE-ARE-ERRORS-YES TO TRUE.
+           PERFORM 8000-LOG-RESULT-TRANS   THRU 8000-LOG-EXIT.
+
+       1100-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT STR UOM0
+      ***************************************************************  **
+       1110-CONVERT-UM0.
+
+           COMPUTE WS-NEW-PRICE = (ARIBACIF-VENDOR-PRICE).
+
+       1110-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT STR UOM1
+      ***************************************************************  **
+       1111-CONVERT-UM1.
+
+           IF  STR-UM1-CF > ZERO
+               COMPUTE WS-NEW-PRICE = (WS-VEN-PRICE / STR-UM1-CF)
+           ELSE
+               MOVE WS-CNVUOM1-MSG    TO  WS-LOG-MSSG
+               SET  THERE-ARE-ERRORS-YES TO TRUE
+           END-IF.
+
+       1111-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT STR UOM2
+      ***************************************************************  **
+       1112-CONVERT-UM2.
+
+           IF  STR-UM2-CF > ZERO
+               COMPUTE WS-NEW-PRICE = (WS-VEN-PRICE / STR-UM2-CF)
+           ELSE
+               MOVE WS-CNVUOM2-MSG    TO  WS-LOG-MSSG
+               SET  THERE-ARE-ERRORS-YES TO TRUE
+           END-IF.
+
+       1112-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT UOM ERROR
+      ***************************************************************  **
+       1113-UOM-ERROR.
+
+           SET  THERE-ARE-ERRORS-YES TO TRUE.
+           MOVE WS-CNVUOMX-MSG    TO  WS-LOG-MSSG.
+
+       1113-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * REMOVE ALL CATALOG RECORDS FOR CURRENT VENDOR
+      ***************************************************************  **
+       2000-DELETE-CATALOG.
+
+           CALL  WS-CATDLT-PGM   USING  ARIBACIF-VENDOR-CODE.
+           MOVE ARIBACIF-VENDOR-CODE  TO   WS-SAVE-VENDOR-CD.
+
+       2000-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * BUILD CATALOG OUTPUT RECORD
+      ***************************************************************  **
+       3000-BUILD-CATALOG.
+
+           INITIALIZE BUF-DARIBCAT.
+
+           MOVE ARIBACIF-VENDOR-CODE  TO  ARIBACAT-VENDOR-CODE.
+           MOVE ARIBACIF-CORP-CODE  TO ARIBACAT-CORP-CODE.
+           MOVE ARIBACIF-MANUFACT-NAME TO  ARIBACAT-MANUFACT-NAME.
+           MOVE ARIBACIF-MANUFACT-PARTNO TO  ARIBACAT-MANUFACT-PARTNO.
+           MOVE ARIBACIF-VENDOR-PARTNO   TO  ARIBACAT-VENDOR-PARTNO.
+           MOVE ARIBACIF-VENDOR-AUXID    TO  ARIBACAT-VENDOR-AUXID.
+           MOVE ARIBACIF-VENDOR-PRICE TO ARIBACAT-VENDOR-PRICE.
+           MOVE WS-NEW-PRICE       TO  ARIBACAT-CONVER-PRICE.
+           MOVE ZERO               TO  ARIBACAT-EMPTY-PRICE.
+           MOVE ARIBACIF-UM        TO  ARIBACAT-VENDOR-UM.
+           MOVE STR-UM             TO  ARIBACAT-STOREROOM-UM.
+           MOVE ARIBACIF-UM        TO  ARIBACAT-QTY-UM.
+           MOVE ARIBACIF-CURR-CODE TO  ARIBACAT-CURR-CODE.
+           MOVE WS-HOME-CURR-CODE  TO  ARIBACAT-HOME-CURR-CODE.
+           MOVE SPACE              TO  ARIBACAT-PREF-FLAG.
+           MOVE SPACE              TO  ARIBACAT-OVRD-FLAG.
+           MOVE SPACE              TO  ARIBACAT-REASON-CODE.
+
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+           MOVE WS-SYSTEM-DATE-TIME2  TO  ARIBACAT-DATE-TIME-STMP.
+
+           PERFORM 9001-WRITE-CATALOG-OUT  THRU 9001-WRITE-EXIT.
+
+           MOVE WS-GOODTOGO-MSG   TO  WS-LOG-MSSG.
+           PERFORM 8000-LOG-RESULT-TRANS   THRU 8000-LOG-EXIT.
+
+       3000-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * CONVERT TO HOME CURRENCY
+      ***************************************************************  **
+       4000-CONVERT-CURRENCY.
+
+           MOVE ARIBACIF-CURR-CODE   TO  SCURCONV-CUR-CODE.
+           MOVE WS-NEW-PRICE         TO  SCURCONV-PRICE-DEC.
+           MOVE ZERO                 TO  SCURCONV-PRICE-WHL
+           MOVE "Y"                  TO  SCURCONV-OVERRIDE-CONV-SW
+
+           CALL "SCURCONV" USING BASE  SCURCONV-PARMS  STATUS-AREA
+                 BU-DISPLAY-MSG  BU-DISPLAY-FLDS.
+
+           IF BU-DISPLAY-MSG-1 = SPACES
+              MOVE SCURCONV-PRICE-DEC TO WS-NEW-PRICE
+           END-IF.
+
+       4000-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * LOG TRANSACTION OUTCOME - SUCCESS OR FAILURE
+      ***************************************************************  **
+       8000-LOG-RESULT-TRANS.
+
+           INITIALIZE  CATALOG-RESULT-REC
+                       CATALOG-RESULT-REC2.
+
+           IF   THERE-ARE-ERRORS-YES
+                SET  FAILURE-YES   TO TRUE
+           END-IF.
+
+           MOVE WS-SUCCESS-SW      TO  RSLTLOG-STATUS-FLAG.
+           MOVE WS-LOG-MSSG        TO  RSLTLOG-MESSAGE.
+
+DCR02 **-- SEND BACK THE SAME VENDOR CODE & FORMAT ARIBA SENT DOWN
+DCR02      MOVE WS-INP-VENDOR-CODE TO  ARIBACIF-VENDOR-CODE.
+
+           MOVE BUF-ARIBACIF       TO  RSLTLOG-CIF-RECORD.
+
+           PERFORM 8999-GET-DATE-TIME    THRU 8999-GDT-EXIT.
+           MOVE WS-SYSTEM-DATE-TIME2 TO RSLTLOG-DATE-TIME.
+
+           PERFORM 9003-WRITE-CATALOG-RESULTS  THRU 9003-WRITE-EXIT.
+
+       8000-LOG-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  GET DATE AND TIME STAMP
+      *****************************************************************
+       8999-GET-DATE-TIME.
+
+           CALL WS-DTS-PGM2  USING WS-SYSTEM-DATE-TIME2.
+
+       8999-GDT-EXIT.
+           EXIT.
+
+
+       COPY ZMPLTSUBR  IN COPYLIB.
+
+      *----------------------------------------------------------------
+      *
+      *          ALL DATABASE FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      **  START CATALOG IN FILE
+      *****************************************************************
+       9000-START-CATALOG-IN.
+
+           INITIALIZE CATALOG-REC-IN.
+
+           MOVE WS-PLANT-CODE   TO ARIBACIF-PLANT.
+           MOVE LOW-VALUES      TO ARIBACIF-VENDOR-CODE.
+
+           START CATALOG-FILE-IN
+                 KEY IS NOT < EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9000-START-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ CATALOG IN NEXT RECORD
+      *****************************************************************
+       9000-READN-CATALOG-IN.
+
+           READ CATALOG-FILE-IN  NEXT RECORD
+           END-READ.
+
+           IF  FS-END-OF-FILE
+               GO TO 9000-READN-EXIT
+           END-IF.
+
+
+DCR02      MOVE ARIBACIF-VENDOR-CODE TO WS-INP-VENDOR-CODE.
+DCR02 **---------------------------------------------------------------
+DCR02 **-- CHECK FOR SAP VENDOR NBR AND CONVERT TO 10 CHAR CSIS FORMAT
+DCR02 **-- CONVERT ==> (IE: 0000123456 ===> S123456000)
+DCR02 **--                  ---SAP----      ---CSIS---)
+DCR02 **---------------------------------------------------------------
+
+DCR02      MOVE SPACE             TO WS-CNV-VENDOR-CODE.
+
+DCR02      IF  ARIBACIF-VENDOR-CODE(1:4) = "0000"
+DCR02          MOVE "S"           TO WS-CNV-VENDOR-CODE(1:1)
+DCR02          MOVE ARIBACIF-VENDOR-CODE(5:6)
+DCR02                             TO WS-CNV-VENDOR-CODE(2:6)
+DCR02          MOVE "000"         TO WS-CNV-VENDOR-CODE(8:3)
+DCR02          MOVE WS-CNV-VENDOR-CODE  TO ARIBACIF-VENDOR-CODE
+DCR02       END-IF.
+
+
+       9000-READN-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  DELETE CATALOG INPUT RECORD
+      *****************************************************************
+       9000-DELET-CATALOG-IN.
+
+           DELETE CATALOG-FILE-IN
+           END-DELETE.
+
+       9000-DELET-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  READK CATALOG FILE OUT
+      *****************************************************************
+       9001-READK-CATALOG-OUT.
+
+           INITIALIZE BUF-DARIBCAT2.
+
+           MOVE ARIBACIF-MANUFACT-NAME TO ARIBACAT2-MANUFACT-NAME.
+           MOVE ARIBACIF-MANUFACT-PARTNO TO ARIBACAT2-MANUFACT-PARTNO.
+           MOVE ARIBACIF-VENDOR-CODE   TO ARIBACAT2-VENDOR-CODE.
+           MOVE ARIBACIF-VENDOR-PARTNO TO ARIBACAT2-VENDOR-PARTNO.
+           MOVE ARIBACIF-VENDOR-AUXID  TO ARIBACAT2-VENDOR-AUXID.
+
+           READ   CATALOG-FILE-READK
+           END-READ.
+
+           IF  FS-RECORD-NOT-FOUND
+               INITIALIZE BUF-DARIBCAT2
+           END-IF.
+
+       9001-READK-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  WRITE CATALOG FILE OUT
+      *****************************************************************
+       9001-WRITE-CATALOG-OUT.
+
+           WRITE  CATALOG-REC-OUT
+           END-WRITE.
+
+       9001-WRITE-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ STOREROOM BY KEY
+      *****************************************************************
+       9002-READK-STOREROOM.
+
+           INITIALIZE STOREROOM-REC.
+
+           MOVE  ARIBACIF-CORP-CODE TO CORP-CODE.
+
+           READ STOREROOM-FILE
+           END-READ.
+
+       9002-READK-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  WRITE RESULTS LOGS
+      *****************************************************************
+       9003-WRITE-CATALOG-RESULTS.
+
+           MOVE  BUF-RSLTLOG        TO CATALOG-RESULT-REC
+                                       CATALOG-RESULT-REC2.
+
+           WRITE  CATALOG-RESULT-REC
+           END-WRITE.
+
+           WRITE  CATALOG-RESULT-REC2
+           END-WRITE.
+
+       9003-WRITE-EXIT.
+           EXIT.
+
+      **************************************************************   ***
+      *            E N D   O F   S O U R C E   C O D E
+      **************************************************************   ***

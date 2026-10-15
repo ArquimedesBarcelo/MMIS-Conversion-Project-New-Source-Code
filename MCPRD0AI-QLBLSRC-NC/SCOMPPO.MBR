@@ -1,0 +1,621 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.  SCOMPPO.
+000500 AUTHOR.      KURT MOVSESIAN/JIM COFFMAN(MAINTAINER).
+000800
+000900******************************************************
+001000*                                                    *
+001100*D  S C O M P P O                                    *
+001200*                                                    *
+001300*D  THIS SUB PROGRAM ADJUSTS ALL DIFFERENCES IN      *
+001400*D  QUANTITY ORDERED AND QUANTITY DELIVERED SUCH     *
+001500*D  QUANTITY ORDERED EQUALS QUANTITY DELIVERED       *
+001600*D  SO THAT THE PO WILL BE SHOWN AS COMPLETED        *
+001700*                                                    *
+001800******************************************************
+001900*   N O T E    T H I S   S U B R O U T I N E   I S   *
+002000*         C A L L E D    B Y :                       *
+002100*      1. SPOMOD                                     *
+002200*      2. TPOPRTSL                                   *
+002300******************************************************
+      *
+      * 04/03/1995    CA ZUBEK    REQ. # 95-009
+      *   ADDED CALL TO 'SPOTRACK' TO WRITE TO THE AUDIT
+      *   TRAIL FILE WHEN THE ORDER QUANTITY IS CHANGED.
+      *
+      * 07/10/1995    CA YODER
+      *   ADDED PO ITEM NUMBER FIELD TO 'SPOTRACK' PARAMETERS.
+      *
+      * 07/22/1996    CA YODER
+      *   MODIFIED FOR CENTURY DATABASE CHANGES.
+      *
+      * 05/21/98  CA YODER
+      *   ADDED CALL TO "SCALCBGT" TO CALCULATE THE CORRECT
+      *   BUDGET AMOUNT FOR THE PO.  DECATUR FOUND THAT THE
+      *   TAX WAS NOT BEING INCLUDED IN THE CALCULATION.
+      *
+      ******************************************************
+002400
+004800
+004900 ENVIRONMENT DIVISION.
+005000 CONFIGURATION SECTION.
+005100 SOURCE-COMPUTER.  HP-3000.
+005200 OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+009100
+009200 INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2502
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQD-I
+                  ASSIGN TO DATABASE-MCFLCS2102
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+
+           SELECT DPORECD-O
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2502.
+
+       FD  DREQD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2102.
+
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  DPORECD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+005300
+       77  INV-RCDS-CTR            PIC S9(8)  VALUE ZEROS.
+       77  ITM-QTY-ORD-SAVE        PIC S9(8)  VALUE ZEROS COMP-3.
+       77  ITM-NET-PAID-AMT        PIC S9(12) VALUE ZEROS COMP-3.
+006000 77  ORD-QTY-SAVE            PIC S9(8)  VALUE ZEROS COMP-3.
+006100 77  PO-STR-PRICE            PIC S9(11)V9(4) COMP-3 VALUE ZEROS.
+006200 77  OLD-BUDGET-AMT          PIC S9(11) COMP-3 VALUE ZEROS.
+006300 77  SAVE-REQ-NO             PIC X(6)  VALUE SPACES.
+006400
+       01  CURR-DATE-WA.
+           05  C-D-YY              PIC 99.
+           05  C-D-MM              PIC 99.
+           05  C-D-DD              PIC 99.
+006500
+006600**************************************************************
+006700**************************************************************
+006800**                                                          **
+006900**                DATABASE I/O BUFFER AREA                  **
+007000**                                                          **
+007100**************************************************************
+007200**************************************************************
+007300
+007400 COPY MSTORERM IN COPYLIB.
+007500
+       COPY DINVRCD  IN COPYLIB.
+
+007600 COPY DPOITEM  IN COPYLIB.
+007700
+007800 COPY DREQD    IN COPYLIB.
+007900
+008000
+008100*********************
+008200*                   *
+008300*   DATA SET NAMES  *
+008400*                   *
+008500*********************
+008600
+008700 01  DSET-NAMES.
+008800     05  DSET-MSTORERM          PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-DINVRCD           PIC X(16)  VALUE "DINVRCD;".
+008900     05  DSET-DREQD             PIC X(16)  VALUE "DREQD;".
+009000     05  DSET-DPOITEM           PIC X(16)  VALUE "DPOITEM;".
+009300
+009400 COPY DBSTAT IN COPYLIB.
+009500
+009600 01 ITEMS-LISTING.
+009700     05  ALL-ITEMS              PIC XX    VALUE "@;".
+009800     05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+009900
+010000 01 ARG-VALUES.
+010100     05  CODE-ARG               PIC X(8)  VALUE SPACES.
+010200     05  PO-ARG                 PIC X(14) VALUE SPACES.
+010500
+010600************************************
+010700*
+010800*  PARAMETERS FOR CALLING
+010900*  STC320.SOURCE
+011000*
+011100************************************
+011200
+011300 COPY STC320 IN COPYLIB.
+011400
+034400************************************
+034500*
+034600*  PARAMETERS FOR CALLING
+034700*  SEDIPOLG.SOURCE
+034800*
+034900************************************
+035000
+       COPY SEDIPOLG IN COPYLIB.
+
+034400************************************
+034500*
+034600*  PARAMETERS FOR CALLING
+034700*  SEDIVNCK.SOURCE
+034800*
+034900************************************
+035000
+       COPY SEDIVNCK IN COPYLIB.
+
+011500************************************
+011600*
+011700*  PARAMETERS FOR CALLING
+011800*  SMODBDGT.SOURCE
+011900*
+012000************************************
+012100
+012200 COPY SMODBDGT IN COPYLIB.
+012300
+       COPY SCALCBGT IN COPYLIB.
+012400
+012500 COPY TBLOWUP IN COPYLIB.
+012600
+012700 COPY VIEWDUM IN COPYLIB.
+012800
+       01  PO-TRACK-DATA.
+           COPY DPOTRACK IN COPYLIB.
+012900
+013000 LINKAGE SECTION.
+013100
+013200 01  BASE             PIC X(10).
+013300
+013400 01  BUILD-PO-SEARCH.
+013500     05  PO-PREFIX           PIC X.
+013600     05  PO-NO               PIC X(7).
+013700     05  PO-REL              PIC X(3).
+013800     05  PO-RCV              PIC X(3).
+013900
+014000 COPY DPORECD IN COPYLIB.
+014100
+014200 01  SWITCH-PARAMETERS.
+014300     05  FATAL-ERR-SW            PIC X.
+014400     05  COMPANY-SAVE            PIC X(3).
+014500
+014600 COPY LANGSUB IN COPYLIB.
+014700
+014800 PROCEDURE DIVISION USING  BASE,
+014900                           BUILD-PO-SEARCH,
+015000                           BUF-DPORECD,
+015100                           SWITCH-PARAMETERS,
+015200                           LANGUAGE-PARMS.
+015300
+015400 COMPLETE-PO SECTION 10.
+       BEGIN-HERE.
+           OPEN INPUT MSTORERM-I, DINVRCD-I, DREQD-I.
+           OPEN I-O DPOITEM-O, DPORECD-O.
+           MOVE SPACES           TO  SEDIVNCK-PARMS.
+           ACCEPT CURR-DATE-WA FROM DATE.
+
+015600     PERFORM 62-COMPLETE-ITEMS  THRU  62-CI-X.
+           PERFORM 63-GET-DINVRCD-NET THRU  63-GDN-X.
+           IF INV-RCDS-CTR > 0
+               PERFORM 64-UPDATE-BGT-AMT  THRU  64-UBA-X.
+015700
+           CLOSE MSTORERM-I, DINVRCD-I, DREQD-I, DPOITEM-O, DPORECD-O.
+015800     GOBACK.
+015900
+016000
+016100******************************************************
+016200**                                                  **
+016300**   BLOWUP ROUTINE                                 **
+016400**                                                  **
+016500******************************************************
+016600
+016700 2-BLOWUP.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS TO COND-WORD.
+016800     MOVE "SCOMPPO"  TO  BU-PGM-NAME.
+016900     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+017000         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+017100             BU-DISPLAY-FLDS.
+017200
+017300
+017400 62-COMPLETE-ITEMS.
+017500     MOVE BUILD-PO-SEARCH         TO  PO-ARG,
+                                            SEDIVNCK-PO-NUMBER,
+017600                                      SMODBDGT-PO-NUMBER,
+017700                                      BU-DISPLAY-FLD (1).
+           CALL "SEDIVNCK" USING BASE,
+                                 SEDIVNCK-PARMS.
+017800     MOVE "Y"                     TO  SMODBDGT-GET-DPORECD-SW.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-O.
+           START DPOITEM-O KEY = PORCVNO OF DPOITEM-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 62-CI-X
+               ELSE
+018200             MOVE "FIND DPOITEM * 62-CI" TO BU-DISPLAY-MSG
+018300             GO TO 2-BLOWUP.
+018400
+018500 62-GET-LOOP.
+           READ DPOITEM-O NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 62-CI-X
+               ELSE
+                   MOVE "GET DPOITEM * 62-GL" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+           IF PORCVNO OF DPOITEM-REC-O NOT = PO-ARG
+               GO TO 62-CI-X.
+019400
+           MOVE ITM-QTY-ORD TO ITM-QTY-ORD-SAVE.
+019500     IF ITM-QTY-DLVR < ITM-QTY-ORD
+019600         IF ITM-COMPLETE-FLAG = SPACES
+019700             PERFORM 621-MODIFY-ITEM-QTY  THRU  621-MIQ-X.
+019800
+019900     GO TO 62-GET-LOOP.
+020000
+020100 62-CI-X.
+020200     EXIT.
+020300
+020400
+020500 621-MODIFY-ITEM-QTY.
+020600     IF ITM-CORP-CODE = "NON-STR"
+020700         MOVE ITM-UNIT-PRICE      TO  PO-STR-PRICE
+020800         GO TO 621-COMPUTE-OLD-BUDGET.
+020900
+021000     MOVE ITM-CORP-CODE     TO  CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+021400         MOVE "GET MSTORERM * 621-MIQ" TO BU-DISPLAY-MSG
+021500         GO TO 2-BLOWUP.
+021600
+021700**************************************
+021800*                                    *
+021900*  COMPUTE OLD BUDGET AMOUNT FOR THE *
+022000*   TC 322                           *
+022100*                                    *
+022200**************************************
+022300
+022400     IF ITM-UM = STR-UM
+022500         MOVE ITM-QTY-ORD           TO  ITM-QTY-ORD
+022600       ELSE
+022700     IF ITM-UM = STR-UM1
+022800         MULTIPLY ITM-QTY-ORD       BY  STR-UM1-CF
+022900                                 GIVING ITM-QTY-ORD ROUNDED
+023000       ELSE
+023100     IF ITM-UM = STR-UM2
+023200         MULTIPLY ITM-QTY-ORD       BY  STR-UM2-CF
+023300                                 GIVING ITM-QTY-ORD ROUNDED.
+023400
+023500     MOVE ZEROS                   TO  PO-STR-PRICE
+023600     IF ITM-PRICE-UM = STR-UM
+023700         MOVE ITM-UNIT-PRICE      TO  PO-STR-PRICE
+023800     ELSE
+023900     IF ITM-PRICE-UM = STR-UM1
+024000         DIVIDE ITM-UNIT-PRICE    BY  STR-UM1-CF
+024100                                  GIVING PO-STR-PRICE ROUNDED
+024200     ELSE
+024300     IF ITM-PRICE-UM = STR-UM2
+024400         DIVIDE ITM-UNIT-PRICE    BY  STR-UM2-CF
+024500                                  GIVING PO-STR-PRICE ROUNDED.
+024600
+024700 621-COMPUTE-OLD-BUDGET.
+024800**** MULTIPLY ITM-QTY-ORD         BY  PO-STR-PRICE
+024900****                             GIVING OLD-BUDGET-AMT ROUNDED.
+
+           MOVE ITM-QTY-ORD      TO  SCALCBGT-QTY.
+           MOVE PO-STR-PRICE     TO  SCALCBGT-PRICE.
+           MOVE ITM-TAX-CODE     TO  SCALCBGT-TAX-CODE.
+           MOVE 0                TO  SCALCBGT-BUDGET.
+           CALL "SCALCBGT"  USING  SCALCBGT-PARMS.
+           MOVE SCALCBGT-BUDGET  TO  OLD-BUDGET-AMT.
+
+025000
+025100 621-UPDATE-DPOITEM.
+026200     MOVE ITM-QTY-DLVR      TO ITM-QTY-ORD.
+           REWRITE DPOITEM-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+026600         MOVE "UPDATE DPOITEM * 621-UD" TO BU-DISPLAY-MSG
+026700         GO TO 2-BLOWUP.
+026800
+      ***********************************************************
+      **  CALL 'SPOTRACK' TO WRITE TO THE AUDIT TRAIL FILE.     *
+      ***********************************************************
+           MOVE ITM-QTY-ORD-SAVE  TO OLD-ITEM-QTY.
+           MOVE ITM-QTY-ORD       TO NEW-ITEM-QTY.
+           MOVE ITM-UNIT-PRICE    TO OLD-ITEM-PRICE
+                                     NEW-ITEM-PRICE.
+           MOVE ITM-PO-RCV-NO     TO PO-NUM-TRACK.
+           MOVE ITM-NUMBER        TO PO-ITEM-NUM.
+           CALL "SPOTRACK" USING PO-TRACK-DATA.
+
+027500     PERFORM 66-CHECK-FOR-REQ  THRU  66-CFR-X.
+027600
+027700     PERFORM 622-CALL-STC320  THRU  622-CALL-STC320-X.
+027800
+027900***********************************************************
+028000**   CALL 'SMODBDGT' TO UPDATE THE TOTAL BUDGET AMOUNT IN
+028100**   THE HEADER 'DPORECD' TO REFLECT THE MODIFICATION TO
+028200**   THE ITEM.
+028300***********************************************************
+028400
+028500     IF STC320-BUDGET-AMT-NET-CHG = 0
+028600         NEXT SENTENCE
+028700     ELSE
+028800         MOVE STC320-BUDGET-AMT-NET-CHG
+028900                                  TO SMODBDGT-BUDGET-NET-CHG
+029000         CALL "SMODBDGT" USING BASE,
+029100                               SMODBDGT-PARMS,
+029200                               BUF-DPORECD,
+029300                               STATUS-AREA,
+029400                               BU-DISPLAY-MSG,
+029500                               BU-DISPLAY-FLDS
+029600         IF BU-DISPLAY-MSG-1 NOT = SPACES
+029700             GO TO 2-BLOWUP.
+029800
+029900 621-MIQ-X.
+030000     EXIT.
+030100
+030200***************************
+030300**  CALL STC320 TO CUT
+030400**  TCs '321' AND '322'
+030500***************************
+030600
+030700 622-CALL-STC320.
+030800     MOVE SPACES                  TO  STC320-PARMS.
+030900     MOVE COMPANY-SAVE            TO  STC320-COMPANY-SAVE.
+031000     MOVE "21"                    TO  STC320-ITEM-TC-ID.
+031100     MOVE BUILD-PO-SEARCH         TO  STC320-PO-NUM.
+031200     MOVE ITM-NUMBER              TO  STC320-ITEM.
+031300     IF ITM-CORP-CODE = "NON-STR"
+031400         MOVE "NC"                TO  STC320-CODE
+031500     ELSE
+031600         MOVE ITM-CORP-CODE       TO  STC320-CODE.
+031700     MOVE ZEROS                   TO  ORD-QTY-SAVE.
+031800     IF ITM-CORP-CODE = "NON-STR"
+031900         MOVE ITM-QTY-ORD         TO  STC320-QTY
+032000         MOVE ITM-UM              TO  STC320-QTY-UM
+032100     ELSE
+032200         IF ITM-UM = STR-UM
+032300             ADD ITM-QTY-ORD      TO  ORD-QTY-SAVE ROUNDED
+032400             MOVE ORD-QTY-SAVE    TO  STC320-QTY
+032500             MOVE ITM-UM          TO  STC320-QTY-UM
+032600         ELSE
+032700         IF ITM-UM = STR-UM1
+032800             MULTIPLY ITM-QTY-ORD BY  STR-UM1-CF
+032900                               GIVING ORD-QTY-SAVE ROUNDED
+033000             MOVE ORD-QTY-SAVE    TO  STC320-QTY
+033100             MOVE STR-UM          TO  STC320-QTY-UM
+033200         ELSE
+033300        IF ITM-UM = STR-UM2
+033400             MULTIPLY ITM-QTY-ORD BY  STR-UM2-CF
+033500                               GIVING ORD-QTY-SAVE ROUNDED
+033600             MOVE ORD-QTY-SAVE    TO  STC320-QTY
+033700             MOVE STR-UM          TO  STC320-QTY-UM
+033800         ELSE
+033900             MOVE ZEROS           TO  STC320-QTY
+034000             MOVE STR-UM          TO  STC320-QTY-UM.
+034100
+034200     IF ITM-CORP-CODE = "NON-STR"
+034300         MOVE ITM-UNIT-PRICE      TO  STC320-PRICE
+034400         MOVE ITM-PRICE-UM        TO  STC320-PRICE-UM
+034500     ELSE
+034600         IF ITM-PRICE-UM = STR-UM
+034700             MOVE ITM-UNIT-PRICE  TO  STC320-PRICE
+034800             MOVE ITM-PRICE-UM    TO  STC320-PRICE-UM
+034900         ELSE
+035000         IF ITM-PRICE-UM = STR-UM1
+035100             DIVIDE ITM-UNIT-PRICE  BY  STR-UM1-CF
+035200                                   GIVING STC320-PRICE ROUNDED
+035300             MOVE STR-UM          TO  STC320-PRICE-UM
+035400         ELSE
+035500         IF ITM-PRICE-UM = STR-UM2
+035600             DIVIDE ITM-UNIT-PRICE  BY  STR-UM2-CF
+035700                                   GIVING STC320-PRICE ROUNDED
+035800             MOVE STR-UM          TO  STC320-PRICE-UM
+035900         ELSE
+036000             MOVE ZEROS           TO  STC320-PRICE
+036100             MOVE STR-UM          TO  STC320-PRICE-UM.
+036200     MOVE SAVE-REQ-NO             TO  STC320-REQ-NO.
+036300     MOVE ITM-TAX-CODE            TO  STC320-TAX-CODE.
+036400     MOVE OLD-BUDGET-AMT          TO  STC320-OLD-BUDGET-AMT.
+036500     MOVE ITM-CLASS               TO  STC320-SUB.
+036600     MOVE ITM-SUB-DETL            TO  STC320-SUBD.
+036700     MOVE ITM-ADDL-DATA           TO  STC320-ADDTL-DATA.
+036800     MOVE PO-BUDGET-NUMBER        TO  STC320-BUDGET-NO.
+036900     MOVE PO-CURRENCY-CODE        TO  STC320-CUR-CODE.
+037000     CALL "STC320" USING BASE,
+037100                         STC320-PARMS,
+037200                         STATUS-AREA,
+037300                         BU-DISPLAY-MSG,
+037400                         BU-DISPLAY-FLDS.
+037500     IF BU-DISPLAY-MSG-1  NOT = SPACES
+037600         GO TO 2-BLOWUP.
+037700
+           IF SEDIVNCK-EDI-IND = "Y"
+               IF ITM-QTY-ORD = ITM-QTY-ORD-SAVE
+                   NEXT SENTENCE
+               ELSE
+               MOVE SPACES              TO  SEDIPOLG-PARMS
+               MOVE BUILD-PO-SEARCH     TO  PO-NUMBER-EDI
+               MOVE SEDIVNCK-VEN-CODE   TO  VENDOR-CODE-EDI
+               MOVE "X"                 TO  FLAG-EDI-M
+               MOVE ITM-NUMBER          TO  PO-ITEM-NO-EDI
+               MOVE "SCOMPPO"           TO  CALLING-PGM-EDI
+               CALL "SEDIPOLG" USING BASE,
+                                     SEDIPOLG-PARMS,
+                                     LANGUAGE-PARMS.
+
+037800 622-CALL-STC320-X.
+037900     EXIT.
+038000
+       63-GET-DINVRCD-NET.
+           MOVE 0 TO INV-RCDS-CTR.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD = 99 GO TO 63-GDN-X.
+       63-GDN-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD NOT = 0 GO TO 63-GDN-X.
+           ADD INV-NET-DUE-VENDOR TO ITM-NET-PAID-AMT.
+           ADD 1 TO INV-RCDS-CTR.
+           GO TO 63-GDN-LOOP.
+       63-GDN-X.    EXIT.
+
+       64-UPDATE-BGT-AMT.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-O.
+           START DPORECD-O KEY = PORCVNO OF DPORECD-REC-O
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "FIND DPORECD *63-BD"  TO  BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           MOVE 0 TO COND-WORD.
+           READ DPORECD-O NEXT INTO BUF-DPORECD AT END
+               MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPORECD-REC-O NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+244600     IF COND-WORD NOT = 0
+244700         MOVE "GET DPORECD *63-BD"  TO  BU-DISPLAY-MSG
+244800         GO TO 2-BLOWUP.
+           MOVE ITM-NET-PAID-AMT TO PO-BUDGET-AMT.
+      *********************************************************
+      *    ADDED THE FOLLOWING CHECK FOR PO-BUDGET-AMT = 0    *
+      *    3/29/95 WHEN IT WAS DISCOVERED THAT SOME P.O'S     *
+      *    WERE REMAINING IN HISTORY DUE TO NO LAST PAYMENT   *
+      *    DATE (PLANT USING CSIS INVOICING) WAS LOADED FOR   *
+      *    THOSE P.O'S THAT WERE BEING CANCELLED AND NO       *
+      *    ITEM HAD EVER BEEN INVOICED ON THE P.O.            *
+      *********************************************************
+           IF PO-BUDGET-AMT = 0
+               IF PO-LAST-PAYMENT = "    "
+                   MOVE C-D-YY   TO PO-LAST-PAYMENT-YEAR
+                   MOVE C-D-MM   TO PO-LAST-PAYMENT-MONTH
+      *------------------ ACCOUNT FOR CENTURY.
+                   IF C-D-YY > 70
+                       MOVE 19   TO PO-LAST-PAYMENT-CC
+                   ELSE
+                       MOVE 20   TO PO-LAST-PAYMENT-CC.
+           MOVE 0 TO COND-WORD.
+           REWRITE DPORECD-REC-O FROM BUF-DPORECD
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+248800     IF COND-WORD NOT = 0
+248900         MOVE "UPDATE DPORECD * 63-BD"  TO  BU-DISPLAY-MSG
+249000         GO TO 2-BLOWUP.
+           MOVE ZEROES TO ITM-NET-PAID-AMT.
+       64-UBA-X.    EXIT.
+038100
+038200 66-CHECK-FOR-REQ.
+038300     MOVE SPACES                  TO  SAVE-REQ-NO.
+           MOVE PO-ARG TO PORCVNO OF DREQD-REC-I.
+           START DREQD-I KEY = PORCVNO OF DREQD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 66-CFR-X
+               ELSE
+038700             MOVE "FIND DREQD * 66-CFR" TO BU-DISPLAY-MSG
+038800             GO TO 2-BLOWUP.
+038900
+039000 66-GET-DREQD.
+           READ DREQD-I NEXT INTO BUF-DREQD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 66-CFR-X
+               ELSE
+039700             MOVE "GET DREQD * 66-GD" TO BU-DISPLAY-MSG
+039800             GO TO 2-BLOWUP.
+           IF PORCVNO OF DREQD-REC-I NOT = PO-ARG
+               GO TO 66-CFR-X.
+039900
+040000     IF DREQD-PO-ITM-NO  =  ITM-NUMBER
+040100         MOVE DREQD-REQ-NUMBER  TO  SAVE-REQ-NO
+040200     ELSE
+040300         GO TO 66-GET-DREQD.
+040400
+040500 66-CFR-X.
+040600     EXIT.

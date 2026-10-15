@@ -1,0 +1,1707 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TSCHEDWO.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+      *C---------------------------------------------------------------
+      *C 02/25/93 JSB REQ #6306
+      *C     ADDED "PR" AS A NEW WO STATUS FOR PRE-RELEASE.
+      *C---------------------------------------------------------------
+      *C  01/04/2010  CA YODER  2010-00142425-001
+      *C     UPDATE LOGIC ASSIGNING WORKORDER LETTER SUFFIX.
+      *C---------------------------------------------------------------
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZSCHDULE-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+           SELECT WO-CRAFTS-REQD
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN       TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS ARG-NO
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-SCHEDULE
+                  ASSIGN       TO DATABASE-MCFLMM2302
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT OUT-FILE
+                  ASSIGN       TO DATABASE-OUTSCHDS
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS ACT-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT SORT-FILE
+                  ASSIGN       TO DISK-SORTFILE.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       FD  WO-CRAFTS-REQD
+           LABEL RECORDS       ARE STANDARD
+           DATA RECORD         IS WCRFREC.
+       01  WCRFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS       ARE STANDARD
+           DATA RECORD         IS WLNUREC.
+       01  WLNUREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  WO-PLANNED
+           LABEL RECORDS       ARE STANDARD
+           DATA RECORD         IS WPFREC.
+       01  WPFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  WO-SCHEDULE
+           LABEL RECORDS       ARE STANDARD
+           DATA RECORD         IS WSFREC.
+       01  WSFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM2302.
+
+       FD  OUT-FILE RECORD     CONTAINS 48 CHARACTERS
+           LABEL RECORDS       ARE OMITTED
+           DATA RECORD         IS OUT-REC.
+       01  OUT-REC.
+           05  OUT-DATA.
+               10  OUT-DATE.
+                   15  OUT-CC  PIC XX.
+                   15  OUT-YY  PIC XX.
+                   15  OUT-MM  PIC XX.
+                   15  OUT-DD  PIC XX.
+               10  OUT-SHIFT   PIC X.
+               10  OUT-QTY     PIC XX.
+               10  OUT-CRAFT   PIC XX.
+               10  OUT-HRS.
+                   15  OUT-HM  PIC 999V9.
+               10  OUT-REM     PIC X(30).
+               10  OUT-SHIFT-ID PIC X.
+
+       SD  SORT-FILE RECORD    CONTAINS 48 CHARACTERS
+           DATA RECORD         IS SORT-REC.
+       01  SORT-REC.
+           05  SORT-DATE.
+               10  SORT-CC     PIC XX.
+               10  SORT-YY     PIC XX.
+               10  SORT-MM     PIC XX.
+               10  SORT-DD     PIC XX.
+           05  SORT-SHIFT      PIC X.
+           05  SORT-QTY        PIC XX.
+           05  SORT-CRAFT      PIC XX.
+           05  SORT-HRS.
+               10  SORT-HM     PIC 999V9.
+           05  SORT-REM        PIC X(30).
+           05  SORT-SHIFT-ID   PIC X.
+
+       WORKING-STORAGE SECTION.
+       77  ACT-KEY             PIC 9(9).
+       77  ADD-SW              PIC 9  VALUE 0.
+       77  ARG-NO              PIC 9(9).
+       77  CRAFT-BUF           PIC X(02).
+       77  EOF-SW              PIC 9  VALUE 0.
+       77  FIELD-NUMBER        PIC S9(4) COMP-4.
+       77  MAX-KEY             PIC 9(9).
+       77  RTN-CODE            PIC X.
+       77  WO-HOLD             PIC X(25).
+       77  WO-YR-HOLD          PIC X  VALUE SPACE.
+       77  YEAR-DISP           PIC X  VALUE SPACE.
+       77  SCREEN-SAVE         PIC X(10).
+       77  TRUE-VAL            PIC 1 VALUE B"1".
+       77  ERROR-BUFFER        PIC X(80).
+      *---- 01/04/2010:  ADDED PARAMETER FOR CMMISYR.
+       77  MMIS-LETTER                PIC X.
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TSCHEDWO".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A.
+                   15  FILLER      PIC X(15) VALUE "ALLOWS USER TO ".
+                   15  FILLER      PIC X(17) VALUE "ADD, MODIFY, AND ".
+                   15  FILLER      PIC X(17) VALUE "DELETE RECORDS IN".
+                   15  FILLER      PIC X(11) VALUE " PLANNED  ".
+               10  PROG-DESC-B.
+                   15  FILLER      PIC X(15) VALUE "W/O SCHEDULING ".
+                   15  FILLER      PIC X(45) VALUE "SYSTEM ".
+               10  PROG-FUNCTION.
+                   15  FILLER      PIC X(11) VALUE "ELECTRONIC ".
+                   15  FILLER      PIC X(13) VALUE "NOTEBOOK FOR ".
+                   15  FILLER      PIC X(17) VALUE "PLANNERS TO KEEP ".
+                   15  FILLER      PIC X(09) VALUE "TRACK OF ".
+                   15  FILLER      PIC X(10) VALUE "SCHEDULES ".
+           05  PASSWORD-FLAG       PIC X.
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X.
+           05  FILE-STAT-2     PIC X.
+
+       01  CUR-DATE-WA.
+           02  CUR-DATE-YY.
+               03  FILLER      PIC X.
+               03  CUR-DATE-YR PIC X.
+           02  CUR-DATE-MM     PIC XX.
+           02  CUR-DATE-DD     PIC XX.
+
+       01  CURR-DATE-99.
+           05  CURR-CT-99      PIC 99.
+           05  CURR-YR-99      PIC 99.
+           05  CURR-MO-99      PIC 99.
+           05  CURR-DY-99      PIC 99.
+
+       01  DATE-COMPARE.
+           05  DATE-99-CC      PIC 99.
+           05  DATE-99-YY      PIC 99.
+           05  DATE-99-MM      PIC 99.
+           05  DATE-99-DD      PIC 99.
+
+       01  DATE-HOLD.
+           05  DH-MM           PIC XX.
+           05  DH-DD           PIC XX.
+           05  DH-YY           PIC XX.
+
+       01  SCH-DATE-99.
+           05  SCH-DATE-99-CC  PIC 99.
+           05  SCH-DATE-99-YY  PIC 99.
+           05  SCH-DATE-99-MM  PIC 99.
+           05  SCH-DATE-99-DD  PIC 99.
+
+       01  HOLD-BUFFER.
+           05  H-LINE-1.
+               10  H-1-DATE.
+                   15  H-1-MM  PIC XX.
+                   15  H-1-DD  PIC XX.
+                   15  H-1-YY  PIC XX.
+               10  H-1-SHIFT   PIC X.
+               10  H-1-QTY     PIC XX.
+               10  H-1-CRAFT   PIC XX.
+               10  H-1-HRS.
+                   15  H-1-HM  PIC 999V9.
+               10  H-1-REM     PIC X(30).
+           05  H-LINE-2.
+               10  H-2-DATE.
+                   15  H-2-MM  PIC XX.
+                   15  H-2-DD  PIC XX.
+                   15  H-2-YY  PIC XX.
+               10  H-2-SHIFT   PIC X.
+               10  H-2-QTY     PIC XX.
+               10  H-2-CRAFT   PIC XX.
+               10  H-2-HRS.
+                   15  H-2-HM  PIC 999V9.
+               10  H-2-REM     PIC X(30).
+           05  H-LINE-3.
+               10  H-3-DATE.
+                   15  H-3-MM  PIC XX.
+                   15  H-3-DD  PIC XX.
+                   15  H-3-YY  PIC XX.
+               10  H-3-SHIFT   PIC X.
+               10  H-3-QTY     PIC XX.
+               10  H-3-CRAFT   PIC XX.
+               10  H-3-HRS.
+                   15  H-3-HM  PIC 999V9.
+               10  H-3-REM     PIC X(30).
+           05  H-LINE-4.
+               10  H-4-DATE.
+                   15  H-4-MM  PIC XX.
+                   15  H-4-DD  PIC XX.
+                   15  H-4-YY  PIC XX.
+               10  H-4-SHIFT   PIC X.
+               10  H-4-QTY     PIC XX.
+               10  H-4-CRAFT   PIC XX.
+               10  H-4-HRS.
+                   15  H-4-HM  PIC 999V9.
+               10  H-4-REM     PIC X(30).
+           05  H-LINE-5.
+               10  H-5-DATE.
+                   15  H-5-MM  PIC XX.
+                   15  H-5-DD  PIC XX.
+                   15  H-5-YY  PIC XX.
+               10  H-5-SHIFT   PIC X.
+               10  H-5-QTY     PIC XX.
+               10  H-5-CRAFT   PIC XX.
+               10  H-5-HRS.
+                   15  H-5-HM  PIC 999V9.
+               10  H-5-REM     PIC X(30).
+           05  H-LINE-6.
+               10  H-6-DATE.
+                   15  H-6-MM  PIC XX.
+                   15  H-6-DD  PIC XX.
+                   15  H-6-YY  PIC XX.
+               10  H-6-SHIFT   PIC X.
+               10  H-6-QTY     PIC XX.
+               10  H-6-CRAFT   PIC XX.
+               10  H-6-HRS.
+                   15  H-6-HM  PIC 999V9.
+               10  H-6-REM     PIC X(30).
+
+       01  LINE-UP.
+           05  S-UP-DATE.
+               10  S-UP-MM     PIC XX.
+               10  S-UP-DD     PIC XX.
+               10  S-UP-YY     PIC XX.
+           05  S-UP-SHIFT      PIC X.
+           05  S-UP-QTY.
+               10  S-UP-QTY1   PIC X.
+               10  S-UP-QTY2   PIC X.
+           05  S-UP-CRAFT      PIC XX.
+           05  S-UP-HRS.
+               10  S-UP-HM     PIC 999V9.
+           05  S-UP-REM.
+               10  S-UP-REM-2  PIC X(02).
+               10  S-UP-REM-28 PIC X(28).
+
+       01  LINE-UP2.
+           05  S-UP2-DATE.
+               10  S-UP2-MM     PIC XX.
+               10  S-UP2-DD     PIC XX.
+               10  S-UP2-YY     PIC XX.
+           05  S-UP2-SHIFT      PIC X.
+           05  S-UP2-QTY.
+               10  S-UP2-QTY1   PIC X.
+               10  S-UP2-QTY2   PIC X.
+           05  S-UP2-CRAFT      PIC XX.
+           05  S-UP2-HRS.
+               10  S-UP2-HM     PIC 999V9.
+           05  S-UP2-REM        PIC X(30).
+
+       01  S-UP-REM-HOLD.
+           05  S-UP-REM-HOLD-1 PIC X(30).
+           05  S-UP-REM-HOLD-2 PIC X(30).
+
+       01  S-UP-WA.
+           05  S-UP-H.
+               10  S-UP-H1     PIC X.
+               10  S-UP-H2     PIC X.
+               10  S-UP-H3     PIC X.
+           05  S-UP-T          PIC X.
+
+       01  SCREEN-DATA.
+           05  WO-DATA.
+               10  S-WO-NUM.
+                   15  WO-NUM-S PIC X(06).
+                   15  WO-YR  PIC X.
+                   15  WO-SUF PIC X(03).
+               10  WO-EQUIP   PIC X(06).
+               10  S-DATE.
+                   15  S-MM   PIC XX.
+                   15  S-DD   PIC XX.
+                   15  S-YY   PIC XX.
+               10  S-SHIFT    PIC X.
+           05  DATA-BUFFER.
+               10  LINE-1.
+                   15  S-1-DATE.
+                       20  S-1-MM     PIC XX.
+                       20  S-1-DD     PIC XX.
+                       20  S-1-YY     PIC XX.
+                   15  S-1-SHIFT      PIC X.
+                   15  S-1-QTY        PIC XX.
+                   15  S-1-CRAFT      PIC XX.
+                   15  S-1-HRS.
+                       20  S-1-HM     PIC 999V9.
+                   15  S-1-REM        PIC X(30).
+               10  LINE-2.
+                   15  S-2-DATE.
+                       20  S-2-MM     PIC XX.
+                       20  S-2-DD     PIC XX.
+                       20  S-2-YY     PIC XX.
+                   15  S-2-SHIFT      PIC X.
+                   15  S-2-QTY        PIC XX.
+                   15  S-2-CRAFT      PIC XX.
+                   15  S-2-HRS.
+                       20  S-2-HM     PIC 999V9.
+                   15  S-2-REM        PIC X(30).
+               10  LINE-3.
+                   15  S-3-DATE.
+                       20  S-3-MM     PIC XX.
+                       20  S-3-DD     PIC XX.
+                       20  S-3-YY     PIC XX.
+                   15  S-3-SHIFT      PIC X.
+                   15  S-3-QTY        PIC XX.
+                   15  S-3-CRAFT      PIC XX.
+                   15  S-3-HRS.
+                       20  S-3-HM     PIC 999V9.
+                   15  S-3-REM        PIC X(30).
+               10  LINE-4.
+                   15  S-4-DATE.
+                       20  S-4-MM     PIC XX.
+                       20  S-4-DD     PIC XX.
+                       20  S-4-YY     PIC XX.
+                   15  S-4-SHIFT      PIC X.
+                   15  S-4-QTY        PIC XX.
+                   15  S-4-CRAFT      PIC XX.
+                   15  S-4-HRS.
+                       20  S-4-HM     PIC 999V9.
+                   15  S-4-REM        PIC X(30).
+               10  LINE-5.
+                   15  S-5-DATE.
+                       20  S-5-MM     PIC XX.
+                       20  S-5-DD     PIC XX.
+                       20  S-5-YY     PIC XX.
+                   15  S-5-SHIFT      PIC X.
+                   15  S-5-QTY        PIC XX.
+                   15  S-5-CRAFT      PIC XX.
+                   15  S-5-HRS.
+                       20  S-5-HM     PIC 999V9.
+                   15  S-5-REM        PIC X(30).
+               10  LINE-6.
+                   15  S-6-DATE.
+                       20  S-6-MM     PIC XX.
+                       20  S-6-DD     PIC XX.
+                       20  S-6-YY     PIC XX.
+                   15  S-6-SHIFT      PIC X.
+                   15  S-6-QTY        PIC XX.
+                   15  S-6-CRAFT      PIC XX.
+                   15  S-6-HRS.
+                       20  S-6-HM     PIC 999V9.
+                   15  S-6-REM        PIC X(30).
+           05  NOTE-DATA              PIC X(76).
+           05  SCREEN-CMD-LINE        PIC X(79).
+           05  SCREEN-ERR-LINE        PIC X(79).
+
+       01  SHIFT-DATA.
+           05  ZONE-BUF        PIC X(04).
+           05  TIME-IN.
+               10  HRS-IN      PIC 99.
+               10  MIN-IN      PIC 99.
+           05  CODE-BUF        PIC X.
+           05  SHIFTS.
+               10  S-1         PIC 9999.
+               10  E-1         PIC 9999.
+               10  S-2         PIC 9999.
+               10  E-2         PIC 9999.
+               10  S-3         PIC 9999.
+               10  E-3         PIC 9999.
+               10  S-4         PIC 9999.
+               10  E-4         PIC 9999.
+           05  CURR-SHIFT      PIC 9.
+
+       01  WO-DELETE-DATA.
+           05  S-H-ZP.
+               10  S-H-Z       PIC X(4).
+               10  S-H-P       PIC X(2).
+           05  S-H-WO          PIC X(10).
+           05  S-H-EQ-NUM      PIC X(6).
+           05  S-H-DATE.
+               10  S-H-YY      PIC X(02).
+               10  S-H-MM      PIC X(02).
+               10  S-H-DD      PIC X(02).
+           05  S-H-SHIFT.
+               10  S-H-SHFT    PIC X.
+               10  FILLER      PIC X.
+           05  S-H-QTY         PIC X(02).
+           05  S-H-CRAFT       PIC X(02).
+           05  S-H-HOURS.
+               10  S-H-HRS     PIC X(03).
+               10  S-H-TENTHS  PIC X.
+           05  S-H-REM         PIC X(30).
+           05  S-H-PAD         PIC X(20).
+
+       01  ZONE-ARGUMENT.
+           05  Z-ARG           PIC X(4).
+           05  FILLER          PIC XX   VALUE "1 ".
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  LAST-WO-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-SCHED-DATA.
+           COPY DWOSCHED       IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       BEGIN-PGM.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               GOBACK.
+
+           CALL "CLSCHDS".
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          WO-CRAFTS-REQD.
+           OPEN INPUT          WO-LAST-NUM-USED.
+           OPEN INPUT          WO-PLANNED.
+           OPEN I-O            WO-SCHEDULE.
+           MOVE 0              TO KEY-HIT ADD-SW.
+           MOVE SPACES         TO DATA-BUFFER.
+           MOVE 1              TO ARG-NO.
+
+           READ WO-LAST-NUM-USED INTO LAST-WO-USED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE 1          TO DATE-FLAG-SW.
+
+           MOVE DATE-FLAG-SW   TO DATE-FLAG.
+
+           ACCEPT CUR-DATE-WA   FROM DATE.
+      *------- 01/04/2010:  UPDATED WORKORDER LETTER SUFFIX LOGIC.
+      *    IF CUR-DATE-YR = "0" MOVE "A" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "1" MOVE "B" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "2" MOVE "C" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "3" MOVE "D" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "4" MOVE "E" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "5" MOVE "F" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "6" MOVE "G" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "7" MOVE "H" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "8" MOVE "J" TO YEAR-DISP
+      *    ELSE
+      *    IF CUR-DATE-YR = "9" MOVE "K" TO YEAR-DISP
+      *    ELSE
+      *    MOVE " "             TO YEAR-DISP.
+
+           CALL "CMMISYR" USING MMIS-LETTER.
+           MOVE MMIS-LETTER    TO YEAR-DISP.
+      *-------
+
+       6-MAIN.
+           MOVE CUR-DATE-MM    TO CURR-MO-99.
+           MOVE CUR-DATE-DD    TO CURR-DY-99.
+           MOVE CUR-DATE-YY    TO CURR-YR-99.
+           MOVE 20             TO CURR-CT-99.
+           IF CURR-YR-99 > 70
+               MOVE 19         TO CURR-CT-99.
+
+           MOVE SPACES         TO SCREEN-DATA
+                                  ERROR-BUFFER
+                                  SCH-DATE-99.
+
+           MOVE "FSCHEDWO"     TO SCREEN-NAME.
+           MOVE YEAR-DISP      TO WO-YR-HOLD.
+           MOVE  WO-YR-HOLD    TO WO-YR.
+
+       6-SHOWFORM.
+           MOVE 31042          TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER   TO NOTE-DATA.
+           MOVE 66175          TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER   TO SCREEN-CMD-LINE.
+
+           IF S-1-HRS = "    " MOVE ZEROES TO S-1-HM.
+           IF S-2-HRS = "    " MOVE ZEROES TO S-2-HM.
+           IF S-3-HRS = "    " MOVE ZEROES TO S-3-HM.
+           IF S-4-HRS = "    " MOVE ZEROES TO S-4-HM.
+           IF S-5-HRS = "    " MOVE ZEROES TO S-5-HM.
+           IF S-6-HRS = "    " MOVE ZEROES TO S-6-HM.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           MOVE "00"           TO SCREEN-STATUS.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+                               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+                               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+
+           IF KEY-HIT = 3
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT = 5
+               MOVE 1          TO ADD-SW
+           ELSE
+           IF KEY-HIT NOT = 0
+               GO TO 6-SHOWFORM.
+
+           IF WO-NUM-S = SPACES
+               MOVE 49004          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(1) IND(99)
+               GO TO 6-SHOWFORM.
+
+           CALL "TALWONO"      USING S-WO-NUM RTN-CODE.
+
+           MOVE S-WO-NUM       TO WONUM OF WPFREC.
+           START WO-PLANNED    KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE 35040          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(1) IND(99)
+               GO TO 6-SHOWFORM.
+
+           READ WO-PLANNED     NEXT INTO WO-PLANNED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE 40014          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(1) IND(99)
+               GO TO 6-SHOWFORM.
+
+           IF WO-STATUS-P = "IP" OR "SD" OR "HS" OR "SW" OR "PR"
+               NEXT SENTENCE
+           ELSE
+               MOVE 35084          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(1) IND(99)
+               GO TO 6-SHOWFORM.
+
+           MOVE ZONE-P         TO ZONE-BUF.
+           MOVE ZEROS          TO TIME-IN.
+           CALL "TGETSHFT"     USING SHIFT-DATA
+                                     DBPARAMETERS.
+
+           MOVE EQUIP-NUM-P    TO WO-EQUIP.
+
+           IF SPACES = S-MM AND S-DD AND S-YY
+               IF S-SHIFT NOT = SPACE
+                   MOVE SPACE  TO S-SHIFT
+                   GO TO 6-MAIN-SORT
+               ELSE
+               GO TO 6-MAIN-SORT.
+
+           IF S-YY IS NUMERIC
+               IF DATE-FLAG = 1
+                   IF S-MM > "00" AND S-MM < "13"
+                       IF S-DD > "00" AND S-DD < "32"
+                           NEXT SENTENCE
+                       ELSE
+                           MOVE 35030          TO CATREAD-MSG-NUMBER
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                           MOVE TRUE-VAL       TO IND(99)
+                           MOVE 4              TO FIELD-NUMBER
+                           GO TO 6-SHOWFORM
+                   ELSE
+                       MOVE 35031          TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                       MOVE TRUE-VAL       TO IND(99)
+                       MOVE 3              TO FIELD-NUMBER
+                       GO TO 6-SHOWFORM
+               ELSE
+               IF S-MM > "00" AND S-MM < "32"
+                   IF S-DD > "00" AND S-DD < "13"
+                       NEXT SENTENCE
+                   ELSE
+                       MOVE 35031          TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                       MOVE TRUE-VAL       TO IND(99)
+                       MOVE 4              TO FIELD-NUMBER
+                       GO TO 6-SHOWFORM
+               ELSE
+                   MOVE 35030          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 3              TO FIELD-NUMBER
+                   GO TO 6-SHOWFORM
+           ELSE
+               MOVE 35032          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 5              TO FIELD-NUMBER
+               GO TO 6-SHOWFORM.
+
+           IF CODE-BUF = "2"
+               IF S-SHIFT = "1" OR "2" OR " "
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 35034          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 6 TO FIELD-NUMBER
+                   GO TO 6-SHOWFORM.
+
+           IF CODE-BUF = "3"
+               IF S-SHIFT = "1" OR "2" OR "3" OR " "
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 35034          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 6              TO FIELD-NUMBER
+                   GO TO 6-SHOWFORM.
+
+           IF CODE-BUF = "4"
+               IF S-SHIFT = "1" OR "2" OR "3" OR "4" OR " "
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 35034          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 6              TO FIELD-NUMBER
+                   GO TO 6-SHOWFORM.
+
+           MOVE S-YY           TO SCH-DATE-99-YY.
+           MOVE S-MM           TO SCH-DATE-99-MM.
+           MOVE S-DD           TO SCH-DATE-99-DD.
+           IF DATE-FLAG = 3
+               MOVE S-DD       TO SCH-DATE-99-MM
+               MOVE S-MM       TO SCH-DATE-99-DD.
+
+           MOVE 20             TO SCH-DATE-99-CC.
+           IF SCH-DATE-99-YY  > 70
+               MOVE 19         TO SCH-DATE-99-CC.
+
+       6-MAIN-SORT.
+           MOVE 0              TO ACT-KEY.
+           IF ADD-SW = 1       GO TO 61-GET-FORM.
+           SORT SORT-FILE      ASCENDING KEY SORT-DATE
+                                             SORT-SHIFT-ID
+                                             SORT-CRAFT
+               INPUT PROCEDURE  7-SORT-INPUT-RECORDS
+               OUTPUT PROCEDURE 8-SORT-WRITE-FILE.
+
+           IF ACT-KEY = 0
+               MOVE 40011          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-CMD-LINE
+               MOVE SCREEN-DATA    TO DISPLAY-REC
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(98)
+               GO TO 6-SHOWFORM.
+
+       61-GET-FORM.
+           MOVE 0              TO ACT-KEY EOF-SW.
+           CLOSE               OUT-FILE.
+           OPEN INPUT          OUT-FILE.
+           MOVE "FSCHEDWO1"    TO SCREEN-NAME.
+           IF ADD-SW = 1
+               IF SPACES = S-MM AND S-DD AND S-YY
+                   NEXT SENTENCE
+               ELSE
+               MOVE "FSCHEDWO2" TO SCREEN-NAME
+               IF S-SHIFT NOT = SPACE
+                    MOVE "FSCHEDWO3" TO SCREEN-NAME.
+
+       61-RESET-SCREEN.
+           IF EOF-SW = 1
+               MOVE 0          TO EOF-SW
+               CLOSE           OUT-FILE
+               GO TO 6-MAIN-SORT.
+
+           MOVE WO-DATA        TO WO-HOLD.
+           MOVE SPACES         TO SCREEN-DATA.
+           MOVE ZEROES         TO S-1-HM S-2-HM S-3-HM
+                                  S-4-HM S-5-HM S-6-HM.
+           MOVE WO-HOLD        TO WO-DATA.
+           MOVE 31046          TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER   TO NOTE-DATA.
+
+           IF ADD-SW = 1
+               IF SPACES = S-MM AND S-DD AND S-YY
+                   MOVE DATA-BUFFER TO HOLD-BUFFER
+                   GO TO 6-MAIN-CONT
+               ELSE
+                   MOVE S-DATE      TO S-1-DATE  S-2-DATE  S-3-DATE
+                                       S-4-DATE  S-5-DATE  S-6-DATE
+                   MOVE S-SHIFT     TO S-1-SHIFT S-2-SHIFT S-3-SHIFT
+                                       S-4-SHIFT S-5-SHIFT S-6-SHIFT
+                   MOVE DATA-BUFFER TO HOLD-BUFFER
+                   GO TO 6-MAIN-CONT.
+
+           PERFORM 62-GET-DATA THRU 62-GD-EXIT.
+
+       6-MAIN-CONT.
+           IF SCREEN-NAME = "FSCHEDWO1" OR "FSCHEDWO2" OR "FSCHEDWO3"
+               MOVE 66176      TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-CMD-LINE.
+
+           IF SCREEN-NAME = "FSCHEDWOA" OR "FSCHEDWOB"
+               MOVE SCREEN-SAVE TO SCREEN-NAME.
+
+           IF S-1-HRS = "    " MOVE ZEROES TO S-1-HM.
+           IF S-2-HRS = "    " MOVE ZEROES TO S-2-HM.
+           IF S-3-HRS = "    " MOVE ZEROES TO S-3-HM.
+           IF S-4-HRS = "    " MOVE ZEROES TO S-4-HM.
+           IF S-5-HRS = "    " MOVE ZEROES TO S-5-HM.
+           IF S-6-HRS = "    " MOVE ZEROES TO S-6-HM.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           MOVE "00"           TO SCREEN-STATUS.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+                               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+                               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+
+           IF KEY-HIT = 3
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT = 0
+               IF DATA-BUFFER = HOLD-BUFFER
+                   IF ADD-SW = 1
+                       GO TO 6-SHOWFORM
+                   ELSE
+                   GO TO 61-RESET-SCREEN
+               ELSE
+               GO TO 62-READ-DATA.
+
+           IF KEY-HIT = 2
+               MOVE SCREEN-NAME TO SCREEN-SAVE
+               MOVE "FSCHEDWOA" TO SCREEN-NAME
+               MOVE  WO-YR      TO WO-YR-HOLD
+               GO TO 6-SHOWFORM.
+
+           IF KEY-HIT = 4
+               MOVE SCREEN-NAME TO SCREEN-SAVE
+               MOVE "FSCHEDWOB" TO SCREEN-NAME
+               MOVE  WO-YR      TO WO-YR-HOLD
+               GO TO 6-SHOWFORM.
+
+           MOVE 0              TO MAX-KEY ACT-KEY.
+           MOVE SPACES         TO SCREEN-DATA
+                                  ERROR-BUFFER
+                                  SCH-DATE-99.
+           MOVE 0              TO ADD-SW.
+           MOVE "FSCHEDWO"     TO SCREEN-NAME.
+           MOVE YEAR-DISP      TO WO-YR-HOLD.
+           MOVE  WO-YR-HOLD    TO WO-YR.
+           MOVE 66175          TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER   TO SCREEN-CMD-LINE.
+           CLOSE               OUT-FILE.
+           GO TO 6-MAIN.
+
+       62-READ-DATA.
+           MOVE SPACES         TO S-UP-REM-HOLD.
+           IF S-1-MM = "DD"
+               MOVE SPACES     TO S-1-MM S-1-DD S-1-YY S-1-SHIFT
+                                  S-1-QTY S-1-CRAFT S-1-HRS S-1-REM.
+           IF LINE-1 = H-LINE-1
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-1-REM         TO S-UP-REM-HOLD-1
+           ELSE
+           IF SPACES = S-1-MM AND S-1-DD AND S-1-YY AND S-1-SHIFT
+               AND S-1-QTY AND S-1-CRAFT AND S-1-REM
+                   MOVE LINE-1   TO LINE-UP
+                   MOVE H-LINE-1 TO LINE-UP2
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                       MOVE SPACES TO LINE-1 H-LINE-1 LINE-UP LINE-UP2
+               ELSE
+                   MOVE LINE-1 TO LINE-UP
+                   MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+                   MOVE S-UP-REM        TO S-UP-REM-HOLD-1
+                   MOVE H-LINE-1 TO LINE-UP2
+                   PERFORM 63-EDIT-DATA THRU 63-ED-EXIT
+                   IF IND(99) = TRUE-VAL
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   IF ADD-SW = 1
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                           MOVE SPACES TO LINE-1 H-LINE-1
+                                          LINE-UP LINE-UP2
+                   ELSE
+                   IF SPACES = H-1-MM AND H-1-DD AND H-1-YY AND
+                       H-1-SHIFT AND H-1-QTY AND H-1-CRAFT
+                           AND H-1-HRS AND H-1-REM
+                           PERFORM 63-PUT-DATA
+                           PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                           IF IND(99) = TRUE-VAL
+                               MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                               GO TO 6-MAIN-CONT
+                           ELSE
+                               MOVE SPACES TO LINE-1 H-LINE-1
+                                              LINE-UP LINE-UP2
+                       ELSE
+                           PERFORM 63-PUT-DATA
+                           PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                           IF IND(99) = TRUE-VAL
+                               MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                               GO TO 6-MAIN-CONT
+                           ELSE
+                               PERFORM 63-PUT-DATA
+                               PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                               IF IND(99) = TRUE-VAL
+                                   MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                                   GO TO 6-MAIN-CONT
+                               ELSE
+                                   MOVE SPACES TO LINE-1 H-LINE-1
+                                                  LINE-UP LINE-UP2.
+
+           IF S-2-MM = "DD"
+               MOVE SPACES TO S-2-MM S-2-DD S-2-YY S-2-SHIFT
+                              S-2-QTY S-2-CRAFT S-2-HRS S-2-REM.
+
+           IF LINE-2 = H-LINE-2
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-2-REM         TO S-UP-REM-HOLD-1
+           ELSE
+           IF SPACES = S-2-MM AND S-2-DD AND S-2-YY AND S-2-SHIFT
+               AND S-2-QTY AND S-2-CRAFT
+                   AND S-2-REM
+                   MOVE LINE-2   TO LINE-UP
+                   MOVE H-LINE-2 TO LINE-UP2
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 08    TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                       MOVE SPACES TO LINE-2 H-LINE-2
+                                      LINE-UP LINE-UP2
+               ELSE
+                   MOVE LINE-2          TO LINE-UP
+                   MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+                   MOVE S-UP-REM        TO S-UP-REM-HOLD-1
+                   MOVE H-LINE-2        TO LINE-UP2
+                   PERFORM 63-EDIT-DATA THRU 63-ED-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 08  TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   IF ADD-SW = 1
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 08  TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                           MOVE SPACES TO LINE-2 H-LINE-2
+                                          LINE-UP LINE-UP2
+                   ELSE
+                   IF SPACES = H-2-MM AND H-2-DD AND H-2-YY AND
+                       H-2-SHIFT AND H-2-QTY AND H-2-CRAFT
+                           AND H-2-HRS AND H-2-REM
+                           PERFORM 63-PUT-DATA
+                           PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                           IF IND(99) = TRUE-VAL
+                               ADD 08 TO FIELD-NUMBER
+                               MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                               GO TO 6-MAIN-CONT
+                           ELSE
+                               MOVE SPACES TO LINE-2 H-LINE-2
+                                              LINE-UP LINE-UP2
+                       ELSE
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 08 TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 08 TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                       MOVE SPACES TO LINE-2 H-LINE-2
+                                      LINE-UP LINE-UP2.
+
+           IF S-3-MM = "DD"
+               MOVE SPACES TO S-3-MM S-3-DD S-3-YY S-3-SHIFT
+                              S-3-QTY S-3-CRAFT S-3-HRS S-3-REM.
+
+           IF LINE-3 = H-LINE-3
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-3-REM         TO S-UP-REM-HOLD-1
+           ELSE
+           IF SPACES = S-3-MM AND S-3-DD AND S-3-YY AND S-3-SHIFT
+               AND S-3-QTY AND S-3-CRAFT
+                   AND S-3-REM
+                   MOVE LINE-3 TO LINE-UP
+                   MOVE H-LINE-3 TO LINE-UP2
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 16 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-3 H-LINE-3 LINE-UP LINE-UP2
+               ELSE
+               MOVE LINE-3 TO LINE-UP
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-UP-REM        TO S-UP-REM-HOLD-1
+               MOVE H-LINE-3 TO LINE-UP2
+               PERFORM 63-EDIT-DATA THRU 63-ED-EXIT
+               IF IND(99) = TRUE-VAL
+                   ADD 16 TO FIELD-NUMBER
+                   MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                   GO TO 6-MAIN-CONT
+               ELSE
+               IF ADD-SW = 1
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 16 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-3 H-LINE-3 LINE-UP LINE-UP2
+               ELSE
+               IF SPACES = H-3-MM AND H-3-DD AND H-3-YY AND
+                   H-3-SHIFT AND H-3-QTY AND H-3-CRAFT
+                       AND H-3-HRS AND H-3-REM
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 16 TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                       MOVE SPACES TO LINE-3 H-LINE-3 LINE-UP LINE-UP2
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 16 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 16 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-3 H-LINE-3 LINE-UP LINE-UP2.
+
+           IF S-4-MM = "DD"
+               MOVE SPACES TO S-4-MM S-4-DD S-4-YY S-4-SHIFT
+                      S-4-QTY S-4-CRAFT S-4-HRS S-4-REM.
+           IF LINE-4 = H-LINE-4
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-4-REM         TO S-UP-REM-HOLD-1
+           ELSE
+           IF SPACES = S-4-MM AND S-4-DD AND S-4-YY AND S-4-SHIFT
+               AND S-4-QTY AND S-4-CRAFT
+                   AND S-4-REM
+                   MOVE LINE-4 TO LINE-UP
+                   MOVE H-LINE-4 TO LINE-UP2
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 24 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-4 H-LINE-4 LINE-UP LINE-UP2
+               ELSE
+               MOVE LINE-4 TO LINE-UP
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-UP-REM        TO S-UP-REM-HOLD-1
+               MOVE H-LINE-4 TO LINE-UP2
+               PERFORM 63-EDIT-DATA THRU 63-ED-EXIT
+               IF IND(99) = TRUE-VAL
+                   ADD 24 TO FIELD-NUMBER
+                   MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                   GO TO 6-MAIN-CONT
+               ELSE
+               IF ADD-SW = 1
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 24 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-4 H-LINE-4 LINE-UP LINE-UP2
+               ELSE
+               IF SPACES = H-4-MM AND H-4-DD AND H-4-YY AND
+                   H-4-SHIFT AND H-4-QTY AND H-4-CRAFT
+                       AND H-4-HRS AND H-4-REM
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 24 TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                       MOVE SPACES TO LINE-4 H-LINE-4 LINE-UP LINE-UP2
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 24 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 24 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-4 H-LINE-4 LINE-UP LINE-UP2.
+
+           IF S-5-MM = "DD"
+               MOVE SPACES TO S-5-MM S-5-DD S-5-YY S-5-SHIFT
+                      S-5-QTY S-5-CRAFT S-5-HRS S-5-REM.
+
+           IF LINE-5 = H-LINE-5
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-5-REM         TO S-UP-REM-HOLD-1
+           ELSE
+           IF SPACES = S-5-MM AND S-5-DD AND S-5-YY AND S-5-SHIFT
+               AND S-5-QTY AND S-5-CRAFT
+                   AND S-5-REM
+                   MOVE LINE-5 TO LINE-UP
+                   MOVE H-LINE-5 TO LINE-UP2
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 32 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-5 H-LINE-5 LINE-UP LINE-UP2
+               ELSE
+               MOVE LINE-5 TO LINE-UP
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-UP-REM        TO S-UP-REM-HOLD-1
+               MOVE H-LINE-5 TO LINE-UP2
+               PERFORM 63-EDIT-DATA THRU 63-ED-EXIT
+               IF IND(99) = TRUE-VAL
+                   ADD 32 TO FIELD-NUMBER
+                   MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                   GO TO 6-MAIN-CONT
+               ELSE
+               IF ADD-SW = 1
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 32 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-5 H-LINE-5 LINE-UP LINE-UP2
+               ELSE
+               IF SPACES = H-5-MM AND H-5-DD AND H-5-YY AND
+                   H-5-SHIFT AND H-5-QTY AND H-5-CRAFT
+                       AND H-5-HRS AND H-5-REM
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 32 TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                       MOVE SPACES TO LINE-5 H-LINE-5 LINE-UP LINE-UP2
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 32 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 32 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-5 H-LINE-5 LINE-UP LINE-UP2.
+
+           IF S-6-MM = "DD"
+               MOVE SPACES TO S-6-MM S-6-DD S-6-YY S-6-SHIFT
+                      S-6-QTY S-6-CRAFT S-6-HRS S-6-REM.
+
+           IF LINE-6 = H-LINE-6
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-6-REM         TO S-UP-REM-HOLD-1
+           ELSE
+           IF SPACES = S-6-MM AND S-6-DD AND S-6-YY AND S-6-SHIFT
+               AND S-6-QTY AND S-6-CRAFT
+                   AND S-6-REM
+                   MOVE LINE-6 TO LINE-UP
+                   MOVE H-LINE-6 TO LINE-UP2
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 40 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-6 H-LINE-6 LINE-UP LINE-UP2
+               ELSE
+               MOVE LINE-6 TO LINE-UP
+               MOVE S-UP-REM-HOLD-1 TO S-UP-REM-HOLD-2
+               MOVE S-UP-REM        TO S-UP-REM-HOLD-1
+               MOVE H-LINE-6 TO LINE-UP2
+               PERFORM 63-EDIT-DATA THRU 63-ED-EXIT
+               IF IND(99) = TRUE-VAL
+                   ADD 40 TO FIELD-NUMBER
+                   MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                   GO TO 6-MAIN-CONT
+               ELSE
+               IF ADD-SW = 1
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 40 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-6 H-LINE-6 LINE-UP LINE-UP2
+               ELSE
+               IF SPACES = H-6-MM AND H-6-DD AND H-6-YY AND
+                   H-6-SHIFT AND H-6-QTY AND H-6-CRAFT
+                       AND H-6-HRS AND H-6-REM
+                       PERFORM 63-PUT-DATA
+                       PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                       IF IND(99) = TRUE-VAL
+                           ADD 40 TO FIELD-NUMBER
+                           MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                           GO TO 6-MAIN-CONT
+                       ELSE
+                       MOVE SPACES TO LINE-6 H-LINE-6 LINE-UP LINE-UP2
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-DEL-DATA THRU 63-DD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 40 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   PERFORM 63-PUT-DATA
+                   PERFORM 63-ADD-DATA THRU 63-AD-EXIT
+                   IF IND(99) = TRUE-VAL
+                       ADD 40 TO FIELD-NUMBER
+                       MOVE TRUE-VAL TO IND(FIELD-NUMBER)
+                       GO TO 6-MAIN-CONT
+                   ELSE
+                   MOVE SPACES TO LINE-6 H-LINE-6 LINE-UP LINE-UP2.
+
+           GO TO 61-RESET-SCREEN.
+
+       63-PUT-DATA.
+           MOVE ZONE-P         TO Z-ARG.
+           MOVE ZONE-ARGUMENT  TO SCHED-ZP S-H-ZP.
+           MOVE S-WO-NUM       TO SCHED-WO S-H-WO.
+           MOVE WO-EQUIP       TO SCHED-EQ-NUM S-H-EQ-NUM.
+
+           IF SPACES = S-UP-YY AND S-UP-MM AND S-UP-DD
+               MOVE SPACES     TO SCHED-DATE-CN
+           ELSE
+               MOVE S-UP-YY    TO SCHED-YY
+               MOVE S-UP-MM    TO SCHED-MM
+               MOVE S-UP-DD    TO SCHED-DD
+               IF DATE-FLAG = 3
+                   MOVE S-UP-DD TO SCHED-MM
+                   MOVE S-UP-MM TO SCHED-DD
+               END-IF
+               MOVE "20"       TO SCHED-CC
+               IF SCHED-YY  > "70"
+                   MOVE "19"   TO SCHED-CC.
+
+           MOVE S-UP-SHIFT     TO SCHED-SHFT.
+           MOVE S-UP-QTY       TO SCHED-QTY.
+           MOVE S-UP-CRAFT     TO SCHED-CRAFT.
+           MOVE S-UP-HRS       TO SCHED-HOURS.
+           MOVE S-UP-REM       TO SCHED-REM.
+           MOVE SPACES         TO SCHED-PAD.
+
+           IF SPACES = S-UP2-YY AND S-UP2-MM AND S-UP2-DD
+               MOVE SPACES     TO S-H-DATE
+           ELSE
+           MOVE S-UP2-YY       TO S-H-YY
+           MOVE S-UP2-MM       TO S-H-MM
+           MOVE S-UP2-DD       TO S-H-DD
+           IF DATE-FLAG = 3
+               MOVE S-UP2-DD   TO S-H-MM
+               MOVE S-UP2-MM   TO S-H-DD.
+
+           MOVE S-UP2-SHIFT    TO S-H-SHFT.
+           MOVE S-UP2-QTY      TO S-H-QTY.
+           MOVE S-UP2-CRAFT    TO S-H-CRAFT.
+           MOVE S-UP2-HRS      TO S-H-HOURS.
+           MOVE S-UP2-REM      TO S-H-REM.
+           MOVE SPACES         TO S-H-PAD.
+
+       63-EDIT-DATA.
+           IF S-UP-YY IS NUMERIC
+               IF DATE-FLAG = 1
+                   IF S-UP-MM > "00" AND S-UP-MM < "13"
+                       IF S-UP-DD > "00" AND S-UP-DD < "32"
+                           NEXT SENTENCE
+                       ELSE
+                           MOVE 35030          TO CATREAD-MSG-NUMBER
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                           MOVE TRUE-VAL       TO IND(99)
+                           MOVE 2              TO FIELD-NUMBER
+                           GO TO 63-ED-EXIT
+                   ELSE
+                       MOVE 35031          TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                       MOVE TRUE-VAL       TO IND(99)
+                       MOVE 1              TO FIELD-NUMBER
+                       GO TO 63-ED-EXIT
+               ELSE
+               IF S-UP-MM > "00" AND S-UP-MM < "32"
+                   IF S-UP-DD > "00" AND S-UP-DD < "13"
+                       NEXT SENTENCE
+                   ELSE
+                       MOVE 35031          TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                       MOVE TRUE-VAL       TO IND(99)
+                       MOVE 2              TO FIELD-NUMBER
+                       GO TO 63-ED-EXIT
+               ELSE
+                   MOVE 35030          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 1              TO FIELD-NUMBER
+                   GO TO 63-ED-EXIT
+           ELSE
+               MOVE 35032          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 3              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           MOVE S-UP-YY        TO DATE-99-YY.
+           MOVE S-UP-MM        TO DATE-99-MM.
+           MOVE S-UP-DD        TO DATE-99-DD
+           IF DATE-FLAG = 3
+               MOVE S-UP-DD    TO DATE-99-MM
+               MOVE S-UP-MM    TO DATE-99-DD.
+
+           MOVE 20             TO DATE-99-CC.
+           IF DATE-99-YY  > 70
+               MOVE 19         TO DATE-99-CC.
+
+           IF DATE-COMPARE < CURR-DATE-99
+               MOVE 30018          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 1              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           IF CODE-BUF = "2"
+               IF S-UP-SHIFT = "1" OR "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 35034          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 4              TO FIELD-NUMBER
+                   GO TO 63-ED-EXIT.
+
+           IF CODE-BUF = "3"
+               IF S-UP-SHIFT = "1" OR "2" OR "3"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 35034          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 4              TO FIELD-NUMBER
+                   GO TO 63-ED-EXIT.
+
+           IF CODE-BUF = "4"
+               IF S-UP-SHIFT = "1" OR "2" OR "3" OR "4"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 35034          TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+                   MOVE TRUE-VAL       TO IND(99)
+                   MOVE 4              TO FIELD-NUMBER
+                   GO TO 63-ED-EXIT.
+
+           IF S-UP-QTY = SPACES
+               MOVE "01"       TO S-UP-QTY.
+
+           IF S-UP-QTY2 = SPACE
+               MOVE S-UP-QTY1  TO S-UP-QTY2
+               MOVE "0"        TO S-UP-QTY1.
+
+           IF S-UP-QTY NOT NUMERIC
+               MOVE 35041          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 5              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           IF S-UP-CRAFT = SPACES
+               MOVE 29032          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 6              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           MOVE S-UP-CRAFT     TO CRAFT-BUF.
+
+           MOVE CRAFT-BUF      TO CRAFTREQD OF WCRFREC.
+           START WO-CRAFTS-REQD KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE 35037          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 6              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           MOVE S-UP-HRS       TO S-UP-WA.
+
+           IF S-UP-H3 = SPACE
+               MOVE S-UP-H2    TO S-UP-H3
+               MOVE S-UP-H1    TO S-UP-H2
+               MOVE "0"        TO S-UP-H1.
+
+           IF S-UP-H3 = SPACE
+               MOVE S-UP-H2    TO S-UP-H3
+               MOVE S-UP-H1    TO S-UP-H2
+               MOVE "0"        TO S-UP-H1.
+
+           IF S-UP-H3 = SPACE
+               MOVE S-UP-H2    TO S-UP-H3
+               MOVE S-UP-H1    TO S-UP-H2
+               MOVE "0"        TO S-UP-H1.
+
+           IF S-UP-H NOT NUMERIC
+               MOVE 35029          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 7              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           IF S-UP-T = SPACE
+               MOVE "0"        TO S-UP-T.
+
+           IF S-UP-T NOT NUMERIC
+               MOVE 35029          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 7              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           IF S-UP-H = "000" AND S-UP-T = "0"
+               MOVE 46013          TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER   TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL       TO IND(99)
+               MOVE 7              TO FIELD-NUMBER
+               GO TO 63-ED-EXIT.
+
+           IF S-UP-REM-28 = SPACES
+               IF S-UP-REM-2 = "D " OR "DD" OR "DU" OR " D"
+                   MOVE S-UP-REM-HOLD-2 TO S-UP-REM S-UP-REM-HOLD-1
+                   MOVE S-UP-REM-HOLD-2 TO S-UP2-REM.
+
+       63-ED-EXIT.             EXIT.
+
+       63-ADD-DATA.
+           MOVE WO-SCHED-DATA  TO WO-DELETE-DATA.
+           WRITE WSFREC        FROM WO-DELETE-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+       63-AD-EXIT.             EXIT.
+
+       63-DEL-DATA.
+           MOVE S-WO-NUM       TO WONUM OF WSFREC.
+           START WO-SCHEDULE   KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 63-DD-EXIT.
+
+       63-DEL-DBGET.
+           READ WO-SCHEDULE    NEXT INTO WO-SCHED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 63-DD-EXIT.
+
+           IF S-WO-NUM NOT = WONUM OF WSFREC
+               GO TO 63-DD-EXIT.
+
+           IF SCHED-DATE = S-H-DATE AND
+              SCHED-SHFT = S-H-SHFT AND
+              SCHED-CRAFT = S-H-CRAFT
+               NEXT SENTENCE
+           ELSE
+               GO TO 63-DEL-DBGET.
+
+           DELETE WO-SCHEDULE RECORD
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+       63-DD-EXIT.             EXIT.
+
+       62-GET-DATA.
+           MOVE DATA-BUFFER    TO HOLD-BUFFER.
+           PERFORM 621-READ-OUTSCHDS THRU 621-RO-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-GD-EXIT.
+
+           PERFORM 63-OUT-REC.
+           MOVE SPACES         TO OUT-DATA.
+           MOVE LINE-UP        TO LINE-1 H-LINE-1.
+           PERFORM 621-READ-OUTSCHDS THRU 621-RO-EXIT.
+
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-GD-EXIT.
+
+           PERFORM 63-OUT-REC.
+           MOVE LINE-UP        TO LINE-2 H-LINE-2.
+           MOVE SPACES         TO OUT-DATA.
+           PERFORM 621-READ-OUTSCHDS THRU 621-RO-EXIT.
+
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-GD-EXIT.
+
+           PERFORM 63-OUT-REC.
+           MOVE LINE-UP        TO LINE-3 H-LINE-3.
+           MOVE SPACES         TO OUT-DATA.
+           PERFORM 621-READ-OUTSCHDS THRU 621-RO-EXIT.
+
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-GD-EXIT.
+
+           PERFORM 63-OUT-REC.
+           MOVE LINE-UP        TO LINE-4 H-LINE-4.
+           MOVE SPACES         TO OUT-DATA.
+           PERFORM 621-READ-OUTSCHDS THRU 621-RO-EXIT.
+
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-GD-EXIT.
+
+           PERFORM 63-OUT-REC.
+           MOVE LINE-UP        TO LINE-5 H-LINE-5.
+           MOVE SPACES         TO OUT-DATA.
+           PERFORM 621-READ-OUTSCHDS THRU 621-RO-EXIT.
+
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-GD-EXIT.
+
+           PERFORM 63-OUT-REC.
+           MOVE LINE-UP        TO LINE-6 H-LINE-6.
+
+       62-GD-EXIT.             EXIT.
+
+       621-READ-OUTSCHDS.
+           ADD 1               TO ACT-KEY.
+           IF ACT-KEY > MAX-KEY GO TO 621-RO-EXIT.
+           MOVE SPACES         TO OUT-DATA.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 621-RO-EXIT.
+
+           IF SCH-DATE-99 = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF SCH-DATE-99 = OUT-DATE
+               IF S-SHIFT = OUT-SHIFT OR SPACE
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 621-READ-OUTSCHDS
+            ELSE
+                GO TO 621-READ-OUTSCHDS.
+
+       621-RO-EXIT.            EXIT.
+
+       63-OUT-REC.
+           MOVE OUT-YY         TO S-UP-YY.
+           MOVE OUT-MM         TO S-UP-MM.
+           MOVE OUT-DD         TO S-UP-DD
+           IF DATE-FLAG = 3
+               MOVE OUT-DD     TO S-UP-MM
+               MOVE OUT-MM     TO S-UP-DD.
+
+           MOVE OUT-SHIFT      TO S-UP-SHIFT.
+           MOVE OUT-QTY        TO S-UP-QTY.
+           MOVE OUT-CRAFT      TO S-UP-CRAFT.
+           MOVE OUT-HRS        TO S-UP-HRS.
+           MOVE OUT-REM        TO S-UP-REM.
+
+       END-OF-JOB.
+           CLOSE               DISPLAY-FILE.
+           CLOSE               OUT-FILE.
+           CLOSE               WO-CRAFTS-REQD.
+           CLOSE               WO-LAST-NUM-USED.
+           CLOSE               WO-PLANNED.
+           CLOSE               WO-SCHEDULE.
+           GOBACK.
+
+       999-CATREAD.
+            MOVE SPACES        TO ERROR-BUFFER.
+            CALL "CCATREAD"    USING CATREAD-PARMS.
+            MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+
+       7-SORT-INPUT-RECORDS.
+           PERFORM 70-SORT-MAIN THRU 70-SORT-M-EXIT.
+
+       70-SORT-MAIN.
+           MOVE S-WO-NUM       TO WONUM OF WSFREC.
+           START WO-SCHEDULE   KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 70-SORT-M-EXIT.
+
+           PERFORM 701-SORT-DBGET THRU 701-SORT-DBGET-EXIT.
+
+       70-SORT-M-EXIT.         EXIT.
+
+       701-SORT-DBGET.
+           MOVE SPACES         TO SORT-REC.
+           READ WO-SCHEDULE    NEXT INTO WO-SCHED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 701-SORT-DBGET-EXIT.
+
+           IF WONUM OF WSFREC NOT = S-WO-NUM
+               GO TO 701-SORT-DBGET-EXIT.
+
+      *    IF SCH-DATE-99 = SPACES
+      *        GO TO 7011-SORT-RELEASE
+      *    ELSE
+      *    IF SCH-DATE-99 = SCHED-DATE
+      *        IF S-SHIFT = SCHED-SHFT OR SPACE
+      *            GO TO 7011-SORT-RELEASE
+      *        ELSE
+      *        GO TO 701-SORT-DBGET-EXIT
+      *    ELSE
+      *    GO TO 701-SORT-DBGET-EXIT.
+
+       7011-SORT-RELEASE.
+           MOVE SCHED-DATE-CN  TO SORT-DATE.
+           MOVE SCHED-SHFT     TO SORT-SHIFT.
+
+           IF SCHED-SHFT = "1" MOVE "B" TO SORT-SHIFT-ID.
+           IF SCHED-SHFT = "2" MOVE "C" TO SORT-SHIFT-ID.
+           IF SCHED-SHFT = "4" MOVE "A" TO SORT-SHIFT-ID.
+
+           IF CODE-BUF = "3"
+               IF SCHED-SHFT = "3" MOVE "A" TO SORT-SHIFT-ID.
+
+           IF CODE-BUF = "4"
+               IF SCHED-SHFT = "3" MOVE "D" TO SORT-SHIFT-ID.
+
+           MOVE SCHED-QTY      TO SORT-QTY.
+           MOVE SCHED-CRAFT    TO SORT-CRAFT.
+           MOVE SCHED-HOURS    TO SORT-HRS.
+           MOVE SCHED-REM      TO SORT-REM.
+           RELEASE             SORT-REC.
+
+           GO TO 701-SORT-DBGET.
+
+       701-SORT-DBGET-EXIT.    EXIT.
+
+       8-SORT-WRITE-FILE.
+           MOVE 0              TO ACT-KEY.
+           OPEN OUTPUT         OUT-FILE.
+           PERFORM 8-SWF-LOOP  THRU 8-SWF-EXIT.
+
+       8-SWF-LOOP.
+           RETURN SORT-FILE    AT END
+               MOVE ACT-KEY    TO MAX-KEY
+               GO TO 8-SWF-EXIT.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SORT-REC       TO OUT-DATA.
+           WRITE OUT-REC       INVALID KEY
+               GO TO 8-SWF-EXIT.
+           GO TO 8-SWF-LOOP.
+
+       8-SWF-EXIT.    EXIT.
+

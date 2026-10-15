@@ -1,0 +1,606 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TPAIDADJ.
+       AUTHOR. ANNETTE TREUDLER.
+      *REMARKS.
+      *
+      **************************************************************
+      *                                                            *
+      *   T P A I D A D J   THIS PROGRAM IS FOR INVOICE PROCESSING *
+      *     THIS PROGRAM ALLOWS THE USER TO MAKE ADJUSTMENTS TO    *
+      *     ITEM QUANTITY PAID BY ITEM BY P.O. NUMBER              *
+      *     NORMALLY THIS PROGRAM WILL BE USED FOR PLANT STARTUP   *
+      *     OF THE INVOICE PROCESSING SYSTEM.                      *
+      *                                                            *
+      **************************************************************
+      *   10/15/85  ADDED CALLS TO FINDJCW, NLAPPEND, CATOPEN, AND *
+      *             CATCLOSE IN ORDER TO ACCOMODATE THE NATIVE     *
+      *             LANGUAGE SUPPORT FACILITY.  ADDED LINKAGES AND *
+      *             ALSO MADE THE CHANGE TO THE FORMFILE NAMES.    *
+      *             CHANGED ALL REFERENCES OF TSCRPRNT TO TSCRPRT2,*
+      *             TDATECHK TO TDATECK2.                          *
+      *             THIS WAS TO INCORPORATE THE NATIVE LANGUAGE    *
+      *             SUPPORT VERSIONS OF THESE SUBROUTINES.         *
+      *                                           PD RAGLOW.       *
+      *                                                            *
+      *   07/15/1996    CA YODER                                   *
+      *     RE-COMPILED TO PICK UP CENTURY DATABASE CHANGES.       *
+      *                                                            *
+      *   07/18/2001    CA YODER                                   *
+      *     CHANGED DISPLAY FILE TO USE DISPLAY-ONLY VERSION OF    *
+      *     SCREEN SO THAT DPOITEM CANNOT BE UPDATED THROUGH THIS  *
+      *     PROGRAM.                                               *
+      *                                                            *
+      *   06/03/2003    CA YODER    TOPEKA REQUEST                 *
+      *     CHANGED PROGRAM TO READ MPLTINFO FIELD (KEY=PODL)      *
+      *     TO DETERMINE IF SCREEN ALLOWS ADJUSTMENTS OR IS FOR    *
+      *     INQUIRY ONLY.                                          *
+      *                                                            *
+      **************************************************************
+
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       SPECIAL-NAMES.    I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPAIDADJ-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS RELATIVE-RECNO
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DDAILYTC-O
+                  ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC           PIC X(2000).
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS0501.
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS0901.
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS1002.
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCS1002.
+       FD  DDAILYTC-O
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCS1601.
+       WORKING-STORAGE SECTION.
+       77  COMP-SCREEN-INDIC       PIC X(3)    VALUE SPACES.
+       77  UPDATES-ALLOWED-SW      PIC X       VALUE "N".
+       01  SAVE-ADJUST-QTY         PIC S9(8)V9(4)   VALUE ZEROS.
+       01  PAID-QTY-COMPARE        PIC S9(9)V9(4)   VALUE ZEROS.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1       PIC X            VALUE SPACES.
+           05  FILE-STATUS-2       PIC X            VALUE SPACES.
+       01  RELATIVE-RECNO          PIC 9(9).
+      **********************
+      *                    *
+      *  S W I T C H E S   *
+      *                    *
+      **********************
+
+       01  SWITCH-AREA.
+           05  FATAL-ERR-SW            PIC X       VALUE "N".
+           05  EOJ-SW                  PIC X       VALUE "N".
+
+
+       01  BUILD-PO-NUM.
+           05  FILLER                  PIC X    VALUE "P".
+           05  PO-NUM                  PIC X(7) VALUE SPACES.
+           05  PO-RLSE                 PIC X(3) VALUE "000".
+           05  PO-RCV                  PIC X(3) VALUE "000".
+
+       COPY VCOMAREA IN COPYLIB.
+
+       01  FORMFILE.
+           05  FORM-FNAME                PIC X(8)  VALUE "FPAIDADJ".
+           05  FILLER                    PIC X     VALUE ".".
+           05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+
+       01  COMMAND-AREA.
+           05  OVERRIDE-ZPAIDADJ      PIC X(34) VALUE
+               "OVRDSPF FILE(ZPAIDADJ) SHARE(*YES)".
+           05  OVERRIDE-PARM2         PIC S9(10)V9(5) COMP-3 VALUE 34.
+
+       01  SAVE-VIEW-STATUS          PIC S9(4) COMP-4 VALUE ZEROS.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(64)    VALUE SPACE.
+           05  MSG-FLD               PIC X(12)    VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(11)9.
+
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76    COMP-4.
+
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE ZERO  COMP-4.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1     COMP-4.
+
+
+       01  PASSED-SPOOL-PRT          PIC S9(2)    VALUE ZEROS COMP-4.
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **             TERMINAL I/O DATA AREA                       **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       01  SCREEN-1.
+           05  S1-COMPANY                  PIC X(3).
+           05  S1-PO-NUM                   PIC X(7).
+           05  S1-PO-REL                   PIC X(3).
+           05  S1-CMDLINE                  PIC X(79).
+           05  S1-MSGLINE                  PIC X(79).
+
+       01  SUBFILE-CONTROL.
+           05  SC-COMPANY                  PIC X(3).
+           05  SC-PO-NUM                   PIC X(7).
+           05  SC-PO-REL                   PIC X(3).
+
+       01  DISP-SUBFILE.
+           05  DS-ITEM-INFO.
+               10 DS-ITEM-TABLE.
+                   15  DS-ITEM-NO          PIC 9999.
+                   15  DS-CODE             PIC X(7).
+                   15  DS-QTY-ORDERED      PIC ZZZZZZZ9.9(4).
+                   15  DS-QTY-RCVD         PIC ZZZZZZZ9.9(4).
+                   15  DS-QTY-PAID         PIC ZZZZZZZ9.9(4).
+                   15  DS-UM               PIC XX.
+                   15  DS-ADJUST-QTY       PIC 9(8)V9(4).
+                   15  DS-ADJUST-SIGN      PIC X.
+
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+
+       COPY DPOITEM    IN COPYLIB.
+
+       COPY MPLTINFO   IN COPYLIB.
+
+       COPY DPORECD    IN COPYLIB.
+
+       COPY DDAILYTC   IN COPYLIB.
+
+       COPY TC493      IN COPYLIB.
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16)  VALUE SPACES.
+           05  DSET-DPOITEM           PIC X(16)  VALUE "DPOITEM;".
+           05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+           05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+           05  DSET-DDAILYTC          PIC X(16)  VALUE "DDAILYTC;".
+
+       COPY DATAB      IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+           05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+
+       01 ARG-VALUES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+
+       01  DATES-AND-TIMES.
+           05  CUR-DATE.
+               10  YY               PIC XX.
+               10  MM               PIC XX.
+               10  DD               PIC XX.
+
+       COPY TDATECHK   IN COPYLIB.
+
+       COPY TBLOWUP    IN COPYLIB.
+
+       COPY LANGUAGE   IN COPYLIB.
+
+       COPY DISPDATA IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY CATREAD  IN COPYLIB.
+
+       PROCEDURE DIVISION.
+
+       PROC-DIV SECTION 01.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           PERFORM 2-EOJ  THRU 2-EOJ-X.
+
+           GOBACK.
+
+       1-HSK.
+           MOVE "TPAIDADJ"  TO  BU-PGM-NAME.
+           CALL "QCMDEXC" USING OVERRIDE-ZPAIDADJ, OVERRIDE-PARM2.
+           OPEN I-O DISPLAY-FILE.
+
+           OPEN INPUT MPLTINFO-I, DPORECD-I, DPOITEM-I.
+           OPEN I-O   DPOITEM-O.
+           OPEN OUTPUT DDAILYTC-O.
+
+      *-------- ARE UPDATES ALLOWED AT THIS PLANT?
+           MOVE "N"                        TO  UPDATES-ALLOWED-SW.
+           MOVE "PODL"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               IF MPLTINFO-UPD-AP9 > " "
+                   MOVE MPLTINFO-UPD-AP9   TO  UPDATES-ALLOWED-SW.
+
+      **************************************************
+      *                                                *
+      *   GET CO. AND PRIME FROM MPLTINFO              *
+      *   USING 'P 01' AS THE ARGUMENT                 *
+      *                                                *
+      **************************************************
+
+           MOVE "P 01"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ MPLTINFO 1-HSK P 01"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG               TO  BU-DISPLAY-FLD (2)
+               GO TO 2-BLOWUP.
+           MOVE MPLTINFO-COMPANY            TO  COMP-SCREEN-INDIC.
+           ACCEPT CUR-DATE  FROM  DATE.
+
+       1-H-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE MPLTINFO-I, DPORECD-I, DPOITEM-I,
+                 DPOITEM-O, DDAILYTC-O, DISPLAY-FILE.
+
+       2-EOJ-X.
+            EXIT.
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "TPAIDADJ"              TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND(99), IND(FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER TO S1-MSGLINE.
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+           MOVE "PAIDADJ1"  TO  VIEW-NFNAME.
+
+       6-PUT-BUFFER-1.
+           MOVE SPACES             TO  SCREEN-1.
+           MOVE ZEROS              TO  S1-PO-REL.
+           MOVE COMP-SCREEN-INDIC  TO  S1-COMPANY.
+
+       6-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1           TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC        TO  SCREEN-1.
+
+       6-READ-SCREEN-1.
+           IF VIEW-LASTKEY = 3
+               GO TO 6-M-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        *** INVALID FUNCTION KEY ENTERED ***
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+      *****************************************************
+      *                                                   *
+      *    EDIT PURCHASE ORDER NUMBER                     *
+      *                                                   *
+      *****************************************************
+
+       6-EDIT-PO-ENTRY.
+           MOVE S1-PO-NUM               TO  PO-NUM.
+           MOVE S1-PO-REL               TO  PO-RLSE.
+           MOVE BUILD-PO-NUM            TO  PO-ARG,
+                                            BU-DISPLAY-FLD (1).
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            *** PURCHASE ORDER DOES NOT EXIST ***
+                   MOVE  16 TO LANG-SETNUM
+                   MOVE  45 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1  TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 6-SHOWFORM-SCREEN-1
+               ELSE
+                   MOVE "START DPORECD 6-ERO" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET DPORECD 6-EPE" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                 MOVE "* NO ITEMS WERE FOUND ON THIS P.O. *"
+                     TO  BU-DISPLAY-MSG
+                 MOVE 1  TO FIELD-NUMBER
+                 PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                 GO TO 6-SHOWFORM-SCREEN-1
+               ELSE
+                 MOVE "FIND DPOITEM * 6-EPE" TO BU-DISPLAY-MSG
+                 GO TO 2-BLOWUP.
+
+           MOVE SPACES     TO  SUBFILE-CONTROL.
+           MOVE COMP-SCREEN-INDIC TO SC-COMPANY.
+           MOVE PO-NUM     TO  SC-PO-NUM.
+           MOVE PO-RLSE    TO  SC-PO-REL.
+           PERFORM 810-CLEAR-SUBFILE THRU 810-EXIT.
+           MOVE 0          TO RELATIVE-RECNO.
+
+
+       6-LOAD-ITEM-INFO.
+           PERFORM 61-GET-ITEMS          THRU  61-GI-X.
+           PERFORM 62-PROCESS-ITEM-INFO  THRU  62-PII-X.
+           GO TO 6-MAIN.
+
+       6-M-X.
+           EXIT.
+
+       61-GET-ITEMS.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 61-GI-X
+               ELSE
+                   MOVE "GET DPOITEM 61-GI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               GO TO 61-GI-X.
+
+           MOVE SPACES            TO  DISP-SUBFILE.
+           IF UPDATES-ALLOWED-SW = "Y"
+               MOVE B"1" TO IND(52).
+           MOVE ITM-NUMBER        TO  DS-ITEM-NO.
+           MOVE ITM-CORP-CODE     TO  DS-CODE.
+           MOVE ITM-QTY-ORD       TO  DS-QTY-ORDERED.
+           MOVE ITM-QTY-DLVR      TO  DS-QTY-RCVD.
+           MOVE ITM-QTY-PAID      TO  DS-QTY-PAID.
+           MOVE ITM-UM            TO  DS-UM.
+           MOVE ZEROS             TO  DS-ADJUST-QTY.
+           MOVE "-"               TO  DS-ADJUST-SIGN.
+           MOVE DISP-SUBFILE      TO  DISPLAY-REC.
+           ADD 1 TO RELATIVE-RECNO.
+           WRITE SUBFILE DISPLAY-REC FORMAT "RDSF"
+                 INDICATORS SRF-INDICATORS.
+
+           GO TO 61-GET-ITEMS.
+
+       61-GI-X.
+           EXIT.
+
+
+       62-PROCESS-ITEM-INFO.
+           WRITE DISPLAY-REC FORMAT "RDSB"
+                 INDICATORS SRF-INDICATORS.
+
+       62-DISPLAY-SUBFILE.
+           MOVE B"1" TO IND(76).
+           IF RELATIVE-RECNO > ZERO
+               MOVE B"1" TO IND(75)
+           ELSE
+               MOVE B"0" TO IND(75).
+           IF UPDATES-ALLOWED-SW = "Y"
+               MOVE B"1" TO IND(52).
+           MOVE SUBFILE-CONTROL TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT "RDSC" INDICATORS SRF-INDICATORS.
+           READ DISPLAY-FILE FORMAT "RDSC" INDICATORS SRF-INDICATORS.
+
+       62-UPDATE-LOOP.
+           READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+                FORMAT "RDSF" INDICATORS SRF-INDICATORS
+                AT END GO TO 62-PII-X.
+           IF DISPLAY-STATUS NOT = "00"
+                GO TO 62-PII-X.
+           MOVE DISPLAY-REC TO DISP-SUBFILE.
+           IF DS-ADJUST-QTY > ZEROS
+               IF DS-ADJUST-SIGN  = "-" OR = "+"
+                   GO TO 62-UPDATE-ITEMS
+               ELSE
+      *         *** '+' OR '-' REQUIRED
+                   MOVE B"1" TO IND(78), IND(51)
+                   GO TO 62-DISPLAY-SUBFILE
+           ELSE
+               GO TO 62-UPDATE-LOOP.
+
+       62-UPDATE-ITEMS.
+           MOVE PO-ARG           TO  PORCVNO OF DPOITEM-REC-O.
+           MOVE DS-ITEM-NO       TO  ITEMNO  OF DPOITEM-REC-O.
+           READ DPOITEM-O INTO BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *    IF FILE-STATUS-1 = "2"
+      *        MOVE 17 TO COND-WORD
+      *    ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET DPOITEM *62-UL" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           IF DS-ADJUST-SIGN = "-"
+              IF DS-ADJUST-QTY > ITM-QTY-PAID
+      *            *** CANNOT REDUCE QUANTITY PAID BELOW ZERO ***
+                  MOVE B"1" TO IND(78), IND(50)
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+                  MOVE HIGH-VALUES TO PORCVNO OF DPOITEM-REC-O
+                  START DPOITEM-O KEY > PORCVNO OF DPOITEM-REC-O
+                     INVALID KEY MOVE "00" TO FILE-STATUS
+                  END-START
+                  GO TO 62-DISPLAY-SUBFILE.
+
+           IF DS-ADJUST-SIGN = "-"
+               MULTIPLY DS-ADJUST-QTY BY -1
+                  GIVING SAVE-ADJUST-QTY
+           ELSE
+               MOVE DS-ADJUST-QTY TO SAVE-ADJUST-QTY.
+           ADD SAVE-ADJUST-QTY  TO  ITM-QTY-PAID
+           IF ITM-QTY-PAID < ZERO
+               MOVE ZEROS  TO  ITM-QTY-PAID.
+
+           REWRITE DPOITEM-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UPDATE DPOITEM * 62-UL" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO DDAILYTC-TIME.
+           MOVE "493"                    TO  DDAILYTC-TC.
+           MOVE MPLTINFO-COMPANY         TO  DDAILYTC-PLT.
+           MOVE ITM-CORP-CODE            TO  TC493-CORP-CODE.
+           MOVE ITM-NUMBER               TO  TC493-ITEM-NO.
+           MOVE ITM-UM                   TO  TC493-ITEM-QTY-UM.
+           MOVE ITM-PO-NO-AND-REL        TO  TC493-PO-NO.
+           MOVE SAVE-ADJUST-QTY          TO  TC493-ADJ-QTY.
+           MOVE ITM-CLASS                TO  TC493-SUB.
+           MOVE ITM-SUB-DETL             TO  TC493-SUBD.
+           MOVE ITM-ADDL-DATA            TO  TC493-ADDTL-DATA.
+           WRITE DDAILYTC-REC-O FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DDAILYTC * 62-UL" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           MOVE "-"                      TO  DS-ADJUST-SIGN.
+           MOVE ITM-QTY-PAID             TO  DS-QTY-PAID.
+           MOVE ZEROS                    TO  DS-ADJUST-QTY.
+           MOVE DISP-SUBFILE             TO  DISPLAY-REC.
+           REWRITE SUBFILE DISPLAY-REC FORMAT "RDSF"
+              INDICATORS SRF-INDICATORS.
+
+           GO TO 62-UPDATE-LOOP.
+
+       62-PII-X.
+           EXIT.
+
+       810-CLEAR-SUBFILE.
+           MOVE B"0" TO IND(75), IND(76).
+           MOVE B"1" TO IND(77).
+           MOVE SUBFILE-CONTROL TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT "RDSC" INDICATORS SRF-INDICATORS.
+           MOVE B"0" TO IND(77).
+           MOVE ZERO TO RELATIVE-RECNO.
+
+       810-EXIT.
+           EXIT.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+       COPY DISPCALL IN COPYLIB.

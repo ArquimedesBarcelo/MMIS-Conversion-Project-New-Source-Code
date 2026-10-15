@@ -1,0 +1,1395 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TJOBPLAN.
+      *REMARKS.   ****THIS PROGRAM PROCESSES JOB PLANS - PLANNER OR
+      *C              ENGINEER LAYOUTS FOR A SPECIFIC TASK.
+      *C
+      *C  SEPTEMBER 1996  JE COFFMAN  REQ# 6619
+      *C     RE-COMPILED TO PICK UP LATEST FILE STRUCTURES FOR YEAR
+      *C     2000 COMPLIANCE.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER. AS400.
+       OBJECT-COMPUTER. AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZMODIFY-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT JOBPLAN-FILE
+               ASSIGN TO DATABASE-MCFLMM1801
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS JF-STATUS.
+           SELECT JOBPLAN-FILE-PF
+               ASSIGN TO DATABASE-MCFPMM1800
+               ORGANIZATION IS RELATIVE
+               ACCESS IS RANDOM
+               RELATIVE KEY IS PFKEY
+               FILE STATUS IS JFPF-STATUS.
+           SELECT PERSONNEL-FILE
+               ASSIGN TO DATABASE-MCFPMM0300
+               ORGANIZATION IS SEQUENTIAL
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS PF-STATUS.
+           SELECT WO-CRAFTS-REQD-FILE
+               ASSIGN TO DATABASE-MCFLMM0601
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WCRF-STATUS.
+           SELECT WO-PLANNED-FILE
+               ASSIGN TO DATABASE-MCFLMM1101
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS WPF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                      PIC X(2000).
+       FD  JOBPLAN-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS JFREC.
+       01  JFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1801.
+       FD  JOBPLAN-FILE-PF
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS JFPFREC.
+       01  JFPFREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM1800.
+       FD  PERSONNEL-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PFREC.
+       01  PFREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0300.
+       FD  WO-CRAFTS-REQD-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WCRFREC.
+       01  WCRFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+       FD  WO-PLANNED-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WPFREC.
+       01  WPFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+       WORKING-STORAGE SECTION.
+       77  CHGADD-SW                      PIC 9.
+       77  FIELDNUM                       PIC 9(4).
+       77  FORMS-RESET-SW                 PIC 9.
+       77  JOBPLAN-PREV-SEQ               PIC XXX.
+       77  JOBPLAN-EST-TIME-WORK          PIC 9(4)V9.
+       77  JPS-FOUND-SW                   PIC 9.
+       77  SAVE-JOBP-KEY                  PIC X(14).
+       77  SAVE-VIEW-LASTKEY-3            PIC S9(4) COMP-4.
+       77  SCREEN-SEQ-SAVE                PIC XXX.
+       77  SUB                            PIC S9(4) COMP-4.
+       77  SUB1                           PIC S9(4) COMP-4.
+       77  TAB-LIMIT                      PIC S9(4) COMP-4.
+       77  TAB-SUB1                       PIC S9(4) COMP-4.
+       01  BLOWUP-BASE                    PIC X(16).
+       COPY CATREAD  IN COPYLIB.
+       COPY CPYIND   IN COPYLIB.
+       COPY TDATECHK IN COPYLIB.
+       01  EDIT-ERROR                     PIC X(80).
+       01  ENTRY-POINT                    PIC X(10).
+       01  ERROR-BUFFER.
+           05  ERROR-1.
+               10  FILLER                 PIC X(11).
+               10  ERROR-WO               PIC X(10).
+               10  FILLER                 PIC X(57).
+           05  ERROR-2 REDEFINES ERROR-1.
+               10  FILLER                 PIC X(36).
+               10  P-SEQ                  PIC ZZ9.
+               10  FILLER                 PIC X(39).
+       01  ERROR-SWITCH                   PIC 9(4).
+       01  FILE-STATUSES.
+           05  DSPLY-STATUS               PIC XX.
+           05  JF-STATUS                  PIC XX.
+           05  JFPF-STATUS                PIC XX.
+           05  PF-STATUS                  PIC XX.
+           05  WCRF-STATUS                PIC XX.
+           05  WPF-STATUS                 PIC XX.
+       01  HOLD-SEQ-WA.
+           05  HOLD-SEQ                   PIC XXX.
+           05  HS-9 REDEFINES HOLD-SEQ    PIC 999.
+       COPY IOFEEDBACK IN COPYLIB.
+       01  JOBPLAN-BUFFER.     COPY DJOBPLAN OF COPYLIB.
+       01  JOBP-KEY.
+           05  JOBP-WO-NO                 PIC X(10).
+           05  JOBP-SEQ-NO                PIC 999.
+           05  FILLER                     PIC X.
+       01  JOBPLAN-SEQU.
+           05  JOBPLAN-SEQUENCE.
+               10  JS-X OCCURS 3 TIMES    PIC X.
+           05  JS-9 REDEFINES JOBPLAN-SEQUENCE PIC 999.
+           05  JS-CMD-LINE                PIC X(79).
+           05  JS-ERR-LINE                PIC X(79).
+       01  JOBPLAN-SEQ-TABLE.
+           05  JSTE OCCURS 96 TIMES.
+               10  JSTE-SEQ               PIC XXX.
+               10  JSTE-DESC              PIC X(50).
+               10  JSTE-DT                PIC X(4).
+               10  JSTE-CRFT              PIC XX.
+               10  JSTE-MEN               PIC XX.
+               10  JSTE-EST               PIC X(4).
+               10  JSTE-LEVEL             PIC XX.
+               10  JSTE-FLAG              PIC XX.
+               10  JSTE-SS                PIC X(4).
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TJOBPLAN".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A.
+                   15  FILLER      PIC X(9)  VALUE " JOBPLAN ".
+                   15  FILLER      PIC X(12) VALUE "MAINTENANCE ".
+                   15  FILLER      PIC X(15) VALUE "PROGRAM - USER ".
+                   15  FILLER      PIC X(12) VALUE "CAN ADD AND ".
+                   15  FILLER      PIC X(12) VALUE "MODIFY      ".
+               10  PROG-DESC-B.
+                   15  FILLER      PIC X(16) VALUE " JOBPLANS FOR A ".
+                   15  FILLER      PIC X(10) VALUE "SPECIFIED ".
+                   15  FILLER      PIC X(10) VALUE "WORK ORDER".
+                   15  FILLER      PIC X(24) VALUE SPACES.
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  PER-PERSONNEL-DATA.     COPY MPERSONL OF COPYLIB.
+       01  PFKEY                          PIC 9(9).
+       01  RETURN-CODE                    PIC X.
+       01  SAVE-SCREEN-INFO.
+           05  SAVE-SCREEN-DATA.
+               10  SAVE-SCREEN-LINE OCCURS 12 TIMES.
+                   15  FILLER             PIC X(53).
+                   15  SAVE-SCREEN-DT-EST.
+                       20  FILLER         PIC X(4).
+                       20  SAVE-SCREEN-CRAFT   PIC XX.
+                       20  SAVE-SCREEN-MEN     PIC XX.
+                       20  SSM REDEFINES SAVE-SCREEN-MEN  PIC 99.
+                       20  SAVE-SCREEN-EST     PIC X(4).
+                       20  SSE REDEFINES SAVE-SCREEN-EST  PIC 999V9.
+               10  SSE-PM-LEVEL           PIC XX.
+               10  SSE-PM-FLAG            PIC XX.
+               10  SSE-PM-SUBSYS          PIC X(4).
+               10  FILLER                 PIC X(79).
+           05  SS-CMD-LINE                PIC X(79).
+           05  SS-ERR-LINE                PIC X(79).
+       01  SCREEN-JOBP-DATA.
+           05  SCREEN-WO                  PIC X(10).
+           05  SCREEN-DESCH               PIC X(30).
+           05  SCREEN-STAT                PIC XX.
+           05  SCREEN-EQPNUM              PIC X(6).
+           05  SCREEN-DEPT                PIC X(4).
+           05  SCREEN-EXPCLASS            PIC X(8).
+           05  SCREEN-ZONE                PIC X(4).
+           05  SCREEN-PRTY                PIC X.
+           05  SCREEN-RIME                PIC XX.
+           05  SCREEN-SCHD-DATE           PIC X(6).
+           05  SCREEN-SCHD-TIME           PIC X(4).
+           05  SCREEN-DATA.
+               10  SCREEN-LINE OCCURS 12 TIMES.
+                   15  SCREEN-SEQ                     PIC XXX.
+                   15  SCREEN-LINE-REST.
+                       20  SCREEN-DESC                PIC X(50).
+                       20  SCREEN-DT-EST.
+                           25  SCREEN-DT.
+                               30  SCREEN-DT-HRS      PIC XXX.
+                               30  SCREEN-DT-PARTIAL  PIC X.
+                           25  SCREEN-CRAFT           PIC XX.
+                           25  SCREEN-MEN             PIC XX.
+                           25  SCREEN-EST.
+                               30  SCREEN-EST-HRS     PIC XXX.
+                               30  SCREEN-EST-PARTIAL PIC X.
+               10  SCREEN-PM-LEVEL                    PIC XX.
+               10  SCREEN-PM-FLAG                     PIC XX.
+               10  SCREEN-PM-SUBSYS                   PIC X(4).
+               10  SCREEN-DEPRESS-LINE                PIC X(79).
+           05  SCREEN-CMD-LINE                        PIC X(79).
+           05  SCREEN-ERR-LINE                        PIC X(79).
+       COPY DBSTAT  IN COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       01  TEMP-LABOR-COST.
+           05  TLC.
+               10  TLC-DOLLS               PIC 9(12).
+               10  TLC-CENTS               PIC 99.
+           05  TMP-LBR-CST REDEFINES TLC   PIC 9(12)V99.
+       01  TRUE-VAL                        PIC 1 VALUE B"1".
+       01  TWO-BYTE-WA.
+           05  TWO-B-WA OCCURS 2 TIMES     PIC X.
+       01  THREE-BYTE-WA.
+           05  TB-WA OCCURS 3 TIMES        PIC X.
+       01  WO-CRAFT-BUFF                   PIC XX.
+       01  WO-PLANNED-DATA.    COPY DWOPLAN OF COPYLIB.
+       COPY WSCONTROL IN COPYLIB.
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS OF COPYLIB.
+       01  WORK-ORDER-BUF                  PIC X(10).
+       COPY VCOMLINK  IN COPYLIB.
+       PROCEDURE DIVISION USING DBPARAMETERS WORK-ORDER-BUF
+                            VIEW-COMAREA.
+       START-PROGRAM.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN.
+       2-EOJ.
+           CLOSE DISPLAY-FILE.
+           CLOSE JOBPLAN-FILE.
+           CLOSE JOBPLAN-FILE-PF.
+           CLOSE PERSONNEL-FILE.
+           CLOSE WO-CRAFTS-REQD-FILE.
+           CLOSE WO-PLANNED-FILE.
+           GOBACK.
+       1-HSK.
+           OPEN I-O   DISPLAY-FILE.
+           OPEN I-O   JOBPLAN-FILE.
+           OPEN I-O   JOBPLAN-FILE-PF.
+           OPEN INPUT PERSONNEL-FILE.
+           OPEN INPUT WO-CRAFTS-REQD-FILE.
+           OPEN I-O   WO-PLANNED-FILE.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               MOVE "  PWORD" TO BLOWUP-BASE
+               MOVE "FAILED PASSWORD CHECK - TJOBPLAN"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           MOVE LOW-VALUES TO STATUS-AREA.
+           MOVE SPACES TO SCREEN-DATA SAVE-SCREEN-DATA
+               JOBPLAN-BUFFER SCREEN-SEQ-SAVE JOBPLAN-SEQU.
+           MOVE SPACES TO SCREEN-PM-LEVEL SCREEN-PM-FLAG
+               SCREEN-PM-SUBSYS.
+           MOVE " " TO RETURN-CODE.
+           MOVE 0 TO VIEW-LASTKEY SAVE-VIEW-LASTKEY-3.
+           MOVE 0 TO SUB FORMS-RESET-SW.
+           MOVE ZEROES TO JOBPLAN-PREV-SEQ.
+           MOVE 0 TO CHGADD-SW JPS-FOUND-SW.
+           MOVE SPACES TO ERROR-BUFFER.
+       6-MAIN.
+           PERFORM 69-START-WO-PLANNED-FILE.
+           IF COND-WORD = 17
+               MOVE 49028 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WORK-ORDER-BUF TO ERROR-WO
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 2-EOJ.
+           PERFORM 69-READ-WO-PLANNED-FILE.
+           IF COND-WORD = 15
+               MOVE 49029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WORK-ORDER-BUF TO ERROR-WO
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 2-EOJ.
+           MOVE SPACES TO SCREEN-JOBP-DATA.
+           MOVE WO-NUM-PLANNED TO SCREEN-WO.
+           MOVE DESCRIPTION-1-P TO SCREEN-DESCH.
+           MOVE WO-STATUS-P TO SCREEN-STAT.
+           MOVE EQUIP-NUM-P TO SCREEN-EQPNUM.
+           MOVE DEPT-P TO SCREEN-DEPT.
+           MOVE EXP-CLASS-P TO SCREEN-EXPCLASS.
+           MOVE ZONE-P TO SCREEN-ZONE.
+           MOVE PRIORITY-P TO SCREEN-PRTY.
+           MOVE RIME-P TO SCREEN-RIME.
+           MOVE 4 TO DATE-MODE.
+           MOVE DATE-SCHD TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT TO SCREEN-SCHD-DATE.
+           MOVE TIME-SCHD TO SCREEN-SCHD-TIME.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE "FJOBPLPM" TO VIEW-CFNAME
+           ELSE
+           MOVE "FJOBPLAN" TO VIEW-CFNAME.
+           IF LAST-JOBPLAN-SEQ = "    " OR "000 "
+               MOVE WORK-ORDER-BUF TO JOBP-WO-NO
+               MOVE 0              TO JOBP-SEQ-NO
+               PERFORM 60-ADD-JOBPLAN THRU 60-AJ-EXIT
+           ELSE
+           PERFORM 61-MODIFY-JOBPLAN THRU 61-MJ-EXIT.
+       60-ADD-JOBPLAN.
+           MOVE SPACES TO SCREEN-DATA SCREEN-PM-LEVEL
+               SCREEN-PM-FLAG SCREEN-PM-SUBSYS.
+           IF CHGADD-SW = 0
+               MOVE 42077 TO CATREAD-MSG-NUMBER
+               ADD 1 TO JOBP-SEQ-NO
+               MOVE JOBP-SEQ-NO TO SCREEN-SEQ (1)
+           ELSE
+           MOVE 27023 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE.
+           MOVE SCREEN-JOBP-DATA TO DSPLY-REC.
+           MOVE SCREEN-DATA TO SAVE-SCREEN-DATA.
+           PERFORM 99-SCREEN-WRITE.
+       60-AJ-READ.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO SCREEN-JOBP-DATA.
+           IF VIEW-LASTKEY = 3
+               IF SCREEN-SEQ-SAVE NOT NUMERIC
+                   GO TO 2-EOJ
+               ELSE
+               PERFORM 601-SAVE-SEQ THRU 601-SS-EXIT
+               GO TO 2-EOJ.
+           IF FORMS-RESET-SW = 1
+               MOVE 0 TO FORMS-RESET-SW
+               MOVE 4 TO VIEW-LASTKEY.
+           IF VIEW-LASTKEY = 4
+               IF WO-START-STATUS = "AA" OR "AR"
+                   IF VIEW-CFNAME = "FJOBPLP2"
+                       MOVE 0 TO VIEW-LASTKEY
+                   ELSE
+                   MOVE "FJOBPLP2" TO VIEW-CFNAME
+                   MOVE 35129 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   MOVE SCREEN-DATA TO SAVE-SCREEN-DATA
+                   GO TO 60-AJ-READ
+               ELSE
+               IF VIEW-CFNAME = "FJOBPLA2"
+                   MOVE 0 TO VIEW-LASTKEY
+               ELSE
+               MOVE "FJOBPLA2" TO VIEW-CFNAME
+               MOVE 35129 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE SCREEN-DATA TO SAVE-SCREEN-DATA
+               GO TO 60-AJ-READ.
+           IF VIEW-LASTKEY = 5
+               IF WO-START-STATUS = "AA" OR "AR"
+                   IF VIEW-CFNAME = "FJOBPLPM"
+                       MOVE 0 TO VIEW-LASTKEY
+                   ELSE
+                   MOVE "FJOBPLPM" TO VIEW-CFNAME
+                   MOVE 42077 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   MOVE SCREEN-DATA TO SAVE-SCREEN-DATA
+                   GO TO 60-AJ-READ
+               ELSE
+               IF VIEW-CFNAME = "FJOBPLAN"
+                   MOVE 0 TO VIEW-LASTKEY
+               ELSE
+               MOVE "FJOBPLAN" TO VIEW-CFNAME
+               MOVE 42077 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE SCREEN-DATA TO SAVE-SCREEN-DATA
+               GO TO 60-AJ-READ.
+           PERFORM 60-MOVE-SAVE-DT-EST VARYING SUB FROM 1 BY 1
+               UNTIL SUB > 12.
+           MOVE SPACES TO SAVE-SCREEN-DATA.
+           IF SCREEN-DATA = SPACES
+               MOVE 40031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 60-AJ-READ.
+      ****************************************************************
+      *    THE FOLLOWING 'IF' CHECK WAS ADDED 9-16-85 TO TRY TO      *
+      *    HANDLE A PROBLEM THAT OCCURRED WHEN THE USER ENTERED      *
+      *    A MULTI-SCREEN SEQUENCE AND NEGLECTED TO INPUT THE        *
+      *    SEQUENCE NUMBER ON THE FIRST LINE OF THE CARRYOVER SCREEN *
+      ****************************************************************
+           IF SCREEN-SEQ (1) = "   "
+               IF SCREEN-SEQ-SAVE > "000"
+                   MOVE SCREEN-SEQ-SAVE TO SCREEN-SEQ (1).
+           MOVE 0 TO SUB.
+           MOVE "A" TO RETURN-CODE.
+           PERFORM 600-EDIT-CHECKS THRU 600-EC-EXIT.
+       60-AJ-CONT.
+           ADD 1 TO SUB.
+           IF SUB > 12
+               MOVE 42074 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               PERFORM 60-CHECK-SEQ-COMP
+               MOVE JOBPLAN-SEQ-NO-1-3 TO P-SEQ
+               MOVE ERROR-2 TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               MOVE TRUE-VAL TO INDS (98)
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               MOVE 0 TO SUB
+               MOVE SPACES TO SCREEN-DATA SAVE-SCREEN-DATA
+                   JOBPLAN-BUFFER SCREEN-PM-LEVEL
+                   SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+               IF CHGADD-SW = 0
+                   IF VIEW-CFNAME = "FJOBPLA2" OR "FJOBPLP2"
+                       MOVE 35129 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+                       MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                       PERFORM 99-SCREEN-WRITE
+                       GO TO 60-AJ-READ
+                   ELSE
+                   MOVE 42077 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   GO TO 60-AJ-READ
+               ELSE
+               MOVE 27023 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               GO TO 60-AJ-READ.
+           IF SCREEN-LINE (SUB) = SPACES GO TO 60-AJ-CONT.
+           MOVE WORK-ORDER-BUF TO JOBPLAN-WO-NO.
+           IF SCREEN-SEQ (SUB) > "000"
+               IF SCREEN-SEQ (SUB) < SCREEN-SEQ-SAVE
+                   MOVE SCREEN-SEQ (SUB) TO JOBPLAN-SEQ-NO-1-3
+               ELSE
+               IF SCREEN-SEQ (SUB) = SCREEN-SEQ-SAVE
+                   MOVE SCREEN-SEQ-SAVE TO JOBPLAN-SEQ-NO-1-3
+               ELSE
+               MOVE SCREEN-SEQ (SUB) TO JOBPLAN-SEQ-NO-1-3
+                   SCREEN-SEQ-SAVE
+           ELSE
+           IF JOBPLAN-SEQ-NO-1-3 < SCREEN-SEQ-SAVE
+               NEXT SENTENCE
+           ELSE
+           MOVE SCREEN-SEQ-SAVE     TO JOBPLAN-SEQ-NO-1-3.
+           MOVE SCREEN-DESC (SUB)   TO JOBPLAN-DESCRIP.
+           MOVE SCREEN-DT (SUB)     TO JOBPLAN-DT.
+           MOVE SCREEN-CRAFT (SUB)  TO JOBPLAN-CRAFT.
+           MOVE SCREEN-MEN (SUB)    TO JOBPLAN-MEN-X.
+           MOVE SCREEN-EST (SUB)    TO JOBPLAN-EST.
+           MOVE SCREEN-PM-LEVEL     TO JOBP-LEVEL.
+           MOVE SCREEN-PM-FLAG      TO JOBP-FLAG.
+           MOVE SCREEN-PM-SUBSYS    TO JOBP-SS.
+           PERFORM 69-WRITE-JOBPLAN-FILE.
+           IF COND-WORD = 17
+               MOVE 49034 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WORK-ORDER-BUF TO ERROR-WO
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 60-AJ-EXIT.
+
+           GO TO 60-AJ-CONT.
+
+       60-AJ-EXIT.    EXIT.
+
+       60-MOVE-SAVE-DT-EST.
+           IF SAVE-SCREEN-DT-EST (SUB) NOT = SPACES
+               MOVE SAVE-SCREEN-DT-EST (SUB) TO SCREEN-DT-EST (SUB).
+
+       60-CHECK-SEQ-COMP.
+           IF JOBPLAN-SEQ-NO-1-3 = "   "
+               IF SCREEN-SEQ-SAVE = "   "
+                   MOVE "001"       TO JOBPLAN-SEQ-NO-1-3
+               ELSE
+               MOVE SCREEN-SEQ-SAVE TO JOBPLAN-SEQ-NO-1-3.
+
+       600-EDIT-CHECKS.
+           ADD 1 TO SUB.
+           IF SUB > 12
+               PERFORM 600-EDIT-PM-FIELDS THRU 600-EPF-EXIT
+               MOVE 0 TO SUB
+               GO TO 600-EC-EXIT.
+           IF SCREEN-SEQ (SUB) = SPACES
+               IF SCREEN-LINE-REST (SUB) = SPACES
+                   GO TO 600-EDIT-CHECKS
+               ELSE
+               IF SCREEN-SEQ (1) = SPACES
+                   IF SCREEN-SEQ-SAVE > "000"
+                       MOVE SCREEN-SEQ-SAVE TO SCREEN-SEQ (1)
+                       GO TO 600-EC-DT
+                   ELSE
+                   MOVE 66362 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MULTIPLY SUB BY 8 GIVING FIELDNUM
+                   SUBTRACT 7 FROM FIELDNUM
+                   MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+                   MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+                   PERFORM 6000-RESET-FORM
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   MOVE 0 TO SUB
+                   IF RETURN-CODE = "A"
+                       MOVE " " TO RETURN-CODE
+                       GO TO 60-AJ-READ
+                   ELSE
+                   GO TO 61-MJ-READ
+               ELSE
+               GO TO 600-EC-DT
+           ELSE
+           MOVE SPACES TO ERROR-BUFFER
+           MOVE SPACES TO THREE-BYTE-WA
+           MOVE SCREEN-SEQ (SUB) TO THREE-BYTE-WA
+           PERFORM 6001-RIGHT-ADJUST-SEQ THRU 6001-RAS-EXIT
+           MOVE THREE-BYTE-WA TO SCREEN-SEQ (SUB).
+           IF SCREEN-SEQ (SUB) NOT NUMERIC
+               MOVE 45038 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 7 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+       600-EC-DT.
+           IF SCREEN-DT (SUB) = SPACES
+               GO TO 600-EC-CRAFT
+           ELSE
+           MOVE SPACES TO THREE-BYTE-WA
+           MOVE SCREEN-DT-HRS (SUB) TO THREE-BYTE-WA
+           PERFORM 6001-RIGHT-ADJUST-SEQ THRU 6001-RAS-EXIT
+           MOVE THREE-BYTE-WA TO SCREEN-DT-HRS (SUB).
+           IF SCREEN-DT-HRS (SUB) NOT NUMERIC
+               MOVE 39028 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 4 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+           IF SCREEN-DT-PARTIAL (SUB) = " "
+               MOVE "0" TO SCREEN-DT-PARTIAL (SUB)
+           ELSE
+           IF SCREEN-DT-PARTIAL (SUB) NOT NUMERIC
+               MOVE 39028 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 4 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+       600-EC-CRAFT.
+           PERFORM 69-START-WO-CRAFTS-REQD-FILE.
+           IF COND-WORD = 0
+               GO TO 600-EC-MEN
+           ELSE
+           MOVE 35037 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MULTIPLY SUB BY 8 GIVING FIELDNUM
+           SUBTRACT 3 FROM FIELDNUM
+           MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+           MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+           PERFORM 6000-RESET-FORM
+           MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+           PERFORM 99-SCREEN-WRITE
+           MOVE 0 TO SUB
+           IF RETURN-CODE = "A"
+              MOVE " " TO RETURN-CODE
+              GO TO 60-AJ-READ
+           ELSE
+           GO TO 61-MJ-READ.
+       600-EC-MEN.
+           IF SCREEN-MEN (SUB) = "  "
+               GO TO 600-EC-EST
+           ELSE
+           MOVE SPACES TO TWO-BYTE-WA
+           MOVE SCREEN-MEN (SUB) TO TWO-BYTE-WA
+           PERFORM 6002-RIGHT-ADJUST-TWO THRU 6002-RAT-EXIT
+           MOVE TWO-BYTE-WA TO SCREEN-MEN (SUB).
+           IF SCREEN-MEN (SUB) = "00"
+               MOVE 52006 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 2 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           IF SCREEN-MEN (SUB) NOT NUMERIC
+               MOVE 39026 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 2 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+       600-EC-EST.
+           IF SCREEN-EST (SUB) = SPACES
+               IF SCREEN-CRAFT (SUB) = SPACES
+                   IF SCREEN-MEN (SUB) = SPACES
+                       GO TO 600-EDIT-CHECKS
+                   ELSE
+                   MOVE 31076 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MULTIPLY SUB BY 8 GIVING FIELDNUM
+                   SUBTRACT 1 FROM FIELDNUM
+                   MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+                   MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+                   PERFORM 6000-RESET-FORM
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   MOVE 0 TO SUB
+                   IF RETURN-CODE = "A"
+                       MOVE " " TO RETURN-CODE
+                       GO TO 60-AJ-READ
+                   ELSE
+                   GO TO 61-MJ-READ
+               ELSE
+               MOVE 31077 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 1 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           IF SCREEN-CRAFT (SUB) = SPACES
+               MOVE 29097 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 3 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           IF SCREEN-MEN (SUB) = SPACES
+               MOVE 29097 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 2 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           MOVE SPACES TO THREE-BYTE-WA
+           MOVE SCREEN-EST-HRS (SUB) TO THREE-BYTE-WA
+           PERFORM 6001-RIGHT-ADJUST-SEQ THRU 6001-RAS-EXIT
+           MOVE THREE-BYTE-WA TO SCREEN-EST-HRS (SUB).
+           IF SCREEN-EST-HRS (SUB) NOT NUMERIC
+               MOVE 31078 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               SUBTRACT 1 FROM FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           IF SCREEN-EST-PARTIAL (SUB) = " "
+               MOVE "0" TO SCREEN-EST-PARTIAL (SUB)
+           ELSE
+           IF SCREEN-EST-PARTIAL (SUB) NOT NUMERIC
+               MOVE 31078 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MULTIPLY SUB BY 8 GIVING FIELDNUM
+               MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE 0 TO SUB
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+           GO TO 600-EDIT-CHECKS.
+       600-EC-EXIT.    EXIT.
+       600-EDIT-PM-FIELDS.
+           IF WO-START-STATUS = "AA" OR "AR"
+               NEXT SENTENCE
+           ELSE
+           GO TO 600-EPF-EXIT.
+           IF SCREEN-PM-LEVEL = "  "
+               MOVE 42138 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (99)
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           MOVE SPACES TO TWO-BYTE-WA
+           MOVE SCREEN-PM-LEVEL TO TWO-BYTE-WA
+           PERFORM 6002-RIGHT-ADJUST-TWO THRU 6002-RAT-EXIT
+           MOVE TWO-BYTE-WA TO SCREEN-PM-LEVEL
+           IF SCREEN-PM-LEVEL = "00"
+               MOVE 42139 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL TO INDS (99)
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ
+           ELSE
+           IF SCREEN-PM-LEVEL NOT NUMERIC
+               MOVE 42140 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL TO INDS (99)
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+           IF SCREEN-PM-FLAG = "  "
+               MOVE "99" TO SCREEN-PM-FLAG
+           ELSE
+           MOVE SCREEN-PM-FLAG TO TWO-BYTE-WA
+           PERFORM 6002-RIGHT-ADJUST-TWO THRU 6002-RAT-EXIT
+           MOVE TWO-BYTE-WA TO SCREEN-PM-FLAG
+           IF SCREEN-PM-FLAG NOT NUMERIC
+               MOVE 42141 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-ERR-LINE
+               MOVE TRUE-VAL TO INDS (99)
+               PERFORM 6000-RESET-FORM
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               IF RETURN-CODE = "A"
+                   MOVE " " TO RETURN-CODE
+                   GO TO 60-AJ-READ
+               ELSE
+               GO TO 61-MJ-READ.
+       600-EPF-EXIT.    EXIT.
+       6000-RESET-FORM.
+           IF VIEW-CFNAME = "FJOBPLA2"
+               MOVE "FJOBPLAN" TO VIEW-CFNAME
+               MOVE 1 TO FORMS-RESET-SW.
+       6001-RIGHT-ADJUST-SEQ.
+           IF TB-WA (3) = " "
+               MOVE TB-WA (2) TO TB-WA (3)
+               MOVE TB-WA (1) TO TB-WA (2)
+               MOVE "0" TO TB-WA (1)
+               GO TO 6001-RIGHT-ADJUST-SEQ
+           ELSE
+           IF TB-WA (2) = " "
+               MOVE TB-WA (1) TO TB-WA (2)
+               MOVE "0" TO TB-WA (1)
+               GO TO 6001-RIGHT-ADJUST-SEQ
+           ELSE
+           IF TB-WA (1) = " "
+               MOVE "0" TO TB-WA (1).
+       6001-RAS-EXIT.    EXIT.
+       6002-RIGHT-ADJUST-TWO.
+           IF TWO-B-WA (2) = " "
+               MOVE TWO-B-WA (1) TO TWO-B-WA (2)
+               MOVE "0" TO TWO-B-WA (1)
+           ELSE
+           IF TWO-B-WA (1) = " "
+               MOVE "0" TO TWO-B-WA (1).
+       6002-RAT-EXIT.    EXIT.
+
+       6011-SET-LABOR-RATE.
+           PERFORM 69-READ-PERSONNEL-FILE.
+           IF COND-WORD = 15
+               CLOSE PERSONNEL-FILE
+               OPEN INPUT PERSONNEL-FILE
+               GO TO 6011-SET-LABOR-RATE.
+           IF JOBPLAN-CRAFT NOT = PER-CRAFT
+               GO TO 6011-SET-LABOR-RATE.
+           IF PLR-X = "          " GO TO 6011-SET-LABOR-RATE.
+
+       6011-SLR-EXIT.    EXIT.
+
+       601-SAVE-SEQ.
+           PERFORM 69-START-WO-PLANNED-FILE.
+           IF COND-WORD = 17
+               MOVE 49030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WORK-ORDER-BUF TO ERROR-WO
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 2-EOJ.
+           PERFORM 69-READ-WO-PLANNED-FILE.
+           IF COND-WORD = 15
+               IF WORK-ORDER-BUF = WO-NUM-PLANNED
+                   NEXT SENTENCE
+               ELSE
+               MOVE 49028 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WORK-ORDER-BUF TO ERROR-WO
+               MOVE ERROR-BUFFER TO EDIT-ERROR
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 2-EOJ.
+           IF SCREEN-SEQ-SAVE = SPACES
+               MOVE "000" TO SCREEN-SEQ-SAVE.
+           MOVE SCREEN-SEQ-SAVE TO LAST-JOBPLAN-SEQ-1-3.
+           PERFORM 69-REWRITE-WO-PLANNED-FILE.
+           IF COND-WORD = 17
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE "SEQUENCE NO. UPDATE FAILED * TJOBPLAN *"
+                   TO BU-DISPLAY-MSG
+               MOVE "WO-PLANNED FILE" TO BU-DISPLAY-FLD (1)
+               MOVE WORK-ORDER-BUF TO BU-DISPLAY-FLD (2)
+               PERFORM 998-BLOWUP.
+       601-SS-EXIT.    EXIT.
+
+       61-MODIFY-JOBPLAN.
+           ADD 1 TO JPS-FOUND-SW.
+           IF JPS-FOUND-SW = 1
+               MOVE "FJOBPSEQ" TO VIEW-CFNAME
+               MOVE SPACES TO JOBPLAN-SEQU
+               MOVE JOBPLAN-SEQU TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO JOBPLAN-SEQU
+               MOVE WORK-ORDER-BUF TO JOBP-WO-NO
+               IF VIEW-LASTKEY = 1
+                   MOVE 0 TO JOBP-SEQ-NO
+                   PERFORM 69-START-JOBPLAN-FILE-GT
+               ELSE
+               PERFORM 61A-EDIT-SEQUENCE THRU 61A-ES-EXIT
+               IF JOBPLAN-SEQUENCE = "   "
+                   MOVE 0 TO JOBP-SEQ-NO
+                   PERFORM 69-START-JOBPLAN-FILE-GT
+               ELSE
+               IF JS-9 > LAST-JOBPLAN-SEQ-1-3
+                   MOVE 0 TO JOBP-SEQ-NO
+                   PERFORM 69-START-JOBPLAN-FILE-GT
+               ELSE
+               MOVE JOBPLAN-SEQUENCE TO JOBP-SEQ-NO
+               MOVE SPACES TO SCREEN-SEQ-SAVE
+               PERFORM 69-START-JOBPLAN-FILE-EQ
+               IF COND-WORD = 17
+                   MOVE 0 TO JOBP-SEQ-NO
+                   PERFORM 69-START-JOBPLAN-FILE-GT.
+           MOVE 0 TO TAB-SUB1 TAB-LIMIT.
+           MOVE SPACES TO JOBPLAN-SEQ-TABLE.
+       61-MJ-READ-NEXT.
+           PERFORM 69-READ-JOBPLAN-FILE THRU 69-RJF-EXIT
+               UNTIL COND-WORD = 15.
+           IF JOBPLAN-WO-NO NOT = WORK-ORDER-BUF
+               IF JOBP-WO-NO = WORK-ORDER-BUF
+                   NEXT SENTENCE
+               ELSE
+               MOVE 1 TO CHGADD-SW
+               PERFORM 60-ADD-JOBPLAN THRU 60-AJ-EXIT
+               GO TO 61-MJ-EXIT.
+           MOVE 0 TO TAB-SUB1 SUB1.
+           PERFORM 611-LOAD-TABLE-ENTRIES 12 TIMES.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE "FJOBPLPM" TO VIEW-CFNAME
+           ELSE
+           MOVE "FJOBPLAN" TO VIEW-CFNAME.
+           MOVE 39039 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE.
+           MOVE JOBP-SEQ-NO TO SCREEN-SEQ (1).
+           MOVE SCREEN-JOBP-DATA TO DSPLY-REC.
+           MOVE SCREEN-DATA TO SAVE-SCREEN-DATA.
+           PERFORM 99-SCREEN-WRITE.
+       61-MJ-READ.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO SCREEN-JOBP-DATA.
+           IF FORMS-RESET-SW = 1
+               MOVE 0 TO FORMS-RESET-SW
+               MOVE 4 TO VIEW-LASTKEY.
+           IF VIEW-LASTKEY = 4
+               IF WO-START-STATUS = "AA" OR "AR"
+                   IF VIEW-CFNAME = "FJOBPLP2"
+                       MOVE 0 TO VIEW-LASTKEY
+                   ELSE
+                   MOVE "FJOBPLP2" TO VIEW-CFNAME
+                   MOVE 35129 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   MOVE SPACES TO SCREEN-DATA SCREEN-PM-LEVEL
+                       SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+                   GO TO 61-MJ-READ
+               ELSE
+               IF VIEW-CFNAME = "FJOBPLA2"
+                   MOVE 0 TO VIEW-LASTKEY
+               ELSE
+               MOVE "FJOBPLA2" TO VIEW-CFNAME
+               MOVE 35129 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE SPACES TO SCREEN-DATA SCREEN-PM-LEVEL
+                   SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+               GO TO 61-MJ-READ.
+           IF VIEW-LASTKEY = 5
+               IF WO-START-STATUS = "AA" OR "AR"
+                   IF VIEW-CFNAME = "FJOBPLPM"
+                       MOVE 0 TO VIEW-LASTKEY
+                   ELSE
+                   MOVE "FJOBPLPM" TO VIEW-CFNAME
+                   MOVE 42077 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+                   MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   MOVE SPACES TO SCREEN-DATA SCREEN-PM-LEVEL
+                       SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+                   GO TO 61-MJ-READ
+               ELSE
+               IF VIEW-CFNAME = "FJOBPLAN"
+                    MOVE 0 TO VIEW-LASTKEY
+               ELSE
+               MOVE "FJOBPLAN" TO VIEW-CFNAME
+               MOVE 42077 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               MOVE SPACES TO SCREEN-DATA SCREEN-PM-LEVEL
+                   SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+               GO TO 61-MJ-READ.
+           IF VIEW-LASTKEY = 3
+               MOVE VIEW-LASTKEY TO SAVE-VIEW-LASTKEY-3.
+           MOVE 0 TO SUB.
+           PERFORM 600-EDIT-CHECKS THRU 600-EC-EXIT.
+       61-MJ-LOOP.
+           ADD 1 TO SUB.
+           IF SUB > 12
+               MOVE 42074 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               PERFORM 61B-CHECK-AND-LOAD-SEQ
+               MOVE JOBPLAN-SEQ-NO-1-3 TO P-SEQ
+               MOVE ERROR-2 TO SCREEN-DEPRESS-LINE
+               MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+               MOVE TRUE-VAL TO INDS (98)
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               IF HOLD-SEQ > SCREEN-SEQ-SAVE
+                   MOVE HOLD-SEQ TO SCREEN-SEQ-SAVE
+                   IF HS-9 > LAST-JOBPLAN-SEQ-1-3
+                       MOVE HOLD-SEQ TO LAST-JOBPLAN-SEQ
+                   ELSE
+                   NEXT SENTENCE
+               ELSE
+               IF HOLD-SEQ = SCREEN-SEQ-SAVE
+                   IF HOLD-SEQ = SPACES AND SCREEN-SEQ-SAVE = SPACES
+                       NEXT SENTENCE
+                   ELSE
+                   IF HS-9 > LAST-JOBPLAN-SEQ-1-3
+                        MOVE HOLD-SEQ TO LAST-JOBPLAN-SEQ
+                   ELSE
+                   NEXT SENTENCE
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           GO TO 61-MJ-LOOP-CONT.
+           MOVE 0 TO SUB.
+           IF SAVE-VIEW-LASTKEY-3 = 3
+               PERFORM 612-LOOP-WRITE-TABLE UNTIL TAB-SUB1 > TAB-LIMIT
+               MOVE LAST-JOBPLAN-SEQ TO SCREEN-SEQ-SAVE
+               PERFORM 601-SAVE-SEQ THRU 601-SS-EXIT
+               GO TO 2-EOJ.
+       61-MJL-CONT.
+           ADD 1 TO TAB-SUB1.
+           IF TAB-SUB1 > TAB-LIMIT
+               MOVE 0 TO TAB-SUB1 SUB1 TAB-LIMIT
+           ELSE
+           MOVE 0 TO SUB1
+           SUBTRACT 1 FROM TAB-SUB1
+           MOVE SPACES TO SCREEN-DATA SAVE-SCREEN-DATA
+               JOBPLAN-BUFFER SCREEN-PM-LEVEL
+               SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+           PERFORM 611-LOAD-TABLE-ENTRIES 12 TIMES
+           IF SCREEN-DATA = SPACES
+               GO TO 61-MJL-CONT
+           ELSE
+           MOVE SCREEN-JOBP-DATA TO DSPLY-REC
+           PERFORM 99-SCREEN-WRITE
+           GO TO 61-MJ-READ.
+           MOVE SPACES TO SCREEN-DATA SAVE-SCREEN-DATA
+               JOBPLAN-BUFFER SCREEN-PM-LEVEL
+               SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+               JOBPLAN-SEQ-TABLE.
+           MOVE 0 TO COND-WORD.
+           IF SAVE-JOBP-KEY = "END           "
+               MOVE 1 TO CHGADD-SW
+               MOVE SPACES TO JOBPLAN-SEQ-TABLE SCREEN-DATA
+                   SCREEN-PM-LEVEL SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+               PERFORM 60-ADD-JOBPLAN THRU 60-AJ-EXIT
+               MOVE LAST-JOBPLAN-SEQ TO SCREEN-SEQ-SAVE
+               PERFORM 601-SAVE-SEQ THRU 601-SS-EXIT
+               GO TO 2-EOJ.
+           MOVE SAVE-JOBP-KEY TO JOBP-KEY.
+           READ JOBPLAN-FILE-PF INTO JOBPLAN-BUFFER
+               INVALID KEY    MOVE 15 TO COND-WORD.
+           IF JFPF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               MOVE "MMISA" TO BLOWUP-BASE
+               MOVE "PHYS.READ/JOBPLAN-FILE FAILED * TJOBPLAN *"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           IF JOBPLAN-WO-NO NOT = WORK-ORDER-BUF
+               REWRITE JFPFREC FROM JOBPLAN-BUFFER
+               MOVE 1 TO CHGADD-SW
+               MOVE SPACES TO JOBPLAN-SEQ-TABLE SCREEN-DATA
+                   SCREEN-PM-LEVEL SCREEN-PM-FLAG SCREEN-PM-SUBSYS
+               PERFORM 60-ADD-JOBPLAN THRU 60-AJ-EXIT
+               GO TO 61-MJ-EXIT.
+           ADD 1 TO SUB.
+           MOVE JOBPLAN-SEQ-NO-1-3 TO SCREEN-SEQ (SUB)
+                                      JOBPLAN-PREV-SEQ.
+           ADD 1                TO TAB-SUB1.
+           IF TAB-SUB1 = 1
+               MOVE JOBP-LEVEL  TO JSTE-LEVEL (TAB-SUB1)
+               MOVE JOBP-FLAG   TO JSTE-FLAG (TAB-SUB1)
+               MOVE JOBP-SS     TO JSTE-SS (TAB-SUB1).
+           MOVE JOBPLAN-SEQ-NO  TO JSTE-SEQ (TAB-SUB1).
+           MOVE JOBPLAN-DESCRIP TO JSTE-DESC (TAB-SUB1).
+           MOVE JOBPLAN-DT      TO JSTE-DT (TAB-SUB1).
+           MOVE JOBPLAN-CRAFT   TO JSTE-CRFT (TAB-SUB1).
+           MOVE JOBPLAN-MEN     TO JSTE-MEN (TAB-SUB1).
+           MOVE JOBPLAN-EST     TO JSTE-EST (TAB-SUB1).
+           ADD 1 TO TAB-LIMIT.
+           PERFORM 69-DELETE-JOBPLAN-PF-RECORD.
+           GO TO 61-MJ-READ-NEXT.
+       61-MJ-LOOP-CONT.
+           IF SCREEN-LINE-REST (SUB) = SPACES
+               IF SCREEN-SEQ (SUB) > "000"
+                   MOVE SCREEN-SEQ (SUB) TO SCREEN-SEQ-SAVE
+               ELSE
+               GO TO 61-MJ-LOOP.
+           MOVE WORK-ORDER-BUF TO JOBPLAN-WO-NO.
+           IF SCREEN-SEQ (SUB) > "000"
+               IF SCREEN-SEQ (SUB) < SCREEN-SEQ-SAVE
+                   MOVE SCREEN-SEQ-SAVE TO HOLD-SEQ
+                   MOVE SCREEN-SEQ (SUB) TO JOBPLAN-SEQ-NO
+                       SCREEN-SEQ-SAVE
+               ELSE
+               IF SCREEN-SEQ (SUB) = SCREEN-SEQ-SAVE
+                   MOVE SCREEN-SEQ-SAVE TO JOBPLAN-SEQ-NO-1-3
+               ELSE
+               MOVE SCREEN-SEQ (SUB) TO JOBPLAN-SEQ-NO SCREEN-SEQ-SAVE
+                   HOLD-SEQ
+           ELSE
+           IF HOLD-SEQ > "000"
+               MOVE SCREEN-SEQ-SAVE TO JOBPLAN-SEQ-NO
+           ELSE
+      ****************************************************************
+      *    THE FOLLOWING 'IF' CHECKS WERE ADDED TO TRY TO BYPASS     *
+      *    A PROBLEM THAT OCCURS WHEN THE USER DELETES ONLY THE      *
+      *    FIRST LINE OF AN ENTIRE SEQUENCE AND LEAVES THE REST      *
+      *    OF THE SEQUENCE ON THE SCREEN (CODED 9-16-85).            *
+      ****************************************************************
+           IF JOBP-SEQ-NO > SCREEN-SEQ-SAVE
+               MOVE JOBP-SEQ-NO TO SCREEN-SEQ-SAVE JOBPLAN-SEQ-NO
+           ELSE
+           MOVE SCREEN-SEQ-SAVE TO JOBPLAN-SEQ-NO.
+           MOVE SCREEN-DESC (SUB) TO JOBPLAN-DESCRIP.
+           MOVE SCREEN-DT (SUB) TO JOBPLAN-DT.
+           MOVE SCREEN-CRAFT (SUB) TO JOBPLAN-CRAFT.
+           MOVE SCREEN-MEN (SUB) TO JOBPLAN-MEN-X.
+           MOVE SCREEN-EST (SUB) TO JOBPLAN-EST.
+           MOVE SCREEN-PM-LEVEL TO JOBP-LEVEL.
+           MOVE SCREEN-PM-FLAG  TO JOBP-FLAG.
+           MOVE SCREEN-PM-SUBSYS    TO JOBP-SS.
+           PERFORM 69-WRITE-JOBPLAN-FILE.
+           IF COND-WORD = 17
+               MOVE 49034 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WORK-ORDER-BUF TO ERROR-WO
+               MOVE TRUE-VAL TO INDS (99)
+               GO TO 61-MJ-EXIT.
+           MOVE 0 TO JOBP-SEQ-NO.
+           GO TO 61-MJ-LOOP.
+       61-MJ-EXIT.    EXIT.
+
+       61A-EDIT-SEQUENCE.
+           IF JOBPLAN-SEQUENCE = "   " GO TO 61A-ES-EXIT.
+           IF JS-X (3) = " "
+               IF JS-X (2) = " "
+                   IF JS-X (1) = " "
+                       MOVE "0" TO JS-X (1) JS-X (2)
+                       MOVE "1" TO JS-X (3)
+                   ELSE
+                   MOVE JS-X (1) TO JS-X (3)
+                   MOVE "0" TO JS-X (1) JS-X (2)
+               ELSE
+               MOVE JS-X (2) TO JS-X (3)
+               MOVE JS-X (1) TO JS-X (2)
+               MOVE "0" TO JS-X (1)
+           ELSE
+           IF JS-X (2) = " "
+               IF JS-X (1) = " "
+                   MOVE "0" TO JS-X (2) JS-X (1)
+               ELSE
+               MOVE JS-X (1) TO JS-X (2)
+               MOVE "0" TO JS-X (1)
+           ELSE
+           IF JS-X (1) = " "
+               MOVE "0" TO JS-X (1).
+       61A-ES-EXIT.    EXIT.
+       61B-CHECK-AND-LOAD-SEQ.
+           IF JOBPLAN-SEQ-NO-1-3 = "   "
+               MOVE JSTE-SEQ (1) TO JOBPLAN-SEQ-NO-1-3.
+       610-DM-SEQ-CHECK.
+           IF JOBPLAN-SEQ-NO-1-3 = JOBPLAN-PREV-SEQ
+               MOVE "   " TO SCREEN-SEQ (SUB)
+           ELSE
+           MOVE JOBPLAN-SEQ-NO-1-3 TO SCREEN-SEQ (SUB)
+               JOBPLAN-PREV-SEQ.
+       610-DMSC-EXIT.    EXIT.
+       61B-SET-FORM.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE "FJOBPLPM" TO VIEW-CFNAME
+           ELSE
+           MOVE "FJOBPLAN" TO VIEW-CFNAME.
+
+       611-LOAD-TABLE-ENTRIES.
+           ADD 1 TO TAB-SUB1.
+           ADD 1 TO SUB1.
+           IF SUB1 > 1
+               MOVE "   "               TO SCREEN-SEQ (SUB1)
+           ELSE
+           MOVE JSTE-SEQ (TAB-SUB1)     TO SCREEN-SEQ (SUB1).
+           MOVE JSTE-DESC (TAB-SUB1)    TO SCREEN-DESC (SUB1).
+           MOVE JSTE-DT (TAB-SUB1)      TO SCREEN-DT (SUB1).
+           MOVE JSTE-CRFT (TAB-SUB1)    TO SCREEN-CRAFT (SUB1).
+           MOVE JSTE-MEN (TAB-SUB1)     TO SCREEN-MEN (SUB1).
+           MOVE JSTE-EST (TAB-SUB1)     TO SCREEN-EST (SUB1).
+           IF TAB-SUB1 = 1
+               MOVE JSTE-LEVEL (TAB-SUB1)   TO SCREEN-PM-LEVEL
+               MOVE JSTE-FLAG (TAB-SUB1)    TO SCREEN-PM-FLAG
+               MOVE JSTE-SS (TAB-SUB1)      TO SCREEN-PM-SUBSYS.
+
+       612-LOOP-WRITE-TABLE.
+           ADD 1 TO TAB-SUB1.
+           IF JSTE (TAB-SUB1) NOT = SPACES
+               MOVE SPACES                TO JOBPLAN-BUFFER
+               MOVE WORK-ORDER-BUF        TO JOBPLAN-WO-NO
+               MOVE JSTE-SEQ (TAB-SUB1)   TO JOBPLAN-SEQ-NO
+               MOVE JSTE-DESC (TAB-SUB1)  TO JOBPLAN-DESCRIP
+               MOVE JSTE-DT (TAB-SUB1)    TO JOBPLAN-DT
+               MOVE JSTE-MEN (TAB-SUB1)   TO JOBPLAN-MEN-X
+               MOVE JSTE-EST (TAB-SUB1)   TO JOBPLAN-EST
+               MOVE JSTE-LEVEL (TAB-SUB1) TO JOBP-LEVEL
+               MOVE JSTE-FLAG (TAB-SUB1)  TO JOBP-FLAG
+               MOVE JSTE-SS (TAB-SUB1)    TO JOBP-SS
+               PERFORM 69-WRITE-JOBPLAN-FILE.
+
+       69-DELETE-JOBPLAN-FILE-RECORD.
+           MOVE 0 TO COND-WORD.
+           DELETE JOBPLAN-FILE RECORD
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-DELETE-JOBPLAN-PF-RECORD.
+           MOVE 0 TO COND-WORD.
+           DELETE JOBPLAN-FILE-PF RECORD
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JFPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-JOBPLAN-FILE.
+           MOVE 0 TO COND-WORD.
+           READ JOBPLAN-FILE NEXT INTO JOBPLAN-BUFFER
+             AT END
+               MOVE "END           " TO SAVE-JOBP-KEY
+               REWRITE JFREC FROM JOBPLAN-BUFFER
+               MOVE SPACES           TO JOBPLAN-BUFFER
+               GO TO 69-RJF-EXIT.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE IO-REL-NO TO PFKEY.
+           IF JOBP-SEQ-NO = 0 MOVE JOBPWOSEQ OF JFREC TO JOBP-KEY.
+           IF JOBP-KEY NOT = JOBPWOSEQ OF JFREC
+               MOVE JOBPWOSEQ OF JFREC TO SAVE-JOBP-KEY
+               REWRITE JFREC FROM JOBPLAN-BUFFER
+               MOVE 15 TO COND-WORD.
+           IF JOBP-WO-NO NOT = WORK-ORDER-BUF MOVE 15 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15  GO TO 69-RJF-EXIT.
+           ADD 1 TO TAB-SUB1.
+           IF TAB-SUB1 > 96
+               MOVE "TABLE LIMIT EXCEEDED" TO ERROR-BUFFER
+               MOVE "END           " TO SAVE-JOBP-KEY
+               REWRITE JFREC FROM JOBPLAN-BUFFER
+               MOVE SPACES           TO JOBPLAN-BUFFER
+               GO TO 69-RJF-EXIT.
+           IF TAB-SUB1 = 1
+               MOVE SPACES      TO JOBPLAN-SEQ-TABLE
+               MOVE JOBP-LEVEL  TO JSTE-LEVEL (TAB-SUB1)
+               MOVE JOBP-FLAG   TO JSTE-FLAG (TAB-SUB1)
+               MOVE JOBP-SS     TO JSTE-SS (TAB-SUB1).
+           MOVE JOBPLAN-SEQ-NO  TO JSTE-SEQ (TAB-SUB1).
+           MOVE JOBPLAN-DESCRIP TO JSTE-DESC (TAB-SUB1).
+           MOVE JOBPLAN-DT      TO JSTE-DT (TAB-SUB1).
+           MOVE JOBPLAN-CRAFT   TO JSTE-CRFT (TAB-SUB1).
+           MOVE JOBPLAN-MEN     TO JSTE-MEN (TAB-SUB1).
+           MOVE JOBPLAN-EST     TO JSTE-EST (TAB-SUB1).
+           ADD 1                TO TAB-LIMIT.
+           PERFORM 69-DELETE-JOBPLAN-FILE-RECORD.
+       69-RJF-EXIT.    EXIT.
+
+       69-READ-JOBPLAN-NEXT-SEQ.
+           MOVE 0 TO COND-WORD.
+           READ JOBPLAN-FILE NEXT INTO JOBPLAN-BUFFER
+               AT END    MOVE 15 TO COND-WORD.
+           IF JOBP-KEY = JOBPWOSEQ OF JFREC
+               GO TO 69-READ-JOBPLAN-NEXT-SEQ.
+
+       69-START-JOBPLAN-FILE-GT.
+           MOVE 0 TO COND-WORD.
+           MOVE JOBP-KEY TO JOBPWOSEQ OF JFREC.
+           START JOBPLAN-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-START-JOBPLAN-FILE-EQ.
+           MOVE 0 TO COND-WORD.
+           MOVE JOBP-KEY TO JOBPWOSEQ OF JFREC.
+           START JOBPLAN-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-WRITE-JOBPLAN-FILE.
+           MOVE 0 TO COND-WORD.
+           WRITE JFREC FROM JOBPLAN-BUFFER
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-PERSONNEL-FILE.
+           MOVE 0 TO COND-WORD.
+           READ PERSONNEL-FILE NEXT INTO PER-PERSONNEL-DATA
+               AT END    MOVE 15 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+
+       69-START-WO-CRAFTS-REQD-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE SCREEN-CRAFT (SUB) TO CRAFTREQD OF WCRFREC.
+           START WO-CRAFTS-REQD-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WCRF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           READ WO-PLANNED-FILE NEXT INTO WO-PLANNED-DATA
+               AT END    MOVE 15 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+
+       69-REWRITE-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           REWRITE WPFREC FROM WO-PLANNED-DATA
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-START-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE WORK-ORDER-BUF TO WONUM OF WPFREC.
+           START WO-PLANNED-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+           MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       98A-SCREEN-READ.
+           READ DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDIC IS INDICS
+                  NO DATA MOVE DSPLY-STATUS TO DSPLY-STATUS.
+           MOVE ALL B"0" TO INDICS.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+       998-BLOWUP.
+           MOVE "TJOBPLAN" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+                            VIEW-COMAREA DUMMY-KSAM-STAT
+                            BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

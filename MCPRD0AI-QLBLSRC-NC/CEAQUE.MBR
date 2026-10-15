@@ -1,0 +1,778 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          CEAQUE.
+       AUTHOR.              C HILLES/JIM COFFMAN (MAINTAINER).
+       DATE-WRITTEN.        9/2/87.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.
+      *D   ELECTRONIC REQUISITION APPROVALS - QUEUE UP A REQ SUBPROGRAM.
+      *D   THIS SUBPROGRAM WILL QUEUE UP A REQ TO EACH PERSON THAT NEEDS
+      *D   TO APPROVE IT, BASED ON THE PATH THE REQ BELONGS TO.  (THE
+      *D   PATH IS DETERMINED BY 'CEARQPH' SUBPROGRAM.
+      *D   NOTE: CALLING PROGRAM MUST LOCK DSET 'DREQQUE' AND 'MREQ'
+      *C
+      *C               CALLING PROGRAMS: CEAFIXPH
+      *C                                 CEAQNEXT
+      *C                                 CEAREQUE
+      *C                                 CEARQPH
+      *C                                 CEARQPH2
+      *C                                 CMANREQ
+      *C                                 SEARETRN
+      *C                                 TEACHECK
+      *C                                 TEARETRN
+      *C                                 TREQUPDT
+      *C
+      *C   05/05/94  JE COFFMAN  WRITTEN REQUEST 94-001/SLS REQ 6487
+      *C     ADDED THE ABILITY TO ALLOW 'SS' STATUS REQUISITIONS
+      *C     THAT HAVE THE AUTHORIZATION FLAG SET VIA MP1 TO BE
+      *C     CHANGED.
+      *C
+      *C  08/14/96  JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     INCLUDE CENTURY ON APPROVED AND QUEUED DATES.
+      *C
+      *C  02/25/00  JE COFFMAN
+      *C     ADDED NEW COPYLIB ENTRY EAQ-TO-LEVEL IN MEMBER
+      *C     CEAQUE TO PASS THE LEVEL NUMBER OF THE APPROVER
+      *C     THAT A REQUISITION IS BEING RETURNED TO SO THAT
+      *C     THE RETURNING COMMENTS COULD BE LOADED INTO THAT
+      *C     APPROVERS AREA ON THE SCREEN.
+      *C
+      *C  12/08/03  BRUCE GEISER
+      *C     CORRECTED PT-LV-O-S FIELD EDIT LOGIC. IT WAS MOVING
+      *C     AN "S" TO PT-LEVEL INSTEAD OF PT-LV-O-S.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MREQ-O
+                  ASSIGN TO DATABASE-MCFLCS2001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPATH-I
+                  ASSIGN TO DATABASE-MCFLCS3901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MLEVEL-I
+                  ASSIGN TO DATABASE-MCFLCS4101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQQUE-O
+                  ASSIGN TO DATABASE-MCFLCS4401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPATHDEF-I
+                  ASSIGN TO DATABASE-MCFLCS4001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MREQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-REC-O.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  MPATH-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPATH-REC-I.
+           COPY DDS-MCRPCS3900  OF MCFLCS3901.
+
+       FD  MLEVEL-I
+           LABEL RECORDS ARE STANDARD.
+       01  MLEVEL-REC-I.
+           COPY DDS-MCRPCS4100  OF MCFLCS4101.
+
+       FD  DREQQUE-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQQUE-REC-O.
+           COPY DDS-MCRPCS4400  OF MCFLCS4401.
+
+       FD  DPATHDEF-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPATHDEF-REC-I.
+           COPY DDS-MCRPCS4000  OF MCFLCS4001.
+
+       WORKING-STORAGE SECTION.
+
+       77  QUE-COUNT                     PIC 9(2)  VALUE 0.
+       77  SUB                           PIC S9(4) COMP-4.
+       77  SUB2                          PIC S9(4) COMP-4.
+       77  SUB3                          PIC S9(4) COMP-4.
+       77  ADD-SUB                       PIC S9(4) COMP-4.
+       77  TABLE-LIMIT                   PIC S9(4) COMP-4.
+       77  DUP-FOUND-FLAG                PIC X(1).
+       77  ADD-DUP-FLAG                  PIC X(1).
+       77  ORDER-COUNT                   PIC 9(4).
+       77  LOW-VALUE-9                   PIC 9(14).
+       77  HIGH-VALUE-9                  PIC 9(14).
+       77  MATCHED-DPATHD                PIC X(1).
+
+       01  BLOWUP-WORK.
+           05  BW-MSG                    PIC X(39).
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  BW-REQ-ARG                PIC X(8).
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  BW-REQNO                  PIC X(8).
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  BW-FILE-STATUS            PIC X(2).
+
+       01  PATH-TABLE.
+           05  PATH-LINE OCCURS 36 TIMES.
+               10  PT-LEVEL              PIC X(2).
+               10  PT-EMPL               PIC X(4).
+               10  PT-LV-O-S             PIC X(1).
+
+       01  SAVE-ADD-LEV-TABLE.
+           05  SAVE-ADD-LEV-LINE OCCURS 24 TIMES.
+               10  SAVE-ADD-LEV          PIC X(2).
+
+      **************************************************************
+      **                                                          **
+      **            D A T A B A S E   W O R K                     **
+      **                                                          **
+      **************************************************************
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16) VALUE SPACES.
+           05  DSET-MPATH                PIC X(16) VALUE "MPATH;".
+           05  DSET-DREQQUE              PIC X(16) VALUE "DREQQUE;".
+           05  DSET-MREQ                 PIC X(16) VALUE "MREQ;".
+           05  DSET-MLEVEL               PIC X(16) VALUE "MLEVEL;".
+           05  DSET-DPATHDEF             PIC X(16) VALUE "DPATHDEF;".
+
+       01  MODE-AREA.
+           05  DB-MODE                   PIC S9(4)   COMP       VALUE 0.
+           05  MODE1                     PIC S9(4)   COMP       VALUE 1.
+           05  MODE2                     PIC S9(4)   COMP       VALUE 2.
+           05  MODE3                     PIC S9(4)   COMP       VALUE 3.
+           05  MODE5                     PIC S9(4)   COMP       VALUE 5.
+           05  MODE7                     PIC S9(4)   COMP       VALUE 7.
+
+       01  ALL-ITEMS                     PIC X(2)  VALUE "@;".
+       01  LEVEL-SEARCH                  PIC X(10) VALUE "LEVEL-NUM;".
+       01  LEVEL-ARG                     PIC X(2).
+       01  PATH-SEARCH                   PIC X(16) VALUE "PATH-NUM;".
+       01  EMPLOYEE-ARG                  PIC X(4).
+       01  PATH-ARG                      PIC X(4).
+
+      ******************************************************************
+      **                                                              **
+      **          S U B P R O G R A M   A R E A S                     **
+      **                                                              **
+      ******************************************************************
+       COPY TDATECHK   IN COPYLIB.
+       COPY CEAQNEXT   IN COPYLIB.
+       COPY CEARQPH    IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   B U F F E R S                **
+      **                                                          **
+      **************************************************************
+
+       COPY MPATH      IN COPYLIB.
+       COPY DREQQUE    IN COPYLIB.
+       COPY DPATHDEF   IN COPYLIB.
+       COPY MLEVEL     IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **            L I N K A G E   S E C T I O N                 **
+      **                                                          **
+      **************************************************************
+
+       LINKAGE SECTION.
+       01  BASE                          PIC X(10).
+       COPY DBSTAT     IN COPYLIB.
+       COPY CEAQUE     IN COPYLIB.
+       COPY REQGLOBS   IN COPYLIB.
+       COPY MREQ       IN COPYLIB.
+       01  BU-DISPLAY-MSG.
+           05  BU-DISPLAY-MSG-1          PIC X(1).
+           05  FILLER                    PIC X(59).
+
+       PROCEDURE DIVISION USING          BASE
+                                         STATUS-AREA,
+                                         EAQ-AREA,
+                                         REQ-GLOBALS,
+                                         BUF-MREQ,
+                                         BU-DISPLAY-MSG.
+
+       6000-MAIN.
+           MOVE 0                        TO  QUE-COUNT.
+           OPEN I-O MREQ-O, DREQQUE-O.
+           OPEN INPUT MPATH-I, MLEVEL-I, DPATHDEF-I.
+           MOVE 0                        TO  ORDER-COUNT.
+      *------ CANT QUEUE UP IF ON PO|  (THIS SHOULD BE EDITED IN
+      *------ CALLING PROG). OTHERWISE, SET RLSE STAT TO SPACES.
+      *------  "XX" = ON PO                   CANT PROCESS
+      *------  "X " = APPROVED, IN PURCH      BEING RETURNED, SET TO "  "
+      *------  "  " = WAITING APPROVALS       NORMAL STATE, LEAVE AS IS
+           IF REQ-RELEASE-STAT = "XX"
+               GO TO 6990-MAIN-X
+           ELSE
+           MOVE SPACES               TO  REQ-RELEASE-STAT.
+
+      *------ LEVEL 00 IS ALWAYS QUEUED UP FIRST FOR THE
+      *------ ORIGINATOR.
+           MOVE EAQ-REQ-NUMBER           TO  DRQQ-REQ-NUMBER.
+           MOVE EAQ-ORIG-EMPL            TO  DRQQ-EMPL-QUEUED,
+                                              DRQQ-EQ-EMPL.
+           MOVE EAQ-QUEUE-TYPE           TO  DRQQ-TYPE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT             TO  DRQQ-QUEUED-DATE.
+           IF DRQQ-QUEUED-DATE-YY > "70"
+               MOVE "19" TO DRQQ-QUEUED-DATE-CC
+           ELSE
+               MOVE "20" TO DRQQ-QUEUED-DATE-CC
+           END-IF.
+      *------ IF WE ARE RE-QUEUEING A RETURNED REQ, WE DON'T QUEUE TO
+      *------ THE FIRST APPROVER.  THAT WILL HAPPEN AFTER THE ORIG
+      *------ MODIFIES THE REQ.
+           IF REQ-HOLD-STATUS-CODE = "RT"
+               MOVE SPACES               TO  DRQQ-APPROVE-DATE-CN
+               ADD 1                     TO  QUE-COUNT
+           ELSE
+               MOVE DATE-YMD-OUT         TO  DRQQ-APPROVE-DATE
+               IF DRQQ-APPROVE-DATE-YY > "70"
+                   MOVE "19" TO DRQQ-APPROVE-DATE-CC
+               ELSE
+                   MOVE "20" TO DRQQ-APPROVE-DATE-CC.
+
+      *---------- COMMENTS WERE BEING DROPPED IF USER DID NOT
+      *---------- SPECIFY THE "00" RETURN LEVEL.  WRITE THE
+      *---------- RETURN COMMENTS IF THEY EXIST.
+      **** IF EAQ-TO-LEVEL = "00"
+               IF EAQ-REASON-1 > SPACES
+                   MOVE EAQ-REASON-1     TO  DRQQ-COMMENT-1
+               ELSE
+               MOVE SPACES               TO  DRQQ-COMMENT-1.
+      **** IF EAQ-TO-LEVEL = "00"
+               IF EAQ-REASON-2 > SPACES
+                   MOVE EAQ-REASON-2     TO  DRQQ-COMMENT-2
+               ELSE
+               MOVE SPACES               TO  DRQQ-COMMENT-2.
+           MOVE SPACES                   TO  DRQQ-FLAGS.
+           MOVE EAQ-ORIG-EMPL            TO  DRQQ-EMPL-ORIG,
+                                              DRQQ-EO-EMPL.
+           MOVE "00"                     TO  DRQQ-LEVEL-NUM.
+           MOVE "X "                     TO  DRQQ-EQ-ST.
+           MOVE SPACES                   TO  DRQQ-EO-ST.
+           MOVE SPACES                   TO  DRQQ-PAD.
+
+      *------ THE 'ORIG-FLAG' IS FOR THE FIRST ENTRY IN THE
+      *------ QUEUE FOR THIS REQ: SO THAT THE REQ INQUIRY BY ORIGINATOR
+      *------ CAN SHOW JUST 1 REQ PER ORIGINATOR.
+           MOVE "X"                      TO  DRQQ-ORIG-FLAG
+
+           ADD 1                         TO  ORDER-COUNT.
+           MOVE ORDER-COUNT              TO  DRQQ-ORDER.
+      *    CALL "DBPUT" USING BASE, DSET-DREQQUE, MODE1, STATUS-AREA,
+      *      ALL-ITEMS, BUF-DREQQUE.
+           WRITE DREQQUE-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE 99       TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAQUE DBPUT ERR DREQQUE 6000-M"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+      *------ CODED STR ITEMS: ONLY THE ORIGINATOR LEVEL '00' IS
+      *------ QUEUED, SO THE INQUIRY BY ORIGINATOR WILL WORK.
+      *------ A BYPASS WAS ADDED PER REQUEST 94-001 TO ALLOW
+      *------ A STOREROOM REQ TO BE QUEUED TO A DEFAULT APPROVAL
+      *------ PATH IF THE AUTH FLAG FOR THE CORPORATE CODE WAS
+      *------ TURNED ON VIA MP1
+           IF EAQ-AUTH-FLAG = "X"
+               NEXT SENTENCE
+           ELSE
+           IF REQ-STATUS = "SS"
+               GO TO 6990-MAIN-X.
+
+      *    CALL "DBGET" USING BASE, DSET-MPATH, MODE7, STATUS-AREA,
+      *      ALL-ITEMS, BUF-MPATH, EAQ-PATH-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE EAQ-PATH-ARG             TO  PATHNUM OF MPATH-REC-I.
+           READ MPATH-I INTO BUF-MPATH
+               INVALID KEY MOVE 17       TO  COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17                   TO  COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99                   TO  COND-WORD.
+           IF NOT GOOD-CALL
+               MOVE "CEAQUE DBGET ERR MPATH 6000-M" TO BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+      *------ BECAUSE WE MAY HAVE TO COMBINE 2 PATHS INTO ONE, WE LOAD
+      *------ ALL PATHS INTO A TABLE.  IF THE 2CD PATH IS USED, WE ALSO
+      *------ LOAD IT INTO TABLE, BUT SKIP DUPLICATE LEVELS.
+           MOVE 0                        TO  SUB,
+                                              SUB2.
+           PERFORM 9010-MOVE-PATH-TABLE 12 TIMES.
+           MOVE SUB2                     TO  TABLE-LIMIT.
+
+           IF EAQ-PATH-ARG-NUMBER2 = 0
+              NEXT SENTENCE
+           ELSE
+      *        CALL "DBGET" USING BASE, DSET-MPATH, MODE7, STATUS-AREA,
+      *          ALL-ITEMS, BUF-MPATH, EAQ-PATH-ARG2
+               MOVE EAQ-PATH-ARG2        TO  PATHNUM OF MPATH-REC-I
+               READ MPATH-I INTO BUF-MPATH
+                   INVALID KEY MOVE 17   TO  COND-WORD
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE "CEAQUE DBGET ERR MPATH2 6000-M"
+                                         TO  BU-DISPLAY-MSG
+                   GO TO 6990-MAIN-X
+               ELSE
+                   MOVE 0                TO  SUB
+                   MOVE TABLE-LIMIT      TO  SUB2
+                   PERFORM 9020-MOVE-PATH-NODUPS 12 TIMES
+                   MOVE SUB2             TO  TABLE-LIMIT.
+
+      *------ THE 'A' PATHS CONTAIN LEVELS THAT WILL BE ADDED TO ALL PATHS
+      *------ IF THE REQ MATCHES THAT PATH.  BUT, A REQ CAN ONLY MATCH 1
+      *------ 'A' PATH.  EXAMPLE: FOR ALL REQS > $500, ADD THE PLANT
+      *------ MANAGER.
+      *------ NOTE: ADDITIONAL LEVELS NEVER ADDED FOR PATH 1.
+           IF NO-PATH-A = "Y"
+               NEXT SENTENCE
+           ELSE
+           IF EAQ-PATH-ARG-NUMBER = 1
+               NEXT SENTENCE
+           ELSE
+               MOVE "A"                  TO  RQPH-PATH-TYPE
+               MOVE REQ-SUB              TO  RQPH-CLASS
+               MOVE REQ-SUBD             TO  RQPH-REQ-DEPT
+               MOVE REQ-SUBD             TO  RQPH-DEPARTMENT
+               MOVE REQ-ADDTL-DATA       TO  RQPH-EXPENSE-CLASS
+               MOVE REQ-BUDGET-NO        TO  RQPH-BUDGET-NUMBER
+               MOVE REQ-BUDGET-AMT       TO  RQPH-VALUE
+               MOVE "N"                  TO  RQPH-WO-APPROVED
+               CALL "CEARQPH" USING BASE, STATUS-AREA, RQPH-AREA,
+                 BU-DISPLAY-MSG
+               IF BU-DISPLAY-MSG-1 = SPACES
+                   IF RQPH-RET-PATH-NUM > 1
+      *                CALL "DBGET" USING BASE, DSET-MPATH, MODE7,
+      *                  STATUS-AREA, ALL-ITEMS, BUF-MPATH,
+      *                  RQPH-RET-PATH
+                       MOVE RQPH-RET-PATH TO PATHNUM OF MPATH-REC-I
+                       READ MPATH-I INTO BUF-MPATH
+                           INVALID KEY MOVE 17 TO COND-WORD
+                       END-READ
+                       IF FILE-STATUS = "00"
+                           MOVE 0        TO  SUB
+                           MOVE TABLE-LIMIT TO SUB2
+                           PERFORM 9020-MOVE-PATH-NODUPS 12 TIMES
+                           MOVE SUB2     TO  TABLE-LIMIT
+                       ELSE
+                       MOVE "CEAQUE DBGET MPATH3" TO BU-DISPLAY-MSG
+                       GO TO 6990-MAIN-X
+                   ELSE
+      *            ** CEARQPH RETURN 'X' SAYS NO PATH TYPE 'A' EXISTS,
+      *            ** DONT WASTE TIME TRYING IT ANY MORE.
+                   IF RQPH-RET-DEFAULT-FLAG = "X"
+                       MOVE "Y"          TO  NO-PATH-A
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+                   GO TO 6990-MAIN-X.
+
+      *------ ALL THE LEVELS ARE NOW LOADED FROM THE MPATH DATASET TO
+      *------ THE TABLE.  1 PATH CAN HAVE 12 LEVELS MAX, SINCE YOU CAN
+      *------ COMBINE 2 YOU HAVE 24, AND YOU CAN HAVE 12 ADD LEVELS,
+      *------ SO TOTAL IS 36 POSSIBLE LEVELS.
+           MOVE 0                        TO  SUB.
+       6010-GET-LEVELS-LOOP.
+           ADD 1                         TO  SUB.
+           IF SUB > TABLE-LIMIT
+               GO TO 6200-ADDITIONS.
+
+       6100-QUEUE-UP.
+      *------ FOR THIS LEVEL ON THE REQ PATH, WE HAVE FOUND AN ACTIVE
+      *------ EMPLOYEE (APPROVER).  SO QUEUE UP THE REQ FOR THE EMPL TO
+      *------ APPROVE.  LEAVE QUEUE DATE SPACES. 'CEAQNEXT' WILL FIGURE
+      *------ OUT WHO TO UPDATE QUEUED DATE FOR (DEPENDING ON WHICH
+      *------ LEVELS ARE SIMULTANEOUS OR IN-ORDER QUEUEING).
+           IF PT-LV-O-S (SUB) = "O" OR "S"
+               NEXT SENTENCE
+           ELSE
+               MOVE "S"                  TO  PT-LV-O-S (SUB).
+           MOVE EAQ-REQ-NUMBER           TO  DRQQ-REQ-NUMBER.
+           MOVE PT-EMPL (SUB)            TO  DRQQ-EMPL-QUEUED,
+                                              DRQQ-EQ-EMPL.
+           MOVE EAQ-QUEUE-TYPE           TO  DRQQ-TYPE.
+           MOVE SPACES                   TO  DRQQ-QUEUED-DATE-CN.
+           MOVE SPACES                   TO  DRQQ-APPROVE-DATE-CN.
+           MOVE SPACES                   TO  DRQQ-COMMENT-1.
+           MOVE SPACES                   TO  DRQQ-COMMENT-2.
+           MOVE SPACES                   TO  DRQQ-FLAGS.
+           MOVE EAQ-ORIG-EMPL            TO  DRQQ-EMPL-ORIG,
+                                              DRQQ-EO-EMPL.
+           MOVE PT-LEVEL (SUB)           TO  DRQQ-LEVEL-NUM.
+           IF EAQ-TO-LEVEL = DRQQ-LEVEL-NUM
+               IF EAQ-REASON-1 > SPACES
+                   MOVE EAQ-REASON-1     TO  DRQQ-COMMENT-1
+               END-IF
+               IF EAQ-REASON-2 > SPACES
+                   MOVE EAQ-REASON-2     TO  DRQQ-COMMENT-2
+               END-IF.
+           MOVE PT-LV-O-S (SUB)          TO  DRQQ-INORD-SIMEL.
+           MOVE SPACES                   TO  DRQQ-EQ-ST,
+                                              DRQQ-EO-ST.
+
+           ADD 1                         TO  ORDER-COUNT.
+           MOVE ORDER-COUNT              TO  DRQQ-ORDER.
+      *    CALL "DBPUT" USING BASE, DSET-DREQQUE, MODE1, STATUS-AREA,
+      *      ALL-ITEMS, BUF-DREQQUE.
+           WRITE DREQQUE-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE 99       TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAQUE DBPUT ERR DREQQUE 6100-QU"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+      *------ UPDATE THE TOTAL NUMBER OF APPROVALS REQUIRED
+           ADD 1                         TO  QUE-COUNT.
+
+      *------ NOW THAT WE HAVE QUEUED UP THE REQ FOR THIS APPROVER,
+      *------ GO GET THE NEXT LEVEL TO QUEUE TO
+           GO TO 6010-GET-LEVELS-LOOP.
+
+       6200-ADDITIONS.
+      *------ IF WORKORDER APPROVAL IS NOT REQUIRED TO CUT A REQ, BUT
+      *------ IT IS REQUIRED TO APPROVE A REQ, PUT AN ADDITIONAL LEVEL OUT
+      *------ THERE TO APPROVE.
+           IF EAQ-WO-FLAG = "Y"
+             IF WOAP-TO-CUT-REQ = "N" AND WOAP-TO-APP-REQ = "Y"
+               MOVE EAQ-REQ-NUMBER       TO  DRQQ-REQ-NUMBER
+               MOVE "WOAP"               TO  DRQQ-EMPL-QUEUED,
+                                              DRQQ-EQ-EMPL
+               MOVE EAQ-QUEUE-TYPE       TO  DRQQ-TYPE
+               MOVE DATE-YMD-OUT         TO  DRQQ-QUEUED-DATE
+               IF DRQQ-QUEUED-DATE-YY > "70"
+                   MOVE "19" TO DRQQ-QUEUED-DATE-CC
+               ELSE
+                   MOVE "20" TO DRQQ-QUEUED-DATE-CC
+               END-IF
+               PERFORM 9000-MOVE-APPDATE-98
+               MOVE SPACES               TO  DRQQ-COMMENT-1
+                                              DRQQ-COMMENT-2
+                                              DRQQ-FLAGS
+               MOVE EAQ-ORIG-EMPL        TO  DRQQ-EMPL-ORIG,
+                                              DRQQ-EO-EMPL
+               MOVE "98"                 TO  DRQQ-LEVEL-NUM
+               ADD 1                     TO  ORDER-COUNT
+               MOVE ORDER-COUNT          TO  DRQQ-ORDER
+      *        CALL "DBPUT" USING BASE, DSET-DREQQUE, MODE1,
+      *          STATUS-AREA, ALL-ITEMS, BUF-DREQQUE
+               WRITE DREQQUE-REC-O FROM BUF-DREQQUE
+                   INVALID KEY MOVE 99   TO  COND-WORD
+               END-WRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "CEAQUE DBPUT ERR DREQQUE 6200-UM"
+                                         TO  BU-DISPLAY-MSG
+                   GO TO 6990-MAIN-X.
+
+      *------ DON'T DO ANY LEVEL ADDITIONS FOR THE DEFAULT PATH
+           IF EAQ-PATH-ARG-NUMBER = 1
+               GO TO 6300-UPDATE-MREQ.
+
+      *------ IF PATH 999 WASN'T THERE, DON'T TRY AND GET IT THE NEXT
+      *------ TIME
+           IF NO-PATH-999 = "Y"
+               GO TO 6300-UPDATE-MREQ.
+
+      *------ THE "999" PATH WILL TELL US ANY LEVEL ADDITIONS THAT ARE
+      *------ MADE TO EVERY PATH.  ADD-SUB KEEPS TRACK OF HOW MANY
+      *------ LEVELS WE ADD, A TABLE IS MAINTAINED SO WE DON'T ADD
+      *------ DUPLICATES.
+           MOVE 0                        TO  ADD-SUB.
+           MOVE "A999"                   TO  PATH-ARG.
+      *    CALL "DBFIND" USING BASE, DSET-DPATHDEF, MODE1,
+      *      STATUS-AREA, PATH-SEARCH,  PATH-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE PATH-ARG                 TO  PATHNUM OF DPATHDEF-REC-I.
+           START DPATHDEF-I KEY = PATHNUM OF DPATHDEF-REC-I
+               INVALID KEY MOVE 0        TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0                TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+           IF NO-ENTRY
+               MOVE "Y"                  TO  NO-PATH-999
+               GO TO 6300-UPDATE-MREQ
+           ELSE
+           IF NOT GOOD-CALL
+               MOVE "CEAQUE DBFIND ERR DPATHD 6200-UM"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+       6210-ADD-LEVELS-LOOP.
+      *    CALL "DBGET" USING BASE, DSET-DPATHDEF, MODE5,
+      *      STATUS-AREA, ALL-ITEMS, BUF-DPATHDEF, PATH-ARG.
+           MOVE 0                        TO  COND-WORD.
+           READ DPATHDEF-I NEXT INTO BUF-DPATHDEF
+               AT END MOVE 15            TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15               TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+           IF PATHNUM OF DPATHDEF-REC-I NOT = PATH-ARG
+               MOVE 15                   TO  COND-WORD.
+           IF END-OF-CHAIN
+               GO TO 6300-UPDATE-MREQ
+           ELSE
+           IF NOT GOOD-CALL
+               MOVE "CEAQUE DBGET ERR 6210-ALL" TO BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+      *------ WE HAVE TO CHECK BOTH THE ACTUAL PATH LEVELS AND THE
+      *------ PREVIOUSLY ADDED PATH '999' LEVELS FOR DUPLICATES BEFORE
+      *------ ADDING IN THE NEW LEVEL.
+           PERFORM 7100-CHECK-DPATHDEF.
+           MOVE "N"                      TO  ADD-DUP-FLAG.
+           MOVE 0                        TO  SUB.
+           PERFORM 7150-CHECK-DUP-ADD ADD-SUB TIMES.
+           IF ADD-DUP-FLAG = "N"
+               MOVE "N"                  TO  ADD-DUP-FLAG
+               MOVE 0                    TO  SUB
+               PERFORM 7160-CHECK-DUP-LEV TABLE-LIMIT TIMES
+               IF ADD-DUP-FLAG = "N"
+                   IF MATCHED-DPATHD = "Y"
+                       PERFORM 7200-ADD-NEW-LEVEL THRU 7290-ANL-X
+                       GO TO 6210-ADD-LEVELS-LOOP.
+
+           GO TO 6210-ADD-LEVELS-LOOP.
+
+       6300-UPDATE-MREQ.
+           MOVE QUE-COUNT                TO  REQ-APPROVALS-LEFT-9.
+           MOVE EAQ-PATH-ARG-NUMBER      TO  REQ-PATH.
+      *    CALL "DBUPDATE" USING BASE, DSET-MREQ, MODE1, STATUS-AREA,
+      *      ALL-ITEMS, BUF-MREQ.
+           REWRITE MREQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE 99       TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAQUE UPDATE ERR MREQ 6200-UM" TO BW-MSG
+               MOVE MREQ-NUMBER          TO  BW-REQ-ARG
+               MOVE REQNO OF MREQ-REC-O  TO  BW-REQNO
+               MOVE FILE-STATUS          TO  BW-FILE-STATUS
+               MOVE BLOWUP-WORK          TO  BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+      *------ NOW CALL SUBPROG TO UPDATE 'QUEUED-DATE' FOR THOSE
+      *------ APPROVERS THAT NEED IT.  BUT WE DONT NEED TO IF REQ
+      *------ IS RETURNED, SINCE WE DONT QUEUE TO 1ST APPROVER UNTIL
+      *------ ORIGINATOR MODIFIES THE REQ.
+           IF EAQ-MODE = "U" MOVE "U" TO QNEXT-MODE.
+           IF REQ-HOLD-STATUS-CODE = "RT"
+               NEXT SENTENCE
+           ELSE
+               MOVE ZERO                 TO  QNEXT-REC-NO
+               CALL "CEAQNEXT" USING          BASE,
+                                              STATUS-AREA,
+                                              REQ-GLOBALS,
+                                              BUF-MREQ,
+                                              BUF-DREQQUE,
+                                              QNEXT-PARMS,
+                                              BU-DISPLAY-MSG
+               IF BU-DISPLAY-MSG-1 NOT = SPACES
+                   GO TO 6990-MAIN-X.
+
+       6990-MAIN-X.
+           CLOSE MREQ-O, MPATH-I, MLEVEL-I, DREQQUE-O, DPATHDEF-I.
+           GOBACK.
+
+       7100-CHECK-DPATHDEF.
+           MOVE "N"                      TO  MATCHED-DPATHD.
+           IF DPATHD-TYPE = "V"
+               MOVE DPATHD-LOW-VALUE     TO  LOW-VALUE-9
+               MOVE DPATHD-HIGH-VALUE    TO  HIGH-VALUE-9.
+
+           IF DPATHD-TYPE = "C"
+               IF REQ-SUB < DPATHD-LOW-VALUE
+                   NEXT SENTENCE
+               ELSE
+               IF REQ-SUB > DPATHD-HIGH-VALUE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "Y"              TO  MATCHED-DPATHD
+            ELSE
+            IF DPATHD-TYPE = "D"
+                IF REQ-SUBD < DPATHD-LOW-VALUE
+                   NEXT SENTENCE
+               ELSE
+               IF REQ-SUBD > DPATHD-HIGH-VALUE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "Y"              TO  MATCHED-DPATHD
+           ELSE
+           IF DPATHD-TYPE = "E"
+               IF REQ-ADDTL-DATA < DPATHD-LOW-VALUE
+                   NEXT SENTENCE
+               ELSE
+               IF REQ-ADDTL-DATA > DPATHD-HIGH-VALUE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "Y"              TO  MATCHED-DPATHD
+           ELSE
+           IF DPATHD-TYPE = "B"
+               IF REQ-BUDGET-NO < DPATHD-LOW-VALUE
+                   NEXT SENTENCE
+               ELSE
+               IF REQ-BUDGET-NO > DPATHD-HIGH-VALUE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "Y"              TO  MATCHED-DPATHD
+           ELSE
+           IF DPATHD-TYPE = "V"
+               IF REQ-BUDGET-AMT < LOW-VALUE-9
+                   NEXT SENTENCE
+               ELSE
+               IF REQ-BUDGET-AMT > HIGH-VALUE-9
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "Y"              TO  MATCHED-DPATHD.
+
+
+       7150-CHECK-DUP-ADD.
+           ADD 1                         TO  SUB.
+           IF SUB < 25
+               IF SAVE-ADD-LEV (SUB) = DPATHD-LEVEL
+                   MOVE "Y"              TO  ADD-DUP-FLAG.
+
+       7160-CHECK-DUP-LEV.
+           ADD 1                         TO  SUB.
+           IF PT-LEVEL (SUB) = DPATHD-LEVEL
+               MOVE "Y"                  TO  ADD-DUP-FLAG.
+
+
+       7200-ADD-NEW-LEVEL.
+           MOVE DPATHD-LEVEL             TO  LEVEL-ARG.
+      *    CALL "DBGET" USING BASE, DSET-MLEVEL, MODE7,
+      *      STATUS-AREA, ALL-ITEMS, BUF-MLEVEL, LEVEL-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE LEVEL-ARG                TO  LEVELNUM OF MLEVEL-REC-I.
+           READ MLEVEL-I INTO BUF-MLEVEL
+               INVALID KEY MOVE 17       TO  COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17                   TO  COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99                   TO  COND-WORD.
+           IF NO-ENTRY
+               GO TO 7290-ANL-X
+           ELSE
+           IF NOT GOOD-CALL
+               MOVE "CEAQUE DBGET MLEV 7200-ANL" TO BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+           MOVE EAQ-REQ-NUMBER           TO  DRQQ-REQ-NUMBER.
+           MOVE MLEVEL-ACTIVE-EMPL       TO  DRQQ-EMPL-QUEUED,
+                                              DRQQ-EQ-EMPL.
+           MOVE EAQ-QUEUE-TYPE           TO  DRQQ-TYPE.
+           MOVE SPACES                   TO  DRQQ-QUEUED-DATE-CN.
+           MOVE SPACES                   TO  DRQQ-APPROVE-DATE-CN.
+           MOVE SPACES                   TO  DRQQ-COMMENT-1.
+           MOVE SPACES                   TO  DRQQ-COMMENT-2.
+           MOVE SPACES                   TO  DRQQ-FLAGS.
+           MOVE EAQ-ORIG-EMPL            TO  DRQQ-EMPL-ORIG.
+           MOVE MLEVEL-LEVEL-NUM         TO  DRQQ-LEVEL-NUM.
+           MOVE DPATHD-INORD-SIMEL       TO  DRQQ-INORD-SIMEL.
+           MOVE SPACES                   TO  DRQQ-EQ-ST,
+                                              DRQQ-EO-ST.
+           ADD 1                         TO  QUE-COUNT.
+           ADD 1                         TO  ORDER-COUNT.
+           MOVE ORDER-COUNT              TO  DRQQ-ORDER.
+      *    CALL "DBPUT" USING BASE, DSET-DREQQUE, MODE1,
+      *      STATUS-AREA, ALL-ITEMS, BUF-DREQQUE
+           WRITE DREQQUE-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE 99       TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAQUE DBPUT ERR DREQQUE 7200-ANL"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 6990-MAIN-X.
+
+      *------ SAVE THE LEVEL ADDED SO WE CAN CHECK FOR DUPLICATES
+           ADD 1                         TO  ADD-SUB.
+           MOVE DPATHD-LEVEL             TO  SAVE-ADD-LEV (ADD-SUB).
+
+
+       7290-ANL-X.
+           EXIT.
+
+       9000-MOVE-APPDATE-98.
+      *------ IF THE WORKORDER IS APPROVED ALREADY, MARK AS APPROVED
+      *------ FOR LEVEL 98
+           IF EAQ-WO-APP = "Y"
+               MOVE DATE-YMD-OUT         TO  DRQQ-APPROVE-DATE
+               IF DRQQ-APPROVE-DATE-YY > "70"
+                   MOVE "19" TO DRQQ-APPROVE-DATE-CC
+               ELSE
+                   MOVE "20" TO DRQQ-APPROVE-DATE-CC
+               END-IF
+               MOVE "X "                 TO  DRQQ-EQ-ST,
+                                              DRQQ-EO-ST
+           ELSE
+               MOVE SPACES               TO  DRQQ-APPROVE-DATE-CN
+               ADD 1                     TO  QUE-COUNT
+               MOVE SPACES               TO  DRQQ-EQ-ST,
+                                              DRQQ-EO-ST.
+
+       9010-MOVE-PATH-TABLE.
+           ADD 1                         TO  SUB.
+      *    IF MPATH-LEVEL (SUB) NUMERIC AND MPATH-EMPL (SUB) > SPACES
+           IF MPATH-EMPL (SUB) > SPACES
+               ADD 1                     TO  SUB2
+               MOVE MPATH-LEVEL (SUB)    TO  PT-LEVEL (SUB2)
+               MOVE MPATH-EMPL (SUB)     TO  PT-EMPL (SUB2)
+               MOVE MPATH-LV-O-S (SUB)   TO  PT-LV-O-S (SUB2).
+
+       9020-MOVE-PATH-NODUPS.
+           ADD 1                         TO  SUB.
+      *    IF MPATH-LEVEL (SUB) NUMERIC AND MPATH-EMPL (SUB) > SPACES
+           IF MPATH-EMPL (SUB) > SPACES
+               MOVE "N"                  TO  DUP-FOUND-FLAG
+               MOVE TABLE-LIMIT          TO  SUB3
+               PERFORM 9030-CHECK-DUP UNTIL SUB3 = 0
+                 OR DUP-FOUND-FLAG = "Y"
+               IF DUP-FOUND-FLAG = "N"
+                   ADD 1                 TO  SUB2
+                   MOVE MPATH-LEVEL (SUB)    TO   PT-LEVEL (SUB2)
+                   MOVE MPATH-EMPL (SUB)     TO   PT-EMPL (SUB2)
+                   MOVE MPATH-LV-O-S (SUB)   TO   PT-LV-O-S (SUB2).
+
+       9030-CHECK-DUP.
+           IF MPATH-LEVEL (SUB) = PT-LEVEL (SUB3)
+               MOVE "Y"                  TO  DUP-FOUND-FLAG
+           ELSE
+               SUBTRACT 1                FROM SUB3.

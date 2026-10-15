@@ -1,0 +1,1442 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TNEWCOMP.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+      *C****************************************************************
+      *C****************************************************************
+      *C  W. ROXBURY  5-3-94        REQ. 94-023                       **
+      *C  ADDED CALL TO "CLDRUMLOC" FOR FAYETTEVILLE DRUM LOCATION    **
+      *C  SUBROUTINE.  CLDRUMLOC IS A DUMMY CL PROGRAM IN OUR SYSTEM  **
+      *C  BUT WILL BE REPLACED BY A LOCAL COBOL PROGRAM IN THE PLANT  **
+      *C  TO KEEP TRACK OF DRUM LOCATIONS.  FAYETTEVILLE ONLY.        **
+      *C  >>> PLEASE NOTE:  ALL OTHER PLANTS MUST HAVE THE DUMMY      **
+      *C                    PROGRAM CLDRUMLOC ON THEIR SYSTEMS.       **
+      *C****************************************************************
+      *C 10/04/94  WILL MCINTYRE  REQUEST #94-040
+      *C    REVISED TNEWCOMP TO EXECUTE SUB PROGRAM SASBCEXP TO CHECK
+      *C    EQUIPMENT ON WORKORDER FOR ASBESTOS FLAG.  IF SO, SASBCEXP
+      *C    WILL COLLECT DATA ON ASBESTOS HANDLING PROCEDURES.
+      *C
+      *C 11/15/2002    GEISER
+      *C    STOPPED PRINTING AUTOMATICALLY IF COMMENTS ARE ADDED. CHECK
+      *C    NEW PRINT FIELD ON SCREEN FOR PRINT OPTION.
+      *C****************************************************************
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-Q-READ
+                  ASSIGN       TO DATABASE-MCFLMM1902
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURR-LAB-CC
+                  ASSIGN       TO DATABASE-MCFLMM1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURR-LAB-WO
+                  ASSIGN       TO DATABASE-MCFLMM1602
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZCFTHELP-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  WO-Q-READ
+           LABEL RECORDS ARE STANDARD.
+       01  QCHG-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1902.
+
+       FD  CURR-LAB-CC
+           LABEL RECORDS ARE STANDARD.
+       01  LCSCC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1601.
+
+       FD  CURR-LAB-WO
+           LABEL RECORDS ARE STANDARD.
+       01  LCSWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1602.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  TRUE-VAL            PIC 1      VALUE B"1".
+       77  SAVE-LASTKEY        PIC S9(4)  VALUE 0  COMP-4.
+       77  SAVE-MSGKEY         PIC 9(05).
+       77  EQUIP-PARM          PIC X(06)  VALUE SPACES.
+       77  EQUIP-TYPE          PIC X(08)  VALUE SPACES.
+       77  WO-NUMBER           PIC X(10)  VALUE SPACES.
+       77  HIGHV               PIC X(10)  VALUE HIGH-VALUES.
+       77  COMPLETE-DATE       PIC X(06)  VALUE SPACES.
+       77  UPDATE-CODE         PIC XX     VALUE "CW".
+       77  FILE-SW             PIC X      VALUE "B".
+           88  BASIC-FILE                 VALUE "B".
+           88  PLAN-FILE                  VALUE "P".
+       77  LABOR-HRS-WA        PIC S99V9.
+       77  COMM-SW             PIC 9      VALUE 0.
+       77  OVERRIDE-SW         PIC 9      VALUE 0.
+       77  QUEUE-PRTY          PIC 9.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  HIGHEST-SUB         PIC 99     VALUE 0.
+       77  FC-HOLD             PIC X.
+       77  PCW-SW              PIC 9      VALUE 0.
+       77  CLEAR-SW            PIC 9      VALUE 0.
+       77  MORE-IP-SW          PIC 9      VALUE 0.
+       77  UPDATE-SW           PIC X      VALUE "A".
+       77  UPDATE-ERROR        PIC X(76).
+       77  RETURN-COD          PIC S9(4)             COMP-4.
+       77  ZONE-LINK           PIC X(04).
+       77  TCOMP-MIN           PIC S9(4).
+       77  TSAVE-MIN           PIC S9(4).
+       77  TSTRT-MIN           PIC S9(4).
+       77  CALL-PROG           PIC X.
+           88  SUPER                      VALUE "S".
+       77  PASS-EQPNUM         PIC X(06)   VALUE SPACES.
+       77  PASS-WONUM          PIC X(10)   VALUE SPACES.
+       77  PASS-RESP           PIC X(01)   VALUE SPACES.
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X  VALUE "0".
+           05  FILE-STAT-2     PIC X  VALUE "0".
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TNEWCOMP".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                  "COMPLETE WORKORDERS FROM THE C".
+               10  PROG-DESC-A2    PIC X(30) VALUE
+                  "RAFTSMAN FUNCTIONS PROGRAM.   ".
+               10  PROG-DESC-B1    PIC X(30) VALUE
+                  "CLOSES PLANNED OR VERBAL WORKO".
+               10  PROG-DESC-B2    PIC X(30) VALUE
+                  "RDERS FROM EXECUTIVE PROGRAM. ".
+               10  PROG-FUNCTION1  PIC X(30) VALUE
+                  "RUNS FROM f2 KEY OF PRIMARY CR".
+               10  PROG-FUNCTION2  PIC X(30) VALUE
+                  "AFTSMAN FUNCTIONS MENU.       ".
+           05  PASSWORD-FLAG       PIC X.
+
+       01  RETURN-ERROR.
+           05  ERROR-TEXT      PIC X(68).
+           05  ERROR-NUM       PIC X(08).
+           05  ERROR-CODE      REDEFINES ERROR-NUM PIC ZZZZZZZ9.
+
+       01  CUR-DATE-CN.
+           05  C-DATE-CC       PIC 99.
+           05  CUR-DATE-99.
+               10  C-DATE-YY   PIC 99.
+               10  C-DATE-MM   PIC 99.
+               10  C-DATE-DD   PIC 99.
+
+       01  TIME-BUFF.
+           02  TIME-HM.
+               03  TIME-HRS    PIC 99.
+               03  TIME-MINS   PIC 99.
+           02  FILLER          PIC XXXX.
+
+       01  SCREEN-DATA.
+           05  WO-DOWN         PIC X.
+           05  FILLER          PIC X.
+           05  WO-PRINT        PIC X.
+           05  FAIL-CODE.
+               10  FAIL-1      PIC X.
+               10  FAIL-2      PIC X.
+               10  FAIL-3      PIC X.
+               10  FAIL-4      PIC X.
+               10  FAIL-5      PIC X.
+               10  FAIL-6      PIC X.
+           05  CCNUM-BUFFER    PIC X(04).
+           05  WO-IP           PIC X(10).
+           05  COMMENTS-BUFFER.
+               10  CMTS-1      PIC X(70).
+               10  CMTS-2      PIC X(70).
+               10  CMTS-3      PIC X(70).
+               10  CMTS-4      PIC X(70).
+               10  CMTS-5      PIC X(70).
+           05  SUB-SYS-BUFFER.
+               10  SUB-1       PIC X.
+               10  DESC-1      PIC X(40).
+               10  SUB-2       PIC X.
+               10  DESC-2      PIC X(40).
+               10  SUB-3       PIC X.
+               10  DESC-3      PIC X(40).
+               10  SUB-4       PIC X.
+               10  DESC-4      PIC X(40).
+               10  SUB-5       PIC X.
+               10  DESC-5      PIC X(40).
+               10  SUB-6       PIC X.
+               10  DESC-6      PIC X(40).
+               10  SUB-7       PIC X.
+               10  DESC-7      PIC X(40).
+               10  SUB-8       PIC X.
+               10  DESC-8      PIC X(40).
+               10  SUB-9       PIC X.
+               10  DESC-9      PIC X(40).
+               10  SUB-10      PIC X.
+               10  DESC-10     PIC X(40).
+           05  CMDMSG          PIC X(79).
+           05  SSMSG           PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+       01  COMMENTS-HOLD.
+           05  CMTS-H1         PIC X(70).
+           05  CMTS-H2         PIC X(70).
+           05  CMTS-H3         PIC X(70).
+           05  CMTS-H4         PIC X(70).
+           05  CMTS-H5         PIC X(70).
+
+       01  DESC-BUFFER.
+           05  SUB-BUF-1       PIC X.
+           05  DESC-BUF-1      PIC X(40).
+           05  SUB-BUF-2       PIC X.
+           05  DESC-BUF-2      PIC X(40).
+           05  SUB-BUF-3       PIC X.
+           05  DESC-BUF-3      PIC X(40).
+           05  SUB-BUF-4       PIC X.
+           05  DESC-BUF-4      PIC X(40).
+           05  SUB-BUF-5       PIC X.
+           05  DESC-BUF-5      PIC X(40).
+           05  SUB-BUF-6       PIC X.
+           05  DESC-BUF-6      PIC X(40).
+           05  SUB-BUF-7       PIC X.
+           05  DESC-BUF-7      PIC X(40).
+           05  SUB-BUF-8       PIC X.
+           05  DESC-BUF-8      PIC X(40).
+           05  SUB-BUF-9       PIC X.
+           05  DESC-BUF-9      PIC X(40).
+           05  SUB-BUF-10      PIC X.
+           05  DESC-BUF-10     PIC X(40).
+
+       01  FT-BUFFER.
+           05  FT-BUF-1        PIC X(40).
+           05  FT-BUF-2        PIC X(40).
+           05  FT-BUF-3        PIC X(40).
+           05  FT-BUF-4        PIC X(40).
+           05  FT-BUF-5        PIC X(40).
+           05  FT-BUF-6        PIC X(40).
+           05  FT-BUF-7        PIC X(40).
+           05  FT-BUF-8        PIC X(40).
+           05  FT-BUF-9        PIC X(40).
+           05  FT-BUF-10       PIC X(40).
+
+       01  CA-BUFFER.
+           05  CA-BUF-1        PIC X(40).
+           05  CA-BUF-2        PIC X(40).
+           05  CA-BUF-3        PIC X(40).
+           05  CA-BUF-4        PIC X(40).
+           05  CA-BUF-5        PIC X(40).
+           05  CA-BUF-6        PIC X(40).
+           05  CA-BUF-7        PIC X(40).
+           05  CA-BUF-8        PIC X(40).
+           05  CA-BUF-9        PIC X(40).
+           05  CA-BUF-10       PIC X(40).
+
+       01  FAIL-CODE-BUF.
+           05  FC-1            PIC X.
+           05  FC-1-9          REDEFINES FC-1 PIC 9.
+           05  FC-2            PIC X.
+           05  FC-2-9          REDEFINES FC-2   PIC 9.
+           05  FC-3            PIC X.
+           05  FC-3-9          REDEFINES FC-3   PIC 9.
+           05  FC-4            PIC X.
+           05  FC-4-9          REDEFINES FC-4   PIC 9.
+           05  FC-5            PIC X.
+           05  FC-5-9          REDEFINES FC-5   PIC 9.
+           05  FC-6            PIC X.
+           05  FC-6-9          REDEFINES FC-6   PIC 9.
+
+       01  DB-ERROR.
+           05  DB-FUNC   PIC X(10) VALUE SPACES.
+           05  DB-FILE   PIC X(18) VALUE SPACES.
+           05  FILLER    PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD  PIC XX.
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+       01  EQP-EQUIP-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-LABOR.
+           COPY DWOLABOR       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  MESSAGE-DATA.
+           COPY DWOMSG         IN COPYLIB.
+
+       01  MESSAGE-BUFFER-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF        PIC XXXX.
+           05  CNAM-BUF        PIC X(16).
+
+       01  DATA-BUFFER.
+           05  WOIP-BUF        PIC X(10).
+           05  FC-BUFFER       PIC X(06).
+           05  EDOWN-BUF       PIC X.
+           05  EDOWN-CW-BUF    PIC X.
+
+       01  RESERVE-SW          PIC S9(4) COMP-4.
+
+       01  LABOR-CURR-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               CNUM-BUFFER
+                               DATA-BUFFER
+                               RESERVE-SW
+                               LABOR-CURR-DATA
+                               WO-TRACK-DATA.
+
+       CHECK-PASSWORD.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG NOT = "N"
+               GO TO BEGIN.
+           GOBACK.
+
+       BEGIN.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          WO-Q-READ.
+           OPEN I-O            CURR-LAB-CC.
+           OPEN I-O            CURR-LAB-WO.
+
+           MOVE HIGH-VALUES    TO HIGHV.
+           MOVE "C"            TO CALL-PROG.
+           MOVE SPACES         TO EQUIP-TYPE WO-NUMBER COMPLETE-DATE.
+           MOVE "CW"           TO UPDATE-CODE.
+           MOVE "A"            TO UPDATE-SW.
+           MOVE "B"            TO FILE-SW.
+           MOVE 0              TO COMM-SW MORE-IP-SW CLEAR-SW PCW-SW
+                                  OVERRIDE-SW HIGHEST-SUB.
+
+           IF RETURN-BYTE = "S"
+               MOVE 1          TO COMM-SW
+               MOVE "S"        TO CALL-PROG
+               OPEN INPUT      WO-BASIC
+               OPEN INPUT      WO-PLANNED
+           ELSE
+               OPEN I-O        WO-BASIC
+               OPEN I-O        WO-PLANNED.
+
+           MOVE SPACES         TO FT-BUFFER CA-BUFFER.
+           MOVE  62            TO CATREAD-MSG-SET.
+           MOVE   0            TO CATREAD-MSG-NUM.
+
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-1.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-2.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-3.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-4.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-5.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-6.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-7.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-8.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-9.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO FT-BUF-10.
+
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-1.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-2.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-3.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-4.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-5.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-6.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-7.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-8.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-9.
+           PERFORM READCAT-LOOP.
+           MOVE MESSAGE-BUFFER TO CA-BUF-10.
+           GO TO CONTINUE-PROCEDURE.
+
+       READCAT-LOOP.
+           ADD    1            TO CATREAD-MSG-NUM.
+           MOVE CATREAD-MSG-NUMBER TO SAVE-MSGKEY.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE SAVE-MSGKEY    TO CATREAD-MSG-NUMBER.
+
+       CONTINUE-PROCEDURE.
+           ACCEPT CUR-DATE-99  FROM DATE.
+           MOVE 20             TO C-DATE-CC.
+           IF C-DATE-YY > 70
+               MOVE 19         TO C-DATE-CC.
+           MOVE C-DATE-CC      TO DATE-INIT-CC.
+           MOVE C-DATE-YY      TO DATE-INIT-YY.
+           MOVE C-DATE-MM      TO DATE-INIT-MM.
+           MOVE C-DATE-DD      TO DATE-INIT-DD.
+           MOVE "COMPWO"       TO SCREEN-NAME.
+           MOVE SPACES         TO SCREEN-DATA MESSAGE-BUFFER.
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+      **********************************************************************
+      **    MESSAGE 042/005:
+      ** PRESS 'ENTER' FOR FAILURE-CODE PROMPTS FOR EACH SUBSYSTEM
+      **********************************************************************
+           MOVE  42            TO CATREAD-MSG-SET.
+           MOVE   5            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           IF FC-BUFFER = "000000"
+               MOVE SPACES     TO FC-BUFFER.
+
+           MOVE FC-BUFFER      TO FAIL-CODE.
+           MOVE CNUM-BUF       TO CCNUM-BUFFER.
+           MOVE WOIP-BUF       TO WO-IP.
+
+       6-GET-WO.
+           MOVE WOIP-BUF       TO WONUM OF WO-BASIC
+                                  WONUM OF WO-PLANNED.
+           READ WO-BASIC       INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               GO TO GET-DATA-CONT.
+
+       READ-PLANNED-FILE.
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               MOVE SPACES     TO WO-BASIC-DATA
+               MOVE "P"        TO FILE-SW
+               GO TO GET-DATA-CONT.
+
+      **********************************************************************
+      **    MESSAGE 035/040:
+      ** INVALID WORKORDER NUMBER
+      **********************************************************************
+           MOVE  35            TO CATREAD-MSG-SET.
+           MOVE  40            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           GO TO END-OF-JOB.
+
+       GET-DATA-CONT.
+           IF BASIC-FILE
+               MOVE EQUIP-DOWN TO EDOWN-BUF
+               IF PRIORITY = "1 "
+                   MOVE "Y" TO WO-DOWN
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               IF PRIORITY-P = "1 "
+                   MOVE "Y" TO WO-DOWN.
+
+           IF FAIL-CODE NOT = SPACES
+               MOVE 0          TO KEY-HIT
+               GO TO 61-CONTINUE.
+
+           IF FAIL-1 = SPACE
+               PERFORM 61-VALIDATE-FC THRU 61-VFC-EXIT.
+
+       61-SHOWFORM.
+           IF WO-DOWN = "  "
+               MOVE 45         TO FIELD-NUMBER
+               PERFORM 65-ERROR.
+
+           IF WO-PRINT = "  "
+               MOVE "N"        TO WO-PRINT.
+
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE
+           "F1-OVERRIDE SUBSYSTEM  F5-DISPLAY WO  F6-CHANGE WORKORDER"
+                               TO CMDMSG.
+           IF SUPER            MOVE B"1" TO IND(90)
+               MOVE "  F1-OVERRIDE SUBSYSTEM    F5-DISPLAY WORKORDER"
+                               TO CMDMSG.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE 0              TO FIELD-NUMBER.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           IF SUPER MOVE 1     TO COMM-SW.
+
+       61-CONTINUE.
+           IF SUPER
+               IF KEY-HIT = 7 OR 3
+                   GO TO END-OF-JOB.
+
+           IF SUPER
+               NEXT SENTENCE
+           ELSE
+           IF KEY-HIT = 8
+               MOVE "LVCHECK"  TO SCREEN-NAME
+               MOVE "00"       TO SCREEN-STATUS
+               MOVE SPACES     TO DISPLAY-REC
+               MOVE 3          TO KEY-HIT
+               WRITE DISPLAY-REC  FORMAT IS SCREEN-NAME
+                   INDIC ARE SCREEN-INDICATORS
+               IF SCREEN-STATUS NOT = "00"
+                   DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                            SCREEN-STATUS
+                   GO TO END-OF-JOB
+               ELSE
+               READ  DISPLAY-FILE FORMAT IS SCREEN-NAME
+                   INDIC ARE SCREEN-INDICATORS
+               IF SCREEN-STATUS NOT = "00"
+                   DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                            SCREEN-STATUS
+                   GO TO END-OF-JOB
+               ELSE
+               MOVE ALL B"0"   TO SCREEN-INDICATORS
+               IF KEY-HIT = 0
+                   MOVE "L"    TO RETURN-BYTE
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE "COMPWO" TO SCREEN-NAME
+                   GO TO 61-SHOWFORM
+           ELSE
+           IF KEY-HIT = 5
+               CALL "TDISPWO"  USING DBPARAMETERS
+                               WO-BASIC-DATA
+                               WO-PLANNED-DATA
+                               FILE-SW
+               MOVE "COMPWO"   TO SCREEN-NAME
+               GO TO 61-SHOWFORM.
+
+           IF SUPER
+               NEXT SENTENCE
+           ELSE
+           IF KEY-HIT = 6
+             IF BASIC-FILE
+                 MOVE "C"      TO RETURN-BYTE
+                 MOVE WOIP-BUF TO WO-NUM-TRACK
+                 MOVE HIGHV    TO WONUM OF WO-BASIC
+                 START WO-BASIC KEY > EXTERNALLY-DESCRIBED-KEY
+                     INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                     END-START
+                 CALL "TCHNGWO" USING DBPARAMETERS
+                                WO-TRACK-DATA
+                 MOVE "COMPWO" TO SCREEN-NAME
+                 MOVE SPACES   TO FAIL-CODE FC-BUFFER
+                 GO TO 6-GET-WO
+             ELSE
+      **********************************************************************
+      **    MESSAGE 035/008:
+      ** INVALID W/O NUMBER OR PLANNED W/O
+      **********************************************************************
+                 MOVE  35      TO CATREAD-MSG-SET
+                 MOVE   8      TO CATREAD-MSG-NUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE 6        TO FIELD-NUMBER
+                 PERFORM 65-ERROR
+                 GO TO 61-SHOWFORM.
+
+           IF KEY-HIT = 1
+               IF OVERRIDE-SW = 3
+                   MOVE "0"    TO FAIL-5 FAIL-6
+                   MOVE 9      TO OVERRIDE-SW
+                   MOVE 0      TO KEY-HIT
+               ELSE
+               IF OVERRIDE-SW = 4
+                   MOVE "0"    TO FAIL-6
+                   MOVE 9      TO OVERRIDE-SW
+                   MOVE 0      TO KEY-HIT
+               ELSE
+                   MOVE 4      TO KEY-HIT.
+
+           IF WO-DOWN = "Y" OR "N"
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 039/032:
+      ** MUST ENTER 'Y' OR 'N'
+      **********************************************************************
+               MOVE  39        TO CATREAD-MSG-SET
+               MOVE  32        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 45         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF WO-PRINT = "Y" OR "N"
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 039/032:
+      ** MUST ENTER 'Y' OR 'N'
+      **********************************************************************
+               MOVE  39        TO CATREAD-MSG-SET
+               MOVE  32        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 46         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF KEY-HIT NOT = 0
+               MOVE 0          TO KEY-HIT.
+
+           IF KEY-HIT = 0
+               PERFORM 61-VALIDATE-FC THRU 61-VFC-EXIT
+               IF FIELD-NUMBER > 1
+                   MOVE 0      TO COMM-SW
+                   GO TO 61-SHOWFORM
+               ELSE
+               IF COMM-SW = 0 AND COMMENTS-BUFFER = SPACES
+                   MOVE 1      TO FIELD-NUMBER COMM-SW PCW-SW
+      **********************************************************************
+      **    MESSAGE 031/023:
+      ** ENTER COMMENTS IF ANY AND PRESS 'ENTER'
+      **********************************************************************
+                   MOVE  31    TO CATREAD-MSG-SET
+                   MOVE  23    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO FIELD-NUMBER
+                   MOVE TRUE-VAL TO IND(1)
+                   MOVE MESSAGE-BUFFER TO SSMSG
+                   GO TO 61-SHOWFORM.
+
+           IF KEY-HIT > 1 AND < 9
+               GO TO 61-SHOWFORM.
+
+           IF CALL-PROG NOT = "S"
+               GO TO 63-UPDATE-FILE
+           ELSE
+               MOVE WO-DOWN    TO EDOWN-CW-BUF
+               MOVE FAIL-CODE  TO FC-BUFFER
+               GO TO END-OF-JOB.
+
+       61-VALIDATE-FC.
+           IF CLEAR-SW = 0
+               MOVE SPACES     TO SUB-SYS-BUFFER.
+           MOVE 0              TO FIELD-NUMBER.
+           IF FILE-SW = "P"
+               IF FAIL-1 = " " AND PCW-SW = 1
+                   MOVE 0      TO PCW-SW
+                   GO TO 61-VFC-EXIT.
+
+           IF FAIL-1 = "?" OR " " OR "X"
+               PERFORM 62-LOAD-SUB-SYS
+               MOVE FT-BUF-1   TO DESC-1
+               MOVE FT-BUF-2   TO DESC-2
+               MOVE FT-BUF-3   TO DESC-3
+               MOVE FT-BUF-4   TO DESC-4
+               MOVE FT-BUF-5   TO DESC-5
+               MOVE FT-BUF-6   TO DESC-6
+               MOVE FT-BUF-7   TO DESC-7
+               MOVE FT-BUF-8   TO DESC-8
+               MOVE FT-BUF-9   TO DESC-9
+               MOVE FT-BUF-10  TO DESC-10
+               MOVE 6          TO FIELD-NUMBER
+               MOVE 1          TO PCW-SW
+               MOVE TRUE-VAL   TO IND(6)
+               MOVE MESSAGE-BUFFER TO SSMSG
+               GO TO 61-VFC-EXIT.
+
+           IF FAIL-1 IS NUMERIC
+               NEXT SENTENCE
+           ELSE
+               MOVE 6          TO FIELD-NUMBER
+      **********************************************************************
+      **    MESSAGE 029/009:
+      ** CODE MUST BE 1,2,3,4,5,6,7,8,9 OR 0
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE   9        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               PERFORM 65-ERROR
+               GO TO 61-VFC-EXIT.
+
+           IF FAIL-2 = "?" OR " " OR "X"
+               PERFORM 62-LOAD-SUB-SYS
+               MOVE CA-BUF-1   TO DESC-1
+               MOVE CA-BUF-2   TO DESC-2
+               MOVE CA-BUF-3   TO DESC-3
+               MOVE CA-BUF-4   TO DESC-4
+               MOVE CA-BUF-5   TO DESC-5
+               MOVE CA-BUF-6   TO DESC-6
+               MOVE CA-BUF-7   TO DESC-7
+               MOVE CA-BUF-8   TO DESC-8
+               MOVE CA-BUF-9   TO DESC-9
+               MOVE CA-BUF-10  TO DESC-10
+               MOVE 7          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(7)
+               MOVE MESSAGE-BUFFER TO SSMSG
+               GO TO 61-VFC-EXIT.
+
+           IF FAIL-2 IS NUMERIC
+               NEXT SENTENCE
+           ELSE
+               MOVE 7          TO FIELD-NUMBER
+      **********************************************************************
+      **    MESSAGE 029/009:
+      ** CODE MUST BE 1,2,3,4,5,6,7,8,9 OR 0
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE   9        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               PERFORM 65-ERROR
+               GO TO 61-VFC-EXIT.
+
+           IF FAIL-1 = "0" AND
+              FAIL-2 = "7" AND
+              WO-START-STATUS = "AA"
+                 IF FAIL-3 = "0" AND
+                    FAIL-4 = "0" AND
+                    FAIL-5 = "0" AND
+                    FAIL-6 = "0"
+                       MOVE FAIL-1     TO FC-1
+                       MOVE FAIL-2     TO FC-2
+                       MOVE FAIL-3     TO FC-3
+                       MOVE FAIL-4     TO FC-4
+                       MOVE FAIL-5     TO FC-5
+                       MOVE FAIL-6     TO FC-6
+                       MOVE 9          TO OVERRIDE-SW
+                       GO TO 61-VFC-EXIT.
+
+           IF FAIL-2 = "9" OR "0"
+               MOVE "0"        TO FAIL-3
+               MOVE "0"        TO FAIL-4
+               MOVE "0"        TO FAIL-5
+               MOVE "0"        TO FAIL-6
+               MOVE FAIL-1     TO FC-1
+               MOVE FAIL-2     TO FC-2
+               MOVE FAIL-3     TO FC-3
+               MOVE FAIL-4     TO FC-4
+               MOVE FAIL-5     TO FC-5
+               MOVE FAIL-6     TO FC-6
+               MOVE 9          TO OVERRIDE-SW
+               GO TO 61-VFC-EXIT.
+
+           IF BASIC-FILE
+              MOVE EQUIP-NUM   TO EQPNUM OF EQP-EQUIPMENT
+           ELSE
+              MOVE EQUIP-NUM-P TO EQPNUM OF EQP-EQUIPMENT.
+
+           READ EQP-EQUIPMENT  INTO EQP-EQUIP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+      **********************************************************************
+      **    MESSAGE 031/022:
+      ** EQUIPMENT NUMBER RETRIEVED IS INVALID
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  22        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 8          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-VFC-EXIT.
+
+           MOVE EQP-TYPE       TO EQUIP-TYPE.
+           MOVE FAIL-1         TO FC-1.
+           MOVE FAIL-2         TO FC-2.
+           MOVE FAIL-3         TO FC-3.
+           MOVE FAIL-4         TO FC-4.
+           MOVE FAIL-5         TO FC-5.
+           MOVE FAIL-6         TO FC-6.
+      **************************************************************
+      *    EQUIPMENT HIERARCHICAL INFORMATION IS RETRIEVED         *
+      *    FOR DISPLAY PURPOSES TO HELP THE USER DETERMINE         *
+      *    WHICH SUBSYSTEM CAUSED THE FAILURE OF THE MACHINE       *
+      **************************************************************
+           MOVE 0              TO CLEAR-SW.
+
+           IF FC-3 IS NOT NUMERIC
+               MOVE "X"        TO FC-3
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 031/020:
+      ** ENTER SUBSYSTEM NUMBER OR ZERO AND PRESS 'ENTER'
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  20        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 8          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(8)
+               MOVE MESSAGE-BUFFER TO SSMSG
+               GO TO 61-VFC-EXIT
+           ELSE
+               MOVE FC-3       TO FC-HOLD
+               MOVE "X"        TO FC-3
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE FC-HOLD    TO FC-3
+               IF FC-3-9 = 0 AND HIGHEST-SUB > 0
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/022:
+      ** INVALID SUBSYSTEM NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  22    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 8      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT
+               ELSE
+               IF FC-3-9 > HIGHEST-SUB
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/022:
+      ** INVALID SUBSYSTEM NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  22    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 8      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT.
+
+           IF FC-4 IS NOT NUMERIC
+               MOVE "X"        TO FC-4
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 031/020:
+      ** ENTER SUBSYSTEM NUMBER OR ZERO AND PRESS 'ENTER'
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  20        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 9          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(9)
+               MOVE MESSAGE-BUFFER TO SSMSG
+               GO TO 61-VFC-EXIT
+           ELSE
+               MOVE FC-4       TO FC-HOLD
+               MOVE "X"        TO FC-4
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE FC-HOLD    TO FC-4
+               IF FC-4-9 = 0 AND HIGHEST-SUB > 0
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/022:
+      ** INVALID SUBSYSTEM NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  22    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 9      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT
+               ELSE
+               IF FC-4-9 > HIGHEST-SUB
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/022:
+      ** INVALID SUBSYSTEM NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  22    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 9      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT.
+
+           IF OVERRIDE-SW > 5
+               GO TO 61-VFC-EXIT.
+           MOVE 3              TO OVERRIDE-SW.
+
+           IF FC-5 IS NOT NUMERIC
+               MOVE "X"        TO FC-5
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 031/020:
+      ** ENTER SUBSYSTEM NUMBER OR ZERO AND PRESS 'ENTER'
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  20        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 10         TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(10)
+               MOVE MESSAGE-BUFFER TO SSMSG
+               GO TO 61-VFC-EXIT
+           ELSE
+               MOVE FC-5       TO FC-HOLD
+               MOVE "X"        TO FC-5
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE FC-HOLD    TO FC-5
+               IF FC-5-9 = 0 AND HIGHEST-SUB > 0
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/046:
+      ** INVALID SUBSYSTEM - PRESS 'f1' TO OVERRIDE
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  46    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 10     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT
+               ELSE
+               IF FC-5-9 > HIGHEST-SUB
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/046:
+      ** INVALID SUBSYSTEM - PRESS 'f1' TO OVERRIDE
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  46    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 10     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT.
+
+           IF OVERRIDE-SW > 5
+               GO TO 61-VFC-EXIT.
+           MOVE 4              TO OVERRIDE-SW.
+
+           IF FC-6 IS NOT NUMERIC
+               MOVE "X"        TO FC-6
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 031/020:
+      ** ENTER SUBSYSTEM NUMBER OR ZERO AND PRESS 'ENTER'
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  20        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 11         TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(11)
+               MOVE MESSAGE-BUFFER TO SSMSG
+               GO TO 61-VFC-EXIT
+           ELSE
+               MOVE FC-6       TO FC-HOLD
+               MOVE "X"        TO FC-6
+               CALL "TEQPHIER" USING DBPARAMETERS
+                               EQUIP-TYPE
+                               FAIL-CODE-BUF
+                               DESC-BUFFER
+                               HIGHEST-SUB
+               MOVE FC-HOLD    TO FC-6
+               IF FC-6-9 = 0 AND HIGHEST-SUB > 0
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/046:
+      ** INVALID SUBSYSTEM - PRESS 'f1' TO OVERRIDE
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  46    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 11     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT
+               ELSE
+               IF FC-6-9 > HIGHEST-SUB
+                   MOVE DESC-BUFFER TO SUB-SYS-BUFFER
+      **********************************************************************
+      **    MESSAGE 035/046:
+      ** INVALID SUBSYSTEM - PRESS 'f1' TO OVERRIDE
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  46    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO CLEAR-SW
+                   MOVE 11     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-VFC-EXIT.
+
+       61-VFC-EXIT.            EXIT.
+
+       62-LOAD-SUB-SYS.
+           MOVE "1"            TO SUB-1.
+           MOVE "2"            TO SUB-2.
+           MOVE "3"            TO SUB-3.
+           MOVE "4"            TO SUB-4.
+           MOVE "5"            TO SUB-5.
+           MOVE "6"            TO SUB-6.
+           MOVE "7"            TO SUB-7.
+           MOVE "8"            TO SUB-8.
+           MOVE "9"            TO SUB-9.
+           MOVE "0"            TO SUB-10.
+
+       63-UPDATE-FILE.
+           ACCEPT CUR-DATE-99  FROM DATE.
+           MOVE 20             TO C-DATE-CC.
+           IF C-DATE-YY > 70
+               MOVE 19         TO C-DATE-CC.
+           MOVE C-DATE-CC      TO DATE-INIT-CC.
+           MOVE C-DATE-YY      TO DATE-INIT-YY.
+           MOVE C-DATE-MM      TO DATE-INIT-MM.
+           MOVE C-DATE-DD      TO DATE-INIT-DD.
+           ACCEPT TIME-BUFF    FROM TIME.
+           MOVE TIME-HM        TO TIME-INIT.
+
+           IF FILE-SW = "B"
+               MOVE ZONE       TO ZONE-LINK
+           ELSE
+               MOVE ZONE-P     TO ZONE-LINK.
+
+           CALL "TLABUPDT"     USING DBPARAMETERS
+                               LABOR-CURR-STAT
+                               ZONE-LINK.
+
+           MOVE CNUM-BUF       TO PERCCNUM OF CURR-LAB-CC.
+           READ CURR-LAB-CC    INTO LABOR-CURR-STAT
+               INVALID KEY     GO TO 63-UPDT-FILE-CONT1.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO 63-UPDT-FILE-CONT1
+               ELSE
+                   MOVE "READ    " TO DB-FUNC
+                   MOVE "CURR-LAB-CC" TO DB-FILE
+                   MOVE FILE-STAT  TO CON-WORD
+                   MOVE DB-ERROR   TO MESSAGE-BUFFER
+                   MOVE 6          TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           DELETE CURR-LAB-CC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DELETE  " TO DB-FUNC
+               MOVE "CURR-LAB-CC" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       63-UPDT-FILE-CONT1.
+           IF COMMENTS-BUFFER = SPACES
+               GO TO 63-UPDT-FILE-CONT2.
+
+           MOVE CNUM-BUF       TO FROM-CC.
+           MOVE "`CW' WORK ORDER PROGRAM   " TO FROM-SIGNON.
+           MOVE WO-IP          TO TO-WO.
+           MOVE "9999"         TO TO-CC.
+           MOVE COMMENTS-BUFFER TO MESSAGES-1-5.
+           CALL "TUPDATEM"     USING MESSAGE-DATA
+                               UPDATE-SW
+                               UPDATE-ERROR.
+           IF UPDATE-ERROR NOT = SPACES
+               MOVE UPDATE-ERROR TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       63-UPDT-FILE-CONT2.
+           MOVE WO-IP          TO WONUM OF CURR-LAB-WO.
+           START CURR-LAB-WO   KEY = WONUM OF CURR-LAB-WO
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO 63-UPDT-FILE-CONT3
+               ELSE
+                   MOVE "START   " TO DB-FUNC
+                   MOVE "CURR-LAB-WO" TO DB-FILE
+                   MOVE FILE-STAT  TO CON-WORD
+                   MOVE DB-ERROR   TO MESSAGE-BUFFER
+                   MOVE 6          TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           READ CURR-LAB-WO    NEXT INTO LABOR-CURR-STAT
+               AT END          GO TO 63-UPDT-FILE-CONT3.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO 63-UPDT-FILE-CONT3
+               ELSE
+                   MOVE "READ    " TO DB-FUNC
+                   MOVE "CURR-LAB-WO" TO DB-FILE
+                   MOVE FILE-STAT  TO CON-WORD
+                   MOVE DB-ERROR   TO MESSAGE-BUFFER
+                   MOVE 6          TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           IF LCS-WO-NUM NOT = WO-IP
+               GO TO 63-UPDT-FILE-CONT3.
+
+           MOVE 1              TO MORE-IP-SW.
+
+       63-UPDT-FILE-CONT3.
+           IF BASIC-FILE
+               PERFORM 63-UPDATE-BASIC-FILE
+               PERFORM 63-UPDATE-QUEUE-FILE THRU 63-UQF-EXIT
+           ELSE
+               PERFORM 63-UPDATE-PLANNED-FILE.
+
+           IF  BASIC-FILE
+               MOVE COMMENTS-BUFFER TO COMMENTS-HOLD
+               GO TO 63-PRINTWO.
+
+           MOVE SPACES             TO WO-BASIC-DATA.
+           MOVE WO-NUM-PLANNED     TO WO-NUM.
+           MOVE WO-STATUS-P        TO WO-STATUS.
+           MOVE WO-START-STATUS    TO WO-STRT-STATUS.
+           MOVE DATE-RECD-P-CN     TO DATE-RECD-CN.
+           MOVE TIME-RECD-P        TO TIME-RECD.
+           MOVE APPROVAL-CODE-P    TO APPROVAL-CODE.
+           MOVE REQUESTER-P        TO REQUESTER-B.
+           MOVE EQUIP-NUM-P        TO EQUIP-NUM.
+           MOVE EQUIP-NAME-P       TO EQUIP-NAME.
+           MOVE TYPE-NUM-P         TO TYPE-NUM.
+           MOVE DEPT-P             TO DEPT.
+           MOVE ZONE-PRIORITY-P    TO ZONE-PRIORITY.
+           MOVE LOCATION-P         TO LOCATION.
+           MOVE EQUIP-DOWN-P       TO EQUIP-DOWN.
+           MOVE EXP-CLASS-P        TO EXP-CLASS.
+           MOVE DESCRIPTION-1-P    TO DESCRIPTION-1.
+           MOVE DESCRIPTION-2-1-P  TO DESCRIPTION-2-1.
+           MOVE DESCRIPTION-2-2-P  TO DESCRIPTION-2-2.
+           MOVE DATE-STRT-P-CN     TO DATE-STRT-CN.
+           MOVE TIME-STRT-P        TO TIME-STRT.
+           MOVE DATE-COMP-P-CN     TO DATE-COMP-CN.
+           MOVE TIME-COMP-P        TO TIME-COMP.
+           MOVE ALL "*"            TO CRAFTS-REQD-1.
+           MOVE ALL "*"            TO CRAFTS-REQD-2.
+           MOVE ALL "*"            TO CRAFTS-REQD-3.
+           MOVE ALL "*"            TO CRAFTSMEN-1.
+           MOVE ALL "*"            TO CRAFTSMEN-2.
+           MOVE ALL "*"            TO CRAFTSMEN-3.
+           MOVE COMMENTS-BUFFER    TO COMMENTS-HOLD.
+
+       63-PRINTWO.
+           IF WO-PRINT = "Y"
+              MOVE "5"            TO RETURN-BYTE
+              CALL "TPRINTWO"     USING WO-BASIC-DATA
+                                  DBPARAMETERS
+                                  COMMENTS-HOLD.
+
+      *-----SET PARMS FOR SUBSEQUENT CALL TO SASBCEXP
+           MOVE WO-IP          TO PASS-WONUM.
+           IF BASIC-FILE
+              MOVE EQUIP-NUM   TO PASS-EQPNUM
+           ELSE IF PLAN-FILE
+              MOVE EQUIP-NUM-P TO PASS-EQPNUM.
+           MOVE SPACES         TO PASS-RESP.
+      *----CALL SASBCEXP TO DETERMINE IF WORKORDER INVOLVED ASBESTOS
+      *----IF RESPONSE PARM IS NOT BLANK, ASBESTOS INVOLVED, PRINT WO
+           CALL "SASBCEXP"     USING PASS-EQPNUM
+                                     PASS-WONUM
+                                     PASS-RESP.
+           IF PASS-RESP = SPACES
+              NEXT SENTENCE
+           ELSE
+              MOVE PASS-RESP TO  RETURN-BYTE
+              MOVE ZONE TO ZONE-LINK
+              MOVE "ABST" TO ZONE
+              CALL "TPRINTWO" USING WO-BASIC-DATA
+                                    DBPARAMETERS
+                                    COMMENTS-HOLD
+              MOVE ZONE-LINK TO ZONE.
+
+           GO TO END-OF-JOB.
+
+       63-UPDATE-BASIC-FILE.
+           MOVE WO-IP          TO WONUM OF WO-BASIC.
+           READ WO-BASIC       INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF DATE-STRT = SPACES
+               MOVE "IP"         TO WO-STATUS
+               MOVE C-START-DATE-CN TO DATE-STRT-CN
+               MOVE C-START-TIME TO TIME-STRT
+               MOVE EMP-NO       TO CRAFTSMEN-1.
+
+           IF RESERVE-SW > 0
+               IF CRAFTSMEN-2 = SPACES
+                   MOVE EMP-NO TO CRAFTSMEN-2
+               ELSE
+               IF CRAFTSMEN-3 = SPACES
+                   MOVE EMP-NO TO CRAFTSMEN-3.
+
+           IF WO-STATUS = "HM" OR "SW"
+               NEXT SENTENCE
+           ELSE
+           IF MORE-IP-SW = 0
+               MOVE "CW"       TO WO-STATUS
+               MOVE FAIL-CODE  TO FAILURE-CODE
+               MOVE WO-DOWN    TO EQUIP-DOWN-CW
+               MOVE CUR-DATE-CN TO DATE-COMP-CN
+               MOVE TIME-HM    TO TIME-COMP.
+
+           REWRITE VWO-REC     FROM WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "REWRITE " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE "TNEWCOMP "    TO PROGRAM-NAME.
+           MOVE WO-NUM         TO WO-NUM-TRACK.
+           MOVE CUR-DATE-CN    TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS.
+           MOVE CNUM-BUF       TO USER-ID CLOCK-CARD.
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+           MOVE "CW"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+       63-UPDATE-PLANNED-FILE.
+           MOVE WO-IP          TO WONUM OF WO-PLANNED.
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF WO-STATUS-P = "HM" OR "SW"
+               NEXT SENTENCE
+           ELSE
+           IF MORE-IP-SW = 0
+               PERFORM UPDATE-PWO.
+
+           MOVE "TNEWCOMP "    TO  PROGRAM-NAME.
+           MOVE WO-NUM-PLANNED TO  WO-NUM-TRACK.
+           MOVE CUR-DATE-CN    TO  DATE-STAMP-CN.
+           MOVE TIME-HM        TO  TIME-STAMP.
+           MOVE WO-START-STATUS TO  WO-TYPE-STATUS.
+           MOVE CNUM-BUF       TO  USER-ID CLOCK-CARD.
+           MOVE WO-STATUS-P    TO  WO-STATUS-TRACK.
+           MOVE "CW"           TO  TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+       UPDATE-PWO.
+           MOVE "CW"           TO WO-STATUS-P.
+           MOVE FAIL-CODE      TO FAILURE-CODE-P.
+           MOVE WO-DOWN        TO EQUIP-DOWN-CW-P.
+           MOVE CUR-DATE-CN    TO DATE-COMP-P-CN.
+           MOVE TIME-HM        TO TIME-COMP-P.
+
+           REWRITE PWO-REC     FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "REWRITE " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF WO-START-STATUS = "AA"
+               MOVE WO-NUM-PLANNED TO WO-NUMBER
+               MOVE DATE-COMP-P    TO COMPLETE-DATE
+               CALL "SPMCWSD"  USING WO-NUMBER
+                               UPDATE-CODE
+                               COMPLETE-DATE
+                               DBPARAMETERS
+                               RETURN-COD
+                               RETURN-ERROR.
+
+       63-UPDATE-QUEUE-FILE.
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE WOIP-BUF       TO WONUM OF WO-Q-READ.
+           READ WO-Q-READ      INTO WO-QUEUE-DATA
+               INVALID KEY     GO TO 63-UQF-EXIT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-Q-READ" TO DB-FUNC
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE "D"            TO QUEUE-SW.
+           IF Q-CC-NUM = "9999"
+               NEXT SENTENCE
+           ELSE
+           IF Q-CC-NUM = CNUM-BUF
+               NEXT SENTENCE
+           ELSE
+           IF Q-RESERVE = "XX"
+               MOVE "C"        TO QUEUE-SW
+               MOVE "CW"       TO Q-CW-LINK.
+
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+           IF QUEUE-ERROR NOT = SPACES
+               MOVE QUEUE-ERROR TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       63-UQF-EXIT.            EXIT.
+
+       65-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+
+       999-CATREAD.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+
+       END-OF-JOB.
+           IF BASIC-FILE
+              MOVE EQUIP-NUM   TO EQUIP-PARM
+           ELSE
+              MOVE EQUIP-NUM-P TO EQUIP-PARM.
+
+           CALL "CLDRUMLOC"    USING EQUIP-PARM.
+
+           CLOSE               EQP-EQUIPMENT,
+                               WO-Q-READ,
+                               WO-BASIC,
+                               WO-PLANNED,
+                               CURR-LAB-CC,
+                               CURR-LAB-WO,
+                               DISPLAY-FILE.
+           GOBACK.
+

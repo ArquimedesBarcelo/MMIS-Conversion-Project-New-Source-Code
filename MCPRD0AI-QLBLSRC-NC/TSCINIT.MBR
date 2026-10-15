@@ -1,0 +1,1147 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TSCINIT.
+       AUTHOR.         W. ROXBURY.
+       DATE-WRITTEN.   05/15/1989.
+       DATE-COMPILED.
+       INSTALLATION.   GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.        THIS PROGRAM INITIATES A SAFETY CONTACT
+      *                SUBROUTINES CALLED:
+      *                  TADDWO
+      *                  TNEWWONU
+      *                  TWOTRACK
+      *                  TQUPDATE
+      *C 12/11/01  GEISER  ADD OPTIONS 5(ERGONOMICS) AND
+      *C                   6 (REPAIR HOSPITAL) TO PROGRAM
+      *C                   PER NAPANEE REQUEST.
+      *C
+      *C 05/14/02  GEISER  PREVENT WORKORDER CREATION FOR CONTACT
+      *C                   LOCATION 1 AND 2 PER LAWTON REQUEST.
+      *C
+      *C 05/20/2003 WR FONAGY
+      *C   ADDED THE ABILITY OF THE SAFETY COORIDINATOR TO SET
+      *C   UP THE SAFETY CONTACT PASSWORD FLAG.  THIS WILL PROMPT
+      *C   THE USER TO ENTER THEIR CLOCK CARD AND THAT WILL BE
+      *C   USED AS A VALIDATION CHECK.
+      *C
+      *C 12/23/2003 GEISER  (LAWTON REQUEST)
+      *C   ADDED EQUIPMENT UP/DOWN FLAG FOR WORK ORDERS.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          REQUESTOR IS WORK-STATION
+                               SYSTEM-CONSOLE IS CONSOLE
+                               LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN       TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS ARG-NO
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-CRAFTS-REQD
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT SAFETY-CONTACT
+                  ASSIGN       TO DATABASE-MCFLSC0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZSCINIT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS DYNAMIC
+                  RELATIVE KEY IS RECNO
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS       ARE STANDARD.
+       01  WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS       ARE STANDARD.
+       01  PP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  WO-CRAFTS-REQD
+           LABEL RECORDS ARE STANDARD.
+       01  CFT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  SAFETY-CONTACT
+           LABEL RECORDS ARE STANDARD.
+       01  SC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLSC0101.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9999  VALUE 1.
+       77  SUB                 PIC 99    VALUE 0.
+       77  SUBT                PIC 99    VALUE 0.
+       77  SYSTEM-SW           PIC 99    VALUE 0.
+           88  SYSTEM-OFF                VALUE 0.
+       77  SAFETY-PWORD-SW     PIC X     VALUE "N".
+       77  SAFETY-PWORD-VRBAGE PIC X(10) VALUE SPACES.
+       77  ERROR-SW            PIC 9     VALUE 0.
+       77  DISP-DOTS           PIC X(40) VALUE ALL "*".
+       77  CONDIT-CODE         PIC X     VALUE SPACE.
+       77  QUEUE-PRTY          PIC 9     VALUE ZEROS.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  MSG-HOLD            PIC X(50).
+       77  ERROR-SWITCH        PIC S9(4)          COMP-4.
+       77  WORK-ORDER-NUMBER   PIC X(10).
+       77  CFT-HOLD            PIC XX.
+       77  LAWTON-MSG          PIC X(18) VALUE "MULTIPLE CONTACTS:".
+       77  FILE-STAT           PIC XX.
+       77  TRUE-VAL            PIC 1     VALUE B"1".
+       77  NEG-VAL             PIC 1     VALUE B"0".
+       77  RECNO               PIC 9999  VALUE 0.
+       77  D-PARM              PIC X.
+       77  L-PARM              PIC X.
+
+      *------ PARMS FOR CALL TO "TPERPASS" - PASSWORD SUBPROGRAM
+       01  CC-BUFFER                     PIC X(4)  VALUE SPACES.
+       01  NAME-BUFFER                   PIC X(16) VALUE SPACES.
+       01  PWORD-BUFFER                  PIC X(10) VALUE SPACES.
+       01  PWORD-SWITCH                  PIC X(1)  VALUE SPACES.
+
+       01  SCREEN-DATA.
+           05  BADGE           PIC X(04).
+           05  OPTREQ-VERBAGE  PIC X(10).
+           05  CONTACT.
+               10  CONT1       PIC X.
+               10  CONT2       PIC X.
+           05  CONT-9          REDEFINES CONTACT
+                               PIC 99.
+           05  LOCATION-DATA   PIC X(396).
+           05  LOCATION-TABLE  REDEFINES LOCATION-DATA.
+               10  LOCATN      OCCURS 18 TIMES.
+                   15  NUM     PIC X(04).
+                   15  LOC     PIC X(18).
+           05  TYPE-SEL        PIC X.
+           05  TYPESEL         REDEFINES TYPE-SEL
+                               PIC 9.
+      *    05  LAW-MSG         PIC X(18).
+      *    05  MULT-CTR        PIC 9.
+           05  EQUIP-MSG       PIC X(17).
+           05  EQUIP.
+               10  EQ1         PIC X.
+               10  EQ2         PIC X.
+               10  EQ3         PIC X.
+               10  EQ4         PIC X.
+               10  EQ5         PIC X.
+               10  EQ6         PIC X.
+           05  CRAFT-MSG       PIC X(15).
+           05  CRAFT           PIC X(02).
+           05  DOWN-MSG        PIC X(11).
+           05  DOWN-FLAG       PIC X(01).
+           05  DESC-2-BUF.
+               10  DESC-2A-BUF PIC X(66).
+               10  DESC-2B-BUF PIC X(66).
+           05  LIST-MSG        PIC X(38).
+           05  MSG-BUF         PIC X(50).
+           05  ERRMSG          PIC X(79).
+
+       01  EQUIP-HOLD.
+           10  EQ1-H       PIC X.
+           10  EQ2-H       PIC X.
+           10  EQ3-H       PIC X.
+           10  EQ4-H       PIC X.
+           10  EQ5-H       PIC X.
+           10  EQ6-H       PIC X.
+
+       01  PRINT-REC.
+           05  EQUIP-IN-1      PIC X.
+           05  EQUIP-NUM-1     PIC X(06).
+           05  EQUIP-NAME-1    PIC X(28).
+
+       01  EQP-SCREEN-INPUT.
+           05  SCR-XFIELD      PIC X.
+           05  SCR-EQUIPNUM    PIC X(06).
+           05  SCR-EQUIPNAME   PIC X(28).
+
+       01  PLACE.
+           05  CTR             PIC 99.
+           05  ZCTR            REDEFINES CTR.
+               10  ZCTR1       PIC X.
+               10  ZCTR2       PIC X.
+           05  FILLER          PIC XX    VALUE " -".
+
+       01  DELETE-CYCLE-BUF.
+           05  DEL-CYCLE-X     PIC XX.
+           05  DEL-CYCLE       REDEFINES DEL-CYCLE-X PIC 99.
+
+       01  TIME-BUFFER.
+           05  CUR-TIME.
+               10  CUR-HRS     PIC XX.
+               10  CUR-MINS    PIC XX.
+           05  CUR-SECS        PIC XXXX.
+
+       01  TODAYS-DATE.
+           05  DATE-BUF-CT     PIC XX.
+           05  DATE-BUFFER.
+               10  DATE-BUF-YY PIC XX.
+               10  DATE-BUF-MM PIC XX.
+               10  DATE-BUF-DD PIC XX.
+
+       01  WS-DATE.
+           05  WS-DATE-CT      PIC 99.
+           05  WS-DATE-YYMMDD.
+               10  WS-DATE-YY  PIC 99.
+               10  WS-DATE-MM  PIC 99.
+               10  WS-DATE-DD  PIC 99.
+
+       01  JUL-SIGN            PIC S9(06).
+       01  JUL-DATE            PIC  X(07).
+       01  JULIAN-DATE         REDEFINES JUL-DATE
+                               PIC  9(07).
+       01  FILLER              REDEFINES JUL-DATE.
+           05  J-YEAR          PIC 9999.
+           05  J-DAY           PIC 999.
+
+       01  GREG-DATE.
+           05  G-YEAR          PIC XXXX.
+           05  G-MONTH         PIC XX.
+           05  G-DAY           PIC XX.
+
+       01  EQUIP-BUFFER.
+           05  EQUIP-VALUES.
+               10  EQP01       PIC X(06) VALUE "SAFE01".
+               10  EQP02       PIC X(06) VALUE "SAFE02".
+               10  EQP03       PIC X(06) VALUE "SAFE03".
+               10  EQP04       PIC X(06) VALUE "SAFE04".
+               10  EQP05       PIC X(06) VALUE "SAFE05".
+               10  EQP06       PIC X(06) VALUE "SAFE06".
+               10  EQP07       PIC X(06) VALUE "SAFE07".
+               10  EQP08       PIC X(06) VALUE "SAFE08".
+               10  EQP09       PIC X(06) VALUE "SAFE09".
+               10  EQP10       PIC X(06) VALUE "SAFE10".
+               10  EQP11       PIC X(06) VALUE "SAFE11".
+               10  EQP12       PIC X(06) VALUE "SAFE12".
+               10  EQP13       PIC X(06) VALUE "SAFE13".
+               10  EQP14       PIC X(06) VALUE "SAFE14".
+               10  EQP15       PIC X(06) VALUE "SAFE15".
+               10  EQP16       PIC X(06) VALUE "SAFE16".
+               10  EQP17       PIC X(06) VALUE "SAFE17".
+               10  EQP18       PIC X(06) VALUE "SAFE18".
+           05  EQP-VAL         REDEFINES EQUIP-VALUES.
+               10  EQPVAL      OCCURS 18 TIMES  PIC X(06).
+
+       01  TABLE-BUFFER.
+           05  TABLE-VALUES.
+               10  SUB01       PIC 99 VALUE  1.
+               10  SUB02       PIC 99 VALUE  4.
+               10  SUB03       PIC 99 VALUE  7.
+               10  SUB04       PIC 99 VALUE 10.
+               10  SUB05       PIC 99 VALUE 13.
+               10  SUB06       PIC 99 VALUE 16.
+               10  SUB07       PIC 99 VALUE  2.
+               10  SUB08       PIC 99 VALUE  5.
+               10  SUB09       PIC 99 VALUE  8.
+               10  SUB10       PIC 99 VALUE 11.
+               10  SUB11       PIC 99 VALUE 14.
+               10  SUB12       PIC 99 VALUE 17.
+               10  SUB13       PIC 99 VALUE  3.
+               10  SUB14       PIC 99 VALUE  6.
+               10  SUB15       PIC 99 VALUE  9.
+               10  SUB16       PIC 99 VALUE 12.
+               10  SUB17       PIC 99 VALUE 15.
+               10  SUB18       PIC 99 VALUE 18.
+           05  SUB-VAL         REDEFINES TABLE-VALUES.
+               10  SUBV        OCCURS 18 TIMES  PIC 99.
+
+       01  DESC-BUFFER.
+           05  DESC-VALUES.
+             10  DESC1  PIC X(30) VALUE "POSITIVE CONTACT".
+             10  DESC2  PIC X(30) VALUE "AT-RISK BEHAVIOR".
+             10  DESC3  PIC X(30) VALUE "UNSAFE CONDITION (CORRECTED)".
+             10  DESC4  PIC X(30) VALUE "UNSAFE CONDITION, WO REQUIRED".
+             10  DESC5  PIC X(30) VALUE "ERGONOMICS".
+             10  DESC6  PIC X(30) VALUE "REPAIR HOSPITAL, WO REQUIRED".
+             10  DESC7.
+                 15  DESC7A PIC X(03) VALUE "SC:".
+                 15  DESC7B PIC X(27).
+           05  DESC-BUFFER     REDEFINES DESC-VALUES.
+             10  DESC          OCCURS 7 TIMES  PIC X(30).
+
+       01  WO-NUM-TRIM.
+           05  WO-F7           PIC X(07).
+           05  WO-L3           PIC X(03).
+
+       01  DB-ADD-MESSAGE.
+           05  DB-ADD-MSG.
+               10  FILLER      PIC X(12).
+               10  WO-ADD      PIC X(07).
+               10  FILLER      PIC X(31).
+
+       01  DB-ERROR.
+           05  DB-FUNC         PIC X(10) VALUE SPACES.
+           05  DB-FILE         PIC X(18) VALUE SPACES.
+           05  FILLER          PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY SAFECONT       IN COPYLIB.
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+           COPY DBSTAT         IN COPYLIB.
+
+       01  EQUIPMENT-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  LAST-WO-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  WO-CRAFT-DATA.
+           COPY MWOCRAFT       IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       01  MESSAGE-BUFFER-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       01  WHO-VARIABLES.
+           COPY WHOPARMS       IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       BEGIN.
+           MOVE SPACES         TO LAST-WO-USED-DATA
+                                  WO-TRACK-DATA
+                                  WHO-VARIABLES
+                                  DBPARAMETERS.
+
+           CALL "WHO"          USING
+                               MOD
+                               CAP
+                               LATTR
+                               USERNAME
+                               GRPNAME
+                               ACCTNAME
+                               HOMEGRP
+                               TERMNUM.
+
+           MOVE USERNAME       TO USER-NAME.
+           MOVE TERMNUM        TO TNUM.
+           MOVE TNUM           TO USER-TERM.
+
+           OPEN INPUT          WO-LAST-NUM-USED.
+           IF FILE-STAT NOT = "00"
+               DISPLAY "UNABLE TO OPEN LAST-WO-USED DATA."
+                       "    FILE-STATUS = " FILE-STAT
+               GO TO ABORT-JOB.
+
+           MOVE 1              TO ARG-NO.
+           READ WO-LAST-NUM-USED INTO LAST-WO-USED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               DISPLAY "UNABLE TO GET LAST-WO-USED DATA."
+                       "    FILE-STATUS = " FILE-STAT
+               CLOSE           WO-LAST-NUM-USED
+               GO TO ABORT-JOB.
+
+           IF PLANT-IDENT = SPACES
+               DISPLAY "FAILED TO GET PLANT-ID"
+               CLOSE           WO-LAST-NUM-USED
+               GO TO ABORT-JOB.
+
+           CLOSE               WO-LAST-NUM-USED.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN I-O            SAFETY-CONTACT.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          WO-CRAFTS-REQD.
+           MOVE "INITSAF"      TO SCREEN-NAME.
+
+           PERFORM LOAD-LOOP   VARYING SUB FROM 1 BY 1
+                               UNTIL SUB > 18.
+           IF SAFETY-PWORD-SW = "Y"
+               CALL "TPERPASS" USING CC-BUFFER,
+                                     NAME-BUFFER,
+                                     PWORD-BUFFER,
+                                     PWORD-SWITCH
+               IF PWORD-SWITCH = "N"
+                   GO TO END-OF-JOB
+               END-IF
+           END-IF.
+
+       6-MAIN.
+           MOVE MSG-BUF        TO MSG-HOLD.
+           MOVE SPACES         TO SCREEN-DATA MESSAGE-BUFFER.
+      *    MOVE 1              TO MULT-CTR.
+           MOVE MSG-HOLD       TO MSG-BUF.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE B"1"           TO IND(25).
+
+       PRELOAD.
+           MOVE SPACES         TO DISPLAY-REC
+                               CFT-HOLD
+                               DBPARAMETERS.
+      *    MOVE 1              TO MULT-CTR.
+
+      ******************************************************************
+      **  06/06/94  W. ROXBURY                                        **
+      **    MULTIPLE RECORD CAPABILITY REMOVED BASED ON CONFERENCE    **
+      **    CALL WITH FRANK MACERI AND PATRICK IVES IN LAWTON, AND    **
+      **    BILL ROXBURY, LARRY KOLB AND DENNIS KENNEDY IN AKRON.     **
+      ******************************************************************
+      **  THE FOLLOWING 'IF' STATEMENT ALLOWS THE ENTRY OF MULTIPLE   **
+      **  IDENTICAL SAFETY CONTACT RECORDS FOR THE LAWTON PLANT ONLY. **
+      **  FROM 1 TO 9 RECORDS MAY BE ENTERED FROM A SINGLE SCREEN.    **
+      ******************************************************************
+      *    IF PLANT-IDENT = "153 "
+      *        MOVE LAWTON-MSG TO LAW-MSG
+      *        MOVE 1          TO MULT-CTR
+      *        MOVE B"1"       TO IND(53).
+
+           MOVE 0              TO SYSTEM-SW.
+           PERFORM LOAD-LOOP   VARYING SUB FROM 1 BY 1
+                               UNTIL SUB > 18.
+           MOVE SAFETY-PWORD-VRBAGE
+                               TO OPTREQ-VERBAGE.
+
+           IF SAFETY-PWORD-SW = "Y"
+               MOVE CC-BUFFER  TO BADGE
+               MOVE B"1"       TO IND(09),
+                                  IND(20)
+           ELSE
+               MOVE B"1"       TO IND(01)
+           END-IF.
+
+           IF SYSTEM-OFF
+               GO TO END-OF-JOB.
+
+       61-SHOWFORM.
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+      ******************************************************************
+      **  06/06/94  W. ROXBURY                                        **
+      **    MULTIPLE RECORD CAPABILITY REMOVED BASED ON CONFERENCE    **
+      **    CALL WITH FRANK MACERI AND PATRICK IVES IN LAWTON, AND    **
+      **    BILL ROXBURY, LARRY KOLB AND DENNIS KENNEDY IN AKRON.     **
+      ******************************************************************
+      **  THE FOLLOWING 'IF' STATEMENT ALLOWS THE ENTRY OF MULTIPLE   **
+      **  IDENTICAL SAFETY CONTACT RECORDS FOR THE LAWTON PLANT ONLY. **
+      **  FROM 1 TO 9 RECORDS MAY BE ENTERED FROM A SINGLE SCREEN.    **
+      ******************************************************************
+      *    IF PLANT-IDENT = "153 "
+      *        MOVE LAWTON-MSG TO LAW-MSG
+      *        MOVE B"1"       TO IND(53).
+
+           MOVE SPACES         TO MESSAGE-BUFFER.
+
+           IF KEY-HIT = 3
+               GO TO END-OF-JOB.
+
+       61-EDIT-CHECKS.
+           IF BADGE = "NEWS" OR "9999"
+               MOVE SPACES     TO BADGE.
+
+           IF BADGE = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE BADGE      TO PERCCNUM OF PER-PERSONNEL
+               READ PER-PERSONNEL INTO WO-PERS-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT NOT = "00"
+                   MOVE "INVALID CLOCK CARD NUMBER"
+                               TO MESSAGE-BUFFER
+                   MOVE 1      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           IF CONTACT = SPACES OR "00" OR "0 " OR " 0"
+               MOVE
+               "LOCATION NUMBER IS REQUIRED, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF CONT1 = SPACE
+               MOVE "0"        TO CONT1.
+
+           IF CONT2 = SPACE
+               MOVE CONT1      TO CONT2
+               MOVE "0"        TO CONT1.
+
+           IF CONTACT NOT NUMERIC
+               MOVE
+               "LOCATION NUMBER MUST BE NUMERIC, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF CONTACT > "18"
+               MOVE
+               "LOCATION NUMBER IS INVALID, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF CONTACT = "01"   MOVE  1 TO SUB.
+           IF CONTACT = "02"   MOVE  4 TO SUB.
+           IF CONTACT = "03"   MOVE  7 TO SUB.
+           IF CONTACT = "04"   MOVE 10 TO SUB.
+           IF CONTACT = "05"   MOVE 13 TO SUB.
+           IF CONTACT = "06"   MOVE 16 TO SUB.
+           IF CONTACT = "07"   MOVE  2 TO SUB.
+           IF CONTACT = "08"   MOVE  5 TO SUB.
+           IF CONTACT = "09"   MOVE  8 TO SUB.
+           IF CONTACT = "10"   MOVE 11 TO SUB.
+           IF CONTACT = "11"   MOVE 14 TO SUB.
+           IF CONTACT = "12"   MOVE 17 TO SUB.
+           IF CONTACT = "13"   MOVE  3 TO SUB.
+           IF CONTACT = "14"   MOVE  6 TO SUB.
+           IF CONTACT = "15"   MOVE  9 TO SUB.
+           IF CONTACT = "16"   MOVE 12 TO SUB.
+           IF CONTACT = "17"   MOVE 15 TO SUB.
+           IF CONTACT = "18"   MOVE 18 TO SUB.
+
+           IF LOC(SUB) = SPACES
+               MOVE
+               "LOCATION NUMBER IS INVALID, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+      ******************************************************************
+      **  06/06/94  W. ROXBURY                                        **
+      **    MULTIPLE RECORD CAPABILITY REMOVED BASED ON CONFERENCE    **
+      **    CALL WITH FRANK MACERI AND PATRICK IVES IN LAWTON, AND    **
+      **    BILL ROXBURY, LARRY KOLB AND DENNIS KENNEDY IN AKRON.     **
+      ******************************************************************
+      **  THE FOLLOWING 'IF' STATEMENT ALLOWS THE ENTRY OF MULTIPLE   **
+      **  IDENTICAL SAFETY CONTACT RECORDS FOR THE LAWTON PLANT ONLY. **
+      **  FROM 1 TO 9 RECORDS MAY BE ENTERED FROM A SINGLE SCREEN.    **
+      ******************************************************************
+      *    IF PLANT-IDENT = "153 "
+      *        IF MULT-CTR = SPACE OR "0"
+      *            MOVE 1      TO MULT-CTR
+      *        ELSE
+      *        IF MULT-CTR NOT NUMERIC
+      *            MOVE 1      TO MULT-CTR.
+
+           IF TYPE-SEL = SPACE OR "0"
+               MOVE
+               "TYPE OF CONTACT IS REQUIRED, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF TYPE-SEL NOT NUMERIC
+               MOVE
+               "TYPE OF CONTACT MUST BE NUMERIC, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF TYPE-SEL > "6"
+               MOVE
+               "TYPE OF CONTACT IS INVALID, ENTER NUMBER FROM LIST"
+                               TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF DESC-2-BUF = SPACES
+                   MOVE "DESCRIPTION REQUIRED"
+                               TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE EQPVAL(CONT-9) TO EQPNUM OF EQP-EQUIPMENT.
+           READ  EQP-EQUIPMENT INTO EQUIPMENT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               STRING
+               "SAFETY EQUIPMENT " EQPVAL(CONT-9)
+               " NOT LOADED IN EQUIPMENT FILE"
+                               DELIMITED BY SIZE
+                               INTO MESSAGE-BUFFER
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       62-BA-DB-WRITE.
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUFFER  FROM DATE.
+           MOVE SPACES         TO CONTACT-DATA.
+           MOVE 20             TO DATE-BUF-CT.
+           IF DATE-BUF-YY > 70
+               MOVE 19         TO DATE-BUF-CT.
+
+           MOVE TODAYS-DATE    TO SC-DATE.
+           MOVE CUR-TIME       TO SC-TIME.
+           MOVE BADGE          TO SC-CC.
+           MOVE PER-EMP-NAME   TO INITIATOR.
+           MOVE EQP-EQUIP-NUM  TO SC-EQUIP.
+           MOVE EQP-EQUIP-NAME TO SC-EQUIP-NAME.
+           MOVE EQP-MAINT-ZONE TO SC-ZONE.
+           MOVE DESC-2-BUF     TO DESC7B.
+           MOVE DESC(TYPESEL)  TO SC-DESC-1.
+           MOVE DESC-2-BUF     TO SC-DESC-2.
+           MOVE EQP-RIME       TO DEL-CYCLE-X.
+           MOVE TODAYS-DATE    TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD DEL-CYCLE       TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN < 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO SC-DELETE-DATE.
+
+      ******************************************************************
+      **  06/06/94  W. ROXBURY                                        **
+      **    MULTIPLE RECORD CAPABILITY REMOVED BASED ON CONFERENCE    **
+      **    CALL WITH FRANK MACERI AND PATRICK IVES IN LAWTON, AND    **
+      **    BILL ROXBURY, LARRY KOLB AND DENNIS KENNEDY IN AKRON.     **
+      ******************************************************************
+      *    PERFORM WRITE-CONTACT MULT-CTR TIMES.
+      ******************************************************************
+
+           PERFORM WRITE-CONTACT.
+
+           MOVE
+           "       SAFETY CONTACT INITIATED IN DATABASE       "
+                               TO MSG-BUF.
+
+      **  DO NOT CREATE LAWTON WORKORDER FOR RECEIVING (01) OR MIXING (02).
+
+           IF TYPESEL = 4 OR 6
+               IF PLANT-IDENT = "153 "
+                  IF CONTACT = "01" OR "02"
+                      NEXT SENTENCE
+                  ELSE
+                      PERFORM CREATE-WORKORDER THRU CW-EXIT
+               ELSE
+                  PERFORM CREATE-WORKORDER THRU CW-EXIT.
+           GO TO 6-MAIN.
+
+       WRITE-CONTACT.
+           WRITE SC-REC        FROM CONTACT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE
+               "WRITE RECORD FAILED - SAFETY CONTACT NOT GENERATED"
+                               TO MESSAGE-BUFFER
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       CREATE-WORKORDER.
+           MOVE "EQUIPMENT NUMBER:" TO EQUIP-MSG.
+           MOVE "CRAFT REQUIRED:"   TO CRAFT-MSG.
+           MOVE "EQUIP DOWN:"       TO DOWN-MSG.
+           MOVE "N"                 TO DOWN-FLAG.
+           MOVE "   PRESS F5 TO VIEW EQUIPMENT LIST    " TO LIST-MSG.
+           MOVE CFT-HOLD       TO CRAFT.
+           MOVE B"1"           TO IND(04).
+
+       62-SHOWFORM.
+           MOVE B"1"           TO IND(08).
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+      ******************************************************************
+      **  06/06/94  W. ROXBURY                                        **
+      **    MULTIPLE RECORD CAPABILITY REMOVED BASED ON CONFERENCE    **
+      **    CALL WITH FRANK MACERI AND PATRICK IVES IN LAWTON, AND    **
+      **    BILL ROXBURY, LARRY KOLB AND DENNIS KENNEDY IN AKRON.     **
+      ******************************************************************
+      **  THE FOLLOWING 'IF' STATEMENT ALLOWS THE ENTRY OF MULTIPLE   **
+      **  IDENTICAL SAFETY CONTACT RECORDS FOR THE LAWTON PLANT ONLY. **
+      **  FROM 1 TO 9 RECORDS MAY BE ENTERED FROM A SINGLE SCREEN.    **
+      ******************************************************************
+      *    IF PLANT-IDENT = "153 "
+      *        MOVE LAWTON-MSG TO LAW-MSG
+      *        MOVE B"1"       TO IND(53).
+
+           MOVE SPACES         TO MESSAGE-BUFFER.
+
+           IF KEY-HIT = 3
+               GO TO CW-EXIT.
+
+      ******************************************************************
+      **  09/14/94  C. ZUBEK                                          **
+      **  THE FOLLOWING 'IF' STATEMENT PERFORMS THE LOGIC TO DISPLAY  **
+      **  THE EQUIPMENT LIST.                                         **
+      ******************************************************************
+           IF KEY-HIT = 5
+               GO TO DISPLAY-RECS.
+
+       CONTINUE-MAIN.
+           IF EQUIP = SPACES
+               MOVE
+               "EQUIPMENT NUMBER IS REQUIRED"
+                               TO MESSAGE-BUFFER
+               MOVE 4          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF CRAFT = SPACES
+               MOVE
+               "CRAFT IS REQUIRED"
+                               TO MESSAGE-BUFFER
+               MOVE 5          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF DOWN-FLAG = "Y" OR "N"
+               NEXT SENTENCE
+           ELSE
+               MOVE
+               "MUST ENTER Y OR N"
+                               TO MESSAGE-BUFFER
+               MOVE 7          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE EQUIP          TO EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO EQUIPMENT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE
+               "INVALID EQUIPMENT NUMBER"
+                               TO MESSAGE-BUFFER
+               MOVE 4          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF EQP-SAFETY-FLG = "X"
+               MOVE
+               "CANNOT CREATE WORKORDER AGAINST SAFETY EQUIPMENT"
+                               TO MESSAGE-BUFFER
+               MOVE 4          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE CRAFT          TO CRAFTREQD OF WO-CRAFTS-REQD.
+           READ WO-CRAFTS-REQD INTO WO-CRAFT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE
+               "INVALID CRAFT ENTERED"
+                               TO MESSAGE-BUFFER
+               MOVE 5          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUFFER  FROM DATE.
+           MOVE 20             TO DATE-BUF-CT.
+           IF DATE-BUF-YY > 70
+               MOVE 19         TO DATE-BUF-CT.
+
+           CALL "TNEWWONU"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WORK-ORDER-NUMBER
+                               ERROR-SWITCH.
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TNEWWONU" TO DB-FUNC
+               MOVE SPACES     TO DB-FILE
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TSCINIT"
+               DISPLAY "  SUBROUTINE:    TNEWWONU"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               GO TO 62-SHOWFORM.
+
+           MOVE SPACES         TO WO-BASIC-DATA.
+           MOVE WORK-ORDER-NUMBER TO WO-NUM.
+           MOVE DOWN-FLAG      TO EQUIP-DOWN.
+           MOVE "OO"           TO WO-STATUS.
+           MOVE TODAYS-DATE    TO DATE-RECD-CN.
+           MOVE CUR-TIME       TO TIME-RECD.
+           MOVE "A"            TO APPROVAL-CODE.
+           MOVE BADGE          TO REQUESTER-B.
+           IF REQUESTER-B = SPACES
+               MOVE "SAFETY CONTACT  " TO REQUESTER-B.
+           MOVE EQUIP          TO EQUIP-NUM.
+           MOVE EQP-EQUIP-NAME TO EQUIP-NAME.
+           MOVE EQP-TYPE       TO TYPE-NUM.
+           MOVE EQP-DEPT       TO DEPT.
+           MOVE EQP-EXP-CLASS  TO EXP-CLASS.
+           MOVE EQP-MAINT-ZONE TO ZONE.
+           MOVE CRAFT          TO CRAFTS-REQD-1.
+           MOVE "1 "           TO PRIORITY.
+           MOVE DESC(7)        TO DESCRIPTION-1.
+           MOVE DESC-2-BUF     TO DESCRIPTION-2.
+           MOVE EQP-LOCATION   TO LOCATION.
+           MOVE "VV"           TO WO-STRT-STATUS.
+
+           CALL "TADDWO"       USING DBPARAMETERS
+                               WO-BASIC-DATA
+                               CONDIT-CODE
+                               ERROR-SWITCH.
+
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TADDWO  " TO DB-FUNC
+               MOVE SPACES     TO DB-FILE
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TSCINIT"
+               DISPLAY "  SUBROUTINE:    TADDWO"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               GO TO 62-SHOWFORM.
+
+       WRITE-TRACKING.
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TSCINIT "     TO PROGRAM-NAME.
+           MOVE WO-NUM         TO WO-NUM-TRACK.
+           MOVE DATE-RECD-CN   TO DATE-STAMP-CN.
+           MOVE TIME-RECD      TO TIME-STAMP.
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS.
+           MOVE "SAFE"         TO USER-ID.
+           MOVE BADGE          TO CLOCK-CARD.
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+           MOVE "OO"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+       WRITE-QUEUE.
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE ZONE           TO Q-ZONE.
+           MOVE PRIORITY       TO Q-PRTY.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE EQUIP-DOWN     TO Q-EQP-DOWN.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE EQUIP-NUM      TO Q-EQUIP-NUM.
+           MOVE DESCRIPTION-1  TO Q-DESCRIPTION.
+           MOVE CRAFTS-REQD-1  TO Q-SKILL-1.
+           MOVE CRAFTS-REQD-2  TO Q-SKILL-2.
+           MOVE CRAFTS-REQD-3  TO Q-SKILL-3.
+           MOVE 9              TO QUEUE-PRTY.
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+           MOVE "A"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+
+           MOVE "WORKORDER #         HAS BEEN ADDED TO THE DATABASE"
+                               TO DB-ADD-MESSAGE.
+           MOVE WO-NUM         TO WO-NUM-TRIM.
+           MOVE WO-F7          TO WO-ADD.
+           MOVE DB-ADD-MESSAGE TO MSG-BUF.
+
+       CW-EXIT.                EXIT.
+
+       LOAD-LOOP.
+           MOVE EQPVAL(SUB)    TO EQPNUM OF EQP-EQUIPMENT.
+           READ  EQP-EQUIPMENT INTO EQUIPMENT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               MOVE SUB        TO CTR
+               IF ZCTR1 = "0"  MOVE " " TO ZCTR1 END-IF
+               MOVE SUBV(SUB)  TO SUBT
+               MOVE PLACE      TO NUM(SUBT)
+               MOVE EQP-EQUIP-NAME TO LOC(SUBT)
+               MOVE EQP-DEPT   TO CFT-HOLD
+               IF EQP-LOCATION = "SAFETY "
+                   MOVE 1      TO SYSTEM-SW
+                   IF EQP-SAFETY-PWORD-FLG = "Y"
+                       MOVE SPACES       TO SAFETY-PWORD-VRBAGE
+                       MOVE "Y"          TO SAFETY-PWORD-SW
+                   ELSE
+                       MOVE "(OPTIONAL)" TO SAFETY-PWORD-VRBAGE
+                       MOVE "N"          TO SAFETY-PWORD-SW
+                   END-IF
+               END-IF
+               IF LOC(SUBT) = "SKIP              "
+                   MOVE SPACES TO LOC(SUBT)
+               END-IF
+           ELSE
+               MOVE SUBV(SUB)  TO SUBT
+               MOVE SPACES     TO NUM(SUBT)
+               MOVE SPACES     TO LOC(SUBT).
+
+      ******************************************************************
+      **  09/14/94  C. ZUBEK                                          **
+      **    CAPABILITY ADDED TO DISPLAY EQUIPMENT LIST IF FUNCTION    **
+      **    5 KEY PRESSED IN EQUIPMENT FIELD.                         **
+      ******************************************************************
+
+       DISPLAY-RECS.
+           MOVE 0                  TO RECNO.
+           MOVE NEG-VAL            TO IND(75).
+           MOVE TRUE-VAL           TO IND(77) IND(76).
+           MOVE SPACES             TO DISPLAY-REC
+                                      EQP-SCREEN-INPUT.
+           WRITE DISPLAY-REC       FORMAT "EQUIPLST"
+                                   INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY
+               "SUBFILE CLEAR WRITE ERROR.  SCREEN-STATUS IS "
+                                   SCREEN-STATUS.
+           MOVE NEG-VAL            TO IND(77).
+
+           IF EQUIP EQUAL SPACES
+               READ EQP-EQUIPMENT      FIRST INTO EQUIPMENT-DATA
+                   AT END              MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               PERFORM CHECK-EQP-EOF
+           ELSE
+               MOVE SPACES TO EQP-REC
+               MOVE EQUIP TO EQPNUM
+               START EQP-EQUIPMENT    KEY >= EQPNUM OF EQP-EQUIPMENT
+                   INVALID KEY        MOVE FILE-STAT TO FILE-STAT
+               END-START
+               PERFORM READ-EQP-FILE
+               PERFORM CHECK-EQP-EOF.
+
+      **--  DISPLAY EQUIPMENT RECORDS ON SCREEN.                    --**
+
+       DBGET-LOOP.
+
+      **--  DON'T DISPLAY SAFETY EQUIPMENT OR EQUIPMENT NUMBERS     --**
+      **--  THAT ARE BLANK.                                         --**
+
+           IF EQP-SAFETY-FLG = "X"
+               GO TO END-OF-LOOP.
+           IF EQP-EQUIP-NUM = SPACES
+               GO TO END-OF-LOOP.
+
+      **--  CHECK TO SEE IF COMPLETE LIST IS REQUESTED OR IF THERE  --**
+      **--  IS SEARCH CRITERIA.                                     --**
+
+           IF EQUIP = SPACES
+               GO TO PRINT-RECORDS.
+
+           MOVE EQP-EQUIP-NUM             TO EQUIP-HOLD.
+           IF EQ1 EQUAL EQ1-H
+               IF EQ2 EQUAL EQ2-H OR SPACES
+                   IF EQ3 EQUAL EQ3-H OR SPACES
+                       IF EQ4 EQUAL EQ4-H OR SPACES
+                           IF EQ5 EQUAL EQ5-H OR SPACES
+                               IF EQ6 EQUAL EQ6-H OR SPACES
+                                   NEXT SENTENCE
+                               ELSE
+                                   GO TO END-OF-LOOP
+                           ELSE
+                               GO TO END-OF-LOOP
+                       ELSE
+                           GO TO END-OF-LOOP
+                   ELSE
+                       GO TO END-OF-LOOP
+               ELSE
+                   GO TO END-OF-LOOP
+           ELSE
+               GO TO END-OF-LOOP.
+
+       PRINT-RECORDS.
+           MOVE SPACES TO PRINT-REC.
+           MOVE EQP-EQUIP-NUM             TO EQUIP-NUM-1.
+           MOVE EQP-EQUIP-NAME            TO EQUIP-NAME-1.
+           ADD 1                          TO RECNO.
+           MOVE PRINT-REC                 TO DISPLAY-REC.
+           MOVE "00" TO SCREEN-STATUS.
+           WRITE SUBFILE          DISPLAY-REC FORMAT "RDSF"
+                                  INDIC ARE SCREEN-INDICATORS
+               INVALID KEY        MOVE FILE-STAT TO FILE-STAT.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY   "SUBFILE 1 WRITE ERROR.  SCREEN STATUS IS "
+                   SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+       END-OF-LOOP.
+           PERFORM READ-EQP-FILE.
+           PERFORM CHECK-EQP-EOF.
+           GO TO DBGET-LOOP.
+
+      **--  READ EQUIPMENT FILE.                                    --**
+
+       READ-EQP-FILE.
+           READ EQP-EQUIPMENT      NEXT INTO EQUIPMENT-DATA
+               AT END              MOVE FILE-STAT TO FILE-STAT.
+
+      **--  CHECK FOR EQUIPMENT END OF FILE.                        --**
+
+       CHECK-EQP-EOF.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO SUBF-CONT
+               ELSE
+                   MOVE "READ     "       TO DB-FUNC
+                   MOVE "EQUP TABLE"      TO DB-FILE
+                   MOVE FILE-STAT         TO CON-WORD
+                   MOVE DB-ERROR          TO ERRMSG
+                   MOVE TRUE-VAL          TO IND(99)
+                   GO TO 62-SHOWFORM.
+
+      ******************************************************************
+      **  09/14/94  C. ZUBEK                                          **
+      **    DISPLAYING FINAL LINE ON SCREEN AND RETURNING TO MAIN     **
+      **    PROCESSING.                                               **
+      ******************************************************************
+
+       SUBF-CONT.
+           IF RECNO EQUAL 0
+               MOVE  "NO MATCHES FOUND FOR EQUIPMENT NUMBER"
+                                          TO MESSAGE-BUFFER
+               MOVE 4                     TO FIELD-NUMBER
+               MOVE TRUE-VAL              TO IND(08)
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           WRITE DISPLAY-REC   FORMAT "RDSB"
+                               INDIC ARE SCREEN-INDICATORS.
+           MOVE TRUE-VAL       TO IND(76).
+           IF RECNO GREATER THAN 0
+               MOVE TRUE-VAL   TO IND(75)
+           ELSE
+               MOVE NEG-VAL    TO IND(75).
+           WRITE DISPLAY-REC   FORMAT "EQUIPLST"
+                               INDIC ARE SCREEN-INDICATORS.
+           READ DISPLAY-FILE   FORMAT "EQUIPLST"
+                               INDIC ARE SCREEN-INDICATORS.
+           READ SUBFILE DISPLAY-FILE NEXT MODIFIED INTO EQP-SCREEN-INPUT
+                               FORMAT "RDSF" INDIC ARE SCREEN-INDICATORS.
+           MOVE SCR-EQUIPNUM TO EQUIP.
+           MOVE "PRESS ENTER TO CONTINUE OR F5 FOR LIST" TO LIST-MSG.
+           GO TO 62-SHOWFORM.
+
+       ABORT-JOB.
+           GOBACK.
+
+       END-OF-JOB.
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               WO-CRAFTS-REQD.
+           CLOSE               SAFETY-CONTACT.
+           CLOSE               DISPLAY-FILE.
+           CALL "TSCPURGE"
+           GOBACK.
+
+       65-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+

@@ -1,0 +1,336 @@
+       PROCESS APOST.
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.       TWO2EDW1.
+       INSTALLATION.
+       AUTHOR.           D. BARAONA.
+       DATE-WRITTEN.     09/2018.
+
+      *************************************************************
+      *  SEND COMPLETED WORK ORDER DATA TO EDW THROUGH FTP.
+      *      -SELECT WORK ORDERS WITHIN THE TIME FRAME
+      *          -TIME FRAME IS LAST THREE DAYS (PARAMETER=N)
+      *          -TIME FRAME IS 2017 TO YESTERDAY, FOR INITIAL LOAD TO EDW
+      *                WHERE (PARAMETER=Y)
+      *      -WO STATUS MUST BE 'CW' OR 'DW' OR 'FF'
+      *      -THOSE RECORDS GET WRITTEN OUT FROM MCFLMM100J
+      *           AND FROM MCFLMM2403.  THEY SHARE THE WORK ORDER #.
+      *      -ADD THE PLANT CODE (I.E. N501) TO EACH RECORD AS THE
+      *           FIRST 4 DIGITS.
+      *      -WRITES TO FILES MCFP10JEDW AND MCFP240EDW.
+      *
+      *  CALLED FROM PROGRAM CLWO2EDW.
+      *
+      *  CPPI 2016-27276561  MMIS TO EDW INTERFACE
+      *  RFC  1116408   CD 5104449
+      *
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.  IBM-AS-400.
+       OBJECT-COMPUTER.  IBM-AS-400.
+
+       SPECIAL-NAMES.    REQUESTOR IS WORK-STATION
+                         SYSTEM-CONSOLE IS CONSOLE
+                         SYSTEM-SHUTDOWN IS SHUTDOWN-SWITCH
+                           ON STATUS IS SYSTEM-SHUTDOWN-REQUESTED.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+      *MCFLMM100J - WO-Basic  WO-Basic-Extended   INPUT
+            SELECT MCFLMM100J-FILE
+                   ASSIGN TO DATABASE-MCFLMM100J
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+                   FILE STATUS IS MCFLMM100J-SK.
+
+      *MCFLMM2403 - WO-Message                    INPUT
+            SELECT MCFLMM2403-FILE
+                   ASSIGN TO DATABASE-MCFLMM2403
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+                   FILE STATUS IS MCFLMM2403-SK.
+
+      *MCFP10JEDW - FOR EDW- WO Completed & in date range  OUTPUT
+            SELECT MCFP10JEDW-FILE
+                   ASSIGN TO DATABASE-MCFP10JEDW
+                   ORGANIZATION IS SEQUENTIAL
+                   ACCESS IS SEQUENTIAL
+                   FILE STATUS IS MCFP10JEDW-SK.
+
+      *MCFP240EDW - FOR EDW- WO-Message for MCFP10JEDW     OUTPUT
+            SELECT MCFP240EDW-FILE
+                   ASSIGN TO DATABASE-MCFP240EDW
+                   ORGANIZATION IS SEQUENTIAL
+                   ACCESS IS SEQUENTIAL
+                   FILE STATUS IS MCFP240EDW-SK.
+
+      *MCFLCS0501 - Read for the PLANT CODE by key ID      INPUT
+            SELECT MCFLCS0501-FILE
+                   ASSIGN TO DATABASE-MCFLCS0501
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   FILE STATUS IS MCFLCS0501-SK.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MCFLMM100J-FILE.
+       01  MCFLMM100J-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM100J.
+
+       FD  MCFLMM2403-FILE.
+       01  MCFLMM2403-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM2403.
+
+       FD  MCFP10JEDW-FILE.
+       01  MCFP10JEDW-REC.
+           COPY DDS-ALL-FORMATS OF MCFP10JEDW.
+
+       FD  MCFP240EDW-FILE.
+       01  MCFP240EDW-REC.
+           COPY DDS-ALL-FORMATS OF MCFP240EDW.
+
+       FD  MCFLCS0501-FILE.
+       01  MCFLCS0501-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+      *    COPY MPLTSAP IN COPYLIB. Used what I needed below.
+      *------- KEY = 'SAP'.
+           06  MPLTINFO-SAP REDEFINES PLTINFODTA.
+               10  MPLTINFO-SAP-SEND-SWK           PIC X(1).
+               10  MPLTINFO-SAP-PRINT-SWK          PIC X(1).
+               10  MPLTINFO-SAP-SET-AUTH-FLAG      PIC X(1).
+               10  MPLTINFO-SAP-HIDE-Q1-SW         PIC X(1).
+               10  MPLT-NUMBER                     PIC X(4).
+               10  FILLER                          PIC X(52).
+
+
+       WORKING-STORAGE SECTION.
+       01  MCFLMM100J-SK     PIC  X(02) VALUE SPACES.
+       01  MCFLMM2403-SK     PIC  X(02) VALUE SPACES.
+       01  MCFP10JEDW-SK     PIC  X(02) VALUE SPACES.
+       01  MCFP240EDW-SK     PIC  X(02) VALUE SPACES.
+       01  MCFLCS0501-SK     PIC  X(02) VALUE SPACES.
+
+       01  HOLD-PLANT            PIC X(4) VALUE SPACES.
+
+       01  HOLD-RECORD1.
+           05  HOLD-PLANT1       PIC X(4) VALUE SPACES.
+           05  HOLD-REC10JEDW    PIC X(436) VALUE SPACES.
+       01  HOLD-RECORD2.
+           05  HOLD-PLANT2       PIC X(4) VALUE SPACES.
+           05  HOLD-REC240EDW    PIC X(418) VALUE SPACES.
+
+      *EX. OF Curr-Date-Ile = '20171231' -YYYYMMDD
+       01  CURR-DATE-ILE        FORMAT DATE '%Y%m%d'.
+
+       01  REC-DATE-ILE         FORMAT DATE '%Y%m%d'.
+
+       01  JDATE.
+           05  JYEAR            PIC S9(4).
+           05  JDAYS            PIC S9(3).
+
+       01  TOTAL-DAYS           PIC S9(7).
+       01  NUMBER-OF-DAYS       PIC S9(9).
+
+       01  RET-CODE             PIC X(10).
+
+       LINKAGE SECTION.
+       01  INITIAL-LOAD-FLAG    PIC X(1).
+
+      *********************
+       PROCEDURE DIVISION USING INITIAL-LOAD-FLAG.
+
+       000-MAIN.
+      * GET CURRENT DATE IN YYYYMMDD FORMAT
+           MOVE FUNCTION CURRENT-DATE(1:8) TO CURR-DATE-ILE.
+
+      * GET CURRENT DATE IN JULIAN FORMAT
+           ACCEPT JDATE FROM DAY YYYYDDD.
+
+      * Calculate number of days needed in case of initial run.
+      * Initial run gets all of 2017 plus data through yesterday.
+           IF JYEAR = 2018
+               COMPUTE TOTAL-DAYS = 365 + JDAYS - 1
+           ELSE
+      *        get 2017, 2018 through yesterday
+               COMPUTE TOTAL-DAYS = 730 + JDAYS - 1.
+
+           PERFORM 1000-OPEN-FILES.
+           IF RET-CODE NOT = SPACES
+               GO TO EOJ.
+
+      * GET PLANT LOCATION
+           MOVE 'XXXX' TO MPLT-NUMBER.
+           MOVE 'SAP' TO PLTINFOKEY.
+           READ MCFLCS0501-FILE
+                INVALID KEY DISPLAY '******************************'
+                            DISPLAY '***  NO PLANT VALUE FOUND  ***'
+                            DISPLAY '*** Error in PGM=MMISEDWXFR **'
+                            DISPLAY '******************************'
+                            GO TO EOJ
+           END-READ.
+           MOVE MPLT-NUMBER TO HOLD-PLANT.
+
+      *Position to beginning of MCLFMM100J Workorder File
+           MOVE SPACES TO WONUM OF MCRPMM1000.
+           START MCFLMM100J-FILE
+                KEY IS NOT LESS THAN EXTERNALLY-DESCRIBED-KEY
+                INVALID KEY CONTINUE.
+
+           READ MCFLMM100J-FILE NEXT RECORD
+                AT END CONTINUE.
+           PERFORM 200-CHECK-DETAILS
+               UNTIL MCFLMM100J-SK NOT = '00'.
+
+       EOJ.
+           CLOSE MCFLMM100J-FILE
+                 MCFLMM2403-FILE
+                 MCFP10JEDW-FILE
+                 MCFP240EDW-FILE
+                 MCFLCS0501-FILE.
+           STOP RUN.
+           EXIT PROGRAM.
+
+       200-CHECK-DETAILS.
+      *Current date YYYYMMDD is in CURR-DATE-ILE
+      *Status can only be 'DW' or 'CW' or 'FF'
+
+           IF (WOSTATUS OF MCRPMM1000 = 'DW' OR 'CW' OR 'FF')
+                 AND (DATECOMP OF MCRPMM1000 NOT = ' ')
+
+               MOVE DATECOMP OF MCRPMM1000 TO REC-DATE-ILE
+
+      *            *Find how many days old this record is by
+      *            *Number Of Days = Current date - Record date
+               COMPUTE NUMBER-OF-DAYS =
+               FUNCTION FIND-DURATION (REC-DATE-ILE CURR-DATE-ILE DAYS)
+
+      *       *If Initial Load, Flag is Y, Get 2017(365) through current dt
+               IF INITIAL-LOAD-FLAG = 'Y'
+                   IF NUMBER-OF-DAYS IS LESS THAN OR EQUAL TO TOTAL-DAYS
+                     PERFORM 300-WRITE-10JEDW-REC
+                   END-IF
+               ELSE
+      *           *Look for data not older than 3 days back
+                   IF NUMBER-OF-DAYS IS LESS THAN OR EQUAL TO 3
+                       PERFORM 300-WRITE-10JEDW-REC
+                   END-IF
+               END-IF
+           END-IF.
+
+           READ MCFLMM100J-FILE NEXT RECORD
+                AT END CONTINUE.
+
+       300-WRITE-10JEDW-REC.
+           INITIALIZE HOLD-REC10JEDW.
+           MOVE HOLD-PLANT TO HOLD-PLANT1.
+      * Remove characters that EDW can't handle.
+      * Remove Line Feeds(x'25') embedded in descriptions & replace w/spaces
+           INSPECT DESCRIPT1 OF MCFLMM100J-REC
+                             REPLACING ALL X'25' BY SPACES.
+           INSPECT DESCRIPT2 OF MCFLMM100J-REC
+                             REPLACING ALL X'25' BY SPACES.
+      * Remove cent sign ¢ embedded in descriptions & replace w/spaces
+           INSPECT DESCRIPT1 OF MCFLMM100J-REC
+                             REPLACING ALL '¢' BY SPACES.
+           INSPECT DESCRIPT2 OF MCFLMM100J-REC
+                             REPLACING ALL '¢' BY SPACES.
+           MOVE MCFLMM100J-REC TO HOLD-REC10JEDW.
+           WRITE MCFP10JEDW-REC FROM HOLD-RECORD1.
+           IF MCFP10JEDW-SK NOT = '00'
+                MOVE 'BAD10JEDW ' TO RET-CODE
+                DISPLAY '*************************************'
+                DISPLAY 'BAD WRITE ON MCFP10JEDW-FILE'
+                DISPLAY 'IN PGM=TWO2EDW1'
+                DISPLAY 'MCFP10JEDW-SK = ' MCFP10JEDW-SK
+                DISPLAY '*************************************'
+           ELSE
+      *        *Get the related message records(s) using workorder
+               MOVE WONUM OF MCRPMM1000 TO TOWO OF MCRPMM2400
+               START MCFLMM2403-FILE
+                    KEY IS NOT LESS THAN EXTERNALLY-DESCRIBED-KEY
+                    INVALID KEY CONTINUE
+               END-START
+               READ MCFLMM2403-FILE NEXT RECORD
+                   AT END CONTINUE
+               END-READ
+               PERFORM 320-PROCESS-2403DATA
+                 UNTIL (TOWO OF MCRPMM2400 NOT = WONUM OF MCRPMM1000)
+                    OR (MCFLMM2403-SK IS NOT = '00').
+
+       320-PROCESS-2403DATA.
+           INITIALIZE HOLD-REC240EDW.
+           MOVE HOLD-PLANT TO HOLD-PLANT2.
+           MOVE MCFLMM2403-REC TO HOLD-REC240EDW.
+           WRITE MCFP240EDW-REC FROM HOLD-RECORD2.
+           IF MCFP240EDW-SK NOT = '00'
+                MOVE 'BAD240EDW' TO RET-CODE
+                DISPLAY '*************************************'
+                DISPLAY 'BAD WRITE ON MCFP240EDW-FILE'
+                DISPLAY 'IN PGM=TWO2EDW1'
+                DISPLAY 'MCFP240EDW-SK = ' MCFP240EDW-SK
+                DISPLAY '*************************************'.
+           READ MCFLMM2403-FILE NEXT RECORD
+               AT END CONTINUE.
+
+       1000-OPEN-FILES.
+           MOVE SPACES TO RET-CODE.
+
+           OPEN INPUT MCFLMM100J-FILE.
+           IF MCFLMM100J-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFLMM100J-FILE'
+               DISPLAY 'IN PGM=MMISEDWXFR'
+               DISPLAY 'MCFLMM100J-SK = ' MCFLMM100J-SK
+               DISPLAY 'PROGRAM ABENDING'
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN INPUT MCFLMM2403-FILE.
+           IF MCFLMM2403-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFLMM2403-FILE'
+               DISPLAY 'IN PGM=MMISEDWXFR'
+               DISPLAY 'MCFLMM2403-SK = ' MCFLMM2403-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN OUTPUT MCFP10JEDW-FILE.
+           IF MCFP10JEDW-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFP10JEDW-FILE'
+               DISPLAY 'IN PGM=TWO2EDW1'
+               DISPLAY 'MCFP10JEDW-SK = ' MCFP10JEDW-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN OUTPUT MCFP240EDW-FILE.
+           IF MCFP240EDW-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFP240EDW-FILE'
+               DISPLAY 'IN PGM=TWO2EDW1'
+               DISPLAY 'MCFP240EDW-SK = ' MCFP240EDW-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.
+
+           OPEN INPUT MCFLCS0501-FILE.
+           IF MCFLCS0501-SK NOT = '00'
+               DISPLAY '***************************************'
+               DISPLAY 'BAD OPEN ON MCFLCS0501-FILE'
+               DISPLAY 'IN PGM=MMISEDWXFR'
+               DISPLAY 'MCFLCS0501-SK = ' MCFLCS0501-SK
+               DISPLAY 'CONTACT AKRON - CHECK JOB LOG'
+               DISPLAY '***************************************'
+               MOVE 'BADOPEN' TO RET-CODE.

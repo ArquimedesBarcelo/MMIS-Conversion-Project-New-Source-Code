@@ -1,0 +1,291 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TCCSPROC.
+       AUTHOR.              J BUNGO.
+       DATE-WRITTEN.        9/19/97.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.     PROCESS CCS DATA (AKRON RESEARH ONLY).
+      *             MOVE COMPLETED CCS DATA FROM DCCSDATA TO
+      *             TEMP FILE CCSDATA, FTP TO REMOTE SYSTEM,
+      *             GENERATE REPORT, AND CLEAR COMPLETED DATA.
+      *
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  AS400.
+       OBJECT-COMPUTER.  AS400.
+       SPECIAL-NAMES. C01 IS NEWPAGE.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DCCSDATA
+                  ASSIGN TO DATABASE-MCFLCS6601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT CCSDATA
+                  ASSIGN TO DISK-CCSDATA
+                  FILE STATUS IS FILE-STATUS.
+           SELECT PRINT-FILE
+                  ASSIGN TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DCCSDATA
+           LABEL RECORDS ARE STANDARD.
+       01  DCCSDATA-REC.
+           COPY DDS-MCRPCS6600  OF MCFLCS6601.
+       FD  CCSDATA
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 43 CHARACTERS
+           DATA RECORD IS CCSDATA-REC.
+       01  CCSDATA-REC                    PIC X(43).
+       FD  PRINT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 80 CHARACTERS
+           DATA RECORD IS PRT-REC.
+       01  PRT-REC           PIC X(80).
+
+       WORKING-STORAGE SECTION.
+       01  BASE                         PIC X(10) VALUE SPACES.
+       01  FTPRETURN                    PIC X  VALUE "0".
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  LINES-PRINTED            PIC 9(2)  VALUE 0.
+
+       01  HEADER.
+           05  FILLER               PIC X(8)  VALUE "TCCSPROC".
+           05  FILLER               PIC X(24) VALUE SPACES.
+           05  FILLER               PIC X(16) VALUE "CCS ENTRY REPORT".
+           05  FILLER               PIC X(14) VALUE SPACES.
+           05  HDR-DATE             PIC X(8)  VALUE SPACES.
+           05  FILLER               PIC X(2)  VALUE SPACES.
+           05  HDR-TIME             PIC X(8)  VALUE SPACES.
+
+       01  LINE-HEADER.
+           05  FILLER               PIC X(8)  VALUE "  USER  ".
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  FILLER               PIC X(9)  VALUE "CONTAINER".
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  FILLER               PIC X(3)  VALUE "BLD".
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  FILLER               PIC X(5)  VALUE "ROOM ".
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  FILLER               PIC X(14) VALUE "ADDITIONAL LOC".
+           05  FILLER               PIC X(5)  VALUE SPACES.
+           05  FILLER               PIC X(8)  VALUE "  DATE  ".
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  FILLER               PIC X(8)  VALUE "  TIME  ".
+
+       01  LINE-DETAIL.
+           05  PRT-USER             PIC X(8).
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  PRT-CONTAINER        PIC X(8).
+           05  FILLER               PIC X(5)  VALUE SPACES.
+           05  PRT-BLD              PIC X(3).
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  PRT-ROOM             PIC X(5).
+           05  FILLER               PIC X(7)  VALUE SPACES.
+           05  PRT-LOC3             PIC X(3).
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  PRT-LOC4             PIC X(2).
+           05  FILLER               PIC X(7)  VALUE SPACES.
+           05  PRT-DATE             PIC X(8).
+           05  FILLER               PIC X(4)  VALUE SPACES.
+           05  PRT-TIME.
+               10  PRT-HH           PIC X(2).
+               10  FILLER           PIC X(1)  VALUE ":".
+               10  PRT-MM           PIC X(2).
+               10  FILLER           PIC X(1)  VALUE ":".
+               10  PRT-SS           PIC X(2).
+
+       COPY TDATECHK   IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY VCOMAREA   IN COPYLIB.
+       COPY DBSTAT     IN COPYLIB.
+
+       COPY DCCSDATA   IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       6000-MAIN.
+           OPEN I-O DCCSDATA.
+           OPEN OUTPUT CCSDATA.
+
+           PERFORM 6100-PREP-CCSDATA THRU 6100-EXIT.
+           CALL "BXCCSFTP" USING FTPRETURN.
+           IF FTPRETURN = "0"
+               PERFORM 6200-REPORT-CCS THRU 6200-EXIT
+               PERFORM 6300-DELETE-CCS THRU 6300-EXIT
+           ELSE
+               PERFORM 6202-ERROR-REPORT THRU 6202-EXIT
+           END-IF.
+       6000-MAIN-X.
+           CLOSE DCCSDATA.
+           CLOSE CCSDATA.
+           GOBACK.
+
+      *----MOVE ALL RECORDS WITH DATE > SPACES (ALREADY PROCESSED)
+      *----TO THE CCSDATA FILE TO BE TRANSFERRED TO THE REMOTE SYSTEM
+       6100-PREP-CCSDATA.
+           OPEN OUTPUT CCSDATA.
+           MOVE SPACES TO WLKEY OF DCCSDATA-REC.
+           MOVE SPACES TO CORPCDE OF DCCSDATA-REC.
+           START DCCSDATA KEY NOT < EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               CLOSE CCSDATA
+               GO TO 6100-EXIT.
+       6100-GET-LOOP.
+           READ DCCSDATA NEXT INTO BUF-DCCSDATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   CLOSE CCSDATA
+                   GO TO 6100-EXIT
+               ELSE
+                   MOVE "DCCSDATA READ ERR 6100" TO BU-DISPLAY-MSG
+                   PERFORM 9999-BLOWUP
+               END-IF
+           END-IF.
+           IF CCS-DATE NOT = SPACES
+               MOVE CCS-DATA TO CCSDATA-REC
+               WRITE CCSDATA-REC
+               IF FILE-STATUS NOT = "00"
+                   MOVE "CCSDATA WRITE ERR 6100" TO BU-DISPLAY-MSG
+                   PERFORM 9999-BLOWUP
+               END-IF
+           END-IF.
+
+           GO TO 6100-GET-LOOP.
+       6100-EXIT.
+           EXIT.
+
+       6200-REPORT-CCS.
+           OPEN OUTPUT PRINT-FILE.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO HDR-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT TO HDR-TIME.
+           PERFORM 6201-PRINT-HEADING THRU 6201-EXIT.
+
+           MOVE SPACES TO WLKEY OF DCCSDATA-REC.
+           MOVE SPACES TO CORPCDE OF DCCSDATA-REC.
+           START DCCSDATA KEY NOT < EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF LINES-PRINTED = 3
+                   MOVE "NO CCS DATA WAS TRANSFERRED" TO PRT-REC
+                   WRITE PRT-REC
+               END-IF
+               CLOSE PRINT-FILE
+               GO TO 6200-EXIT.
+       6200-GET-LOOP.
+           READ DCCSDATA NEXT INTO BUF-DCCSDATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   IF LINES-PRINTED = 3
+                       MOVE "NO CCS DATA WAS TRANSFERRED" TO PRT-REC
+                       WRITE PRT-REC
+                   END-IF
+                   CLOSE PRINT-FILE
+                   GO TO 6200-EXIT
+               ELSE
+                   MOVE "DCCSDATA READ ERR 6200" TO BU-DISPLAY-MSG
+                   PERFORM 9999-BLOWUP
+               END-IF
+           END-IF.
+           IF CCS-DATE NOT = SPACES
+               IF LINES-PRINTED > 55
+                   MOVE SPACES TO PRT-REC
+                   WRITE PRT-REC BEFORE ADVANCING NEWPAGE
+                   PERFORM 6201-PRINT-HEADING THRU 6201-EXIT
+               END-IF
+               MOVE CCS-USER TO PRT-USER
+               MOVE CCS-CONTAINER TO PRT-CONTAINER
+               MOVE CCS-BLD TO PRT-BLD
+               MOVE CCS-ROOM TO PRT-ROOM
+               MOVE CCS-LOC3 TO PRT-LOC3
+               MOVE CCS-LOC4 TO PRT-LOC4
+               MOVE CCS-DATE-YMD TO DATE-VALIDATE-IN
+               MOVE 4 TO DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO PRT-DATE
+               MOVE CCS-TIME-HH TO PRT-HH
+               MOVE CCS-TIME-MM TO PRT-MM
+               MOVE CCS-TIME-SS TO PRT-SS
+               MOVE LINE-DETAIL TO PRT-REC
+               WRITE PRT-REC
+               ADD 1 TO LINES-PRINTED
+           END-IF.
+
+           GO TO 6200-GET-LOOP.
+       6200-EXIT.
+           EXIT.
+
+       6201-PRINT-HEADING.
+           MOVE HEADER TO PRT-REC.
+           WRITE PRT-REC.
+           MOVE LINE-HEADER TO PRT-REC.
+           WRITE PRT-REC AFTER ADVANCING 2 LINES.
+           MOVE 3 TO LINES-PRINTED.
+       6201-EXIT.
+           EXIT.
+
+       6202-ERROR-REPORT.
+           OPEN OUTPUT PRINT-FILE.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO HDR-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT TO HDR-TIME.
+           PERFORM 6201-PRINT-HEADING THRU 6201-EXIT.
+           MOVE "ERROR TRANSFERING DATA TO REMOTE SYSTEM" TO PRT-REC.
+           WRITE PRT-REC.
+           CLOSE PRINT-FILE.
+       6202-EXIT.
+           EXIT.
+
+      *----DELETE ALL RECORDS WITH DATE > SPACES (ALREADY PROCESSED)
+       6300-DELETE-CCS.
+           MOVE SPACES TO WLKEY OF DCCSDATA-REC.
+           MOVE SPACES TO CORPCDE OF DCCSDATA-REC.
+           START DCCSDATA KEY NOT < EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               GO TO 6300-EXIT.
+       6300-GET-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DCCSDATA NEXT INTO BUF-DCCSDATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 6300-EXIT
+               ELSE
+                   MOVE "DCCSDATA READ ERR 6300" TO BU-DISPLAY-MSG
+                   PERFORM 9999-BLOWUP
+               END-IF
+           END-IF.
+           IF CCS-DATE NOT = SPACES
+               DELETE DCCSDATA
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-DELETE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "DCCSDATA DELETE ERR 6300" TO BU-DISPLAY-MSG
+                   PERFORM 9999-BLOWUP
+               END-IF
+           END-IF.
+
+           GO TO 6300-GET-LOOP.
+       6300-EXIT.
+           EXIT.
+
+       9999-BLOWUP.
+           MOVE "TCCSPROC"               TO  BU-PGM-NAME.
+           MOVE CCS-WS                   TO  BU-DISPLAY-FLD (1).
+           MOVE CCS-CODE                 TO  BU-DISPLAY-FLD (2).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-FLDS.

@@ -1,0 +1,925 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TAPUPDAT.
+       AUTHOR. KURT MOVSESIAN.
+      *REMARKS.
+      **************************************************************
+      *                                                            *
+      *   T A P U P D A T  (CSAS)  ALLOWS MODIFICATION OF CLASS,   *
+      *    DEPARTMENT, AND ACCOUNT TO ANY TRANSACTION IN THE       *
+      *    STORES ACCOUNTING DATA BASE.  PO NUMBER  OR MATERIAL    *
+      *    CODE ALONG WITH THE VALUE MUST BE ENTERED TO IDENTIFY   *
+      *    THE TRANSACTION.                                        *
+      *                                                            *
+      **************************************************************
+      *C   12SEP1996       DAVE PLUM
+      *C     REVISED FOR CENTURY DATABASE CHANGES.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       SPECIAL-NAMES.        I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZAPUPDAT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MATLACUM-I
+                  ASSIGN TO DATABASE-MCFLCA0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCHTACTS-I
+                  ASSIGN TO DATABASE-MCFLCA0301
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCLASS-I
+                  ASSIGN TO DATABASE-MCFLCS4901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MACTINFO-I
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-PHYSICAL
+                  ASSIGN TO DATABASE-MCFPCA0700
+                  ORGANIZATION IS RELATIVE
+                    ACCESS MODE IS RANDOM
+                  RELATIVE KEY IS PFKEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-I-CDE
+                  ASSIGN TO DATABASE-MCFLCA0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-I-PO
+                  ASSIGN TO DATABASE-MCFLCA0703
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC           PIC X(2000).
+
+       FD  MATLACUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MATLACUM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0601.
+
+       FD  MCHTACTS-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCHTACTS-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0301.
+
+       FD  MCLASS-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCLASS-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS4901.
+
+       FD  MACTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MACTINFO-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0101.
+
+       FD  DTRANS-PHYSICAL
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-PHYSICAL.
+           COPY DDS-ALL-FORMATS OF MCFPCA0700.
+
+       FD  DTRANS-I-CDE
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-I-CDE.
+           COPY DDS-ALL-FORMATS OF MCFLCA0701.
+
+       FD  DTRANS-I-PO
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-I-PO.
+           COPY DDS-ALL-FORMATS OF MCFLCA0703.
+
+       WORKING-STORAGE SECTION.
+       77  FATAL-ERR-SW                 PIC X(1)   VALUE SPACES.
+       77  EOJ-SW                       PIC X(1)   VALUE SPACES.
+       77  AT-LEAST-ONE-FOUND-SW        PIC X(1)   VALUE SPACES.
+       77  FOUND-ENTRY                  PIC X(1)   VALUE SPACES.
+       77  WS-VALUE-SIGNED              PIC S9(12)V99 VALUE ZEROS.
+       77  SAVE-STR-DEPT                PIC X(6)   VALUE SPACES.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X      VALUE SPACES.
+           05  FILE-STATUS-2            PIC X      VALUE SPACES.
+
+       01  PFKEY                        PIC 9(9).
+       01  SAVE-REC-NO                  PIC S9(9)  COMP-4.
+      ********************************
+      **   PARAMETERS FOR CALLING   **
+      **   'TDATECHK'               **
+      ********************************
+
+       COPY TDATECHK IN COPYLIB.
+
+      **********************************************************
+      **   VIEW PARAMETERS                                    **
+      **********************************************************
+
+       COPY VCOMAREA IN COPYLIB.
+
+       01  FORMFILE.
+           05  FORM-FNAME                PIC X(8)  VALUE "FAPUPDAT".
+           05  FILLER                    PIC X     VALUE ".".
+           05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+
+       01  FORM-NAMES.
+           05  UPD-HEADER                PIC X(8)  VALUE "ACCGSEL".
+           05  UPD-TRANS                 PIC X(8)  VALUE "ACCGTRAN".
+           05  UPD-PO                    PIC X(8)  VALUE "ACCGPONO".
+           05  UPD-MATL                  PIC X(8)  VALUE "ACCGMATL".
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(64)    VALUE SPACE.
+           05  MSG-FLD               PIC X(12)    VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(11)9.
+
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76    COMP-4.
+
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE ZERO  COMP-4.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1     COMP-4.
+
+       01  SAVE-VIEW-LASTKEY         PIC S9(4)    VALUE ZERO  COMP-4.
+
+      *************************************************************
+      **    PARAMETER AREA FOR DISPLAY FILE                      **
+      *************************************************************
+       COPY DISPDATA   IN COPYLIB.
+       01  COMMAND-AREA.
+           05  OVERRIDE-ZAPUPDAT      PIC X(34) VALUE
+               "OVRDSPF FILE(ZAPUPDAT) SHARE(*YES)".
+           05  OVERRIDE-PARM2         PIC S9(10)V9(5) COMP-3 VALUE 34.
+       COPY IOFEEDBACK IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **             TERMINAL I/O DATA AREA                       **
+      **                                                          **
+      **************************************************************
+
+       01  SCREEN-1.
+           05  DE1-SELECT-OPTION        PIC X(1).
+           05  DE1-CMDLINE              PIC X(79).
+           05  DE1-MSGLINE              PIC X(79).
+
+       01  SCREEN-2.
+           05  DE2-PO-NUMBER.
+               10  DE2-PO-NUM           PIC X(7).
+               10  DE2-PO-RLSE          PIC X(3).
+           05  DE2-PO-ITEM              PIC X(4).
+           05  DE2-PO-VALUE             PIC 9(12)V9(2).
+           05  DE2-PO-VALUE-SIGN        PIC X(1).
+           05  DE2-PO-RCVR              PIC X(3).
+           05  DE2-CMDLINE              PIC X(79).
+           05  DE2-MSGLINE              PIC X(79).
+
+       01  SCREEN-3.
+           05  DE3-MATL-CODE            PIC X(7).
+           05  DE3-MATL-VALUE           PIC 9(12)V9(2).
+           05  DE3-MATL-VALUE-SIGN      PIC X(1).
+           05  DE3-CMDLINE              PIC X(79).
+           05  DE3-MSGLINE              PIC X(79).
+
+       01  SCREEN-4.
+           05  DE4-MATL-CODE            PIC X(7).
+           05  DE4-PO-NUMBER            PIC X(10).
+           05  DE4-PO-RCVR              PIC X(3).
+           05  DE4-PO-ITEM              PIC X(4).
+           05  DE4-TRANS-CODE           PIC X(4).
+           05  DE4-TRANS-DATE           PIC X(8).
+           05  DE4-TRANS-QTY            PIC Z(9)9.
+           05  DE4-TRANS-QTY-SIGN       PIC X(1).
+           05  DE4-TRANS-VALUE          PIC Z(11)9.9(2).
+           05  DE4-TRANS-VALUE-SIGN     PIC X(1).
+           05  DE4-TRANS-DOCUMENT-NUM   PIC X(12).
+           05  DE4-UNIT-MEASURE         PIC X(2).
+           05  DE4-CLASS                PIC X(3).
+           05  DE4-DEPT                 PIC X(4).
+           05  DE4-ACCOUNT              PIC X(6).
+           05  DE4-CMDLINE              PIC X(79).
+           05  DE4-MSGLINE              PIC X(79).
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       COPY DTRANS    IN COPYLIB.
+
+      ****** 12SEP1996 REVISED THE LENGTH OF COMPARE-DTRANS TO MATCH
+      ******   THE SIZE OF THE DTRANS RECORDS FOR RELEASE J.01
+      *** 01  COMPARE-DTRANS  PIC X(150) VALUE SPACES.   *REPLACED*
+       01  COMPARE-DTRANS  PIC X(112) VALUE SPACES.
+
+       COPY MCHTACCT  IN COPYLIB.
+
+       COPY MCLASS    IN COPYLIB.
+
+       COPY MATLACUM  IN COPYLIB.
+
+       COPY MACTINFO  IN COPYLIB.
+
+       COPY DBCSACCT  IN COPYLIB.
+
+       COPY DATAB     IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS               PIC XX    VALUE "@;".
+           05  MATL-KEY                PIC X(10) VALUE "MATL-CODE;".
+           05  PO-KEY                  PIC X(10) VALUE "PO-NUMBER;".
+
+       01 ARG-VALUES.
+           05  PO-ARG                  PIC X(10)  VALUE SPACES.
+           05  DEPT-ARG                PIC X(6)   VALUE SPACES.
+           05  CLASS-ARG               PIC X(4)   VALUE SPACES.
+           05  MATL-ARG                PIC X(8)   VALUE SPACES.
+           05  MACCT-KEY               PIC X(4)   VALUE SPACES.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY CATREAD  IN COPYLIB.
+
+
+       PROCEDURE DIVISION.
+
+       PROC-DIV SECTION 01.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           PERFORM 2-EOJ  THRU 2-EOJ-X.
+
+           GOBACK.
+
+       1-HSK.
+           CALL "QCMDEXC" USING OVERRIDE-ZAPUPDAT, OVERRIDE-PARM2.
+           OPEN I-O DISPLAY-FILE.
+
+           OPEN INPUT MCHTACTS-I, MCLASS-I, MATLACUM-I, MACTINFO-I,
+                      DTRANS-I-CDE, DTRANS-I-PO.
+           OPEN I-O   DTRANS-PHYSICAL.
+
+      ****************************************************
+      **   GET STOREROOM DEPT FROM MACCOUNT-INFO        **
+      **   KEY IS EQUAL TO 'SDPT'.  THE STOREROOM DEPT. **
+      **   IS USED WHEN PROCESSING RECEIVING AND        **
+      **   RECEIPT INTO STOREROOM TCs (323, 324, 325)   **
+      ****************************************************
+
+           MOVE "SDPT" TO MACCT-KEY.
+           MOVE MACCT-KEY TO INFOKEY OF MACTINFO-REC-I.
+           READ MACTINFO-I INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MACCOUNT-INFO 'SDPT'* 1-H"
+                     TO BU-DISPLAY-MSG
+               MOVE MACCT-KEY           TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE MACCT-STR-DEPT      TO  SAVE-STR-DEPT.
+
+       1-H-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE DISPLAY-FILE.
+
+           CLOSE MCHTACTS-I, MCLASS-I, MATLACUM-I, MACTINFO-I,
+                 DTRANS-I-CDE, DTRANS-I-PO.
+           CLOSE DTRANS-PHYSICAL.
+
+       2-EOJ-X.
+            EXIT.
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "TAPUPDAT"                TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND(FIELD-NUMBER), IND(99).
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+           PERFORM 61-PROCESS-SCREEN-1  THRU  61-PS1-X.
+           IF EOJ-SW = "Y"
+               GO TO 6-M-X.
+
+           IF DE1-SELECT-OPTION = "1"
+               PERFORM 62-PROCESS-SCREEN-2  THRU  62-PS2-X
+           ELSE
+           IF DE1-SELECT-OPTION = "2"
+               PERFORM 63-PROCESS-SCREEN-3  THRU  63-PS3-X.
+
+           IF EOJ-SW = "Y"
+               NEXT SENTENCE
+           ELSE
+               GO TO 6-MAIN.
+
+       6-M-X.
+           EXIT.
+
+       61-PROCESS-SCREEN-1.
+           MOVE UPD-HEADER              TO  VIEW-NFNAME.
+
+       61-PUT-BUFFER-1.
+           MOVE SPACES                  TO  SCREEN-1.
+
+       61-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-1.
+
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO  EOJ-SW
+               GO TO 61-PS1-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE1-MSGLINE
+               MOVE 1  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-1.
+
+       61-PS1-X.
+           EXIT.
+
+       62-PROCESS-SCREEN-2.
+           MOVE UPD-PO                  TO  VIEW-NFNAME.
+           MOVE SPACES                  TO  SCREEN-2.
+           MOVE "+"                     TO  DE2-PO-VALUE-SIGN.
+           MOVE ZEROS                   TO  DE2-PO-RLSE,
+                                            DE2-PO-VALUE.
+
+       62-SHOWFORM-SCREEN-2.
+           MOVE SCREEN-2                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-2.
+
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO EOJ-SW
+               GO TO 62-PS2-X
+           ELSE
+           IF VIEW-LASTKEY = 7
+               GO TO 62-PS2-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE 6  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+
+       62-FIELD-EDITS.
+           IF DE2-PO-NUM = SPACES
+      *** PURCHASE ORDER NUMBER IS REQUIRED
+               MOVE 42134 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE 6  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+           IF DE2-PO-ITEM = SPACES
+      *** PURCHASE ORDER ITEM NUMBER IS REQUIRED
+               MOVE 42135 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE 2  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+
+       62-EDIT-PO-NUMBER.
+           MOVE DE2-PO-NUMBER           TO PO-ARG.
+           MOVE PO-ARG TO PONUM OF DTRANS-REC-I-PO.
+           START DTRANS-I-PO KEY = PONUM OF DTRANS-REC-I-PO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             IF FILE-STATUS-1 = "2"
+      *        "PURCHASE ORDER DOES NOT EXIST"
+               MOVE  16 TO LANG-SETNUM
+               MOVE  45 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO MSG-TEXT
+               MOVE PO-ARG         TO  MSG-FLD
+               MOVE MESSAGE-BUFFER TO  DE2-MSGLINE
+               MOVE 6              TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2
+             ELSE
+               MOVE "DBFIND DTRANS * 62-EPN" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           IF DE2-PO-VALUE-SIGN = "-"
+               COMPUTE WS-VALUE-SIGNED = DE2-PO-VALUE * -1
+           ELSE
+               MOVE DE2-PO-VALUE        TO WS-VALUE-SIGNED.
+
+           MOVE "N"                     TO AT-LEAST-ONE-FOUND-SW.
+
+           PERFORM 621-GET-DTRANS
+               UNTIL (VIEW-LASTKEY = 6 OR 7 OR 3) OR
+                 (PONUM OF DTRANS-REC-I-PO NOT  = PO-ARG) OR
+                 (FILE-STATUS NOT = "00").
+
+           IF (PONUM OF DTRANS-REC-I-PO NOT = PO-ARG) OR
+              (FILE-STATUS NOT = "00")
+               IF AT-LEAST-ONE-FOUND-SW = "N"
+      *            "NO POs WERE FOUND THAT MATCHED THIS CRITERIA"
+                   MOVE  14 TO LANG-SETNUM
+                   MOVE 116 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO  DE2-MSGLINE
+                   MOVE 6              TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 62-SHOWFORM-SCREEN-2.
+
+           IF VIEW-LASTKEY = 7 OR 3
+               NEXT SENTENCE
+           ELSE
+               GO TO 62-PROCESS-SCREEN-2.
+
+       62-PS2-X.
+           EXIT.
+
+       621-GET-DTRANS.
+           MOVE "N"                     TO FOUND-ENTRY.
+           READ DTRANS-I-PO NEXT INTO BUF-DTRANS
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET DTRANS * 621-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               IF PONUM OF DTRANS-REC-I-PO NOT = PO-ARG
+                   NEXT SENTENCE
+               ELSE
+               IF TRANS-ITEM-NUM = DE2-PO-ITEM  AND
+                  TRANS-VALUE = WS-VALUE-SIGNED
+                       IF DE2-PO-RCVR = SPACES
+                          OR TRANS-RCVR-NUM = DE2-PO-RCVR
+                           MOVE "Y"     TO FOUND-ENTRY,
+                                           AT-LEAST-ONE-FOUND-SW.
+
+           IF FOUND-ENTRY = "Y"
+               ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA
+               MOVE IO-REL-NO     TO   SAVE-REC-NO
+               PERFORM 64-PROCESS-DTRANS-ENTRY  THRU 64-PDE-X.
+
+       63-PROCESS-SCREEN-3.
+           MOVE UPD-MATL                TO  VIEW-NFNAME.
+           MOVE SPACES                  TO  SCREEN-3.
+           MOVE ZEROS                   TO  DE3-MATL-VALUE.
+           MOVE "+"                     TO  DE3-MATL-VALUE-SIGN.
+
+       63-SHOWFORM-SCREEN-3.
+           MOVE SCREEN-3                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-3.
+
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO EOJ-SW
+               GO TO 63-PS3-X
+           ELSE
+           IF VIEW-LASTKEY = 7
+               GO TO 63-PS3-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE3-MSGLINE
+               MOVE 11 TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 63-SHOWFORM-SCREEN-3.
+
+       63-FIELD-EDITS.
+           IF DE3-MATL-CODE = SPACES
+      *** MATERIAL CODE IS REQUIRED
+               MOVE 66328 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE3-MSGLINE
+               MOVE 11 TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 63-SHOWFORM-SCREEN-3.
+
+       63-EDIT-MATL-CODE.
+           MOVE DE3-MATL-CODE           TO MATL-ARG.
+           MOVE MATL-ARG TO MATLCODE OF DTRANS-REC-I-CDE.
+           START DTRANS-I-CDE KEY = MATLCODE OF DTRANS-REC-I-CDE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            "MATERIAL CODE DOES NOT EXIST"
+                   MOVE  13 TO LANG-SETNUM
+                   MOVE  56 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE MATL-ARG       TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO  DE3-MSGLINE
+                   MOVE 11             TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 63-SHOWFORM-SCREEN-3
+               ELSE
+                   MOVE "DBFIND DTRANS * 63-EMC" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF DE3-MATL-VALUE-SIGN = "-"
+               COMPUTE WS-VALUE-SIGNED = DE3-MATL-VALUE * -1
+           ELSE
+               MOVE DE3-MATL-VALUE      TO WS-VALUE-SIGNED.
+
+           MOVE "N"                     TO AT-LEAST-ONE-FOUND-SW.
+
+           PERFORM 631-GET-DTRANS
+               UNTIL (VIEW-LASTKEY = 6 OR 7 OR 3) OR
+                 (MATLCODE OF DTRANS-REC-I-CDE NOT = MATL-ARG) OR
+                 (FILE-STATUS NOT = "00").
+
+           IF (MATLCODE OF DTRANS-REC-I-CDE NOT = MATL-ARG) OR
+              (FILE-STATUS NOT = "00")
+               IF AT-LEAST-ONE-FOUND-SW = "N"
+      *            "NO ENTRIES WERE FOUND THAT MATCHED THIS CRITERIA"
+                   MOVE  14 TO LANG-SETNUM
+                   MOVE 116 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO  DE3-MSGLINE
+                   MOVE 11             TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 63-SHOWFORM-SCREEN-3.
+
+           IF VIEW-LASTKEY = 7 OR 3
+               NEXT SENTENCE
+           ELSE
+               GO TO 63-PROCESS-SCREEN-3.
+
+       63-PS3-X.
+           EXIT.
+
+       631-GET-DTRANS.
+           MOVE "N"                     TO FOUND-ENTRY.
+           READ DTRANS-I-CDE NEXT INTO BUF-DTRANS
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET DTRANS * 631-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               IF MATLCODE OF DTRANS-REC-I-CDE NOT = MATL-ARG
+                   NEXT SENTENCE
+               ELSE
+               IF TRANS-VALUE = WS-VALUE-SIGNED
+                   MOVE "Y"             TO FOUND-ENTRY
+                                           AT-LEAST-ONE-FOUND-SW.
+           IF FOUND-ENTRY = "Y"
+               ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA
+               MOVE IO-REL-NO     TO   SAVE-REC-NO
+               PERFORM 64-PROCESS-DTRANS-ENTRY  THRU 64-PDE-X.
+
+       64-PROCESS-DTRANS-ENTRY.
+           MOVE UPD-TRANS               TO  VIEW-NFNAME.
+
+           MOVE SPACES                  TO SCREEN-4.
+           MOVE TRANS-STORES-CODE       TO DE4-MATL-CODE.
+           MOVE TRANS-PO-NUM            TO DE4-PO-NUMBER.
+           MOVE TRANS-RCVR-NUM          TO DE4-PO-RCVR.
+           MOVE TRANS-ITEM-NUM          TO DE4-PO-ITEM.
+           MOVE TRANS-CODE              TO DE4-TRANS-CODE.
+           MOVE 4                       TO DATE-MODE.
+           MOVE TRANS-DATE              TO DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-SLASH-OUT          TO DE4-TRANS-DATE.
+           MOVE TRANS-QTY               TO DE4-TRANS-QTY.
+           IF TRANS-QTY < 0
+               MOVE "-"                 TO DE4-TRANS-QTY-SIGN
+           ELSE
+               MOVE "+"                 TO DE4-TRANS-QTY-SIGN.
+           MOVE TRANS-VALUE             TO DE4-TRANS-VALUE.
+           IF TRANS-VALUE < 0
+               MOVE "-"                 TO DE4-TRANS-VALUE-SIGN
+           ELSE
+               MOVE "+"                 TO DE4-TRANS-VALUE-SIGN.
+           MOVE TRANS-DOCUMENT-NUM      TO DE4-TRANS-DOCUMENT-NUM.
+           MOVE TRANS-UNIT-MEASURE      TO DE4-UNIT-MEASURE.
+           MOVE TRANS-CLASS             TO DE4-CLASS.
+           MOVE TRANS-DEPT              TO DE4-DEPT.
+           MOVE TRANS-ACCT              TO DE4-ACCOUNT.
+      *SAVE THE DTRANS BUFFER - ENSURE THAT NO CHANGES HAVE BEEN
+      *MADE WHILE THE DATA IS ON THE SCREEN
+           MOVE BUF-DTRANS              TO COMPARE-DTRANS.
+
+       64-SHOWFORM-SCREEN-4.
+           MOVE SCREEN-4                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-4.
+
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO EOJ-SW
+               GO TO 64-PDE-X
+           ELSE
+           IF VIEW-LASTKEY = 7 OR 6
+               GO TO 64-PDE-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE4-MSGLINE
+               MOVE 23 TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 64-SHOWFORM-SCREEN-4.
+
+       64-FIELD-EDITS.
+           IF DE4-CLASS = SPACES
+      *** ACCOUNTING CLASS IS REQUIRED
+               MOVE 66332 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE4-MSGLINE
+               MOVE 23 TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 64-SHOWFORM-SCREEN-4.
+           IF DE4-DEPT = SPACES
+      *** DEPARTMENT IS REQUIRED
+               MOVE 45056 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE4-MSGLINE
+               MOVE 24 TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 64-SHOWFORM-SCREEN-4.
+           IF DE4-ACCOUNT = SPACES
+      *** ACCOUNT IS REQUIRED
+               MOVE 66333 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE4-MSGLINE
+               MOVE 17 TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 64-SHOWFORM-SCREEN-4.
+
+       64-EDIT-STR-DEPT-CHG.
+           IF TRANS-CODE = "REC" OR "DCHG" OR "INV"
+             IF TRANS-STORES-CODE NOT = "NON-STR"
+               IF TRANS-QTY NOT = 0
+                   IF TRANS-DEPT NOT = DE4-DEPT
+                       IF TRANS-DEPT = SAVE-STR-DEPT OR
+                            DE4-DEPT = SAVE-STR-DEPT
+      *   "CANNOT CHANGE TO/FROM A STOREROOM DEPT ON THIS TRANSACTION"
+                           MOVE 3       TO LANG-SETNUM
+                           MOVE 174     TO LANG-MSGNUM
+                           PERFORM 999-CATREAD  THRU  999-CATREAD-EXIT
+                           MOVE MESSAGE-BUFFER  TO    DE4-MSGLINE
+                           MOVE 24      TO FIELD-NUMBER
+                           PERFORM 4-PGM-ERROR  THRU 4-PGM-ERROR-X
+                           GO TO 64-SHOWFORM-SCREEN-4.
+
+       64-EDIT-ACCOUNTING-INFO.
+           MOVE DE4-CLASS               TO CLASS-ARG.
+           MOVE CLASS-ARG TO ACTGCLASS OF MCLASS-REC-I.
+           READ MCLASS-I INTO BUF-MCLASS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+      *            "INVALID ACCOUNTING CLASS"
+                   MOVE   9 TO LANG-SETNUM
+                   MOVE  42 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE CLASS-ARG      TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO  DE4-MSGLINE
+                   MOVE 23              TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 64-SHOWFORM-SCREEN-4
+           ELSE
+           IF FILE-STATUS NOT = "00"
+                   MOVE "DBGET MCLASS * 64-EAI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           MOVE DE4-DEPT                TO DEPT-ARG.
+           MOVE DEPT-ARG  TO DEPT OF MCHTACTS-REC-I.
+           READ MCHTACTS-I INTO BUF-MCHTACCTS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+      *            "INVALID DEPARTMENT NUMBER"
+                   MOVE   9 TO LANG-SETNUM
+                   MOVE  43 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE DEPT-ARG       TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO  DE4-MSGLINE
+                   MOVE 24              TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 64-SHOWFORM-SCREEN-4
+           ELSE
+           IF FILE-STATUS NOT = "00"
+                   MOVE "DBGET MCHT-ACCTS * 64-EAI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       64-CHECK-FOR-STR-DEPT-CHG.
+           IF TRANS-DEPT NOT = DE4-DEPT
+               IF TRANS-CODE = "REC"
+                   IF TRANS-DEPT = SAVE-STR-DEPT
+                       PERFORM 641-UPDATE-MATL-CODE
+                       MOVE "DCHG"      TO TRANS-CODE
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+               IF TRANS-CODE = "DCHG" AND
+                  TRANS-STORES-CODE NOT = "NON-STR"
+                   IF DE4-DEPT = SAVE-STR-DEPT
+                       PERFORM 641-UPDATE-MATL-CODE
+                       MOVE "REC"       TO TRANS-CODE
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+               IF TRANS-CODE = "INV" OR "FRT"
+                   PERFORM 641-UPDATE-MATL-CODE.
+
+       64-UPDATE-DTRANS.
+           MOVE SAVE-REC-NO TO PFKEY.
+           READ DTRANS-PHYSICAL INTO BUF-DTRANS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" OR BUF-DTRANS NOT = COMPARE-DTRANS
+      *** TRANSACTION TO BE PROCESSED HAS BEEN CHANGED BY ANOTHER USER/
+      ***     OR PROCESS -TRY AGAIN
+                   MOVE  66334 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO  DE4-MSGLINE
+                   MOVE 25              TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 64-SHOWFORM-SCREEN-4.
+
+           IF DE4-DEPT NOT = TRANS-DEPT
+                DELETE DTRANS-PHYSICAL
+                    INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                END-DELETE
+                IF FILE-STATUS NOT = "00"
+                    MOVE "DBDELETE DTRANS * 64-UD" TO BU-DISPLAY-MSG
+                    GO TO 2-BLOWUP.
+
+           MOVE DE4-CLASS               TO TRANS-CLASS.
+           MOVE DE4-ACCOUNT             TO TRANS-ACCT.
+           IF DE4-DEPT = TRANS-DEPT
+               MOVE DE4-DEPT            TO TRANS-DEPT
+               REWRITE DTRANS-REC-PHYSICAL FROM BUF-DTRANS
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+               IF FILE-STATUS = "00"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBUPDATE DTRANS * 64-UD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+
+           ELSE
+               MOVE DE4-DEPT            TO TRANS-DEPT
+               WRITE DTRANS-REC-PHYSICAL FROM BUF-DTRANS
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-WRITE
+               IF FILE-STATUS = "00"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBPUT DTRANS * 64-UD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       64-PDE-X.
+           EXIT.
+
+       641-UPDATE-MATL-CODE.
+           IF TRANS-STORES-CODE = "NON-STR"
+               NEXT SENTENCE
+           ELSE
+               PERFORM 6411-GET-MATL-CODE
+               IF TRANS-CODE = "REC"
+                   SUBTRACT TRANS-VALUE FROM MATL-RCPT-DOLLARS
+                   PERFORM 6411-UPDATE-MATL-CODE
+               ELSE
+               IF TRANS-CODE = "DCHG"
+                   ADD TRANS-VALUE      TO MATL-RCPT-DOLLARS
+                   PERFORM 6411-UPDATE-MATL-CODE
+               ELSE
+               IF TRANS-CODE = "INV" OR "FRT"
+                   IF TRANS-DEPT = SAVE-STR-DEPT
+                       SUBTRACT TRANS-VALUE FROM MATL-INV-DOLLARS
+                       PERFORM 6411-UPDATE-MATL-CODE
+                   ELSE
+                   IF DE4-DEPT = SAVE-STR-DEPT
+                       ADD TRANS-VALUE  TO MATL-INV-DOLLARS
+                       PERFORM 6411-UPDATE-MATL-CODE.
+
+       6411-GET-MATL-CODE.
+           MOVE TRANS-STORES-CODE       TO MATL-ARG.
+           MOVE MATL-ARG TO MATLCODE OF MATLACUM-REC-I.
+           READ MATLACUM-I INTO BUF-MATLACUM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               NEXT SENTENCE
+           ELSE
+               MOVE "DBGET MMATL-ACCUM* 6411-GMC" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       6411-UPDATE-MATL-CODE.
+           CALL "SUPDMATL" USING ACCTG-BASE,
+                                 BUF-MATLACUM,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-AREA,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               GO TO 2-BLOWUP.
+
+        COPY DISPCALL IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

@@ -1,0 +1,321 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TPMCWSD.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS. **** WRITES `SD' DATE OR `CW' DATE TO THE PM
+      *                TRANSACTION FILE AND UPDATES THE PM QUEUE
+      *                RECORD IF NECESSARY.
+      *                   ****.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PREV-MAINT
+                  ASSIGN TO DATABASE-MCFLMM1402
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT PM-TRANS-FILE-E
+                  ASSIGN TO DATABASE-MCFLMM1501
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT PM-TRANS-FILE-W
+                  ASSIGN TO DATABASE-MCFLMM1502
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT PM-OPEN-QUEUE
+                  ASSIGN TO DATABASE-MCFLMM3901
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PREV-MAINT
+           LABEL RECORDS ARE STANDARD.
+       01  PM-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1402.
+
+       FD  PM-TRANS-FILE-E
+           LABEL RECORDS ARE STANDARD.
+       01  PTFE-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1501.
+
+       FD  PM-TRANS-FILE-W
+           LABEL RECORDS ARE STANDARD.
+       01  PTFW-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1502.
+
+       FD  PM-OPEN-QUEUE
+           LABEL RECORDS ARE STANDARD.
+       01  PMQ-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM3901.
+
+       WORKING-STORAGE SECTION.
+       77  EQUIP-KEY        PIC X(06).
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X   VALUE "0".
+           05 FILE-STAT-2      PIC X   VALUE "0".
+
+       01  DB-ERROR.
+           05  DB-FUNC   PIC X(10) VALUE SPACES.
+           05  DB-FILE   PIC X(18) VALUE SPACES.
+           05  FILLER    PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD  PIC XX.
+
+       01  PM-FILE-DATA.
+           COPY DPMTRANS       IN COPYLIB.
+
+       01  TRANS-FILE-DATA.
+           COPY TRANSFIL       IN COPYLIB.
+
+       01  PM-QUEUE-DATA.
+           COPY DPMOPENQ       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  WO-NUMBER                   PIC X(10).
+       01  UPDATE-CODE                 PIC X(02).
+       01  UPDATE-DATE                 PIC X(06).
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  RETURN-CODE                 PIC S9(4) BINARY.
+       01  RETURN-ERROR.
+           05  ERROR-TEXT                     PIC X(68).
+           05  ERROR-NUM                      PIC X(08).
+           05  ERROR-CODE REDEFINES ERROR-NUM PIC Z(7)9.
+
+       PROCEDURE DIVISION USING WO-NUMBER
+                                UPDATE-CODE
+                                UPDATE-DATE
+                                DBPARAMETERS
+                                RETURN-CODE
+                                RETURN-ERROR.
+
+       BEGIN.
+           OPEN I-O            PREV-MAINT.
+           OPEN I-O            PM-TRANS-FILE-E.
+           OPEN I-O            PM-TRANS-FILE-W.
+           OPEN I-O            PM-OPEN-QUEUE.
+           MOVE 0              TO   RETURN-CODE.
+           IF UPDATE-CODE = "SD" OR "CW"
+               NEXT SENTENCE
+           ELSE
+               MOVE 1          TO   RETURN-CODE
+               MOVE "INVALID UPDATE-CODE - MUST BE `CW' OR `SD'"
+                               TO   RETURN-ERROR
+               GO TO END-OF-JOB.
+
+           IF UPDATE-CODE = "CW"
+               NEXT SENTENCE
+           ELSE
+               GO              TO UPDATE-PM-FILE-RECORD.
+
+       UPDATE-TRANS-FILE-RECORD.
+           MOVE WO-NUMBER      TO WONUM OF PM-TRANS-FILE-W.
+           START PM-TRANS-FILE-W KEY = WONUM OF PM-TRANS-FILE-W
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO DELETE-QUEUE-RECORD
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "START   " TO   DB-FUNC
+                   MOVE "PM-TRANS-FILE-W" TO   DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           READ PM-TRANS-FILE-W NEXT INTO TRANS-FILE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO DELETE-QUEUE-RECORD
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "READ    " TO   DB-FUNC
+                   MOVE "PM-TRANS-FILE-W" TO   DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           IF TR-WO-NUM NOT = WO-NUMBER
+               GO TO DELETE-QUEUE-RECORD.
+
+           MOVE UPDATE-DATE    TO   TR-LAST-COMP.
+
+           REWRITE PTFW-REC    FROM TRANS-FILE-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO   CON-WORD
+               MOVE "REWRITE " TO   DB-FUNC
+               MOVE "PM-TRANS-FILE-W" TO   DB-FILE
+               MOVE 1          TO   RETURN-CODE
+               MOVE DB-ERROR   TO   ERROR-TEXT
+               GO TO END-OF-JOB.
+
+       DELETE-QUEUE-RECORD.
+           MOVE WO-NUMBER      TO WONUM OF PM-OPEN-QUEUE.
+           START PM-OPEN-QUEUE KEY = WONUM OF PM-OPEN-QUEUE
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "START   " TO   DB-FUNC
+                   MOVE "PM-OPEN-QUEUE" TO DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           READ PM-OPEN-QUEUE  NEXT INTO PM-QUEUE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "READ    " TO   DB-FUNC
+                   MOVE "PM-OPEN-QUEUE" TO DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           IF WO-NUMBER NOT = PMQ-WO-NUM
+               GO TO END-OF-JOB.
+
+           DELETE PM-OPEN-QUEUE
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO   CON-WORD
+               MOVE "DELETE"   TO   DB-FUNC
+               MOVE "PM-OPEN-QUEUE" TO DB-FILE
+               MOVE 1          TO   RETURN-CODE
+               MOVE DB-ERROR   TO   ERROR-TEXT.
+
+           GO TO END-OF-JOB.
+
+       UPDATE-PM-FILE-RECORD.
+           MOVE WO-NUMBER      TO WONUM OF PREV-MAINT.
+           START PREV-MAINT    KEY = WONUM OF PREV-MAINT
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "START   " TO   DB-FUNC
+                   MOVE "PREV-MAINT" TO DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           READ PREV-MAINT     NEXT INTO PM-FILE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "READ    " TO   DB-FUNC
+                   MOVE "PREV-MAINT" TO DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           IF WO-NUMBER NOT = PM-WO-NUM
+               GO TO END-OF-JOB.
+
+           MOVE UPDATE-DATE    TO   PM-SCHED-DT.
+           MOVE PM-EQUIP-NUM   TO   EQUIP-KEY.
+           MOVE "999999"       TO   PM-NEXT-REL.
+
+           REWRITE PM-REC      FROM PM-FILE-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "REWRITE " TO   DB-FUNC
+               MOVE "PREV-MAINT" TO DB-FILE
+               MOVE FILE-STAT  TO   CON-WORD
+               MOVE 1          TO   RETURN-CODE
+               MOVE DB-ERROR   TO   ERROR-TEXT.
+
+           MOVE EQUIP-KEY      TO PMEQPNUM OF PM-TRANS-FILE-E.
+           START PM-TRANS-FILE-E KEY = PMEQPNUM OF PM-TRANS-FILE-E
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "START   " TO   DB-FUNC
+                   MOVE "PM-TRANS-FILE-E" TO DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+       DBGET-LOOP.
+           READ PM-TRANS-FILE-E NEXT INTO TRANS-FILE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO END-OF-JOB
+               ELSE
+                   MOVE FILE-STAT  TO   CON-WORD
+                   MOVE "READ    " TO   DB-FUNC
+                   MOVE "PM-TRANS-FILE-E" TO DB-FILE
+                   MOVE 1          TO   RETURN-CODE
+                   MOVE DB-ERROR   TO   ERROR-TEXT
+                   GO TO END-OF-JOB.
+
+           IF EQUIP-KEY NOT = TR-EQUIP-NUM
+               GO TO END-OF-JOB.
+
+           IF TR-FILLER = "**" OR "WW" OR "MM" OR
+                          "QQ" OR "SS" OR "AA"
+               GO TO DBGET-LOOP.
+
+           IF PM-WO-NUM = TR-WO-NUM
+               MOVE PM-FILE-DATA TO TRANS-FILE-DATA
+           ELSE
+           IF PM-SCHED-DT < TR-SCHED-DT AND TR-EXEC-FLAG = 0
+               MOVE PM-FILE-DATA TO TRANS-FILE-DATA
+           ELSE
+           IF TR-EXEC-FLAG = 1 AND TR-HLR-LEVEL = PM-LEVEL
+               MOVE PM-SCHED-DT TO TR-HLR-DATE
+           ELSE
+               GO TO END-OF-JOB.
+
+           REWRITE PTFE-REC    FROM TRANS-FILE-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DELETE  " TO   DB-FUNC
+               MOVE "PM-TRANS-FILE-E" TO DB-FILE
+               MOVE FILE-STAT  TO   CON-WORD
+               MOVE 1          TO   RETURN-CODE
+               MOVE DB-ERROR   TO   ERROR-TEXT.
+
+       END-OF-JOB.
+           CLOSE               PREV-MAINT.
+           CLOSE               PM-TRANS-FILE-E.
+           CLOSE               PM-TRANS-FILE-W.
+           CLOSE               PM-OPEN-QUEUE.
+           GOBACK.
+

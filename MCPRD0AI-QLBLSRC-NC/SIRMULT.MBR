@@ -1,0 +1,1188 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.          SIRMULT.
+000400 AUTHOR.              C HILLES.
+000500 DATE-WRITTEN.        8/20/90.
+000600 DATE-COMPILED.
+000700 INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+000800 SECURITY.
+000900*REMARKS.     MULTIPLE ITEM ISSUE AND RETURN WITHOUT WORKSHEET.
+001000*
+001100*    THIS PROGRAM ISSUES MULTIPLE ITEMS FROM THE STOREROOM, IN
+001200*    SIMILAR FORMAT TO THE STOREROOM WORKSHEET, BUT THE ITEMS
+001300*    ARE WITHDRAWN IMMEDIATELY, WITHOUT THE NEED FOR PROCESSING
+001400*    THE WORKSHEET.
+001500*
+      *C    03/07/94   JEFF BUNGO
+      *C        FOR CRAFTSMAN SIGNON ("CFA, CFB, ETC) IN MULTI
+      *C        STOREROOM, USE THE THIRD CHARACTER AS DEFAULT
+      *C        STORERROOM.
+      *C        IF MULTIPLE STOREROOM, USER-1-6 NOT "STORES", AND
+      *C        MULTI-INSTEAD-RW = "Y" THEN IF USER-1-2 = "CF" THEN
+      *C        DEFAULT STOREROOM = USER-3.
+      *C   04NOV1994    WILL MCINTYRE   REQUEST 94-027
+      *C     ADDED CODE TO PASS NEW PARMS TO TQTYEDIT, TO CHECK FOR LIMITS
+      *C     ON STOREROOM RETURNS.
+      *C
+      *C   06/12/96    JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     INCLUDE CENTURY FOR ACTIVITY AND LAST ISSUE DATE.
+      *C
+      *C   05/06/97    JEFF BUNGO
+      *C     PASS NEW PARAMETERS TO TQTYEDIT TO FORCE WITHDRAWAL
+      *C     FROM GOODYEAR BINS FIRST BEFORE FRANCHISE BINS FOR
+      *C     CODES THAT ARE FRANCHISED OWNED.  ALSO CREATE A
+      *C     TC333 OR TC433 FOR EACH OWNER THE WITHDRAWAL IS
+      *C     MADE FROM.
+018200*C
+      *C   OCTOBER 1995  JIM COFFMAN
+      *C     CHANGED ISSPARTS PARAMETERS TO BE INCLUDED IN A COPYLIB
+      *C     MEMBER. THIS WAS NECESSARY TO ALLOW THE AREA TO BE
+      *C     EXPANDABLE TO CONTAIN THE LINK TO A WORK ORDER LOGIC
+      *C     REQUEST NOW AVAILABLE IN AN E1 REQUISITION CREATE.
+      *C
+      *C   SEPT 22, 1998  CA YODER
+      *C     ADDED CALL TO MCXSNDMSG TO SEND A MESSAGE TO USERS
+      *C     SPECIFIED IN MCFPCSUSER FILE WHEN A PARTICULAR CODE
+      *C     IS WITHDRAWN FROM THE STOREROOM.
+      *C
+001600 ENVIRONMENT DIVISION.
+001700 CONFIGURATION SECTION.
+001800 SOURCE-COMPUTER.  HP-3000.
+001900 OBJECT-COMPUTER.  HP-3000.
+002000 COPY SPECIALN IN COPYLIB.
+002100
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MSTORERM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-DT-O
+               ASSIGN TO DATABASE-MCFLCS1601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT USER-I
+               ASSIGN         TO DATABASE-MCFLCSUSER
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                              WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZUDCSTR-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DISPLAY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+002300
+002400 DATA DIVISION.
+002500 FILE SECTION.
+002800 FD  MSTORERM-CD-O
+002900     LABEL RECORDS ARE STANDARD.
+003000 01  MSTORERM-CD-REC-O.
+003100     COPY DDS-MCRPCS0200 OF MCFLCS0201.
+003200
+003300 FD  MPLTINFO-PK-I
+003400     LABEL RECORDS ARE STANDARD.
+003500 01  MPLTINFO-PK-REC-I.
+003600     COPY DDS-MCRPCS0500 OF MCFLCS0501.
+003700
+003800 FD  DDAILYTC-DT-O
+003900     LABEL RECORDS ARE STANDARD.
+004000 01  DDAILYTC-DT-REC-O.
+004100     COPY DDS-MCRPCS1600 OF MCFLCS1601.
+004200
+       FD  USER-I
+           LABEL RECORDS ARE STANDARD.
+       01  USER-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCSUSER.
+
+004300 FD  DISPLAY-FILE
+004400     LABEL RECORDS ARE OMITTED.
+004500 01  DISPLAY-REC                   PIC X(1500).
+004800
+004900 WORKING-STORAGE SECTION.
+       77  USER-FILE-EXISTS              PIC X     VALUE "N".
+005000 01  SAVE-STOREROOM                PIC X(2).
+005100 01  SAVE-STR                      PIC X(2).
+005200 01  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+       01  MOVED-IT-FLAG                 PIC X(1).
+005300 01  FOUND-ONE                     PIC X(1).
+005400 01  SUB                           PIC S9(4) BINARY.
+005500 01  SUB2                          PIC S9(4) BINARY.
+005600 01  SAVE-PARA-NUMBER              PIC X(2).
+005700 01  ALT-KEY-ARG                   PIC X(40).
+005800 01  ALT-CORP-CODE                 PIC X(8).
+005900 01  DUMMY-REQFILNO                PIC S9(4) BINARY.
+006000 01  SAVE-ONHAND-BEFORE            PIC S9(8).
+006100 01  SAVE-RSRVD-BEFORE             PIC S9(8).
+006200 01  SAVE-SRF-MODE                 PIC S9(4) BINARY.
+       01  SAVE-SUB                      PIC S9(4) BINARY.
+
+       01  USER-INSTEAD-RW.
+           05  USER-INSTEAD-RW-1-2       PIC X(2).
+           05  USER-INSTEAD-RW-3         PIC X(1).
+           05  FILLER                    PIC X(5).
+006300
+006400 COPY FILESTAT IN COPYLIB.
+006500
+006600*************************************************************
+006700**                                                          **
+006800**          S U B P R O G R A M   A R E A S                 **
+006900**                                                          **
+007000**************************************************************
+007100
+007200 01  BUDGET-MESSAGE                PIC X(80).
+007300
+       COPY ISSPARTS IN COPYLIB.
+
+007400*01  MMIS-WORK.
+007500*    05  MMIS-WO                   PIC X(10).
+007600*    05  MMIS-ST-CODE              PIC X(8).
+007700*    05  MMIS-QTY                  PIC S9(8).
+007800*    05  MMIS-AVGCST               PIC S9(11)V9(4).
+007900*    05  MMIS-CHRG-DEPT            PIC X(4).
+008000*    05  MMIS-EXP-CLASS.
+008100*        10  MMIS-EXP-CLASS-1-2    PIC X(2).
+008200*        10  MMIS-EXP-CLASS-3-8    PIC X(6).
+008300*    05  MMIS-DESC                 PIC X(46).
+008400*    05  MMIS-STAT                 PIC XX.
+008500*    05  MMIS-UM                   PIC XX.
+008600*    05  MMIS-EMP-ID               PIC X(4).
+008700*
+       COPY SINQMFR IN COPYLIB.
+031500
+      *------ PARMS FOR CALL TO 'TMTLSTAT"
+038400 01  MTLSTAT-CODE-PARM                  PIC X(7)  VALUE SPACES.
+038500
+008800 01  SPOOLER-AREA.
+008900     05  SPOOL-STAT                PIC S9     BINARY VALUE 0.
+009000     05  SPOOL-PRT                 PIC S9(2)  BINARY.
+009100     05  SPOOL-COPIES              PIC S9(2)  BINARY VALUE 1.
+009200     05  SPOOL-PRIOR               PIC S9     BINARY VALUE 0.
+009300     05  SPOOL-MSG                 PIC X(75)  VALUE SPACES.
+009400
+009500 COPY TBLOWUP    IN COPYLIB.
+009600 01  RET-CODE.
+009700     05  FILLER                    PIC X(1)  VALUE SPACES.
+009800     05  RET-CODE-2                PIC X(1)  VALUE SPACES.
+009900
+010000*------ PARMS FOR CALL TO 'TQTYEDIT'
+      *-----05/06/97 JSB, CHANGE BIN AREA TO PASS TO TQTYEDIT
+       01  BIN-AREA.
+           05  SAVE-LINE OCCURS 6 TIMES.
+               10  DE-FRAN               PIC X(4).
+               10  FILLER                PIC X(20).
+               10  DE-QTY-X              PIC X(8).
+               10  DE-QTY-9 REDEFINES DE-QTY-X PIC 9(8).
+010200 01  RET-SUB                       PIC 9(1).
+       01  WARNING-FLAG                  PIC X(01) VALUE "N".
+       01  WARNING-TYPE                  PIC X(01) VALUE " ".
+       01  WARNING-VALUE                 PIC 9(08) VALUE 0.
+      *---5/6/97, JSB HOLDING AREA FOR FRANCHISERS
+       01  FRAN-TABLE.
+           05  FRAN-ENTRY OCCURS 4 TIMES INDEXED BY FRAN-IDX.
+               10  FRAN-ID             PIC X(1).
+               10  FRAN-NAME           PIC X(4).
+               10  FRAN-VEN0CODE       PIC X(10).
+       01  FRAN-SUB                    PIC 9.
+
+      *----5/6/97, HOLDING AREA FOR ISSUE FROM EACH BIN OWNER.
+       01  OWNER-TABLE.
+          05  OWNER-ENTRY OCCURS 6 TIMES INDEXED BY OWNR-IDX.
+              10  OWNR                PIC X(4).
+              10  OWNR-QTY            PIC 9(9).
+       01  CURR-OWNR                  PIC 9(1).
+       01  MAX-OWNRS                  PIC 9(1).
+       01  HOLD-FRAN-ID               PIC X(1).
+
+      *----------- MESSAGE PARAMETER FOR CALL TO MCXSNDMSG.
+       01  MCXSNDMSG-PARM.
+           05  MCXSNDMSG-CODE            PIC X(08).
+           05  FILLER                    PIC X.
+           05  MCXSNDMSG-MSG             PIC X(70).
+           05  FILLER                    PIC X(433).
+010300
+011500 COPY TIREDIT    IN COPYLIB.
+011400
+011500 COPY TDATECHK   IN COPYLIB.
+011600 COPY CDESC      IN COPYLIB.
+011700 COPY COMMAND    IN COPYLIB.
+011800 COPY CATREAD    IN COPYLIB.
+011900 COPY IOFEEDBACK IN COPYLIB.
+012000 COPY DISPDAT2   IN COPYLIB.
+012100 COPY OVRPFDAT   IN COPYLIB.
+       COPY CSWITCHF   IN COPYLIB.
+012200
+012300**************************************************************
+012400**                                                          **
+012500**                  V I E W   W O R K                       **
+012600**                                                          **
+012700**************************************************************
+012800 COPY FUNCTDEF   IN COPYLIB.
+012900**  SEE LINKAGE SECTION FOR VIEW-COMAREA
+013000
+013100 COPY HMSGBUF IN COPYLIB.
+013200
+013300 01  FIELD-NUMBER   PIC S9(4) BINARY VALUE 1.
+       01  FORMFILE       PIC X(36) VALUE "FISSCRWS.FLANG".
+013400
+013500**************************************************************
+013600**                                                          **
+013700**            D A T A B A S E   W O R K                     **
+013800**                                                          **
+013900**************************************************************
+014000 COPY DATAB3 IN COPYLIB.
+014100 COPY DBMODES IN COPYLIB.
+014200
+014300 01  MULTI-LOCK.
+014400     05  NUMBER-OF-LOCK-DESCRIPTORS PIC S9(4) BINARY VALUE 1.
+014500     05  LOCK-MSTORERM.
+014600         10  LOCK-LENGTH           PIC S9(4) BINARY VALUE 24.
+014700         10  LOCK-DSET             PIC X(16)  VALUE "MSTORERM;".
+014800         10  LOCK-ITEM-LIST        PIC X(16)  VALUE "CORP-CODE;".
+014900         10  LOCK-REL-OP           PIC XX     VALUE "= ".
+015000         10  LOCK-VALUE            PIC X(12)  VALUE SPACES.
+015100     05  LOCK-DRESERVE.
+015200         10  LOCK-LENGTH2          PIC S9(4) BINARY VALUE 24.
+015300         10  LOCK-DSET2            PIC X(16) VALUE "DRESERVE;".
+015400         10  LOCK-ITEM-LIST2       PIC X(16) VALUE "RSRV-WONO;".
+015500         10  LOCK-REL-OP2          PIC X(2)  VALUE "= ".
+015600         10  LOCK-VALUE2           PIC X(12) VALUE SPACES.
+015700
+015800**************************************************************
+015900**                                                          **
+016000**           D A T A B A S E   B U F F E R S                **
+016100**                                                          **
+016200**************************************************************
+016300
+016400 COPY MSTORERM   IN COPYLIB.
+016500 COPY DDAILYTC   IN COPYLIB.
+016600 COPY TC333      IN COPYLIB.
+016700 COPY TC433      IN COPYLIB.
+016800 COPY TC330      IN COPYLIB.
+016900 COPY TC430      IN COPYLIB.
+017000 COPY MPLT0      IN COPYLIB.
+       COPY MPLTPLAN   IN COPYLIB.
+       COPY MPLTFRAN   IN COPYLIB.
+       COPY USERFILE   IN COPYLIB.
+017100
+017200**************************************************************
+017300**                                                          **
+017400**                  S C R E E N   D A T A                   **
+017500**                                                          **
+017600**************************************************************
+017700
+017800 01  DE-FIELDS-1.
+017900     05  DE-STOREROOM              PIC X(2).
+018000     05  DE-LINE OCCURS 15 TIMES.
+018100         10  DE-CODE               PIC X(7).
+018200         10  DE-QTY                PIC X(8).
+018300         10  DE-CHARGE-DATA.
+018400             15  DE-EMPL           PIC X(4).
+018500             15  DE-WO             PIC X(10).
+018600             15  DE-REQ-DEPT       PIC X(4).
+018700             15  DE-CHARGE-DEPT    PIC X(6).
+018800             15  DE-EXP-CLASS      PIC X(6).
+018900             15  DE-WORK-CENTER    PIC X(2).
+019000     05  DE-COMMAND-LINE-1         PIC X(79).
+019100     05  DE-MESSAGE-LINE-1         PIC X(79).
+019200
+019300 01  HOLD-LINE.
+019400     05  HOLD-CODE                 PIC X(7).
+019500     05  FILLER                    PIC X(1).
+019600     05  HOLD-QTY                  PIC X(8).
+019700     05  HOLD-CHARGE-DATA.
+019800         10  HOLD-EMPL             PIC X(4).
+019900         10  HOLD-WO.
+020000             15  MT-CHECK.
+020100                 20  STATIONERY-CHECK PIC X(1).
+020200                 20  FILLER        PIC X(1).
+020300             15  FILLER            PIC X(1).
+020400             15  IT-J-Z-CHECK      PIC X(1).
+020500             15  FILLER            PIC X(6).
+020600         10  HOLD-REQ-DEPT         PIC X(4).
+020700         10  HOLD-CHARGE-DEPT.
+020800             15  HOLD-CHARGE-DEPT-1-4 PIC X(4).
+020900             15  HOLD-CHARGE-TYPE  PIC X(2).
+021000         10  HOLD-EXP-CLASS        PIC X(6).
+021100         10  HOLD-WORK-CENTER      PIC X(2).
+021200
+021300**************************************************************
+021400**                                                          **
+021500**            L I N K A G E   S E C T I O N                 **
+021600**                                                          **
+021700**************************************************************
+021800
+021900 LINKAGE SECTION.
+022000 01  BASE                          PIC X(10).
+022100 01  MMIS-BASE                     PIC X(13).
+022200
+022300 COPY DBSTAT     IN COPYLIB.
+022400 COPY VCOMLINK   IN COPYLIB.
+022500 COPY STCOM      IN COPYLIB.
+022600 COPY TSHWSUB    IN COPYLIB.
+022700 COPY LANGSUB    IN COPYLIB.
+022800 COPY MULTSTR    IN COPYLIB.
+022900 COPY ESCSUB     IN COPYLIB.
+023000 COPY TISSCRWS   IN COPYLIB.
+023100
+023200 PROCEDURE DIVISION USING BASE MMIS-BASE STATUS-AREA
+023300                          VIEW-COMAREA STORES-COMAREA
+023400                          SRF-COMAREA, SRF-SPOOLER-REC,
+023500                          LANGUAGE-PARMS, MULTIPLE-STR-DATA,
+023600                          ESC-NAME, ISCR-DATA.
+023700
+023800 1-HSK.
+           MOVE ZERO                     TO  VIEW-LASTKEY.
+023900     MOVE ZERO                     TO  SRF-ERROR-FLD.
+024000     MOVE ZERO                     TO  LANG-SETNUM.
+024100     MOVE SRF-MODE                 TO  SAVE-SRF-MODE.
+024200     MOVE 2                        TO  SRF-MODE.
+024300     MOVE SPACES                   TO  DE-FIELDS-1.
+024400     PERFORM 9999-OPENS.
+      *------5/6/97 GET FRANCHISE TABLE.
+           MOVE "FRAN"                   TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF NO-ENTRY
+               MOVE SPACES               TO   FRAN-TABLE
+           ELSE
+               MOVE MPLTINFO-FRANCHISES  TO   FRAN-TABLE.
+024500*------ IF THIS IS CALLED BY THE CRAFTSMEN PROGRAM, THE MULT-STR
+024600*------ DATA HAS NOT ALREADY BEEN GOTTEN
+024700     IF WO-OVERRD-ENTRY = SPACES
+024800         MOVE "STST"               TO  PLT-ARG
+024900         PERFORM 9999-GETKEY-MPLTINFO-PK-I
+025000         MOVE MPLTINFO-DATA        TO  MULTIPLE-STR-DATA.
+025100
+           MOVE "PLAN"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           MOVE PRIMARY-LANGUAGE         TO  INQ-MPLT-DDESC-LANG.
+           MOVE SECONDARY-LANGUAGE       TO  INQ-MPLT-DDESC2-LANG.
+
+025200     IF MULT-STR-PLANT
+025300         IF SCOM-PGM-KEY = "SW6"
+025400             MOVE "FIRMULT_ST"     TO  VIEW-NFNAME
+025500         ELSE
+025600             MOVE "FRTMULT_ST"     TO  VIEW-NFNAME
+025700     ELSE
+025800         IF SCOM-PGM-KEY = "SW6"
+025900             MOVE "FIRMULT"        TO  VIEW-NFNAME
+026000         ELSE
+026100             MOVE "FRTMULT"        TO  VIEW-NFNAME.
+026200
+026300*------ IF SIGNED ON AS 'STORESA', ETC, DEFAULT TO THE DESIGNATED
+026400*------ STOREROOM, IF SIGNED ON AS 'CFA', ETC, DEFAULT TO THE
+      *------ DESIGNATED STOREROOM, ELSE DEFAULT TO STOREROOM 'A'.
+026500     IF MULT-STR-PLANT
+026600         IF SRF-USER-1-6 = "STORES"
+026700             MOVE SRF-USER-7       TO  DE-STOREROOM
+026800         ELSE
+                   IF MULTI-INSTEAD-RW = "Y"
+                       MOVE SRF-USERNAME TO USER-INSTEAD-RW
+                       IF USER-INSTEAD-RW-1-2 = "CF"
+                           MOVE USER-INSTEAD-RW-3 TO DE-STOREROOM
+                       ELSE
+                           MOVE "A"               TO DE-STOREROOM
+                       END-IF
+                   ELSE
+026900                 MOVE "A"              TO  DE-STOREROOM.
+027000
+027100*------ THE OTHER ISSUE PROGRAMS USE USERNAME TO DETERMINE STOREROOM
+027200*------ FOR THE MULT. STR SITUATION: STORESA IS STOREROOM A, ETC.
+027300*------ HOWEVER THIS ONE USES THE SAME WAY AS CRAFT WS: THE USER
+027400*------ INPUTS THE STOREROOM.  'TUDCSTR' DETERMINES THE MULT-STR-STR
+027500*------ FOR THE OTHER PROGRAMS, SO WE HAVE TO SAVE IT AND RESTORE
+027600*------ IT.
+027700     MOVE MULT-STR-STR             TO  SAVE-STR.
+027800
+027900     PERFORM 9999-GETNEXTFORM.
+028000
+028100     IF ISCR-WO-NUM = SPACES AND ISCR-PART (1) = SPACES
+028200         NEXT SENTENCE
+028300     ELSE
+               MOVE ISCR-WO-NUM              TO    DE-WO (1)
+028800         MOVE ISCR-CC-NUM              TO    DE-EMPL (1)
+028400         PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 8
+028500             IF ISCR-PART (SUB) > SPACES
+028600                 MOVE ISCR-PART (SUB)  TO    DE-CODE (SUB)
+028900             END-IF
+029000         END-PERFORM.
+029100
+029200     PERFORM 6000-MAIN THRU 6990-MAIN-X
+029300       UNTIL VIEW-LASTKEY = EXIT-PROGRAM.
+029400     PERFORM 9999-CLOSES.
+029500     MOVE SAVE-SRF-MODE            TO  SRF-MODE.
+029600     MOVE SAVE-STR                 TO  MULT-STR-STR.
+029700     GOBACK.
+029800
+029900 2100-BLOWUP.
+030000     MOVE SAVE-PARA-NUMBER         TO  BU-DISPLAY-PARA.
+030100     MOVE "SIRMULT"                TO  BU-PGM-NAME.
+030200     MOVE CODE-ARG                 TO  BU-DISPLAY-FLD (2).
+030300     MOVE CORP-CODE                TO  BU-DISPLAY-FLD (3).
+030400     CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+030500       VIEW-COMAREA FILE-STATUS BU-DISPLAY-MSG
+030600       BU-DISPLAY-FLDS.
+030700
+030800 6000-MAIN.
+030900*------ SKIP PAST DE-STOREROOM FIELD, SINCE HE WILL RETAIN DEFAULT
+           IF DE-STOREROOM NOT = SPACES
+031000         MOVE 1                    TO  SRF-CURSOR-FLD.
+           MOVE 2 TO SRF-KEYSET.
+031100     PERFORM 9999-DO-SCREEN-1.
+031200     IF VIEW-LASTKEY = EXIT-PROGRAM
+031300         GO TO 6990-MAIN-X.
+031400
+           IF VIEW-LASTKEY = HP-F3-KEY OR F6-KEY
+               PERFORM 9100-CALL-SINQMFR THRU 9110-CS-X
+               MOVE ZERO TO VIEW-LASTKEY
+               GO TO 6990-MAIN-X.
+           IF VIEW-LASTKEY = F2-KEY
+               PERFORM 9120-MATERIAL-STATUS THRU 9130-MS-X
+               MOVE ZERO TO VIEW-LASTKEY
+               GO TO 6990-MAIN-X.
+
+031500*    "N72: NOW EDITING"
+031600     MOVE 14072 TO CATREAD-MSG-NUMBER.
+031700     PERFORM 999-CATREAD.
+031800     MOVE "Y" TO SRF-MSG-AND-GO.
+031900     PERFORM 9999-SETERROR-1.
+032000
+032100*------ IF CHARGE DATA (EMPL, WO, REQ-DEPT, CHARGE-DEPT, EXP
+032200*------ CLASS) ARE LEFT BLANK, DEFAULT TO THE FIRST LINE ABOVE IT
+032300*------ THAT HAS ANY CHARGE DATA
+032400     MOVE 1                        TO  SUB.
+032500     PERFORM 14 TIMES
+032600         ADD 1                     TO  SUB
+032700         IF DE-CHARGE-DATA (SUB) = SPACES AND DE-CODE (SUB) > " "
+032800             MOVE SUB              TO  SUB2
+032900             MOVE "N"              TO  FOUND-ONE
+033000             PERFORM UNTIL SUB2 = 1 OR FOUND-ONE = "Y"
+033100                 SUBTRACT 1 FROM SUB2
+033200                 IF DE-CHARGE-DATA (SUB2) > SPACES
+033300                     MOVE DE-CHARGE-DATA (SUB2)
+033400                                   TO  DE-CHARGE-DATA (SUB)
+033500                     MOVE "Y"      TO  FOUND-ONE
+033600                 END-IF
+033700             END-PERFORM
+033800         END-IF
+033900     END-PERFORM.
+034000
+034100********************************************
+034200**      EDIT ENTIRE SCREEN                **
+034300********************************************
+034400     MOVE ZERO                     TO  SUB.
+      *------  SET TQTYEDIT RETURN LIMIT CHECK FLAG TO "Y" TO BYPASS
+      *------  LIMIT CHECKS UNTIL NEXT PERFORM GROUP
+           MOVE "Y"                      TO  WARNING-FLAG.
+034500     PERFORM UNTIL SUB = 15 OR MESSAGE-BUFFER-1 > SPACES
+034600         ADD 1                     TO  SUB
+034700         IF DE-CODE (SUB) > SPACES
+034800             MOVE DE-CODE (SUB)    TO  HOLD-CODE
+034900             MOVE DE-QTY (SUB)     TO  HOLD-QTY
+035000             MOVE DE-CHARGE-DATA (SUB) TO HOLD-CHARGE-DATA
+035100             PERFORM 9000-ALTKEY
+035200             PERFORM 7000-EDIT-CODE THRU 7990-EC-X
+035300             MOVE HOLD-CODE        TO  DE-CODE (SUB)
+035400             MOVE HOLD-QTY         TO  DE-QTY (SUB)
+035500             MOVE HOLD-CHARGE-DATA TO  DE-CHARGE-DATA (SUB)
+035600             IF MESSAGE-BUFFER-1 NOT = SPACES
+035700                 PERFORM 9999-RESET-MSTORERM-CD-O
+035800                 IF EDIT-SUB = 6
+035900                     MOVE 5        TO  EDIT-SUB
+036000                 END-IF
+036100                 COMPUTE SRF-ERROR-FLD =
+036200                   ((SUB - 1) * 8) + EDIT-SUB + 2
+036300             END-IF
+036400         ELSE
+036500             MOVE SPACES           TO  DE-LINE (SUB)
+036600         END-IF
+036700     END-PERFORM.
+036800     IF MESSAGE-BUFFER-1 NOT = SPACES
+036900         GO TO 6990-MAIN-X.
+037000
+      *-----  INITIALIZE WARNING-FLAG FOR TQTYEDIT FOR RETURN LIMITS
+      *-----  DONE HERE SO EACH QTY ON WORKSHEET WILL BE CHECKED AT
+      *-----  LEAST ONCE IN NEXT SET OF LOGIC.
+           MOVE "N"          TO WARNING-FLAG.
+
+037100*    "N73: NOW PROCESSING"
+037200     MOVE 14073 TO CATREAD-MSG-NUMBER.
+037300     PERFORM 999-CATREAD.
+037400     MOVE "Y" TO SRF-MSG-AND-GO.
+037500     PERFORM 9999-SETERROR-1.
+037600
+037700********************************************
+037800**      EDIT AND ISSUE INDIVIUAL CODES    **
+037900********************************************
+038000     MOVE ZERO                     TO  SUB.
+038100     PERFORM UNTIL SUB = 15 OR MESSAGE-BUFFER-1 > SPACES
+038200         ADD 1                     TO  SUB
+038300         IF DE-CODE (SUB) > SPACES
+038400             MOVE DE-CODE (SUB)    TO  HOLD-CODE
+038500             MOVE DE-QTY (SUB)     TO  HOLD-QTY
+038600             MOVE DE-CHARGE-DATA (SUB) TO HOLD-CHARGE-DATA
+038700             PERFORM 9000-ALTKEY
+038800             MOVE 1                TO  NUMBER-OF-LOCK-DESCRIPTORS
+038900             MOVE CODE-ARG         TO  LOCK-VALUE
+039000             PERFORM 9999-MULTI-LOCK
+039100             PERFORM 7000-EDIT-CODE THRU 7990-EC-X
+                   PERFORM 60000-CHECK-LIMITS THRU 60000-CL-X
+039200             MOVE HOLD-CODE        TO  DE-CODE (SUB)
+039300             MOVE HOLD-QTY         TO  DE-QTY (SUB)
+039400             MOVE HOLD-CHARGE-DATA TO  DE-CHARGE-DATA (SUB)
+039500             IF MESSAGE-BUFFER-1 NOT = SPACES
+039600                 PERFORM 9999-RESET-MSTORERM-CD-O
+039700                 PERFORM 9999-UNLOCK
+039800                 IF EDIT-SUB = 6
+039900                     MOVE 5        TO  EDIT-SUB
+040000                 END-IF
+040100                 COMPUTE SRF-ERROR-FLD =
+040200                   ((SUB - 1) * 8) + EDIT-SUB + 2
+040300             ELSE
+040400                 PERFORM 8000-ISSUE-CODE THRU 8990-IC-X
+040500                 MOVE SPACES       TO  DE-LINE (SUB)
+      *-----  INITIALIZE WARNING-FLAG FOR TQTYEDIT FOR RETURN LIMITS
+      *-----  DONE HERE SO EACH QTY ON WORKSHEET CHECKED AT LEAST ONCE
+                       MOVE "N" TO WARNING-FLAG
+040600             END-IF
+040700         END-IF
+040800     END-PERFORM.
+040900     IF MESSAGE-BUFFER-1 NOT = SPACES
+041000         GO TO 6990-MAIN-X.
+041100
+041200     MOVE DE-STOREROOM             TO  SAVE-STOREROOM.
+041300     MOVE SPACES                   TO  DE-FIELDS-1.
+041400     PERFORM 9999-RESET-SCREEN.
+041500     MOVE SAVE-STOREROOM           TO  DE-STOREROOM.
+      *-----  INITIALIZE WARNING-FLAG FOR TQTYEDIT FOR RETURN LIMITS
+      *-----  DONE HERE SO EACH QTY ON WORKSHEET CHECKED AT LEAST ONCE
+      *-----  ALSO SET SAVE-SUB TO 0
+           MOVE "N" TO WARNING-FLAG.
+           MOVE 0 TO SAVE-SUB.
+041600
+041700 6990-MAIN-X.
+041800     EXIT.
+041900
+042000*****************************************************************
+042200**        E D I T   R E T U R N   L I M I T S                  **
+042400*****************************************************************
+       60000-CHECK-LIMITS.
+      *------ IF WARNING-FLAG IS "Y", THEN A UNIT QTY/VALUE LIMITS HAS
+      *------ BEEN SURPASSED.  IF CURRENT WORKSHEET ENTRY IN ERROR (SUB)
+      *------ IS EQUAL TO THE LAST-ENTRY FLAGGED FOR ERROR (SAVE-SUB),
+      *------ THEN USER HAS SEEN THE MESSAGE AND WANTS TO ACCEPT THE
+      *------ ENTRY, SO OVERRIDE THE WARNING BY CLEARING MSG BUFFER. IF
+      *------ CURRENT ENTRY FLAGGED FOR SURPASSING RETURN LIMIT DOES
+      *------ NOT EQUAL THE LAST ENTRY FLAGGED, THEN THIS IS THE FIRST
+      *------ CHECK ON THIS FIELD, DO NOT OVERRIDE WARNING.
+           IF WARNING-FLAG = "Y"
+              IF SAVE-SUB = SUB
+                 MOVE SPACES TO MESSAGE-BUFFER-1
+              ELSE
+                 MOVE SUB TO SAVE-SUB.
+
+       60000-CL-X.
+           EXIT.
+
+042000*****************************************************************
+042100**                                                             **
+042200**     E D I T   C O R P O R A T E   C O D E                   **
+042300**                                                             **
+042400*****************************************************************
+042500 7000-EDIT-CODE.
+042600     PERFORM 9999-GETKEY-MSTORERM-CD-O.
+042700     IF NO-ENTRY
+042800*        "S9: STORES CODE DOES NOT EXIST"
+042900         MOVE 19009                TO  CATREAD-MSG-NUMBER
+043000         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+043100         MOVE MESSAGE-BUFFER       TO  MSG-TEXT
+043200         MOVE HOLD-CODE            TO  MSG-FLD
+043300         MOVE -1                   TO  EDIT-SUB
+043400         GO TO 7990-EC-X.
+043500
+043600     IF STR-STATE = "F"
+043700*        "M32: MATERIAL BEING INVENTORIED"
+043800         MOVE 13032                TO  CATREAD-MSG-NUMBER
+043900         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+044000         MOVE MESSAGE-BUFFER       TO  MSG-TEXT
+044100         MOVE HOLD-CODE            TO  MSG-FLD
+044200         MOVE -1                   TO  EDIT-SUB
+044300         GO TO 7990-EC-X.
+044400
+044500**************************************************************
+044600**                                                          **
+044700**              EDIT CHARGE DATA                            **
+044800**                                                          **
+044900**************************************************************
+045000
+045100     MOVE SRF-MPLTINFO-COMPANY     TO  EDIT-PLANT-CODE.
+045200     MOVE CODE-ARG                 TO  EDIT-CODE.
+045300     MOVE HOLD-EMPL                TO  EDIT-EMPL.
+045400     MOVE HOLD-WO                  TO  EDIT-WO.
+045500     MOVE HOLD-REQ-DEPT            TO  EDIT-REQ-DEPT.
+045600     MOVE HOLD-CHARGE-DEPT         TO  EDIT-CHARGE-DEPT.
+045700     MOVE HOLD-EXP-CLASS           TO  EDIT-EXP-CLASS.
+045700     MOVE STR-RESTRICTED-FLG       TO  EDIT-RESTRICTED-FLG.
+045700     MOVE STR-REQ-CHG-OVERRD       TO  EDIT-REQ-CHG-OVERRD.
+045700     MOVE STR-DIR-CHRG-DEPT        TO  EDIT-DIR-CHRG-DEPT.
+045800     IF SCOM-PGM-KEY = "SW6"
+045900         MOVE "IS"                 TO  RET-CODE
+046000     ELSE
+046100         MOVE "RT"                 TO  RET-CODE.
+046200
+046300     CALL "TIREDIT" USING RET-CODE, BASE, MMIS-BASE, PART-WORKAREA,
+046400       STATUS-AREA, EDIT-DATA, MESSAGE-BUFFER, MULTIPLE-STR-DATA,
+046500       STORES-COMAREA, STR-EXPENSE-CLASS, LANGUAGE-PARMS.
+046600     IF RET-CODE = "BU"
+046700         MOVE "TIREDIT ERROR 631-RF" TO BU-DISPLAY-MSG
+046800         PERFORM 2100-BLOWUP.
+046900
+047000     MOVE EDIT-CODE                TO  HOLD-CODE.
+047100     MOVE EDIT-EMPL                TO  HOLD-EMPL.
+047200     MOVE EDIT-WO                  TO  HOLD-WO.
+047300     MOVE EDIT-REQ-DEPT            TO  HOLD-REQ-DEPT.
+047400     MOVE EDIT-CHARGE-DEPT         TO  HOLD-CHARGE-DEPT.
+047500     MOVE EDIT-EXP-CLASS           TO  HOLD-EXP-CLASS.
+047600
+047700     IF MESSAGE-BUFFER NOT = SPACES
+047800         GO TO 7990-EC-X.
+047900
+048000**************************************************************
+048100**                                                          **
+048200**                     EDIT ONHAND AND RESERVED             **
+048300**                                                          **
+048400**************************************************************
+048500
+048600*------ EDIT QTY IN SINGLE QTY/ DON'T UPDATE MODE
+048700     IF SCOM-PGM-KEY = "SW6"
+048800         MOVE "I4"                 TO  RET-CODE
+048900     ELSE
+049000         MOVE "R4"                 TO  RET-CODE.
+049100     MOVE DE-STOREROOM             TO  MULT-STR-STR.
+      *------5/6/97 INIT BIN-AREA WITH FRANCHISE FOR BINS
+           PERFORM VARYING FRAN-SUB FROM 1 BY 1 UNTIL FRAN-SUB > 6
+               IF FRAN-TABLE = SPACES
+                   MOVE SPACES TO DE-FRAN(FRAN-SUB)
+               ELSE
+                   SET FRAN-IDX TO 1
+                   SEARCH FRAN-ENTRY
+                     AT END  MOVE SPACES TO DE-FRAN (FRAN-SUB)
+                     WHEN FRAN-ID(FRAN-IDX) = STR-BIN-OWNER (FRAN-SUB)
+                      MOVE FRAN-NAME(FRAN-IDX) TO DE-FRAN(FRAN-SUB)
+                   END-SEARCH
+               END-IF
+           END-PERFORM.
+049200     CALL "TQTYEDIT" USING RET-CODE BASE, STATUS-AREA, CODE-ARG,
+049300       HOLD-WO, STR-ONHAND, STR-RESERVED, STR-LOC-AREA, BIN-AREA,
+049400       HOLD-QTY, ISSUED-QTY, RET-SUB, MESSAGE-BUFFER,
+049500       MULTIPLE-STR-DATA, LANGUAGE-PARMS, WARNING-FLAG,
+             WARNING-TYPE, WARNING-VALUE, STR-AVG-COST,
+             HOLD-CHARGE-DEPT-1-4, HOLD-EXP-CLASS, HOLD-EMPL,
+             STR-UM, STR-MAX, STR-REORDER
+             STR-CODE-OWNER FRAN-TABLE.
+049600     IF RET-CODE NOT = "00"
+049700         MOVE "TQTYEDIT ERROR"     TO  BU-DISPLAY-MSG
+049800         PERFORM 2100-BLOWUP.
+049900     IF MESSAGE-BUFFER NOT = SPACES
+050000         MOVE ZERO                 TO  EDIT-SUB
+050100         GO TO 7990-EC-X.
+050200 7990-EC-X.
+050300     EXIT.
+050400
+050500*****************************************************************
+050600**                                                             **
+050700**    U P D A T E   T H E   C O D E                            **
+050800**                                                             **
+050900*****************************************************************
+051000 8000-ISSUE-CODE.
+051100     MOVE 2                        TO  CDESC-LINES-TO-GET.
+051200     MOVE "N"                      TO  CDESC-LOCAL-DESC-OPTION.
+051300     CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+051400       BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+051500     IF BU-DISPLAY-MSG-1 NOT = SPACES
+051600         PERFORM 2100-BLOWUP.
+051700
+051800     MOVE STR-ONHAND               TO  SAVE-ONHAND-BEFORE.
+051900     MOVE STR-RESERVED             TO  SAVE-RSRVD-BEFORE.
+052000
+052100*------ SINGLE QTY/ UPDATE MODE: MSTORERM BUF IS UPDATED
+052200     IF SCOM-PGM-KEY = "SW6"
+052300         MOVE "I3"                 TO  RET-CODE
+052400     ELSE
+052500         MOVE "R3"                 TO  RET-CODE.
+052600     MOVE DE-STOREROOM             TO  MULT-STR-STR.
+      *------  SET TQTYEDIT RETURN LIMIT CHECK FLAG TO "Y" TO BYPASS
+      *------  LIMIT CHECKS
+           MOVE "Y"                      TO  WARNING-FLAG.
+      *------5/6/97 INIT BIN-AREA WITH FRANCHISE FOR BINS
+           PERFORM VARYING FRAN-SUB FROM 1 BY 1 UNTIL FRAN-SUB > 6
+               IF FRAN-TABLE = SPACES
+                   MOVE SPACES TO DE-FRAN(FRAN-SUB)
+               ELSE
+                   SET FRAN-IDX TO 1
+                   SEARCH FRAN-ENTRY
+                     AT END  MOVE SPACES TO DE-FRAN (FRAN-SUB)
+                     WHEN FRAN-ID(FRAN-IDX) = STR-BIN-OWNER (FRAN-SUB)
+                      MOVE FRAN-NAME(FRAN-IDX) TO DE-FRAN(FRAN-SUB)
+                   END-SEARCH
+               END-IF
+           END-PERFORM.
+052700     CALL "TQTYEDIT" USING RET-CODE, BASE, STATUS-AREA, CODE-ARG,
+052800       HOLD-WO, STR-ONHAND, STR-RESERVED, STR-LOC-AREA, BIN-AREA,
+052900       HOLD-QTY, ISSUED-QTY, RET-SUB, MESSAGE-BUFFER,
+053000       MULTIPLE-STR-DATA, LANGUAGE-PARMS, WARNING-FLAG,
+             WARNING-TYPE, WARNING-VALUE, STR-AVG-COST,
+             HOLD-CHARGE-DEPT-1-4, HOLD-EXP-CLASS, HOLD-EMPL,
+             STR-UM, STR-MAX, STR-REORDER
+             STR-CODE-OWNER FRAN-TABLE.
+053100     IF MESSAGE-BUFFER-1 NOT = SPACES
+053200         MOVE MESSAGE-BUFFER       TO  BU-DISPLAY-MSG
+053300         PERFORM 2100-BLOWUP.
+053400     IF RET-CODE NOT = "00"
+053500         MOVE "TQTYEDIT ERROR"     TO  BU-DISPLAY-MSG
+053600         PERFORM 2100-BLOWUP.
+053700
+053800**************************************************************
+053900**   DETERMINE DATE & TIME FOR TRANSACTION.  NOTE THAT DATE **
+054000**   & TIME AT THIS INSTANT WILL BE USED FOR MSTORERM       **
+054100**   UPDATE, TRANSACTION, AND PRINTOUT.                     **
+054200**************************************************************
+054300
+054400     MOVE 1                        TO  DATE-MODE.
+054500     CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+054600
+054700******************************
+054800**   UPDATE ACTIVITY DATES  **
+054900******************************
+055000
+      *------MOVE CENTURY FOR ACTIVITY DATE
+055100     MOVE DATE-YMD-OUT             TO  STR-ACT-DATE.
+           IF STR-ACT-DATE-YY > "70"
+               MOVE "19" TO STR-ACT-DATE-CC
+           ELSE
+               MOVE "20" TO STR-ACT-DATE-CC.
+      *------MOVE CENTURY FOR ISSUE DATE
+055200     IF SCOM-PGM-KEY = "SW6"
+055300         MOVE DATE-YMD-OUT         TO  STR-LAST-IDATE
+               IF STR-ISS-DATE-YY > "70"
+                   MOVE "19" TO STR-LAST-IDATE-CC
+               ELSE
+                   MOVE "20" TO STR-LAST-IDATE-CC
+               END-IF.
+055400
+055500     IF SCOM-PGM-KEY = "SW6"
+055600         MOVE HOLD-EMPL            TO  STR-LAST-EMPL
+055700         IF AKRON-PLANT
+055800             IF IT-J-Z-CHECK = "I" OR "J" OR "Z"
+055900                 MOVE HOLD-WO      TO  STR-LAST-CHARGE
+056000             ELSE
+056100             IF STATIONERY-CHECK = "R" OR "D" OR "T" OR "S"
+056200                 MOVE HOLD-REQ-DEPT  TO  STR-LAST-CHARGE
+056300             ELSE
+056400             IF HOLD-CHARGE-TYPE = "4" OR "5"
+056500                 MOVE HOLD-REQ-DEPT  TO  STR-LAST-CHARGE
+056600             ELSE
+056700                 MOVE HOLD-CHARGE-DEPT TO  STR-LAST-CHARGE
+056800         ELSE
+056900             MOVE HOLD-CHARGE-DEPT TO  STR-LAST-CHARGE.
+057000
+057100     PERFORM 9999-UPDATE-MSTORERM-CD-O.
+057200
+057300     PERFORM 9999-UNLOCK.
+057400
+057500 64-UPDATE-DDAILYTC.
+057600     MOVE 10                       TO  SAVE-PARA-NUMBER.
+      *------5/2/97 BUILD OWNER/QTY TABLE
+           IF SCOM-PGM-KEY = "SW6"
+             MOVE 0 TO MAX-OWNRS
+             INITIALIZE OWNER-TABLE
+             PERFORM VARYING FRAN-SUB FROM 1 BY 1
+             UNTIL FRAN-SUB > 6
+               IF DE-QTY-9(FRAN-SUB) > 0
+                   SET OWNR-IDX TO 1
+                   SEARCH OWNER-ENTRY
+                     AT END
+                        ADD 1 TO MAX-OWNRS
+                        MOVE DE-FRAN(FRAN-SUB) TO OWNR(MAX-OWNRS)
+                        IF DE-QTY-X(FRAN-SUB) NUMERIC
+                          MOVE DE-QTY-9(FRAN-SUB) TO OWNR-QTY(MAX-OWNRS)
+                        ELSE
+                          MOVE ZEROS        TO OWNR-QTY(MAX-OWNRS)
+                        END-IF
+                     WHEN OWNR(OWNR-IDX) = DE-FRAN(FRAN-SUB)
+                        MOVE OWNR-IDX TO CURR-OWNR
+                        IF MAX-OWNRS = 0
+                            MOVE 1 TO MAX-OWNRS
+                            MOVE 0 TO OWNR-QTY(CURR-OWNR)
+                        END-IF
+                        IF DE-QTY-X(FRAN-SUB) NUMERIC
+                         IF OWNR-QTY(CURR-OWNR) NUMERIC
+                          ADD DE-QTY-9(FRAN-SUB) TO OWNR-QTY(CURR-OWNR)
+                         ELSE
+                          MOVE DE-QTY-9(FRAN-SUB) TO OWNR-QTY(CURR-OWNR)
+                         END-IF
+                        END-IF
+                   END-SEARCH
+              END-IF
+             END-PERFORM
+           END-IF.
+057700     IF HOLD-EXP-CLASS = "000000"
+057800         MOVE SPACES               TO  HOLD-EXP-CLASS.
+057900
+058000     MOVE SPACES                   TO  DDAILYTC-DATA.
+058100     MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+058200     MOVE DATE-UNFORMATTED-TIME-OUT TO  DDAILYTC-TIME.
+058300     MOVE SRF-MPLTINFO-COMPANY     TO  DDAILYTC-PLT.
+058400     IF SCOM-PGM-KEY = "SW6"
+      *--------5/2/97 WRITE TC FOR EACH OWNER/QTY
+            PERFORM VARYING FRAN-SUB FROM 1 BY 1
+               UNTIL FRAN-SUB > MAX-OWNRS
+058500       IF STR-AVG-COST > 99999.9999
+058600         MOVE "433"                TO  DDAILYTC-TC
+058700         MOVE CODE-ARG             TO  TC433-CORPCODE
+058800         MOVE HOLD-EMPL            TO  TC433-EMP
+058900*        MOVE HOLD-QTY             TO  TC433-QTY
+               MOVE OWNR-QTY(FRAN-SUB)   TO  TC433-QTY
+               PERFORM 900-GET-FRAN-ID THRU 900-GET-FRAN-ID-X
+               MOVE HOLD-FRAN-ID         TO  TC433-FRAN-ID
+      *----------GOODYEAR OWNED USES AVG COST
+      *----------FRANCHISE OWNED USES MKT COST
+               IF STR-CODE-OWNER NOT = SPACES
+                 IF HOLD-FRAN-ID NOT = STR-CODE-OWNER
+                   MOVE STR-AVG-COST     TO  TC433-AVG-COST
+                 ELSE
+                   MOVE STR-MKT-COST     TO  TC433-AVG-COST
+                 END-IF
+               ELSE
+                 MOVE STR-AVG-COST       TO  TC433-AVG-COST
+               END-IF
+059100         MOVE STR-UM               TO  TC433-UM
+059200         MOVE HOLD-CHARGE-DEPT     TO  TC433-DEPARTMENT
+059300         MOVE HOLD-WO              TO  TC433-WO
+059400         MOVE HOLD-WORK-CENTER     TO  TC433-WORK-CENTER
+059500         MOVE HOLD-EXP-CLASS       TO  TC433-EXP-CLASS
+059600         MOVE HOLD-REQ-DEPT        TO  TC433-REQ-DEPT
+059700         MOVE STR-CLASS            TO  TC433-CLASS
+               PERFORM 9999-PUT-DDAILYTC-DT-O
+059800       ELSE
+059900         MOVE "333"                TO  DDAILYTC-TC
+060000         MOVE CODE-ARG             TO  TC333-CORPCODE
+060100         MOVE HOLD-EMPL            TO  TC333-EMP
+060200*        MOVE HOLD-QTY             TO  TC333-QTY
+               MOVE OWNR-QTY(FRAN-SUB)   TO  TC333-QTY
+               PERFORM 900-GET-FRAN-ID THRU 900-GET-FRAN-ID-X
+               MOVE HOLD-FRAN-ID         TO  TC333-FRAN-ID
+      *----------GOODYEAR OWNED USES AVG COST
+      *----------FRANCHISE OWNED USES MKT COST
+               IF STR-CODE-OWNER NOT = SPACES
+                 IF HOLD-FRAN-ID NOT = STR-CODE-OWNER
+060300             MOVE STR-AVG-COST     TO  TC333-AVG-COST
+                 ELSE
+                   MOVE STR-MKT-COST     TO  TC333-AVG-COST
+                 END-IF
+               ELSE
+                 MOVE STR-AVG-COST       TO  TC333-AVG-COST
+               END-IF
+060400         MOVE STR-UM               TO  TC333-UM
+060500         MOVE HOLD-CHARGE-DEPT     TO  TC333-DEPARTMENT
+060600         MOVE HOLD-WO              TO  TC333-WO
+060700         MOVE HOLD-WORK-CENTER     TO  TC333-WORK-CENTER
+060800         MOVE HOLD-EXP-CLASS       TO  TC333-EXP-CLASS
+060900         MOVE HOLD-REQ-DEPT        TO  TC333-REQ-DEPT
+061000         MOVE STR-CLASS            TO  TC333-CLASS
+               PERFORM 9999-PUT-DDAILYTC-DT-O
+             END-IF
+            END-PERFORM
+061100     ELSE
+061200       IF STR-AVG-COST > 99999.9999
+061300         MOVE "430"                TO  DDAILYTC-TC
+061400         MOVE CODE-ARG             TO  TC430-CORPCODE
+061500         MOVE HOLD-EMPL            TO  TC430-EMP
+061600         MOVE HOLD-QTY             TO  TC430-QTY
+061700         MOVE STR-AVG-COST         TO  TC430-AVG-COST
+061800         MOVE STR-UM               TO  TC430-UM
+061900         MOVE HOLD-CHARGE-DEPT     TO  TC430-DEPARTMENT
+062000         MOVE HOLD-WO              TO  TC430-WO
+062100         MOVE HOLD-WORK-CENTER     TO  TC430-WORK-CENTER
+062200         MOVE HOLD-EXP-CLASS       TO  TC430-EXP-CLASS
+062300         MOVE HOLD-REQ-DEPT        TO  TC430-REQ-DEPT
+062400         MOVE STR-CLASS            TO  TC430-CLASS
+               PERFORM 9999-PUT-DDAILYTC-DT-O
+062500       ELSE
+062600         MOVE "330"                TO  DDAILYTC-TC
+062700         MOVE CODE-ARG             TO  TC330-CORPCODE
+062800         MOVE HOLD-EMPL            TO  TC330-EMP
+062900         MOVE HOLD-QTY             TO  TC330-QTY
+063000         MOVE STR-AVG-COST         TO  TC330-AVG-COST
+063100         MOVE STR-UM               TO  TC330-UM
+063200         MOVE HOLD-CHARGE-DEPT     TO  TC330-DEPARTMENT
+063300         MOVE HOLD-WO              TO  TC330-WO
+063400         MOVE HOLD-WORK-CENTER     TO  TC330-WORK-CENTER
+063500         MOVE HOLD-EXP-CLASS       TO  TC330-EXP-CLASS
+063600         MOVE HOLD-REQ-DEPT        TO  TC330-REQ-DEPT
+063700         MOVE STR-CLASS            TO  TC330-CLASS
+               PERFORM 9999-PUT-DDAILYTC-DT-O.
+063800
+      *--------- SEND USER NOTIFICATION MESSAGE IF SPECIFIED IN
+      *--------- MCFPCSUSER.
+           IF SCOM-PGM-KEY = "SW6"
+               IF USER-FILE-EXISTS = "Y"
+                   PERFORM 900-SEND-MESSAGE.
+064100
+064300
+064500
+064600**************************************************************
+064700**   CALL "TREQFILU" TO UPDATE THE REQFILE IF NEEDED.  IF   **
+064800**   THE REQFILE HAS NOT YET BEEN OPENED, "TREQFILU" WILL   **
+064900**   OPEN IT AND RETURN THE FILE NUMBER.                    **
+065000**************************************************************
+065100
+065200     CALL "TREQFILU" USING RET-CODE, BASE, DUMMY-REQFILNO,
+065300       CODE-ARG, SAVE-ONHAND-BEFORE, SAVE-RSRVD-BEFORE,
+065400       STR-ONHAND, STR-RESERVED, STR-REORDER, STR-EXPEDITE.
+065500     IF RET-CODE NOT = "00"
+065600         MOVE "TREQFILU ERROR"     TO  BU-DISPLAY-MSG
+065700         MOVE CODE-ARG             TO  BU-DISPLAY-FLD (1)
+065800         MOVE RET-CODE             TO  FILE-STATUS
+065900         PERFORM 2100-BLOWUP.
+066000
+066100*********************************************************
+066200**  PRINT A RECORD OF THE SINGLE ISSUE TO LOCAL PRINTER *
+066300*********************************************************
+066400     IF PRINT-MULT-ISS-FLAG = "Y"
+066500         CALL "CIRPRNT" USING SCOM-PGM-KEY, MULTIPLE-STR-DATA,
+066600           SRF-COMAREA, SRF-SPOOLER-REC, HOLD-CHARGE-DATA,
+066700           BUF-MSTORERM, BIN-AREA, CDESC (1), CDESC (2),
+066800           ESC-NAME, DATE-CHECK-AREA.
+066900
+067000 66-UPDATE-MMIS.
+067100     MOVE 14                       TO  SAVE-PARA-NUMBER.
+067200
+067300     IF HOLD-WO = SPACES
+067400         GO TO 8990-IC-X.
+067500
+067600     MOVE SPACES                   TO  PART-WORKAREA.
+067700     MOVE HOLD-WO                  TO  WO-NUMBER.
+067800     MOVE CODE-ARG                 TO  STORES-CODE.
+067900     MOVE HOLD-QTY                 TO  QTY-ISSUED.
+068000     IF SCOM-PGM-KEY = "ST1"
+068100         MULTIPLY -1         BY  QTY-ISSUED.
+068200     MOVE STR-AVG-COST             TO  AVG-COST.
+068300     MOVE CDESC (1)                TO  STORES-DESC.
+068400     MOVE HOLD-EMPL                TO  EMPLOYEE-ID.
+068500     MOVE STR-UM                   TO  UNIT-OF-MEAS.
+068600
+068700     CALL "ISSPARTS" USING PART-WORKAREA
+068800                           MMIS-BASE
+068900                           LANGUAGE-PARMS
+069000                           BUDGET-MESSAGE.
+069100
+069200 8990-IC-X.
+069300     EXIT.
+069400
+069500 9000-ALTKEY.
+069600     MOVE HOLD-CODE                TO  ALT-KEY-ARG.
+069700     CALL "TALTKEY" USING RET-CODE, BASE, STATUS-AREA,
+069800                          ALT-KEY-ARG, ALT-CORP-CODE.
+069900     IF RET-CODE NOT EQUAL "00"
+070000       MOVE "TALTKEY ERROR 612-CHECK-CODE" TO
+070100         BU-DISPLAY-MSG
+070200       PERFORM 2100-BLOWUP.
+070300     MOVE ALT-CORP-CODE            TO  CODE-ARG HOLD-CODE.
+070400
+       9100-CALL-SINQMFR.
+           MOVE "FCSISINQ"               TO  CSF-NEW-FORMFILE-NAME.
+           MOVE "N"                      TO  CSF-MODE.
+           PERFORM 9200-CALL-CSWITCHF.
+           IF CSF-OPENFORM-ERR-SW = "Y"
+               GO TO 9110-CS-X.
+           IF VIEW-LASTKEY = HP-F3-KEY
+               MOVE "M"                  TO  SINQMFR-MFR-KWM-FLAG
+           ELSE
+               MOVE "K"                  TO  SINQMFR-MFR-KWM-FLAG.
+
+           MOVE SRF-MPLTINFO-COMPANY     TO  INQ-MPLT-PLANT-CODE.
+           CALL "SINQMFR" USING BASE, VIEW-COMAREA, LANGUAGE-PARMS,
+             INQ-MPLT-PARMS, SINQMFR-PARMS.
+
+           MOVE "O"                      TO  CSF-MODE.
+           PERFORM 9200-CALL-CSWITCHF.
+
+           MOVE 1 TO SUB2.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 15
+               IF INQ-CORP-CODE (SUB) > SPACES
+                   MOVE "N" TO MOVED-IT-FLAG
+                   PERFORM UNTIL MOVED-IT-FLAG = "Y" OR SUB2 > 15
+                       IF DE-CODE (SUB2) = SPACES
+                           MOVE INQ-CORP-CODE (SUB) TO DE-CODE (SUB2)
+                           MOVE "Y" TO MOVED-IT-FLAG
+                       END-IF
+                       ADD 1 TO SUB2
+                   END-PERFORM
+               END-IF
+           END-PERFORM.
+
+       9110-CS-X.
+           EXIT.
+
+       9120-MATERIAL-STATUS.
+           MOVE "FCSISINQ"               TO  CSF-NEW-FORMFILE-NAME.
+           MOVE "N"                      TO  CSF-MODE.
+           PERFORM 9200-CALL-CSWITCHF.
+           IF CSF-OPENFORM-ERR-SW = "Y"
+               GO TO 9130-MS-X.
+
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 15
+               IF DE-CODE (SUB) > SPACES OR SUB = 1
+                   MOVE DE-CODE (SUB) TO MTLSTAT-CODE-PARM
+                   CALL "TMTLSTAT" USING BASE, VIEW-COMAREA,
+                     SRF-MPLTINFO-COMPANY, SPOOL-PRT,
+                     MTLSTAT-CODE-PARM, LANGUAGE-PARMS
+               END-IF
+           END-PERFORM.
+
+           MOVE "O"                      TO  CSF-MODE.
+           PERFORM 9200-CALL-CSWITCHF.
+
+       9130-MS-X.
+           EXIT.
+
+       9200-CALL-CSWITCHF.
+           CALL "CSWITCHF" USING VIEW-COMAREA, LANGUAGE-PARMS,
+             FORMFILE, CSF-PARMS, BU-DISPLAY-MSG.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+       9999-OPENS.
+           OPEN I-O   MSTORERM-CD-O.
+           OPEN I-O   DDAILYTC-DT-O.
+           OPEN I-O   DISPLAY-FILE.
+           OPEN INPUT MPLTINFO-PK-I.
+
+           OPEN INPUT USER-I.
+           IF FILE-STATUS NOT = "00"
+               MOVE "N" TO USER-FILE-EXISTS
+           ELSE
+               MOVE "Y" TO USER-FILE-EXISTS.
+
+       9999-CLOSES.
+           CLOSE      MSTORERM-CD-O.
+           CLOSE      DDAILYTC-DT-O.
+           CLOSE      DISPLAY-FILE.
+           CLOSE      MPLTINFO-PK-I.
+           CLOSE      USER-I.
+
+070600 COPY HCATREAD   IN COPYLIB.
+070700 COPY SCRNCALL   IN COPYLIB.
+070800 COPY SCRNCL1B   IN COPYLIB.
+070900 COPY DLOCKCAL   IN COPYLIB.
+071000 COPY MLOCKCAL   IN COPYLIB.
+071100 COPY UNLOCK     IN COPYLIB.
+       9999-GETKEY-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-O.
+           READ MSTORERM-CD-O INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MSTORERM-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY > CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-PUT-DDAILYTC-DT-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DDAILYTC-DT-REC-O FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DDAILYTC-DT-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-CD-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       900-SEND-MESSAGE.
+           MOVE CODE-ARG TO CORPCDE OF USER-I-REC.
+           START USER-I KEY = CORPCDE OF USER-I-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               READ USER-I NEXT INTO BUF-USERFILE
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS = "00"
+                   PERFORM UNTIL USR-CORP-CODE NOT = CODE-ARG
+                                     OR FILE-STATUS NOT = "00"
+                       MOVE SPACES            TO  MCXSNDMSG-PARM
+                       MOVE USR-CORP-CODE     TO  MCXSNDMSG-CODE
+                       MOVE USR-MESSAGE       TO  MCXSNDMSG-MSG
+                       CALL "MCXSNDMSG" USING MCXSNDMSG-PARM
+                                              USR-USER-ID
+                       READ USER-I NEXT INTO BUF-USERFILE
+                           AT END MOVE FILE-STATUS TO FILE-STATUS
+                       END-READ
+                   END-PERFORM.
+
+       900-GET-FRAN-ID.
+           IF FRAN-TABLE = SPACES
+               MOVE SPACES TO HOLD-FRAN-ID
+           ELSE
+               SET FRAN-IDX TO 1
+               SEARCH FRAN-ENTRY
+                 AT END  MOVE SPACES TO HOLD-FRAN-ID
+                 WHEN FRAN-NAME(FRAN-IDX) = OWNR (FRAN-SUB)
+                  MOVE FRAN-ID(FRAN-IDX) TO HOLD-FRAN-ID
+               END-SEARCH.
+       900-GET-FRAN-ID-X.
+           EXIT.

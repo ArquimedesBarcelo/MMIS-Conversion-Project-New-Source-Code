@@ -1,0 +1,1812 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    TDISPBAS.
+000400 INSTALLATION.  GOODYEAR TIRE & RUBBER CO.
+000500*REMARKS.   THIS PROGRAM DISPLAYS A VERBAL WORK ORDER;
+000600*                   SOFT KEY F1 CONTINUES AN EXISTING DISPLAY,
+000700*                   SOFT KEY F2 REQUESTS NEW WORK ORDER NUMBER,
+000800*               SOFT KEY F4 DISPLAYS BASIC WORK ORDER,
+000900*               SOFT KEY F5 DISPLAYS NONPURCHASED MATERIALS,
+001000*               SOFT KEY F6 DISPLAYS PURCHASED MATERIALS,
+001100*               SOFT KEY F7 DISPLAYS LABOR USED,
+001300*                   SOFT KEY F3 EXITS PROGRAM.
+001400*          SUBROUTINES CALLED:
+001500*              TALWONO
+001600*              TSCRPRNT
+001700*              ****.
+      *C 02/02/93    RESOLVED PROBLEM IN 652-PREREAD-CMATLS-ORDERED AND
+      *C             653-PREREAD-UMATLS-ORDERDED.  THE PROGRAM BECAME
+      *C             LOCKED IN A INFINITE LOOP IF THE USER SELECTED TO
+      *C             DISPLAY A NON-PURCHASED MATERIAL BUT ENTERED A REQ
+      *C             NUMBER FOR A PURCHASED MATERIAL AND VICE VERSA.
+      *C                                            MARVIN MITCHELL.
+      *C 09/10/96  JEFF BUNGO
+      *C   EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C   RECOMPILE TO PICK UP COPYLIB CHANGES.
+      *C
+001800 ENVIRONMENT DIVISION.
+001900 CONFIGURATION SECTION.
+002000 SOURCE-COMPUTER.    AS400.
+002100 OBJECT-COMPUTER.    AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZDISPLAY-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+002800     SELECT LBRFILE
+002900         ASSIGN TO DATABASE-LBRFI
+               ORGANIZATION IS INDEXED
+003000         ACCESS MODE IS DYNAMIC
+003100         RECORD KEY IS ACT-KEYL
+               FILE STATUS IS LBRF-STATUS.
+003200     SELECT MATFILE
+003300         ASSIGN TO DATABASE-MATFI
+               ORGANIZATION IS INDEXED
+003400         ACCESS MODE IS DYNAMIC
+003500         RECORD KEY IS ACT-KEYM
+               FILE STATUS IS MATF-STATUS.
+           SELECT WO-LABOR-FILE
+               ASSIGN TO DATABASE-MCFLMM1301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WLF-STATUS.
+           SELECT WO-LAST-NUM-USED
+               ASSIGN TO DATABASE-MCFPMM0800
+               ORGANIZATION IS RELATIVE
+               ACCESS MODE IS RANDOM
+               RELATIVE KEY IS ARG-NO
+               FILE STATUS IS WOLN-STATUS.
+           SELECT WO-PARTS-FILE
+               ASSIGN TO DATABASE-MCFLMM1201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS WPF-STATUS.
+003600 DATA DIVISION.
+003700 FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                            PIC X(2000).
+004300 FD  LBRFILE
+004400     RECORD CONTAINS 92 CHARACTERS
+004500     LABEL RECORD IS OMITTED
+004600     DATA RECORD IS LBRREC.
+004700 01  LBRREC.
+           05  ACT-KEYL                         PIC 9(4).
+           05  LBRREC-REC                       PIC X(88).
+004800 FD  MATFILE
+004900     RECORD CONTAINS 840 CHARACTERS
+005000     LABEL RECORD IS OMITTED
+005100     DATA RECORD IS MATF.
+012200 01  MATF.
+           05  ACT-KEYM                         PIC 9(4).
+           05  MATREC-REC                       PIC X(836).
+       FD  WO-LABOR-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WOLABF.
+       01  WOLABF.
+           COPY DD-MCRPMM1300 OF MCFLMM1301.
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLNU.
+       01  WLNU.
+           COPY DD-MCRPMM0800 OF MCFPMM0800.
+       FD  WO-PARTS-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WOPARF.
+       01  WOPARF.
+           COPY DD-MCRPMM1200 OF MCFLMM1201.
+011100 WORKING-STORAGE SECTION.
+011300 77  CNT-LIMIT                            PIC S9(4) COMP-4.
+011400 77  CRFT-SUBSC                           PIC S9(4) COMP-4.
+011500 77  LBR-REC-CNT                          PIC S9(4) COMP-4.
+011600 77  LBR-REC-CHECK                        PIC S9(4) COMP-4.
+011700 77  LINE-CNT                             PIC S9(4) COMP-4.
+011800 77  LOOP-CNT                             PIC S9(4) COMP-4.
+012000 77  RETURN-SW                            PIC X.
+012100 77  RETURN-SW-2                          PIC X.
+012200 77  SAVE-KEY-HIT                         PIC S9(4) COMP-4.
+012300 77  SUB                                  PIC S9(4) COMP-4.
+012400 77  TMP-LBR-CST                          PIC S9(12)V99.
+012500 77  TMP-MTL-CENTS                        PIC S99.
+012600 77  WO-BASIC-REC-CNT                     PIC S9(4) COMP-4.
+       01  ACT-KEYL-WA                          PIC 9(4).
+       01  ACT-KEYM-WA                          PIC 9(4).
+012700 01  ARG-NO                               PIC 9(9).
+012800 01  ARGUMENT-DEFN                        PIC X(10).
+012900 01  BLOWUP-BASE                          PIC X(16).
+013000 01  BUFFER-DEFINITION.
+013100     05  BUFFER                           PIC X(582).
+013200*
+013300*    BUFFER-2
+013400*
+013500     05  BUFFER-DEFN-2  REDEFINES  BUFFER.
+013600         10  WO-NUM-BUF2                  PIC X(10).
+013700         10  WO-STATUS-BUF2               PIC XX.
+013800         10  WO-CURR-STAT-BUF2            PIC XX.
+013900         10  DATE-RECD-BUF2               PIC X(6).
+014000         10  TIME-RECD-BUF2               PIC X(4).
+014100         10  APPROVAL-CODE-BUF2           PIC X.
+014200         10  REQUESTER-BUF2               PIC X(16).
+014300         10  EQUIP-NUM-BUF2               PIC X(6).
+014400         10  EQUIP-NAME-BUF2              PIC X(50).
+014500         10  TYPE-NUM-BUF2                PIC X(8).
+014600         10  DEPT-BUF2                    PIC X(4).
+014700         10  ZONE-BUF2                    PIC X(4).
+014800         10  LOCATION-BUF2                PIC X(8).
+014900         10  PRIORITY-BUF2                PIC X.
+015000         10  EQUIP-DOWN-BUF2              PIC X.
+015100         10  CRAFTS-REQT-1-BUF2           PIC XX.
+015200         10  CRAFTS-REQT-2-BUF2           PIC XX.
+015300         10  CRAFTS-REQT-3-BUF2           PIC XX.
+015400         10  EXP-CLASS-BUF2               PIC X(8).
+015500         10  DESCRIPTION-1-BUF2           PIC X(30).
+015600         10  DESCRIPTION-2-BUF2           PIC X(66).
+015700         10  DESCRIPTION-3-BUF2           PIC X(66).
+015800         10  CRAFTSMEN-1-BUF2             PIC X(4).
+015900         10  CRAFTSMEN-2-BUF2             PIC X(4).
+016000         10  CRAFTSMEN-3-BUF2             PIC X(4).
+016100         10  FILLER                       PIC X(8).
+016200         10  DATE-STRT-BUF2               PIC X(6).
+016300         10  TIME-STRT-BUF2               PIC X(4).
+016400         10  FAIL-CODE-REASON-BUF2        PIC XX.
+016500         10  FAIL-CODE-SUBSYS-BUF2        PIC XXXX.
+016600         10  DATE-COMP-BUF2               PIC X(6).
+016700         10  TIME-COMP-BUF2               PIC X(4).
+016800         10  MESSAGE-BUF2                 PIC X(79).
+               10  BUFFER-CMD-LINE              PIC X(79).
+               10  BUFFER-ERR-LINE              PIC X(79).
+       COPY CATREAD IN COPYLIB.
+017000 COPY CMANREQ IN COPYLIB.
+017100 01  COST-WORKAREA.
+017200     05  UC-SIGNED                        PIC S9(12)V9(4).
+017300     05  UC-S REDEFINES UC-SIGNED.
+017400         10  UC-DOLS-S                    PIC 9(12).
+017500         10  UC-CENTS-S                   PIC S9(4).
+017600     05  UNITCST-CENTS                    PIC 9999.
+017700     05  UCST-CENTS REDEFINES UNITCST-CENTS.
+017800         10  UCST-CENTS-1-2               PIC 99.
+017900         10  UCST-CENTS-3-4               PIC 99.
+       COPY CPYIND  IN COPYLIB.
+018000 COPY TDATESUB IN COPYLIB.
+018100 01  ERROR-BUFFER.
+018200     05  ERROR-76                         PIC X(76).
+018300     05  ERROR-DELAY                      PIC XXXX.
+018400 COPY ESCNAME IN COPYLIB.
+       01  FILE-STATUSES.
+           05  DSPLY-STATUS                     PIC XX.
+           05  LBRF-STATUS                      PIC XX.
+           05  MATF-STATUS                      PIC XX.
+           05  WLF-STATUS                       PIC XX.
+           05  WOLN-STATUS                      PIC XX.
+           05  WPF-STATUS                       PIC XX.
+       COPY IOFEEDBACK IN COPYLIB.
+018600 01  LABOR-LINES.
+018700     05  LL-DATE                          PIC X(8).
+018800     05  LL-TIME-HH                       PIC XX.
+018900     05  LL-SEMICOLON                     PIC X.
+019000     05  LL-TIME-MM                       PIC XX.
+019100     05  LL-WO                            PIC X(10).
+019200     05  LL-CRF-MEN OCCURS 12 TIMES       PIC XX.
+019300     05  LL-EST-MEN OCCURS 12 TIMES       PIC XX.
+019400     05  LL-ACT-MEN OCCURS 12 TIMES       PIC XX.
+019500     05  LL-HRS-EST OCCURS 12 TIMES.
+019600         10  LL-HRSE                      PIC ---9.9.
+019700     05  LL-HRS-ACT OCCURS 12 TIMES.
+019800         10  LL-HRSA                      PIC ---9.9.
+019900     05  LL-TOT-COST                      PIC -------------9.99.
+020000     05  LL-DATA-LINES.
+020100         10  LL-DATA OCCURS 10 TIMES.
+020200             15  LL-CRAFTSMAN             PIC X(4).
+020300             15  FILLER                   PIC XX.
+020400             15  LL-CRAFTSMAN-NAME        PIC X(16).
+020500             15  FILLER                   PIC XX.
+020600             15  LL-CRAFT                 PIC XX.
+020700             15  FILLER                   PIC X(3).
+020800             15  LL-SHIFT                 PIC X.
+020900             15  FILLER                   PIC X(2).
+021000             15  LL-DATE-ST               PIC X(6).
+021100             15  FILLER                   PIC XX.
+021200             15  LL-TIME-ST-HH            PIC XX.
+021300             15  LL-TIME-ST-MM            PIC XX.
+021400             15  FILLER                   PIC XX.
+021500             15  LL-DATE-CO               PIC X(6).
+021600             15  FILLER                   PIC XX.
+021700             15  LL-TIME-CO-HH            PIC XX.
+021800             15  LL-TIME-CO-MM            PIC XX.
+021900             15  FILLER                   PIC XX.
+022000             15  LL-HRS1-99               PIC --9.
+022100             15  LL-HRS-DEC               PIC X.
+022200             15  LL-HRS2-9                PIC X.
+022300             15  FILLER                   PIC X.
+022400             15  LL-CST-DOLLR-9           PIC ---------9.
+022500             15  LL-CST-DEC               PIC X.
+022600             15  LL-CST-CENTS-9           PIC XX.
+022700         10  LL-DEPRESS-LINE              PIC X(79).
+               10  LL-CMD-LINE                  PIC X(79).
+               10  LL-ERR-LINE                  PIC X(79).
+034000 01  LABOR-WORK-AREA.
+034100     05  LA-CRAFT-CNT                     PIC 9(4).
+           05  LA-CRAFT-REQ-WA.
+034200         10  LA-CRAFT-REQ-I  OCCURS  12  TIMES.
+034300             15  LA-CRAFT-REQ             PIC XX.
+           05  LA-MEN-EST-WA.
+034400         10  LA-MEN-EST-I  OCCURS  12  TIMES.
+034500             15  LA-MEN-EST               PIC 99.
+           05  LA-MEN-ACT-WA.
+034600         10  LA-MEN-ACT-I  OCCURS  12  TIMES.
+034700             15  LA-MEN-ACT               PIC 99.
+           05  LA-HRS-EST-WA.
+034800         10  LA-HRS-EST-I  OCCURS  12  TIMES.
+034900             15  LA-HRS-EST               PIC 9999V9.
+           05  LA-HRS-ACT-WA.
+035000         10  LA-HRS-ACT-I  OCCURS  12  TIMES.
+035100             15  LA-HRS-ACT               PIC 9999V9.
+035200     05  LA-TOTAL-COST-WA                 PIC 9(12)V99.
+           05  LA-TOT-CRF-CST-WA.
+035300         10  LA-TOT-CRF-CST-I  OCCURS  12  TIMES.
+035400             15  LA-TOT-CRF-CST           PIC S9(12)V99.
+           05  LA-SUM-CRF-CST-WA.
+035500         10  LA-SUM-CRF-CST-I  OCCURS  12 TIMES.
+035600             15  LA-SUM-CRF-CST           PIC S9(12)V99.
+       COPY LANGSUB  IN COPYLIB.
+024500 01  LAST-WO-BUFF.     COPY MLASTWO  OF COPYLIB.
+005200 01  MATREC.
+005300     05  MATREC-DB-REC.
+005400         10  MAT-WO-NU.
+005500             15  MAT-WO-NUM-PRIM          PIC X(7).
+005600             15  MAT-WO-NUM-SUFFIX        PIC XXX.
+005700         10  MAT-ITEM-NO                  PIC X(4).
+005800         10  MAT-STATUS.
+005900             15  MAT-STATUS-1             PIC X.
+006000             15  MAT-STATUS-2             PIC X.
+006100         10  MAT-EST-QTY.
+006200             15  MAT-EST-QTY-9            PIC S9(8).
+006300         10  MAT-NUM.
+006400             15  MAT-NUM-7                PIC X(7).
+006500             15  FILLER                   PIC X.
+006600         10  MAT-UNIT-MEAS                PIC XX.
+006700         10  MAT-UNIT-COST.
+006800             15  MAT-UNIT-COST-DOLLR      PIC 9(12).
+006900             15  MAT-UNIT-COST-CENTS      PIC 9(4).
+007000         10  M-UNIT-COST REDEFINES MAT-UNIT-COST
+007100                                          PIC S9(12)V9999.
+007200         10  MAT-PRIME.
+007300             15  MAT-PRIME-1-3            PIC XXX.
+007400             15  FILLER                   PIC X.
+007500         10  MAT-SUB.
+007600             15  MAT-SUB-1-3              PIC XXX.
+007700             15  FILLER                   PIC X.
+007800         10  MAT-STAGE                    PIC X(4).
+007900         10  MAT-ORIGINATOR               PIC X(4).
+008000         10  MAT-DATE-USED-CN.
+                   15  MAT-DATE-USED-CC         PIC 99.
+                   15  MAT-DATE-USED.
+008100                 20  MAT-DATE-USED-YY     PIC 99.
+008200                 20  MAT-DATE-USED-MM     PIC 99.
+008300                 20  MAT-DATE-USED-DD     PIC 99.
+008400         10  MAT-ADDL-INFO                PIC X(14).
+008500         10  MAT-SUGG-VENDOR              PIC X(30).
+008600         10  MAT-REQ-NO                   PIC X(12).
+008700         10  MAT-DESC                     PIC X(80).
+008800         10  MAT-DESC-2                   PIC X(80).
+008900         10  MAT-DESC-3                   PIC X(80).
+009000         10  MAT-DESC-4                   PIC X(80).
+009100         10  MAT-DESC-5                   PIC X(80).
+009200         10  MAT-REMARKS                  PIC X(80).
+009300         10  MAT-REMARKS-2                PIC X(80).
+009400         10  MAT-EST-COST.
+009500             15  MAT-EST-COST-DOLLR       PIC 9(14).
+009600             15  MAT-EST-COST-CENTS       PIC 99.
+009700         10  M-EST-COST REDEFINES MAT-EST-COST    PIC S9(14)V99.
+009800         10  MAT-ACT-QTY.
+009900             15  MAT-ACT-QTY-9            PIC S9(8).
+010000         10  MAT-ACT-COST.
+010100             15  MAT-ACT-COST-DOLLR       PIC 9(14).
+010200             15  MAT-ACT-COST-CENTS       PIC 99.
+010300         10  M-ACT-COST REDEFINES MAT-ACT-COST    PIC S9(14)V99.
+010400         10  MAT-PO-NO                    PIC X(10).
+010500         10  MAT-EST-QTY-FLAG             PIC X.
+010600         10  MAT-DELETE-FLAG              PIC X.
+010700         10  MAT-LEVEL                    PIC XX.
+010800         10  MAT-FLAG                     PIC XX.
+010900         10  MAT-SS                       PIC X(4).
+011000         10  MAT-PAD2                     PIC X(4).
+           05  MATREC-REQ-QTY.
+               10  MATREC-REQ-QTY-9             PIC 9(8).
+011100     05  MATREC-PUR-QTY.
+011200         10  MATREC-PUR-QTY-9             PIC 9(8).
+011300     05  MATREC-RCV-QTY.
+011400         10  MATREC-RCV-QTY-9             PIC 9(8).
+011500     05  MATREC-INV-QTY.
+011600         10  MATREC-INV-QTY-9             PIC 9(8).
+011700     05  MATREC-REQ-UNIT-PRICE.
+011800         10  MATREC-REQ-UP-DOLS           PIC 9(12).
+011900         10  MATREC-REQ-UP-CTS            PIC 9(4).
+012000     05  MATREC-REQ-UP REDEFINES MATREC-REQ-UNIT-PRICE
+                                                PIC 9(12)V9(4).
+011700     05  MATREC-PO-UNIT-PRICE.
+011800         10  MATREC-PO-UP-DOLS            PIC 9(12).
+011900         10  MATREC-PO-UP-CTS             PIC 9(4).
+012000     05  MATREC-PO-UP REDEFINES MATREC-PO-UNIT-PRICE
+                                                PIC 9(12)V9(4).
+011700     05  MATREC-INV-UNIT-PRICE.
+011800         10  MATREC-INV-UP-DOLS           PIC 9(12).
+011900         10  MATREC-INV-UP-CTS            PIC 9(4).
+012000     05  MATREC-INV-UP REDEFINES MATREC-INV-UNIT-PRICE
+                                                PIC 9(12)V9(4).
+           05  FILLER                           PIC XX.
+024600 01  MATERIAL-USED-WORK-AREA.
+024700     05  MA-MATRL-REC-CNT                 PIC S9(4) COMP SYNC.
+024800     05  MA-TOT-EST-COST                  PIC 9(12)V99.
+024900     05  MA-TOT-ACT-COST                  PIC 9(12)V99.
+025000 01  MATL-LINES.
+025100     05  MRA-LINE-1-CURR-DATE             PIC X(8).
+025200     05  MRA-LINE-1-TIME-HH               PIC XX.
+025300     05  MRA-LINE-1-SEMICOLON             PIC X.
+025400     05  MRA-LINE-1-TIME-MM               PIC XX.
+025500     05  MRA-LINE-3-WO-NUM-PRIM           PIC X(7).
+025600     05  MRA-LINE-3-WO-NUM-SUFF           PIC XXX.
+025700     05  MRA-LINE-3-WO-DESC               PIC X(30).
+025800     05  MRA-LINE-3-STATUS                PIC XX.
+025900     05  MRA-EQPNUM                       PIC X(6).
+026000     05  MRA-DEPT                         PIC X(4).
+026100     05  MRA-CHARGE                       PIC X(8).
+026200     05  MRA-ZONE                         PIC X(4).
+026300     05  MRA-PRTY                         PIC X.
+026400     05  MRA-RIME                         PIC XX.
+           05  MRA-DATE.
+026500         10  MRA-DATE-MD                  PIC XX.
+026600         10  MRA-DATE-DM                  PIC XX.
+026700         10  MRA-DATE-YY                  PIC XX.
+026800     05  MRA-HRS                          PIC XX.
+026900     05  MRA-MINS                         PIC XX.
+027000     05  MATERIAL-LINES.
+027100         10  MM-LINES.
+027200             15  MM-LINES-DATA.
+027300                 20  MLINE-1.
+027400                     25  MRA-ITM          PIC 9999.
+027500                     25  VAR-MATL-DATA    PIC X(20).
+027600                     25  MRA-REQ-DATE     PIC X(8).
+027700                     25  FILLER           PIC X.
+027800                     25  MRA-STAG         PIC X(4).
+027900                     25  FILLER           PIC XX.
+028000                     25  MRA-EST-LIT      PIC X(4).
+028100                     25  MRA-QTY          PIC ZZZZ9.
+028200                     25  MRA-QTY-FLAG     PIC X.
+028300                     25  FILLER           PIC X.
+028400                     25  MRA-UNIT-COST.
+028500                         30  MRA-UNITCST-DOLS PIC ZZZZZZZZZZ9.
+028600                         30  MRA-UNITCST-DEC  PIC X.
+028700                         30  MRA-UNITCST-CTS  PIC 99.
+028800                     25  MUC REDEFINES MRA-UNIT-COST
+028900                                              PIC ZZZZZZZZZZ9.99.
+029000                     25  FILLER               PIC X.
+029100                     25  MRA-TOTAL-COST.
+029200                         30  MRA-TOTALCST-DOLS  PIC ZZZZZZZZZZ9.
+029300                         30  MRA-TOTALCST-DEC   PIC X.
+029400                         30  MRA-TOTALCST-CENTS PIC 99.
+029500                     25  MTC REDEFINES MRA-TOTAL-COST
+029600                                              PIC ZZZZZZZZZZ9.99.
+029700                 20  MLINE-2 OCCURS 4 TIMES.
+029800                     25  MRA-REQ-PO-LIT       PIC X(16).
+029900                     25  MRA-REQ-PO           PIC X(10).
+030000                     25  FILLER               PIC X(13).
+030100                     25  MRA-ACT-LIT          PIC X(4).
+030200                     25  MRA-ACT-QTY          PIC ZZZZ9.
+030300                     25  FILLER               PIC XX.
+030400                     25  MRA-ACTUNIT-DOLS     PIC ZZZZZZZZZZ9.
+030500                     25  MRA-ACTUNIT-DEC      PIC X.
+030600                     25  MRA-ACTUNIT-CENTS    PIC 99.
+030700                     25  FILLER               PIC X.
+030800                     25  MRA-ACTTOT-DOLS      PIC ZZZZZZZZZZ9.
+030900                     25  MRA-ACTTOT-DEC       PIC X.
+031000                     25  MRA-ACTTOT-CENTS     PIC 99.
+031100                 20  MLINE-6-12.
+031200                     25  MRA-DESC-1       PIC X(79).
+031300                     25  MRA-DESC-2       PIC X(79).
+031400                     25  MRA-DESC-3       PIC X(79).
+031500                     25  MRA-DESC-4       PIC X(79).
+031600                     25  MRA-DESC-5       PIC X(79).
+031700                     25  MRA-REMARKS-1    PIC X(79).
+031800                     25  MRA-REMARKS-2    PIC X(79).
+                       20  MLINE-13             PIC X(79).
+031900         10  MM-DEPRESS-LINE              PIC X(79).
+               10  MM-CMD-LINE                  PIC X(79).
+               10  MM-ERR-LINE                  PIC X(79).
+032000 01  MATL-WORK-AREA.
+032100     05  CODED-MATL-DATA.
+032200         10  FILLER                       PIC X.
+032300         10  MRA-CODE                     PIC X(7).
+032400         10  FILLER                       PIC X.
+032500         10  MRA-STAT                     PIC XX.
+032600         10  FILLER                       PIC X.
+032700         10  MRA-UM                       PIC XX.
+032800         10  FILLER                       PIC X.
+032900         10  MRA-ORIG                     PIC X(4).
+033000         10  FILLER                       PIC X.
+033100 01  MSG-AREA.
+033200     05  FILLER                           PIC X(04).
+033300     05  WONUM-MSG                        PIC X(10).
+           05  MSG-BUFFER                       PIC X(76).
+033400 01  PASSED-BASE                          PIC X(10).
+033500 01  PASSED-SPOOL-PRT             PIC S9(2) VALUE ZERO  COMP-4.
+033600 01  PASSWORD-INFORMATION.
+033700     05  NAME-OF-PROGRAM     PIC X(08) VALUE "TDISPBAS".
+033800     05  PROGRAM-TYPE        PIC X(02) VALUE "RE".
+033900     05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+034000     05  PROGRAM-DESCRIPTION.
+034100         10  PROG-DESC-A     PIC X(60) VALUE
+034200             " DISPLAY VERBAL WORK ORDER INFORMATION"            .
+034300         10  PROG-DESC-B     PIC X(60) VALUE SPACES.
+034500         10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+034700     05  PASSWORD-FLAG       PIC X.
+035900 01  READ-BUFFER.
+036000     05  READ-ITEM.
+036100         10  READ-I OCCURS 4 TIMES        PIC X.
+036200     05  READ-ITEM-9 REDEFINES READ-ITEM  PIC 9(4).
+036300     05  READ-REQNO                       PIC X(12).
+           05  READ-CMD-LINE                    PIC X(79).
+           05  READ-ERR-LINE                    PIC X(79).
+036400 01  RETURN-CODE.
+036500     05  RET-CODE                         PIC X.
+036600     05  FILLER                           PIC X.
+       01  SCREEN-BUFFER.
+036300     05  SCREEN-FILLER                    PIC X(10).
+           05  SCREEN-CMD-LINE                  PIC X(79).
+           05  SCREEN-ERR-LINE                  PIC X(79).
+036700 01  SCREEN-PRINT-PARMS.
+036800     05  PRINTCNTL                PIC S9(4) VALUE ZERO  COMP-4.
+036900     05  PAGECNTL                 PIC S9(4) VALUE 49    COMP-4.
+037000     05  SPOOLFIL-OPEN-SW         PIC X   VALUE "N".
+037100 COPY DBSTAT  IN COPYLIB.
+037200 COPY TBLOWUP IN COPYLIB.
+037300 01  TMP-WORKAREA.
+037400     05  CRAFT-DESIRED                    PIC XX.
+037500     05  TMP-CONV-AREA.
+037600         10  UNITS-POSITION               PIC 999.
+037700         10  TENTHS-POSITION              PIC 9.
+037800     05  DECIMAL-NUM REDEFINES TMP-CONV-AREA  PIC 999V9.
+037900     05  TMP-L-C-FIELD1                   PIC 9999999.
+038000 01  TMP-TIME-AREA.
+038100     05  TTA-HRS                          PIC XX.
+038200     05  TTA-MIN                          PIC XX.
+038300     05  FILLER                           PIC XX.
+       01  TRUE-VAL                             PIC 1 VALUE B"1".
+038400 01  WO-LABOR-DATA.    COPY DWOLABOR OF COPYLIB.
+038500 01  WO-PARTS-DATA.    COPY DWOPARTS OF COPYLIB.
+       COPY WSCONTROL IN COPYLIB.
+038600 LINKAGE SECTION.
+039300 01  DBPARAMETERS.     COPY DBPARMS OF COPYLIB.
+039500 01  WO-BASIC-DATA.    COPY DWOBASIC OF COPYLIB.
+       COPY VCOMLINK  IN COPYLIB.
+039700 PROCEDURE DIVISION USING DBPARAMETERS WO-BASIC-DATA
+                            VIEW-COMAREA.
+039900 BEGIN.
+040000     PERFORM 1-HSK.
+040100     PERFORM 6-MAIN UNTIL RETURN-SW = "2".
+040200 2-EOJ.
+           CLOSE DISPLAY-FILE.
+040300     CLOSE LBRFILE MATFILE WO-LAST-NUM-USED.
+041400     GOBACK.
+041600****************************************************************
+041700*    HOUSEKEEPING                                              *
+041800****************************************************************
+041900 1-HSK.
+042200     CALL "TPWORD" USING PASSWORD-INFORMATION.
+042600     IF PASSWORD-FLAG = "N"
+042700       MOVE "  PWORD" TO BLOWUP-BASE
+042800       MOVE "FAILED PASSWORD CHECK - TDISPBAS"
+042900           TO BU-DISPLAY-MSG
+043000       PERFORM 998-BLOWUP.
+           MOVE "0" TO RETURN-SW.
+           OPEN I-O    DISPLAY-FILE.
+           OPEN I-O    LBRFILE.
+           OPEN I-O    MATFILE.
+           OPEN INPUT WO-LABOR-FILE.
+           OPEN INPUT WO-LAST-NUM-USED.
+           OPEN INPUT WO-PARTS-FILE.
+043300     MOVE DATE-FLAG    TO  DATE-CODE.
+043400     MOVE 1 TO ARG-NO.
+           MOVE 0 TO COND-WORD.
+043500     READ WO-LAST-NUM-USED INTO LAST-WO-BUFF
+               INVALID KEY    MOVE 17 TO COND-WORD.
+044800 6-MAIN.
+044900     PERFORM 63-READ-DB-AND-SAVE-DATA.
+045000     MOVE "0" TO RETURN-SW.
+045100     PERFORM 65-DISPLAY-CONTROL
+045200         UNTIL RETURN-SW = "1" OR "2".
+045300*****************************************************************
+045400*    READ DATA BASE-MMISA AND SAVE DATA                               *
+045500*****************************************************************
+045600 63-READ-DB-AND-SAVE-DATA.
+046100     MOVE ZERO TO LBR-REC-CNT.
+046400     MOVE +0001 TO WO-BASIC-REC-CNT.
+      *
+      *    CLEAR LABOR WORK AREAS AND RETRIEVE WO-LABOR DATA
+      *
+066500     MOVE SPACES TO LA-CRAFT-REQ-WA.
+           MOVE ZEROES TO LA-CRAFT-CNT LA-MEN-EST-WA LA-MEN-ACT-WA
+               LA-HRS-EST-WA LA-HRS-ACT-WA LA-TOTAL-COST-WA
+               LA-TOT-CRF-CST-WA LA-SUM-CRF-CST-WA.
+           IF WO-BASIC-REC-CNT NOT = 0
+             PERFORM 6330-SET-LA-CRAFT-REQ.
+066600     MOVE "0" TO RET-CODE.
+           MOVE 0 TO ACT-KEYL-WA.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUM TO WONUM-MM OF WOLABF.
+           START WO-LABOR-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF WLF-STATUS NOT = "00"
+             MOVE 17 TO COND-WORD.
+           IF COND-WORD = 0
+066800       PERFORM 633-READ-AND-SAVE-1-LBR-REC
+066900           UNTIL RET-CODE = "1".
+067000*
+067100*    CLEAR MATERIALS WORK AREAS AND GET WO-PARTS DATA
+067200*
+069000     MOVE ZERO TO MA-MATRL-REC-CNT.
+069100     MOVE 0    TO ACT-KEYM-WA.
+           MOVE ZEROES TO MA-TOT-EST-COST MA-TOT-ACT-COST.
+069200     MOVE "0" TO RET-CODE.
+           MOVE SPACES TO MATREC.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUM TO WONUM-MM OF WOPARF.
+           START WO-PARTS-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00"
+             MOVE 17 TO COND-WORD.
+           IF COND-WORD = 0
+069300       PERFORM 634-READ-AND-SAVE-1-MAT-REC
+069400           UNTIL RET-CODE = "1".
+073600 633-READ-AND-SAVE-1-LBR-REC.
+           MOVE 0 TO COND-WORD.
+           READ WO-LABOR-FILE PRIOR INTO WO-LABOR-DATA
+               AT END MOVE 14 TO COND-WORD.
+           IF LBR-WO-NUM NOT = WO-NUM
+             MOVE 14 TO COND-WORD.
+076000     IF COND-WORD = 14
+076100       MOVE "1" TO RET-CODE
+           ELSE
+073900       IF COND-WORD = 0
+074000         ADD +0001 TO LBR-REC-CNT
+               MOVE LBR-CRAFT TO CRAFT-DESIRED
+               PERFORM 63300-DET-CRAFT-SUBSCRIPT
+               ADD 1 TO LA-MEN-ACT (CRFT-SUBSC)
+074100         MOVE LBR-HRS1-99 TO UNITS-POSITION
+074200         MOVE LBR-HRS2-9 TO TENTHS-POSITION
+               ADD DECIMAL-NUM TO LA-HRS-ACT (CRFT-SUBSC)
+074300         DIVIDE LBR-CST-CENTS-9 BY 100
+074400             GIVING TMP-LBR-CST
+074500         ADD LBR-CST-DOLLR-9 TO TMP-LBR-CST
+074600         ADD TMP-LBR-CST TO LA-TOTAL-COST-WA
+074700         ADD TMP-LBR-CST TO LA-TOT-CRF-CST (CRFT-SUBSC)
+074900         ADD 1 TO ACT-KEYL-WA
+               MOVE ACT-KEYL-WA TO ACT-KEYL
+               MOVE WO-LABOR-DATA TO LBRREC-REC
+075000         WRITE LBRREC     INVALID KEY
+075100             MOVE 27031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (99).
+070700 6330-SET-LA-CRAFT-REQ.
+070800     MOVE ZERO TO LA-CRAFT-CNT.
+070900     IF CRAFTS-REQD-1 NOT = "  "
+             MOVE CRAFTS-REQD-1 TO CRAFT-DESIRED
+             PERFORM 63300-DET-CRAFT-SUBSCRIPT.
+           IF CRAFTS-REQD-2 NOT = "  "
+             MOVE CRAFTS-REQD-2 TO CRAFT-DESIRED
+             PERFORM 63300-DET-CRAFT-SUBSCRIPT.
+           IF CRAFTS-REQD-3 NOT = "  "
+             MOVE CRAFTS-REQD-3 TO CRAFT-DESIRED
+             PERFORM 63300-DET-CRAFT-SUBSCRIPT.
+071000 63300-DET-CRAFT-SUBSCRIPT.
+071100     IF LA-CRAFT-CNT = ZERO
+071200       MOVE +0001 TO CRFT-SUBSC
+071300       MOVE +0001 TO LA-CRAFT-CNT
+071400       MOVE CRAFT-DESIRED TO LA-CRAFT-REQ (CRFT-SUBSC)
+071800     ELSE
+071900       MOVE ZERO TO CRFT-SUBSC
+072000       PERFORM 633100-LOOP-TABLE
+072100           VARYING LOOP-CNT FROM 1 BY 1
+072200           UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+072300     IF CRFT-SUBSC = ZERO
+072400       ADD +0001 TO LA-CRAFT-CNT
+072500       MOVE LA-CRAFT-CNT TO CRFT-SUBSC
+072600       MOVE CRAFT-DESIRED TO LA-CRAFT-REQ (CRFT-SUBSC).
+073000 633100-LOOP-TABLE.
+073100     IF LA-CRAFT-REQ (LOOP-CNT) = CRAFT-DESIRED
+073200       MOVE LOOP-CNT TO CRFT-SUBSC.
+077300 634-READ-AND-SAVE-1-MAT-REC.
+           MOVE 0 TO COND-WORD.
+           READ WO-PARTS-FILE PRIOR INTO WO-PARTS-DATA
+               AT END MOVE 14 TO COND-WORD.
+           IF PRT-WO-NU NOT = WO-NUM
+             MOVE 14 TO COND-WORD.
+084400     IF COND-WORD = 14
+084500       MOVE "1" TO RET-CODE
+           ELSE
+077600       IF COND-WORD = 0
+077700         MOVE SPACES TO MATREC-DB-REC
+077800         PERFORM 6341-RAS1MR THRU 6341-RAS1MR-EXIT
+               ADD 1 TO MA-MATRL-REC-CNT
+               COMPUTE MA-TOT-EST-COST = MA-TOT-EST-COST +
+                   MAT-EST-COST-DOLLR + MAT-EST-COST-CENTS / 100
+               COMPUTE MA-TOT-ACT-COST = MA-TOT-ACT-COST +
+                   MAT-ACT-COST-DOLLR + MAT-ACT-COST-CENTS / 100
+               ADD 1 TO ACT-KEYM-WA
+               MOVE ACT-KEYM-WA TO ACT-KEYM
+               MOVE MATREC TO MATREC-REC
+               WRITE MATF    INVALID KEY
+084200             MOVE 45039 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (99).
+085700 6341-RAS1MR.
+085800     MOVE WO-PARTS-DATA TO MATREC-DB-REC.
+           IF MAT-EST-COST = SPACES
+             MOVE ZEROES TO M-EST-COST.
+           IF MAT-ACT-COST = SPACES
+             MOVE ZEROES TO M-ACT-COST.
+085900     IF MAT-REQ-NO = SPACES OR "CANCEL" GO TO 6341-RAS1MR-EXIT.
+086000     MOVE SPACES TO CMR-DATA CMR-DESC CMR-REMARKS
+086100         CMR-RETURNED-DATA CMR-MISC-PARMS BU-DISPLAY-MSG.
+086200     MOVE "IN" TO CMR-CALL-MODE.
+086300     MOVE MAT-REQ-NO TO CMR-REQ-NUMBER.
+086400     MOVE MAT-WO-NU TO CMR-WO-NUMBER.
+086600     CALL "CMANINQ" USING PASSED-BASE
+086700                          CMR-CALL-MODE
+086800                          CMR-DATA
+086900                          CMR-DESC
+087000                          CMR-REMARKS
+087100                          CMR-RETURNED-DATA
+087200                          CMR-MISC-PARMS
+087300                          LANGUAGE-PARMS
+087400                          ESC-NAME
+087500                          STATUS-AREA
+087600                          BU-DISPLAY-MSG.
+           IF CMR-RETURN-STATUS = "OK"
+               NEXT SENTENCE
+           ELSE
+           MOVE 0                     TO  MATREC-REQ-QTY-9
+                                          MATREC-PUR-QTY-9
+                                          MATREC-RCV-QTY-9
+                                          MATREC-INV-QTY-9
+                                          MATREC-REQ-UP
+                                          MATREC-PO-UP
+                                          MATREC-INV-UP
+           GO TO 6341-RAS1MR-EXIT.
+           MOVE CMR-CORP-CODE         TO  MAT-NUM-7.
+           MOVE CMR-UM                TO  MAT-UNIT-MEAS.
+           MOVE CMR-REQ-ORIG          TO  MAT-ORIGINATOR.
+           MOVE CMR-QTY               TO  MATREC-REQ-QTY-9.
+           MOVE CMR-EST-UNIT-PRICE    TO  MATREC-REQ-UP.
+           MOVE CMR-SUB               TO  MAT-SUB.
+           MOVE CMR-SUGGESTED-VENDOR  TO  MAT-SUGG-VENDOR.
+           MOVE CMR-WO-ITEM-NUMBER    TO  MAT-ITEM-NO.
+           MOVE CMR-ADDTL-INFO        TO  MAT-ADDL-INFO.
+      *************************************************************
+      *    THE FOLLOWING CHECK FOR MAT-DELETE-FLAG WAS ADDED      *
+      *    ON 1-13-88 TO MAKE THE USER AWARE OF AN ITEM THAT      *
+      *    HAD BEEN DELETED AFTER THE W/O HAD BEEN APPROVED       *
+      *    BUT NEEDED TO BE RETAINED FOR ESTIMATE ACCURACY        *
+      *************************************************************
+           IF MAT-DELETE-FLAG = "D"
+               MOVE SPACES TO MAT-DESC MAT-DESC-2 MAT-DESC-3
+                   MAT-DESC-4 MAT-DESC-5
+               MOVE MAT-REMARKS-2 TO MAT-DESC
+               MOVE SPACES TO MAT-REMARKS MAT-REMARKS-2
+           ELSE
+           MOVE CMR-DESC-LINE (1)      TO  MAT-DESC
+           MOVE CMR-DESC-LINE (2)      TO  MAT-DESC-2
+           MOVE CMR-DESC-LINE (3)      TO  MAT-DESC-3
+           MOVE CMR-DESC-LINE (4)      TO  MAT-DESC-4
+           MOVE CMR-DESC-LINE (5)      TO  MAT-DESC-5
+           MOVE CMR-REMARK-1           TO  MAT-REMARKS
+           MOVE CMR-REMARK-2           TO  MAT-REMARKS-2.
+           MOVE CMR-PO-NO-AND-REL      TO  MAT-PO-NO.
+           IF PRT-EST-QTY = "        "
+               MOVE ZEROES             TO  MAT-EST-QTY-9
+           ELSE
+           MOVE PRT-EST-QTY-9          TO  MAT-EST-QTY-9.
+           MOVE CMR-PO-QTY-DLVR        TO  MATREC-RCV-QTY.
+           MOVE SPACES                 TO  MAT-PAD2.
+           MOVE CMR-QTY                TO  MAT-ACT-QTY-9.
+           MOVE CMR-PO-QTY-ORD         TO  MATREC-PUR-QTY.
+           MOVE CMR-PO-UNIT-PRICE      TO  MATREC-PO-UP.
+           MOVE CMR-PO-QTY-PAID        TO  MATREC-INV-QTY.
+           MOVE CMR-INV-UNIT-PRICE     TO  MATREC-INV-UP.
+           IF MATREC-INV-QTY-9 > MATREC-REQ-QTY-9
+               MOVE MATREC-REQ-QTY-9 TO MATREC-INV-QTY-9.
+           IF MATREC-PUR-QTY-9 > MATREC-REQ-QTY-9
+               MOVE MATREC-REQ-QTY-9 TO MATREC-PUR-QTY-9.
+           IF MATREC-RCV-QTY-9 > MATREC-REQ-QTY-9
+               MOVE MATREC-REQ-QTY-9 TO MATREC-RCV-QTY-9.
+           IF MATREC-INV-QTY-9 > 0
+               IF MATREC-INV-UP > 0
+                   MULTIPLY MATREC-INV-QTY-9 BY MATREC-INV-UP
+                       GIVING M-ACT-COST
+                   GO TO 6341-RAS1MR-CONT
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF MATREC-INV-QTY-9 = 0
+               IF MATREC-INV-UP > 0
+                   MOVE MATREC-INV-UP  TO M-ACT-COST
+                   GO TO 6341-RAS1MR-CONT.
+           IF MATREC-PUR-QTY-9 > 0
+               IF MATREC-PO-UP > 0
+                   MULTIPLY MATREC-PUR-QTY-9 BY MATREC-PO-UP
+                       GIVING M-ACT-COST.
+       6341-RAS1MR-CONT.
+093200     IF PLANT-IDENT NOT = "126 "
+093300       MOVE CMR-STAGING-AREA   TO  MAT-STAGE.
+
+093400 6341-RAS1MR-EXIT.
+           EXIT.
+
+068800*****************************************************************
+068900*    LOGIC CONTROL OF DISPLAY                                   *
+069000*****************************************************************
+105500 65-DISPLAY-CONTROL.
+105600     MOVE "0" TO RET-CODE.
+105700     MOVE 0 TO ACT-KEYL-WA ACT-KEYM-WA.
+105800     IF VIEW-LASTKEY = 0
+             MOVE "FDISPME2" TO VIEW-CFNAME
+             MOVE 66045 TO CATREAD-MSG-NUMBER
+             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+             MOVE ERROR-BUFFER TO SCREEN-CMD-LINE
+             MOVE SCREEN-BUFFER TO DSPLY-REC
+             PERFORM 99-SCREEN-WRITE
+             PERFORM 98-SCREEN-READ
+106000     ELSE
+106100       IF VIEW-LASTKEY = 1
+               MOVE SPACES TO LABOR-LINES
+               CLOSE LBRFILE
+               OPEN I-O LBRFILE
+               MOVE SPACES TO MATL-LINES
+               CLOSE MATFILE
+               OPEN I-O MATFILE
+106200         MOVE "2" TO RETURN-SW
+106300       ELSE
+106400         IF VIEW-LASTKEY = 2
+                 MOVE SPACES TO LABOR-LINES
+                 CLOSE LBRFILE
+                 OPEN I-O LBRFILE
+                 MOVE SPACES TO MATL-LINES
+                 CLOSE MATFILE
+                 OPEN I-O MATFILE
+106500           MOVE "2" TO RETURN-SW
+106600         ELSE
+106700           IF VIEW-LASTKEY = 4
+106800             PERFORM 651-WRITE-WO-BASIC
+106900           ELSE
+107000             IF VIEW-LASTKEY = 5
+107100               IF MA-MATRL-REC-CNT > 10
+107200                 PERFORM 652-PREREAD-CMATLS-ORDERED
+107200                     THRU 652-PCO-EXIT
+                       MOVE 0 TO ACT-KEYM-WA
+107300                 PERFORM 652-WRITE-WO-MATERIALS-USED
+107400               ELSE
+107500                 PERFORM 652-WRITE-WO-MATERIALS-USED
+107600             ELSE
+107700               IF VIEW-LASTKEY = 6
+107800                 IF MA-MATRL-REC-CNT > 10
+107900                   PERFORM 653-PREREAD-UMATLS-ORDERED
+107900                       THRU 653-PUO-EXIT
+                         MOVE 0 TO ACT-KEYM-WA
+108000                   PERFORM 653-WRITE-WO-MATERIALS-ORDERED
+108100                 ELSE
+108200                   PERFORM 653-WRITE-WO-MATERIALS-ORDERED
+108300               ELSE
+108400                 IF VIEW-LASTKEY = 7
+108500                   PERFORM 654-WRITE-WO-LABOR-USED
+108600                 ELSE
+109000                   IF VIEW-LASTKEY = 3
+109100                     MOVE "2" TO RETURN-SW
+                         ELSE
+                           MOVE 35126 TO CATREAD-MSG-NUMBER
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE TRUE-VAL TO INDS (99)
+                           MOVE 0 TO VIEW-LASTKEY.
+075400*****************************************************************
+075500*    DISPLAY BASIC WORK ORDER                                   *
+075600*****************************************************************
+075700 651-WRITE-WO-BASIC.
+077800     PERFORM 6511-MOVE-WO-BASIC-TO-BUF2.
+078000     MOVE "0" TO RETURN-SW-2.
+078100     PERFORM 6513-GET-NEXT-INST
+078200         UNTIL RETURN-SW-2 = "1".
+079600 6511-MOVE-WO-BASIC-TO-BUF2.
+079700     MOVE SPACES TO BUFFER MSG-AREA.
+079800     MOVE WO-NUM               TO WO-NUM-BUF2 WONUM-MSG.
+079900     MOVE WO-STATUS            TO WO-STATUS-BUF2.
+080000     MOVE WO-STRT-STATUS       TO WO-CURR-STAT-BUF2.
+080100     MOVE 4                    TO DATE-MODE.
+080200     MOVE DATE-RECD            TO DATE-VALIDATE-IN.
+080300     CALL "TDATECHK" USING DATE-CHECK-AREA.
+080400     MOVE DATE-OUT             TO DATE-RECD-BUF2.
+080500     MOVE TIME-RECD            TO TIME-RECD-BUF2.
+080600     MOVE APPROVAL-CODE        TO APPROVAL-CODE-BUF2.
+080700     MOVE REQUESTER-B          TO REQUESTER-BUF2.
+080800     MOVE EQUIP-NUM            TO EQUIP-NUM-BUF2.
+080900     MOVE EQUIP-NAME           TO EQUIP-NAME-BUF2.
+081000     MOVE TYPE-NUM             TO TYPE-NUM-BUF2.
+081100     MOVE DEPT                 TO DEPT-BUF2.
+081200     MOVE ZONE                 TO ZONE-BUF2.
+081300     MOVE LOCATION             TO LOCATION-BUF2.
+081400     MOVE PRIORITY             TO PRIORITY-BUF2.
+081500     MOVE EQUIP-DOWN           TO EQUIP-DOWN-BUF2.
+081600     MOVE CRAFTS-REQD-1        TO CRAFTS-REQT-1-BUF2.
+081700     MOVE CRAFTS-REQD-2        TO CRAFTS-REQT-2-BUF2.
+081800     MOVE CRAFTS-REQD-3        TO CRAFTS-REQT-3-BUF2.
+081900     MOVE EXP-CLASS            TO EXP-CLASS-BUF2.
+082000     MOVE DESCRIPTION-1        TO DESCRIPTION-1-BUF2.
+082100     MOVE DESCRIPTION-2-1      TO DESCRIPTION-2-BUF2.
+082200     MOVE DESCRIPTION-2-2      TO DESCRIPTION-3-BUF2.
+082300     MOVE CRAFTSMEN-1          TO CRAFTSMEN-1-BUF2.
+082400     MOVE CRAFTSMEN-2          TO CRAFTSMEN-2-BUF2.
+082500     MOVE CRAFTSMEN-3          TO CRAFTSMEN-3-BUF2.
+082600     IF DATE-STRT = "      "
+082700       MOVE DATE-STRT        TO DATE-STRT-BUF2
+082800     ELSE
+082900       MOVE 4                    TO DATE-MODE
+083000       MOVE DATE-STRT            TO DATE-VALIDATE-IN
+083100       CALL "TDATECHK" USING DATE-CHECK-AREA
+083200       MOVE DATE-OUT             TO DATE-STRT-BUF2.
+083300     MOVE TIME-STRT            TO TIME-STRT-BUF2.
+083400     MOVE FAIL-CODE-REASON     TO FAIL-CODE-REASON-BUF2.
+083500     MOVE FAIL-CODE-SUBSYS     TO FAIL-CODE-SUBSYS-BUF2.
+083600     IF DATE-COMP = "      "
+083700       MOVE DATE-COMP        TO DATE-COMP-BUF2
+083800     ELSE
+083900       MOVE 4                    TO DATE-MODE
+084000       MOVE DATE-COMP            TO DATE-VALIDATE-IN
+084100       CALL "TDATECHK" USING DATE-CHECK-AREA
+084200       MOVE DATE-OUT             TO DATE-COMP-BUF2.
+084300     MOVE TIME-COMP            TO TIME-COMP-BUF2.
+084400     MOVE 42017 TO CATREAD-MSG-NUMBER.
+084600     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+084700     MOVE ERROR-BUFFER TO MESSAGE-BUF2.
+           MOVE "FDISPBAS" TO VIEW-CFNAME.
+           MOVE 49060 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO BUFFER-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO BUFFER.
+085900 6513-GET-NEXT-INST.
+087200     IF VIEW-LASTKEY = 3
+087300       MOVE 0 TO VIEW-LASTKEY
+087400       MOVE "1" TO RETURN-SW-2
+           ELSE
+087600       IF VIEW-LASTKEY = 4
+087700         CALL "TDISPMES" USING DBPARAMETERS
+088000                               MSG-AREA
+               MOVE MSG-BUFFER TO BUFFER-CMD-LINE
+               MOVE BUFFER TO DSPLY-REC
+               MOVE TRUE-VAL TO INDS (98)
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+089500         MOVE 42017 TO CATREAD-MSG-NUMBER
+089700         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MESSAGE-BUF2
+               MOVE 49060 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO BUFFER-CMD-LINE
+               MOVE BUFFER TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+090200         GO TO 6513-GET-NEXT-INST
+             ELSE
+092400         MOVE "1" TO RETURN-SW-2.
+092500*****************************************************************
+092600*    DISPLAY MATERIALS USED ON WORK ORDER                       *
+092700*****************************************************************
+134400 652-PREREAD-CMATLS-ORDERED.
+134500     MOVE "FDISPITM" TO VIEW-CFNAME.
+           MOVE SPACES TO READ-BUFFER.
+           MOVE READ-BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO READ-BUFFER.
+135200 652-PCO-READ.
+135700     IF READ-BUFFER = SPACES
+135700       GO TO 652-PCO-EXIT.
+135800     MOVE 0 TO ACT-KEYM-WA.
+135900 652-PCO-LOOP.
+136000     ADD 1 TO ACT-KEYM-WA.
+136100     IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+13620        IF READ-ITEM NOT = SPACES
+136400         MOVE 35110 TO CATREAD-MSG-NUMBER
+136600         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (98)
+               MOVE ERROR-BUFFER TO READ-CMD-LINE
+               MOVE READ-BUFFER TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               CALL "CLPAUSE2"
+               GO TO 65-DISPLAY-CONTROL
+137200       ELSE
+137300         IF READ-REQNO NOT = SPACES
+137500           MOVE 44119 TO CATREAD-MSG-NUMBER
+137700           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE TRUE-VAL TO INDS (98)
+                 MOVE ERROR-BUFFER TO READ-CMD-LINE
+                 MOVE READ-BUFFER TO DSPLY-REC
+                 PERFORM 99-SCREEN-WRITE
+      **************************
+                 PERFORM 98A-SCREEN-READ
+                 CALL "CLPAUSE2"
+                 CALL "CLPAUSE2"
+                 GO TO 65-DISPLAY-CONTROL
+138300         ELSE
+138400           GO TO 652-PCO-EXIT.
+138500     PERFORM 6521000-READ-MATFILE.
+138600     IF MAT-STATUS-1 = "M"
+138600       GO TO 652-PCO-LOOP.
+138700     IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+138800       GO TO 652-PCO-LOOP.
+138900     IF READ-ITEM = "    "
+139000       NEXT SENTENCE
+139100     ELSE
+139200       PERFORM 6520-RIGHT-JUSTIFY-ITEM THRU 6520-RJI-EXIT
+139300       IF READ-ITEM-9 = ACT-KEYM-WA
+139400         SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6521000-READ-MATFILE-PRIOR THRU 6521000-RMP-EXIT
+139500         GO TO 652-PCO-EXIT
+139600       ELSE
+139700         GO TO 652-PCO-LOOP.
+139800     IF READ-REQNO = SPACES
+139900       NEXT SENTENCE
+140000     ELSE
+140100       IF READ-REQNO = MAT-REQ-NO
+140200         SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6521000-READ-MATFILE-PRIOR THRU 6521000-RMP-EXIT
+140300         GO TO 652-PCO-EXIT
+140400       ELSE
+140500         GO TO 652-PCO-LOOP.
+140600 652-PCO-EXIT.
+140600     EXIT.
+140700 6520-RIGHT-JUSTIFY-ITEM.
+140800     IF READ-I (4) = " "
+140900       IF READ-I (3) = " "
+141000         IF READ-I (2) = " "
+141100           MOVE READ-I (1) TO READ-I (4)
+141200           MOVE " " TO READ-I (1)
+141300         ELSE
+141400           MOVE READ-I (2) TO READ-I (4)
+141500           MOVE READ-I (1) TO READ-I (3)
+141600           MOVE " " TO READ-I (2) READ-I (1)
+141700       ELSE
+141800         MOVE READ-I (3) TO READ-I (4)
+141900         MOVE READ-I (2) TO READ-I (3)
+142000         MOVE READ-I (1) TO READ-I (2)
+142100         MOVE " " TO READ-I (3) READ-I (2) READ-I (1).
+           IF READ-I (4) = " " MOVE "0" TO READ-I (4).
+           IF READ-I (3) = " " MOVE "0" TO READ-I (3).
+           IF READ-I (2) = " " MOVE "0" TO READ-I (2).
+           IF READ-I (1) = " " MOVE "0" TO READ-I (1).
+142300 6520-RJI-EXIT.    EXIT.
+142400 652-WRITE-WO-MATERIALS-USED.
+146600     MOVE 1 TO DATE-MODE.
+146700     CALL "TDATECHK" USING DATE-CHECK-AREA.
+146800     MOVE DATE-SLASH-OUT TO MRA-LINE-1-CURR-DATE.
+146900     ACCEPT TMP-TIME-AREA FROM TIME.
+147000     MOVE TTA-HRS TO MRA-LINE-1-TIME-HH.
+147100     MOVE ":" TO MRA-LINE-1-SEMICOLON.
+147200     MOVE TTA-MIN TO MRA-LINE-1-TIME-MM.
+147300     MOVE WO-NUM TO MRA-LINE-3-WO-NUM-PRIM.
+147400     MOVE WO-NUM-SUFF TO MRA-LINE-3-WO-NUM-SUFF.
+147500     MOVE DESCRIPTION-1 TO MRA-LINE-3-WO-DESC.
+147600     MOVE WO-STATUS TO MRA-LINE-3-STATUS.
+147700     MOVE EQUIP-NUM TO MRA-EQPNUM.
+147800     MOVE DEPT TO MRA-DEPT.
+147900     MOVE EXP-CLASS TO MRA-CHARGE.
+148000     MOVE ZONE TO MRA-ZONE.
+148100     MOVE PRIORITY TO MRA-PRTY.
+148300     MOVE 4 TO DATE-MODE.
+142500     IF MA-MATRL-REC-CNT = 0
+             MOVE 48003 TO CATREAD-MSG-NUMBER
+             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+             MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+             MOVE 50001 TO CATREAD-MSG-NUMBER
+             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+             MOVE ERROR-BUFFER TO MM-CMD-LINE
+             MOVE "FDISPMAT" TO VIEW-CFNAME
+             MOVE MATL-LINES TO DSPLY-REC
+             PERFORM 99-SCREEN-WRITE
+             PERFORM 98-SCREEN-READ
+             MOVE DSPLY-REC TO MATL-LINES
+             MOVE "0" TO RETURN-SW-2
+145100     ELSE
+145200       PERFORM 6520-WRITE-MATERIAL.
+145300 6520-WRITE-MATERIAL.
+           MOVE "0" TO RET-CODE.
+149800     PERFORM 652100-WRITE-CMATL-LINES THRU 652100-WCL-CONT
+149900         UNTIL RET-CODE = "1".
+150000     MOVE 0 TO ACT-KEYM-WA.
+150100 652100-WRITE-CMATL-LINES.
+150200     ADD 1 TO ACT-KEYM-WA.
+150300     IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+150400       MOVE "1" TO RET-CODE
+150500       GO TO 652100-WCL-CONT
+150600     ELSE
+150700       PERFORM 6521000-READ-MATFILE
+150800       IF MAT-STATUS-1 = "M"
+150900         GO TO 652100-WRITE-CMATL-LINES
+151000       ELSE
+151100         IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+151200           GO TO 652100-WRITE-CMATL-LINES.
+151300     MOVE SPACES TO MM-LINES.
+151400     MOVE ACT-KEYM-WA TO MRA-ITM.
+151500     MOVE SPACES TO MATL-WORK-AREA.
+151600     IF MAT-NUM-7 = "NON-STR" MOVE SPACES TO MAT-NUM-7.
+151700     MOVE MAT-NUM TO MRA-CODE.
+151800     MOVE MAT-STATUS TO MRA-STAT.
+151900     MOVE MAT-UNIT-MEAS TO MRA-UM.
+152000     MOVE MAT-ORIGINATOR TO MRA-ORIG.
+152100     MOVE CODED-MATL-DATA TO VAR-MATL-DATA.
+152200     PERFORM 652102-MOVE-DATES.
+152300     MOVE MAT-STAGE TO MRA-STAG.
+152400     MOVE "EST" TO MRA-EST-LIT.
+152500     MOVE M-UNIT-COST TO UC-SIGNED.
+152600     MOVE UC-DOLS-S TO MRA-UNITCST-DOLS.
+152700     MOVE "." TO MRA-UNITCST-DEC.
+152800     MOVE UC-CENTS-S TO UNITCST-CENTS.
+152900     MOVE UCST-CENTS-1-2 TO MRA-UNITCST-CTS.
+153000     MOVE MAT-EST-COST-DOLLR TO MRA-TOTALCST-DOLS.
+153100     MOVE "." TO MRA-TOTALCST-DEC.
+153200     MOVE MAT-EST-COST-CENTS TO TMP-MTL-CENTS.
+153300     MOVE TMP-MTL-CENTS TO MRA-TOTALCST-CENTS.
+           IF MAT-EST-QTY = SPACES
+             MOVE 0 TO MAT-EST-QTY-9
+           ELSE
+153400       MOVE MAT-EST-QTY-9 TO MRA-QTY.
+153500     MOVE MAT-EST-QTY-FLAG TO MRA-QTY-FLAG.
+153600     IF MAT-EST-QTY-9 = 0 MOVE ZEROES TO MUC MTC.
+153700     MOVE "ACT" TO MRA-ACT-LIT (1).
+153800     MOVE SPACES TO MLINE-2 (2) MLINE-2 (3) MLINE-2 (4).
+153900     MOVE MAT-DESC TO MRA-DESC-1.
+154000     MOVE MAT-DESC-2 TO MRA-DESC-2.
+154100     MOVE MAT-DESC-3 TO MRA-DESC-3.
+154200     MOVE MAT-DESC-4 TO MRA-DESC-4.
+154300     MOVE MAT-DESC-5 TO MRA-DESC-5.
+154400     MOVE MAT-REMARKS TO MRA-REMARKS-1.
+154500     MOVE MAT-REMARKS-2 TO MRA-REMARKS-2.
+           IF MAT-ACT-QTY = "        " MOVE 0 TO MAT-ACT-QTY-9.
+154600     IF MAT-ACT-QTY-9 > 0
+154700       MOVE MAT-ACT-QTY-9 TO MRA-ACT-QTY (1)
+154800       DIVIDE M-ACT-COST BY MAT-ACT-QTY-9 GIVING UC-SIGNED
+154900       MOVE UC-DOLS-S TO MRA-ACTUNIT-DOLS (1)
+155000       MOVE "." TO MRA-ACTUNIT-DEC (1)
+155100       MOVE UC-CENTS-S TO UNITCST-CENTS
+155200       MOVE UCST-CENTS-1-2 TO MRA-ACTUNIT-CENTS (1)
+155300       MOVE MAT-ACT-COST-DOLLR TO MRA-ACTTOT-DOLS (1)
+155400       MOVE "." TO MRA-ACTTOT-DEC (1)
+155500       MOVE MAT-ACT-COST-CENTS TO TMP-MTL-CENTS
+155600       MOVE TMP-MTL-CENTS TO MRA-ACTTOT-CENTS (1)
+155700     ELSE
+155800       MOVE 0 TO MRA-ACT-QTY (1)
+155900       MOVE 0 TO MRA-ACTUNIT-DOLS (1)
+156000       MOVE "." TO MRA-ACTUNIT-DEC (1)
+156100       MOVE 0 TO MRA-ACTUNIT-CENTS (1)
+156200       MOVE 0 TO MRA-ACTTOT-DOLS (1)
+156300       MOVE "." TO MRA-ACTTOT-DEC (1)
+156400       MOVE 0 TO MRA-ACTTOT-CENTS (1).
+157500       MOVE SPACES TO MLINE-13.
+157600 652100-WCL-CONT.
+157700     IF RET-CODE = "0"
+157800       MOVE 42017 TO CATREAD-MSG-NUMBER
+158000       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+158100       MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+158200     ELSE
+158300       MOVE 31088 TO CATREAD-MSG-NUMBER
+158500       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+158600       MOVE ERROR-BUFFER TO MM-DEPRESS-LINE.
+           MOVE "FDISPMAT" TO VIEW-CFNAME.
+           MOVE 50001 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MM-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE MATL-LINES TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO MATL-LINES.
+159200     IF VIEW-LASTKEY = 2
+159300       SUBTRACT 2 FROM ACT-KEYM-WA
+             MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+             PERFORM 6521000-READ-MATFILE-PRIOR THRU 6521000-RMP-EXIT
+                 2 TIMES
+           ELSE
+             IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RET-CODE
+           ELSE
+             IF VIEW-LASTKEY = 5
+               MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+             ELSE
+               MOVE "1" TO RET-CODE.
+159500 6521000-READ-MATFILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           IF ACT-KEYM = 1
+             READ MATFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+159600       READ MATFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+             MOVE "1" TO RET-CODE
+           ELSE
+             MOVE MATREC-REC TO MATREC.
+159700 6521000-RM-CONT.
+159800     IF ACT-KEYM-WA = 0 GO TO 6521000-RM-EXIT.
+159900     IF MAT-STATUS-1 = "M"
+160000       SUBTRACT 1 FROM ACT-KEYM-WA
+160100       GO TO 6521000-READ-MATFILE
+160200     ELSE
+160300       IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+160400         SUBTRACT 1 FROM ACT-KEYM-WA
+160500         GO TO 6521000-READ-MATFILE.
+160600     SUBTRACT 1 FROM ACT-KEYM-WA.
+160700 6521000-RM-EXIT.    EXIT.
+159500 6521000-READ-MATFILE-PRIOR.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           READ MATFILE PRIOR AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+             MOVE "1" TO RET-CODE
+           ELSE
+             MOVE MATREC-REC TO MATREC-DB-REC.
+159700 6521000-RMP-CONT.
+159800     IF ACT-KEYM-WA = 0 GO TO 6521000-RMP-EXIT.
+159900     IF MAT-STATUS-1 = "M"
+160000       SUBTRACT 1 FROM ACT-KEYM-WA
+160100       GO TO 6521000-READ-MATFILE-PRIOR
+160200     ELSE
+160300       IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+160400         SUBTRACT 1 FROM ACT-KEYM-WA
+160500         GO TO 6521000-READ-MATFILE-PRIOR.
+160700 6521000-RMP-EXIT.    EXIT.
+165300 652102-MOVE-DATES.
+165400     MOVE 4 TO DATE-MODE.
+165500     MOVE MAT-DATE-USED TO DATE-VALIDATE-IN.
+165600     CALL "TDATECHK" USING DATE-CHECK-AREA.
+165700     MOVE DATE-SLASH-OUT TO MRA-REQ-DATE.
+165800****************************************************************
+165900*    DISPLAY WORK ORDER MATERIALS ORDERED                      *
+166000****************************************************************
+166100 653-PREREAD-UMATLS-ORDERED.
+134500     MOVE "FDISPITM" TO VIEW-CFNAME.
+           MOVE SPACES TO READ-BUFFER.
+           MOVE READ-BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO READ-BUFFER.
+166900 653-PUO-READ.
+           IF READ-BUFFER = SPACES GO TO 653-PUO-EXIT.
+167500     MOVE 0 TO ACT-KEYM-WA.
+167600 653-PUO-LOOP.
+167700     ADD 1 TO ACT-KEYM-WA.
+167800     IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+167900       IF READ-ITEM NOT = SPACES
+168100         MOVE 35011 TO CATREAD-MSG-NUMBER
+168300         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (98)
+               MOVE ERROR-BUFFER TO READ-CMD-LINE
+               MOVE READ-BUFFER TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98A-SCREEN-READ
+               CALL "CLPAUSE2"
+               CALL "CLPAUSE2"
+               GO TO 65-DISPLAY-CONTROL
+168900         ELSE
+169000           IF READ-REQNO NOT = SPACES
+169200             MOVE 44011 TO CATREAD-MSG-NUMBER
+169400             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (98)
+                   MOVE ERROR-BUFFER TO READ-CMD-LINE
+                   MOVE READ-BUFFER TO DSPLY-REC
+                   PERFORM 99-SCREEN-WRITE
+                   PERFORM 98A-SCREEN-READ
+                   CALL "CLPAUSE2"
+                   CALL "CLPAUSE2"
+                   GO TO 65-DISPLAY-CONTROL
+170000           ELSE
+170100             GO TO 653-PUO-EXIT.
+170200     PERFORM 6531000-READ-MATFILE.
+170300     IF MAT-STATUS-1 = "S" GO TO 653-PUO-LOOP.
+170400     IF MAT-STATUS-1 = "X"
+170500       IF MAT-NUM-7 = "       "
+170600         NEXT SENTENCE
+170700       ELSE
+170800         GO TO 653-PUO-LOOP.
+170900     IF READ-ITEM = "    "
+171000       NEXT SENTENCE
+171100     ELSE
+171200       PERFORM 6530-RIGHT-JUSTIFY-ITEM THRU 6530-RJI-EXIT
+171300       IF READ-ITEM-9 = ACT-KEYM-WA
+171400         SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6531000-READ-MATFILE-PRIOR THRU 6531000-RMP-EXIT
+171500         GO TO 653-PUO-EXIT
+171600       ELSE
+171700       GO TO 653-PUO-LOOP.
+171800     IF READ-REQNO = SPACES
+171900       NEXT SENTENCE
+172000     ELSE
+172100       IF READ-REQNO = MAT-REQ-NO
+172200         SUBTRACT 1 FROM ACT-KEYM-WA
+               PERFORM 6531000-READ-MATFILE-PRIOR THRU 6531000-RMP-EXIT
+172300         GO TO 653-PUO-EXIT
+172400       ELSE
+172500         GO TO 653-PUO-LOOP.
+172600 653-PUO-EXIT.    EXIT.
+172700 6530-RIGHT-JUSTIFY-ITEM.
+172800     IF READ-I (4) = " "
+172900       IF READ-I (3) = " "
+173000         IF READ-I (2) = " "
+173100           MOVE READ-I (1) TO READ-I (4)
+173200           MOVE " " TO READ-I (1)
+173300         ELSE
+173400           MOVE READ-I (2) TO READ-I (4)
+173500           MOVE READ-I (1) TO READ-I (3)
+173600           MOVE " " TO READ-I (2) READ-I (1)
+173700       ELSE
+173800         MOVE READ-I (3) TO READ-I (4)
+173900         MOVE READ-I (2) TO READ-I (3)
+174000         MOVE READ-I (1) TO READ-I (2)
+174100         MOVE " " TO READ-I (3) READ-I (2) READ-I (1).
+           IF READ-I (4) = " " MOVE "0" TO READ-I (4).
+           IF READ-I (3) = " " MOVE "0" TO READ-I (3).
+           IF READ-I (2) = " " MOVE "0" TO READ-I (2).
+           IF READ-I (1) = " " MOVE "0" TO READ-I (1).
+174300 6530-RJI-EXIT.    EXIT.
+174400 653-WRITE-WO-MATERIALS-ORDERED.
+178600     MOVE 1 TO DATE-MODE.
+178700     CALL "TDATECHK" USING DATE-CHECK-AREA.
+178800     MOVE DATE-SLASH-OUT TO MRA-LINE-1-CURR-DATE.
+178900     ACCEPT TMP-TIME-AREA FROM TIME.
+179000     MOVE TTA-HRS TO MRA-LINE-1-TIME-HH.
+179100     MOVE ":" TO MRA-LINE-1-SEMICOLON.
+179200     MOVE TTA-MIN TO MRA-LINE-1-TIME-MM.
+179300     MOVE WO-NUM TO MRA-LINE-3-WO-NUM-PRIM.
+179400     MOVE WO-NUM-SUFF TO MRA-LINE-3-WO-NUM-SUFF.
+179500     MOVE DESCRIPTION-1 TO MRA-LINE-3-WO-DESC.
+179600     MOVE WO-STATUS TO MRA-LINE-3-STATUS.
+179700     MOVE EQUIP-NUM TO MRA-EQPNUM.
+179800     MOVE DEPT TO MRA-DEPT.
+179900     MOVE EXP-CLASS TO MRA-CHARGE.
+180000     MOVE ZONE TO MRA-ZONE.
+180100     MOVE PRIORITY TO MRA-PRTY.
+180300     MOVE 4 TO DATE-MODE.
+142500     IF MA-MATRL-REC-CNT = 0
+             MOVE 48003 TO CATREAD-MSG-NUMBER
+             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+             MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+             MOVE 50002 TO CATREAD-MSG-NUMBER
+             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+             MOVE ERROR-BUFFER TO MM-CMD-LINE
+             MOVE "FDISPUNC" TO VIEW-CFNAME
+             MOVE MATL-LINES TO DSPLY-REC
+             PERFORM 99-SCREEN-WRITE
+             PERFORM 98-SCREEN-READ
+             MOVE DSPLY-REC TO MATL-LINES
+             MOVE "0" TO RETURN-SW-2
+177100     ELSE
+177200       PERFORM 6530-WRITE-UNCODED.
+177300 6530-WRITE-UNCODED.
+           MOVE "0" TO RET-CODE.
+181800     PERFORM 653100-WRITE-UMATL-LINES THRU 653100-WUL-CONT
+181900         UNTIL RET-CODE = "1".
+182000     MOVE 0 TO ACT-KEYM-WA.
+182100 653100-WRITE-UMATL-LINES.
+182200     ADD 1 TO ACT-KEYM-WA.
+182300     IF ACT-KEYM-WA > MA-MATRL-REC-CNT
+182400       MOVE "1" TO RET-CODE
+182500       GO TO 653100-WUL-CONT
+182600     ELSE
+182700       PERFORM 6531000-READ-MATFILE
+182800       IF MAT-STATUS-1 = "M"
+182900         NEXT SENTENCE
+183000       ELSE
+183100         IF MAT-STATUS-1 = "X" AND MAT-NUM-7 = "       "
+183200           NEXT SENTENCE
+183300         ELSE
+183400           GO TO 653100-WRITE-UMATL-LINES.
+183500     MOVE SPACES TO MM-LINES.
+183600     MOVE ACT-KEYM-WA TO MRA-ITM.
+183700     MOVE SPACES TO MATL-WORK-AREA.
+183800     IF MAT-NUM-7 = "NON-STR" MOVE SPACES TO MAT-NUM-7.
+183900     MOVE MAT-NUM TO MRA-CODE.
+184000     MOVE MAT-STATUS TO MRA-STAT.
+184100     MOVE MAT-UNIT-MEAS TO MRA-UM.
+184200     MOVE MAT-ORIGINATOR TO MRA-ORIG.
+184300     MOVE CODED-MATL-DATA TO VAR-MATL-DATA.
+184400     PERFORM 653102-MOVE-DATES.
+184500     MOVE MAT-STAGE TO MRA-STAG.
+184600     MOVE "EST" TO MRA-EST-LIT.
+184700     MOVE M-UNIT-COST TO UC-SIGNED.
+184800     MOVE UC-DOLS-S TO MRA-UNITCST-DOLS.
+184900     MOVE "." TO MRA-UNITCST-DEC.
+185000     MOVE UC-CENTS-S TO UNITCST-CENTS.
+185100     MOVE UCST-CENTS-1-2 TO MRA-UNITCST-CTS.
+185200     MOVE MAT-EST-COST-DOLLR TO MRA-TOTALCST-DOLS.
+185300     MOVE "." TO MRA-TOTALCST-DEC.
+185400     MOVE MAT-EST-COST-CENTS TO TMP-MTL-CENTS.
+185500     MOVE TMP-MTL-CENTS TO MRA-TOTALCST-CENTS.
+185600     MOVE MAT-EST-QTY-9 TO MRA-QTY.
+185700     MOVE MAT-EST-QTY-FLAG TO MRA-QTY-FLAG.
+185800     IF MAT-EST-QTY-9 = 0 MOVE ZEROES TO MUC MTC.
+185900     PERFORM 653103-MOVE-REQ-PO VARYING SUB FROM 1 BY 1
+186000         UNTIL SUB > 4.
+186100     MOVE MAT-DESC TO MRA-DESC-1.
+186200     MOVE MAT-DESC-2 TO MRA-DESC-2.
+186300     MOVE MAT-DESC-3 TO MRA-DESC-3.
+186400     MOVE MAT-DESC-4 TO MRA-DESC-4.
+186500     MOVE MAT-DESC-5 TO MRA-DESC-5.
+186600     MOVE MAT-REMARKS TO MRA-REMARKS-1.
+186700     MOVE MAT-REMARKS-2 TO MRA-REMARKS-2.
+187800     MOVE SPACES TO MLINE-13.
+187900 653100-WUL-CONT.
+188000     IF RET-CODE = "0"
+188100       MOVE 42017 TO CATREAD-MSG-NUMBER
+188300       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+188400       MOVE ERROR-BUFFER TO MM-DEPRESS-LINE
+188500     ELSE
+188600       MOVE 31088 TO CATREAD-MSG-NUMBER
+188800       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+188900       MOVE ERROR-BUFFER TO MM-DEPRESS-LINE.
+           MOVE "FDISPUNC" TO VIEW-CFNAME.
+           MOVE 50002 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MM-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE MATL-LINES TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO MATL-LINES.
+159200     IF VIEW-LASTKEY = 2
+159300       SUBTRACT 2 FROM ACT-KEYM-WA
+             MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+             PERFORM 6531000-READ-MATFILE-PRIOR THRU 6531000-RMP-EXIT
+                 2 TIMES
+           ELSE
+             IF VIEW-LASTKEY = 3
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE "1" TO RET-CODE
+             ELSE
+               IF VIEW-LASTKEY = 6
+                 MOVE SPACES TO MATERIAL-LINES MM-DEPRESS-LINE
+               ELSE
+                 MOVE "1" TO RET-CODE.
+189800 6531000-READ-MATFILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           IF ACT-KEYM = 1
+             READ MATFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+189900       READ MATFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+             MOVE "1" TO RET-CODE
+           ELSE
+             MOVE MATREC-REC TO MATREC.
+190000 6531000-RM-CONT.
+190100     IF ACT-KEYM-WA = 0 GO TO 6531000-RM-EXIT.
+190200     IF MAT-STATUS = "M"
+190300       NEXT SENTENCE
+190400     ELSE
+190500       IF MAT-STATUS = "X" AND MAT-NUM-7 = "       "
+190600         NEXT SENTENCE
+190700       ELSE
+190800         SUBTRACT 1 FROM ACT-KEYM-WA
+190900         GO TO 6531000-READ-MATFILE.
+191000     SUBTRACT 1 FROM ACT-KEYM-WA.
+191100 6531000-RM-EXIT.    EXIT.
+189800 6531000-READ-MATFILE-PRIOR.
+           MOVE 0 TO COND-WORD.
+           MOVE ACT-KEYM-WA TO ACT-KEYM.
+           READ MATFILE PRIOR AT END    MOVE 15 TO COND-WORD.
+           IF MATF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+      *        MOVE "1" TO RET-CODE
+             GO TO 6531000-RMP-EXIT
+           ELSE
+             MOVE MATREC-REC TO MATREC-DB-REC.
+190000 6531000-RMP-CONT.
+190100     IF ACT-KEYM-WA = 0 GO TO 6531000-RMP-EXIT.
+190200     IF MAT-STATUS = "M"
+190300       NEXT SENTENCE
+190400     ELSE
+190500       IF MAT-STATUS = "X" AND MAT-NUM-7 = "       "
+190600         NEXT SENTENCE
+190700       ELSE
+190800         SUBTRACT 1 FROM ACT-KEYM-WA
+190900         GO TO 6531000-READ-MATFILE-PRIOR.
+191100 6531000-RMP-EXIT.    EXIT.
+195700 653102-MOVE-DATES.
+195800     MOVE 4 TO DATE-MODE.
+195900     MOVE MAT-DATE-USED TO DATE-VALIDATE-IN.
+196000     CALL "TDATECHK" USING DATE-CHECK-AREA.
+196100     MOVE DATE-SLASH-OUT TO MRA-REQ-DATE.
+196200 653103-MOVE-REQ-PO.
+196300     IF SUB = 1
+196400         MOVE "ACT" TO MRA-ACT-LIT (SUB)
+196500         PERFORM 6531030-SET-ACT
+196600         IF MAT-REQ-NO = SPACES OR "CANCEL"
+196700           MOVE SPACES TO MRA-REQ-PO-LIT (SUB)
+196800                          MRA-REQ-PO (SUB)
+196900         ELSE
+197000         MOVE "CSIS REQ NUMBER:" TO MRA-REQ-PO-LIT (SUB)
+197100         MOVE MAT-REQ-NO TO MRA-REQ-PO (SUB)
+197200     ELSE
+197300     IF SUB = 2
+197400         MOVE "PUR" TO MRA-ACT-LIT (SUB)
+197500         PERFORM 6531031-SET-PUR
+197600         IF MAT-PO-NO = SPACES
+197700           MOVE SPACES TO MLINE-2 (SUB)
+197800         ELSE
+197900           MOVE "CSIS PO  NUMBER:" TO MRA-REQ-PO-LIT (SUB)
+198000           MOVE MAT-PO-NO TO MRA-REQ-PO (SUB)
+198100     ELSE
+198200     IF SUB = 3
+198300         MOVE "RCV" TO MRA-ACT-LIT (SUB)
+198400         PERFORM 6531032-SET-RCV
+198500         IF MATREC-RCV-QTY-9 > 0
+198600             NEXT SENTENCE
+198700         ELSE
+198800         MOVE SPACES TO MLINE-2 (SUB)
+198900     ELSE
+199000     IF SUB = 4
+               MOVE "INV"  TO MRA-ACT-LIT (SUB)
+               PERFORM 6531033-SET-INV
+               IF MATREC-INV-QTY-9 > 0
+                   NEXT SENTENCE
+               ELSE
+199100         MOVE SPACES TO MLINE-2 (SUB).
+199200 6531030-SET-ACT.
+           IF MATREC-REQ-QTY = "        " MOVE 0 TO MAT-ACT-QTY-9.
+199300     IF MATREC-REQ-QTY-9 > 0
+199400         MOVE MATREC-REQ-QTY-9   TO MRA-ACT-QTY (SUB)
+201800         MOVE MATREC-REQ-UP-DOLS TO MRA-ACTUNIT-DOLS (SUB)
+201900         MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+202000         MOVE MATREC-REQ-UP-CTS  TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+202100         MULTIPLY MATREC-REQ-QTY-9 BY MATREC-REQ-UP
+202200             GIVING UC-SIGNED
+202300         MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+202400         MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+202500         MOVE UC-CENTS-S         TO UNITCST-CENTS
+202600         MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+200400     ELSE
+200500       MOVE 0 TO MRA-ACT-QTY (SUB)
+200600       MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+200700       MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+200800       MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+200900       MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+201000       MOVE "." TO MRA-ACTTOT-DEC (SUB)
+201100       MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+201200 6531031-SET-PUR.
+201300     IF MATREC-PUR-QTY = SPACES
+201400       NEXT SENTENCE
+201500     ELSE
+201600       IF MATREC-PUR-QTY-9 > 0
+201700         MOVE MATREC-PUR-QTY-9   TO MRA-ACT-QTY (SUB)
+201800         MOVE MATREC-PO-UP-DOLS  TO MRA-ACTUNIT-DOLS (SUB)
+201900         MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+202000         MOVE MATREC-PO-UP-CTS   TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+202100         MULTIPLY MATREC-PUR-QTY-9 BY MATREC-PO-UP
+202200             GIVING UC-SIGNED
+202300         MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+202400         MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+202500         MOVE UC-CENTS-S         TO UNITCST-CENTS
+202600         MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+202700       ELSE
+202800         MOVE 0 TO MRA-ACT-QTY (SUB)
+202900         MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+203000         MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+203100         MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+203200         MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+203300         MOVE "." TO MRA-ACTTOT-DEC (SUB)
+203400         MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+203500 6531032-SET-RCV.
+203600     IF MATREC-RCV-QTY = SPACES
+203700       MOVE ZEROES TO MATREC-RCV-QTY
+203800     ELSE
+203900       IF MATREC-RCV-QTY-9 > 0
+204000         MOVE MATREC-RCV-QTY-9   TO MRA-ACT-QTY (SUB)
+204100         MOVE MATREC-PO-UP-DOLS  TO MRA-ACTUNIT-DOLS (SUB)
+204200         MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+202000         MOVE MATREC-PO-UP-CTS   TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+204400         MULTIPLY MATREC-RCV-QTY-9 BY MATREC-PO-UP
+204500             GIVING UC-SIGNED
+204600         MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+204700         MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+204800         MOVE UC-CENTS-S         TO UNITCST-CENTS
+204900         MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+205000       ELSE
+205100         MOVE 0 TO MRA-ACT-QTY (SUB)
+205200         MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+205300         MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+205400         MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+205500         MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+205600         MOVE "." TO MRA-ACTTOT-DEC (SUB)
+205700         MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+203500 6531033-SET-INV.
+203600     IF MATREC-INV-QTY = SPACES
+203700       MOVE ZEROES TO MATREC-INV-QTY
+203800     ELSE
+203900       IF MATREC-INV-QTY-9 > 0
+204000         MOVE MATREC-INV-QTY-9   TO MRA-ACT-QTY (SUB)
+204100         MOVE MATREC-PO-UP-DOLS  TO MRA-ACTUNIT-DOLS (SUB)
+204200         MOVE "."                TO MRA-ACTUNIT-DEC (SUB)
+202000         MOVE MATREC-PO-UP-CTS   TO UNITCST-CENTS
+               MOVE UCST-CENTS-1-2     TO MRA-ACTUNIT-CENTS (SUB)
+204400         MULTIPLY MATREC-INV-QTY-9 BY MATREC-PO-UP
+204500             GIVING UC-SIGNED
+204600         MOVE UC-DOLS-S          TO MRA-ACTTOT-DOLS (SUB)
+204700         MOVE "."                TO MRA-ACTTOT-DEC (SUB)
+204800         MOVE UC-CENTS-S         TO UNITCST-CENTS
+204900         MOVE UCST-CENTS-1-2     TO MRA-ACTTOT-CENTS (SUB)
+205000       ELSE
+205100         MOVE 0 TO MRA-ACT-QTY (SUB)
+205200         MOVE 0 TO MRA-ACTUNIT-DOLS (SUB)
+205300         MOVE "." TO MRA-ACTUNIT-DEC (SUB)
+205400         MOVE 0 TO MRA-ACTUNIT-CENTS (SUB)
+205500         MOVE 0 TO MRA-ACTTOT-DOLS (SUB)
+205600         MOVE "." TO MRA-ACTTOT-DEC (SUB)
+205700         MOVE 0 TO MRA-ACTTOT-CENTS (SUB).
+205800*****************************************************************
+205900*    DISPLAY LABOR USED ON WORK ORDER                           *
+206000*****************************************************************
+206100 654-WRITE-WO-LABOR-USED.
+206200     IF LBR-REC-CNT = 0
+206900       MOVE SPACES TO LABOR-LINES
+207000       MOVE 1 TO DATE-MODE
+207100       CALL "TDATECHK" USING DATE-CHECK-AREA
+207200       MOVE DATE-SLASH-OUT TO LL-DATE
+207300       ACCEPT TMP-TIME-AREA FROM TIME
+207400       MOVE TTA-HRS TO LL-TIME-HH
+207500       MOVE ":" TO LL-SEMICOLON
+207600       MOVE TTA-MIN TO LL-TIME-MM
+207700       MOVE WO-NUM TO LL-WO
+207800       PERFORM 65400-MOVE-CRAFT-REQD-DATA
+207900           VARYING LOOP-CNT FROM 1 BY 1
+208000           UNTIL LOOP-CNT GREATER THAN LA-CRAFT-CNT
+208100       PERFORM 65401-MOVE-MEN-REQD-DATA
+208200           VARYING LOOP-CNT FROM 1 BY 1
+208300           UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+208400       PERFORM 65404-MOVE-MEN-ACT-DATA
+208500           VARYING LOOP-CNT FROM 1 BY 1
+208600           UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+208700       PERFORM 65402-MOVE-HRS-EST-DATA
+208800           VARYING LOOP-CNT FROM 1 BY 1
+208900           UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+209000       PERFORM 65403-MOVE-HRS-ACT-DATA
+209100           VARYING LOOP-CNT FROM 1 BY 1
+209200           UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT
+209300       MOVE LA-TOTAL-COST-WA TO LL-TOT-COST
+209400       MOVE  40010 TO CATREAD-MSG-NUMBER
+209600       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+209700       MOVE ERROR-BUFFER TO LL-DEPRESS-LINE
+             MOVE "FDISPLAB" TO VIEW-CFNAME
+             MOVE 52010 TO CATREAD-MSG-NUMBER
+             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+             MOVE ERROR-BUFFER TO LL-CMD-LINE
+             MOVE SPACES TO ERROR-BUFFER
+             MOVE LABOR-LINES TO DSPLY-REC
+             PERFORM 99-SCREEN-WRITE
+             PERFORM 98-SCREEN-READ
+             MOVE DSPLY-REC TO LABOR-LINES
+222600       MOVE "0" TO RETURN-SW-2
+213800     ELSE
+             MOVE 0 TO COND-WORD
+213900       PERFORM 6540-WRITE-LABOR.
+214000 6540-WRITE-LABOR.
+215300     MOVE SPACES TO LABOR-LINES.
+215400     MOVE 1 TO DATE-MODE.
+215500     CALL "TDATECHK" USING DATE-CHECK-AREA.
+215600     MOVE DATE-SLASH-OUT TO LL-DATE.
+215700     ACCEPT TMP-TIME-AREA FROM TIME.
+215800     MOVE TTA-HRS TO LL-TIME-HH.
+215900     MOVE ":" TO LL-SEMICOLON.
+216000     MOVE TTA-MIN TO LL-TIME-MM.
+216100     MOVE WO-NUM TO LL-WO.
+216200     PERFORM 65400-MOVE-CRAFT-REQD-DATA
+216300         VARYING LOOP-CNT FROM 1 BY 1
+216400         UNTIL LOOP-CNT GREATER THAN LA-CRAFT-CNT.
+216500     PERFORM 65401-MOVE-MEN-REQD-DATA
+216600         VARYING LOOP-CNT FROM 1 BY 1
+216700         UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+216800     PERFORM 65404-MOVE-MEN-ACT-DATA
+216900         VARYING LOOP-CNT FROM 1 BY 1
+217000         UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+217100     PERFORM 65402-MOVE-HRS-EST-DATA
+217200         VARYING LOOP-CNT FROM 1 BY 1
+217300         UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+217400     PERFORM 65403-MOVE-HRS-ACT-DATA
+217500         VARYING LOOP-CNT FROM 1 BY 1
+217600         UNTIL LOOP-CNT IS GREATER THAN LA-CRAFT-CNT.
+217700     MOVE LA-TOTAL-COST-WA TO LL-TOT-COST.
+217800     MOVE "0" TO RET-CODE.
+217900     MOVE LBR-REC-CNT TO LBR-REC-CHECK.
+218000     PERFORM 65411-ZERO-LA-SUM-CRF-CST
+218100         VARYING LINE-CNT FROM 1 BY 1
+218200         UNTIL LINE-CNT IS GREATER THAN 10.
+218300     MOVE +0001 TO LINE-CNT.
+218400     MOVE +0010 TO CNT-LIMIT.
+218500     MOVE ZERO TO ACT-KEYL-WA.
+218600     PERFORM 65410-LOOP-SCREENS
+218700         UNTIL RET-CODE = "1".
+218800 65400-MOVE-CRAFT-REQD-DATA.
+           IF LOOP-CNT > 12
+             NEXT SENTENCE
+           ELSE
+218900       MOVE LA-CRAFT-REQ (LOOP-CNT) TO
+219000           LL-CRF-MEN (LOOP-CNT).
+219100 65401-MOVE-MEN-REQD-DATA.
+219200     IF LA-MEN-EST-I (LOOP-CNT) NOT = SPACES
+             IF LOOP-CNT > 12
+               NEXT SENTENCE
+             ELSE
+219300         MOVE LA-MEN-EST (LOOP-CNT) TO
+219400             LL-EST-MEN (LOOP-CNT).
+219500 65402-MOVE-HRS-EST-DATA.
+219600     IF LA-HRS-EST-I (LOOP-CNT) NOT = SPACES
+             IF LOOP-CNT > 12
+               NEXT SENTENCE
+             ELSE
+219700         MOVE LA-HRS-EST (LOOP-CNT) TO
+219800             LL-HRSE (LOOP-CNT).
+219900 65403-MOVE-HRS-ACT-DATA.
+220000     IF LA-HRS-ACT-I (LOOP-CNT) NOT = SPACES
+             IF LOOP-CNT > 12
+               NEXT SENTENCE
+             ELSE
+220100         MOVE LA-HRS-ACT (LOOP-CNT) TO
+220200             LL-HRSA (LOOP-CNT).
+220300 65404-MOVE-MEN-ACT-DATA.
+220400     IF LA-MEN-ACT-I (LOOP-CNT) NOT = SPACES
+             IF LOOP-CNT > 12
+               NEXT SENTENCE
+             ELSE
+220500         MOVE LA-MEN-ACT (LOOP-CNT) TO
+220600             LL-ACT-MEN (LOOP-CNT).
+220700 65410-LOOP-SCREENS.
+220800     IF CNT-LIMIT IS GREATER THAN LBR-REC-CHECK
+220900       MOVE LBR-REC-CHECK TO CNT-LIMIT
+221000       MOVE "1" TO RET-CODE.
+221100     PERFORM 654100-WRITE-ONE-LINE CNT-LIMIT TIMES.
+221200     IF RET-CODE = "1"
+221300       MOVE  31088 TO CATREAD-MSG-NUMBER
+221500       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+221600       MOVE ERROR-BUFFER TO LL-DEPRESS-LINE
+221700     ELSE
+221800       MOVE  42017 TO CATREAD-MSG-NUMBER
+222000       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+222100       MOVE ERROR-BUFFER TO LL-DEPRESS-LINE.
+           MOVE "FDISPLAB" TO VIEW-CFNAME.
+           MOVE 52010 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO LL-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE LABOR-LINES TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO LABOR-LINES.
+222600     MOVE "0" TO RETURN-SW-2.
+222700     PERFORM 654101-GET-NEXT-INST UNTIL RETURN-SW-2 = "1".
+222800     MOVE 1 TO LINE-CNT.
+222900     IF LBR-REC-CHECK > 10
+223000       SUBTRACT 10 FROM LBR-REC-CHECK.
+223100 654100-WRITE-ONE-LINE.
+223200     ADD 1 TO ACT-KEYL-WA.
+           MOVE 0 TO COND-WORD.
+           IF ACT-KEYL-WA = 1
+             READ LBRFILE FIRST    AT END MOVE 15 TO COND-WORD
+           ELSE
+223300       READ LBRFILE NEXT AT END    MOVE 15 TO COND-WORD.
+           IF LBRF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+             MOVE "1" TO RET-CODE
+           ELSE
+             MOVE LBRREC-REC TO WO-LABOR-DATA.
+223700     IF ACT-KEYL-WA = LBR-REC-CNT
+223800       MOVE "1" TO RET-CODE.
+           MOVE LBRREC-REC TO WO-LABOR-DATA.
+223900     MOVE SPACES TO LL-DATA (LINE-CNT).
+224000     MOVE LINE-CNT TO TMP-L-C-FIELD1.
+224100     MOVE LBR-EMPL-NUM TO LL-CRAFTSMAN (LINE-CNT).
+224200     MOVE LBR-EMPL-NAME TO LL-CRAFTSMAN-NAME (LINE-CNT).
+224300     MOVE LBR-CRAFT TO LL-CRAFT (LINE-CNT).
+224400     MOVE LBR-HRS1-99 TO LL-HRS1-99 (LINE-CNT).
+224500     MOVE "." TO LL-HRS-DEC (LINE-CNT).
+224600     MOVE LBR-HRS2-9 TO LL-HRS2-9 (LINE-CNT).
+224700     MOVE LBR-SHIFT-1 TO LL-SHIFT (LINE-CNT).
+224800     MOVE LBR-CST-DOLLR-9 TO LL-CST-DOLLR-9 (LINE-CNT).
+224900     MOVE "." TO LL-CST-DEC (LINE-CNT).
+225000     MOVE LBR-CST-CENTS-9 TO LL-CST-CENTS-9 (LINE-CNT).
+225100     MOVE LBR-CRAFT TO CRAFT-DESIRED.
+225200*    PERFORM 6320-DET-CRAFT-SUBSCRIPT.
+225300     COMPUTE LA-SUM-CRF-CST (CRFT-SUBSC) =
+225400         LA-SUM-CRF-CST (CRFT-SUBSC) +
+225500         LBR-CST-DOLLR-9 + LBR-CST-CENTS-9 / 100.
+225600*    IF LA-SUM-CRF-CST (CRFT-SUBSC) = LA-TOT-CRF-CST (CRFT-SUBSC)
+225700*      MOVE LA-SUM-CRF-CST (CRFT-SUBSC) TO LRA-SUM-CRF-CST.
+225800     MOVE 4 TO DATE-MODE.
+225900     MOVE LBR-START-DATE TO DATE-VALIDATE-IN.
+226000     CALL "TDATECHK" USING DATE-CHECK-AREA.
+226100     MOVE DATE-OUT TO LL-DATE-ST (LINE-CNT).
+226200     MOVE LBR-START-TIME-HH TO LL-TIME-ST-HH (LINE-CNT).
+226300     MOVE LBR-START-TIME-MM TO LL-TIME-ST-MM (LINE-CNT).
+226400     MOVE 4 TO DATE-MODE.
+226500     MOVE LBR-COMPL-DATE TO DATE-VALIDATE-IN.
+226600     CALL "TDATECHK" USING DATE-CHECK-AREA.
+226700     MOVE DATE-OUT TO LL-DATE-CO (LINE-CNT).
+226800     MOVE LBR-COMPL-TIME-HH TO LL-TIME-CO-HH (LINE-CNT).
+226900     MOVE LBR-COMPL-TIME-MM TO LL-TIME-CO-MM (LINE-CNT).
+227000     ADD 1 TO LINE-CNT.
+227100 654101-GET-NEXT-INST.
+228900     IF VIEW-LASTKEY = 3
+229000       MOVE 0 TO VIEW-LASTKEY
+229100       MOVE "1" TO RETURN-SW-2
+229200       MOVE "1" TO RET-CODE
+231000     ELSE
+231100       IF VIEW-LASTKEY = 7
+231200         IF LBR-REC-CHECK < 10
+231300           MOVE "1" TO RETURN-SW-2
+231400           MOVE "1" TO RET-CODE
+231500         ELSE
+231600           MOVE SPACES TO LL-DATA-LINES LL-DEPRESS-LINE
+231700           MOVE "1" TO RETURN-SW-2
+231800       ELSE
+231900         MOVE "1" TO RET-CODE
+232000         MOVE "1" TO RETURN-SW-2.
+232100 65411-ZERO-LA-SUM-CRF-CST.
+232200     MOVE ZERO TO LA-SUM-CRF-CST (LINE-CNT).
+185000
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+             MOVE 3 TO VIEW-LASTKEY
+           ELSE
+             MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       98A-SCREEN-READ.
+           READ DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDIC IS INDICS
+                  NO DATA MOVE DSPLY-STATUS TO DSPLY-STATUS.
+           MOVE ALL B"0" TO INDICS.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+185100 998-BLOWUP.
+185200     MOVE "TDISPBAS" TO BU-PGM-NAME.
+185300     CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+185400                      VIEW-COMAREA DUMMY-KSAM-STAT
+185500                      BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+185600
+185700 999-CATREAD.
+185800     MOVE SPACES TO ERROR-BUFFER.
+185900     CALL "CCATREAD" USING CATREAD-PARMS.
+187200     MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+187300 999-CATREAD-EXIT.
+187400     EXIT.

@@ -1,0 +1,660 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TWSPRT.
+       AUTHOR.     C HILLES.
+       DATE-WRITTEN. FEBRUARY, 1984.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.
+      *
+      *    THIS SUBPROGRAM PRINTS A STOREROOM WORKSHEET, GIVEN
+      *    CODES, QUANTITIES, CHARGE DATA, ETC. FROM THE CALLING
+      *    PROGRAM.  THIS IS CURRENTLY CALLED BY 3 PROGRAMS -
+      *    WITHDRAWAL WORKSHEET BUILD (SW2)/ RETURN WORKSHEET
+      *    BUILD (ST2), REMOTE WORKSHEET, AND WORKSHEET
+      *    REPRINT.
+      *
+      *    THE PGM HAS THE OPTION OF ADVANCING TWICE AFTER THE DOCUMENT
+      *    FOR PLANTS USING HALF SHEET PAPER.  IT CAN ALSO RING THE
+      *    PRINTER BEEPER IF DESIRED (REMOTE WORKSHEET DOES THIS).
+      *    THESE OPTIONS ARE PASSED THRU THE "WS-PARMS" PARAMETERS.
+      *
+      *    ON MAY 14, 1984, CHANGED THE SUB-PGM TO PRINT PLANNER
+      *    DATA PASSED TO IT FROM REMOTE WORKSHEET.  (THE "PLANNER
+      *    DATA" IS ACTUALLY JUST A COMMENT FOR THE STOREROOM).
+      *    THIS ENTAILED ADDING A THE PARAMETER TO PASS THE COMMENT,
+      *    AND THUS ALL CALLING PROGRAMS ALSO MUST BE CHANGED TO
+      *    PASS EITHER THE PLANNER DATA (REMOTE WORKSHEET), OR A
+      *    DUMMY FIELD (OTHER WORKSHEET PROGRAMS).  CIH.
+      *
+      *    IN OCTOBER, 1984, CHANGED THIS SUBPROGRAM TO
+      *    WORK FOR AKRON.  THIS INVOLVES A NEW FIELDIN THE
+      *    WORK TABLE CALLED "WORK CENTER".
+      *
+      *    ON OCT 8, 1984, CHANGED THIS SUBPROGRAM AS PART OF THE
+      *    COMBINATION OF AKRON VERSION AND PLANT VERSION OF STORES
+      *    PROGRAMS.  IF PRINTING IN AKRON, THE CALLING PROGRAM MUST
+      *    PASS AN "AKRON" FLAG PARAMETER.  THIS INSTRUCTS THIS SUBPRG
+      *    TO PRINT THE "WORK CENTER" HEADER AND THE WORK CENTER
+      *    FIELD.  CIH.
+      *
+      *    ON MAY 16, 1985, CHANGED THIS SUBPROGRAM FOR THE
+      *    EUROPEAN DATE CONVERSION.  IT WILL NOW CALL "TDATECHK"
+      *    FOR ALL DATE MANIPULATION, WHICH WILL RESULT IN A
+      *    EUROPEAN STLYE DATE ON THE OUTPUT DOCUMENT IF THE
+      *    EUROPEAN DATE FLAG IS SET.  CIH.
+      *
+      *   10/10/85  ADDED CALLS TO FINDJCW, NLAPPEND, CATOPEN, AND *
+      *             CATCLOSE IN ORDER TO ACCOMODATE THE NATIVE     *
+      *             LANGUAGE SUPPORT FACILITY.  ADDED LINKAGES AND *
+      *             ALSO MADE THE CHANGE TO THE FORMFILE NAMES.    *
+      *             CHANGED ALL REFERENCES OF TFDESC TO TFDESC2,   *
+      *             TDATECHK TO TDATECK2.                          *
+      *             THIS WAS TO INCORPORATE THE NATIVE LANGUAGE    *
+      *             SUPPORT VERSIONS OF THESE SUBROUTINES.         *
+      *                                           PD RAGLOW.       *
+      **************************************************************
+      *
+      *   06/16/86  ADDED CALL TO "CDESC" TO GET DESCRIPION.  CALL TO
+      *             "TFDESC2" IS ELIMINATED.  "CDESC" HANDLES THE NEW
+      *             "DMANPART" DATASET.  CIH.
+      *
+      *    06/26/86
+      *      ADDED "REPAIRABLE ITEM" NOTE TO THE WORKSHEET IF AN ITEM
+      *      IS REPAIRABLE (MR OR OR).  THIS IS TO AID LAWTON IN TRACKING
+      *      OF REPAIRABLE ITEMS.  CIH.
+      *C
+      *C   06/10/96      JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     RECOMPILE PROGRAM TO PICK UP NEW FILE FORMATS.
+      *C
+      *C   06/13/96      JEFF BUNGO
+      *C     REMOVED COMPRESSED PRINT FROM THE WORKSHEET FOR
+      *C     DATE/TIME, CODE DESCRIPTION, AND CHARGE DETAILS.
+      *
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES.
+           C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+           SELECT MSTORERM
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS MSTORERM-STATUS.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS PER-PERSONNEL-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  ONLINE-PRT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-RCD.
+       01  PRINT-RCD.
+           05  PRINT-LINE                PIC X(132).
+
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS ARE STANDARD.
+       01  PER-PERSONNEL-REC.
+           COPY DDS-MCRPMM0300  OF MCFLMM0301.
+
+       WORKING-STORAGE SECTION.
+
+       77  SUB                           PIC 9(2)  VALUE 0.
+       77  SUBP1                         PIC 9(2)  VALUE 0.
+       77  SUB2                          PIC 9(2)  VALUE 0.
+       77  TOTAL-QTY                     PIC S9(8)  VALUE 0.
+       77  WLT-TEMP                      PIC X(192) VALUE SPACES.
+       77  SWITCH-FLAG                   PIC X(1)   VALUE "N".
+       77  STRIP                         PIC X(5) JUST RIGHT.
+       77  NUM-ITEMS                     PIC 9(2).
+
+       01  TIME-SAVE.
+           05  HRS-SAVE                  PIC XX.
+           05  MIN-SAVE                  PIC XX.
+           05  SEC-SAVE                  PIC XX.
+
+       COPY OVRPFDATA IN COPYLIB.
+       COPY CCHKOBJ IN COPYLIB.
+
+       01  CONTROL-CHARACTERS.
+           05  CTL-B-TEMP                PIC 9(6) BINARY VALUE 196879.
+           05  CTL-B REDEFINES CTL-B-TEMP.
+               10  FILLER                PIC X(1).
+               10  CONDENSED-MODE-ON     PIC X(3).
+           05  CTL-C-TEMP                PIC 9(6) BINARY VALUE 196882.
+           05  CTL-C REDEFINES CTL-C-TEMP.
+               10  FILLER                PIC X(1).
+               10  CONDENSED-MODE-OFF    PIC X(3).
+           05  CTL-F-TEMP              PIC 9(8) BINARY VALUE 50469702.
+           05  CTL-F REDEFINES CTL-F-TEMP.
+               10  NLQ-MODE-OFF          PIC X(4).
+
+       COPY DBMODES  IN COPYLIB.
+       COPY DATAB3   IN COPYLIB.
+       01  EMPL-ARG                      PIC X(4).
+       01  DSET-PER-PERSONNEL     PIC X(16)  VALUE "PER-PERSONNEL;".
+       COPY MSTORERM IN COPYLIB.
+       01  BUF-PER-PERSONNEL.
+       COPY MPERSONL IN COPYLIB.
+
+       01  MSTORERM-STATUS               PIC X(2).
+       01  PER-PERSONNEL-STATUS          PIC X(2).
+
+
+      *************************************************************
+      **                                                          **
+      **          C O M M U N I C A T I O N S   A R E A S         **
+      **                                                          **
+      **************************************************************
+
+      ***  PARMS FOR CALL TO SLEMMER SPOOLER
+
+       01  SPOOLER-AREA.
+           05  SPOOL-STAT                PIC S9     VALUE ZEROS COMP-4.
+           05  SPOOL-COPIES              PIC S9(2)  VALUE 1 COMP-4.
+           05  SPOOL-PRIOR               PIC S9     VALUE ZEROS COMP-4.
+           05  SPOOL-MSG                 PIC X(75)  VALUE SPACES.
+
+       COPY CDESC    IN COPYLIB.
+       COPY TDATECHK IN COPYLIB.
+
+      *------ PARMS FOR CALL TO 'QCMDEXC': EXECUTE A COMMAND
+       01  COMMAND-WORK                  PIC X(70).
+       01  COMMAND-LEN      PIC S9(10)V9(5) COMP-3 VALUE 70.
+
+       01  FORMAT-SPOOL-PRT              PIC 9(2).
+
+       01  BU-DISPLAY-MSG2.
+           05  BU-DISPLAY-MSG-1          PIC X(1)  VALUE SPACES.
+           05  FILLER                    PIC X(59) VALUE SPACES.
+
+      **************************************************************
+      **                                                          **
+      **     H E A D E R   &   D E T A I L   L I N E S            **
+      **                                                          **
+      **************************************************************
+
+       01  HDR-1.
+           05  FILLER                    PIC X(12) VALUE SPACES.
+           05  FILLER                    PIC X(10) VALUE "STOREROOM ".
+           05  PRT-HEAD                  PIC X(10) VALUE SPACES.
+           05  FILLER      PIC X(13) VALUE " WORKSHEET  #".
+           05  PRT-WS-NO                 PIC 9(4)  VALUE ZEROS.
+           05  FILLER                    PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(5)  VALUE "DATE ".
+           05  PRT-DATE                  PIC X(8)  VALUE SPACES.
+           05  FILLER                    PIC XX    VALUE SPACES.
+           05  FILLER                    PIC X(5)  VALUE "TIME ".
+           05  PRT-TIME                  PIC X(8).
+
+       01  REPRINT-HDR.
+           05  FILLER                    PIC X(28) VALUE SPACES.
+           05  FILLER      PIC X(13) VALUE "R E P R I N T".
+
+       01  CODE-HDR.
+           05  FILLER                    PIC X(6)  VALUE "  CODE".
+           05  FILLER                    PIC X(6)  VALUE SPACES.
+           05  FILLER                    PIC X(11) VALUE "TOT QTY UM".
+           05  FILLER                    PIC X(5)  VALUE SPACES.
+           05  FILLER                    PIC X(8)  VALUE "LOCATION".
+           05  FILLER      PIC X(12) VALUE "    QUANTITY".
+           05  FILLER      PIC X(13) VALUE "     LOCATION".
+           05  FILLER      PIC X(12) VALUE "    QUANTITY".
+
+       01  CODE-DETAIL.
+           05  FILLER                    PIC X(2)  VALUE SPACES.
+           05  PRT-CODE                  PIC X(7).
+           05  FILLER                    PIC X(2)  VALUE SPACES.
+           05  PRT-T-QTY                 PIC Z(7)9.
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  PRT-UM                    PIC X(2).
+           05  FILLER                    PIC X(6)  VALUE SPACES.
+           05  PRT-LOC1                  PIC X(12).
+           05  PRT-QTY1                  PIC Z(7)9.
+           05  FILLER                    PIC X(5)  VALUE SPACES.
+           05  PRT-LOC2                  PIC X(12).
+           05  PRT-QTY2                  PIC Z(8).
+
+       01  FURTHER-LOC-DETAIL.
+           05  FILLER                    PIC X(28) VALUE SPACES.
+           05  FPRT-LOC1                 PIC X(12).
+           05  FPRT-QTY1                 PIC Z(7)9.
+           05  FILLER                    PIC X(5)  VALUE SPACES.
+           05  FPRT-LOC2                 PIC X(12).
+           05  FPRT-QTY2                 PIC Z(8).
+
+       01  DESC-DETAIL.
+           05  PRT-DESC                  PIC X(80).
+
+       01  DISB-INSTR-DETAIL.
+           05  FILLER                    PIC X(4)  VALUE SPACES.
+           05  FILLER                    PIC X(11) VALUE "**** NOTE: ".
+           05  PRT-DISB                  PIC X(30).
+           05  FILLER                    PIC X(6)  VALUE "  ****".
+
+       01  CHARGE-DATA-DETAIL.
+           05  FILLER                    PIC X(3)  VALUE "WO ".
+           05  PRT-WO                    PIC X(10).
+           05  FILLER                    PIC X(2)  VALUE SPACES.
+           05  FILLER                    PIC X(8)  VALUE "REQ DPT ".
+           05  PRT-REQ-DEPT              PIC X(4).
+           05  FILLER                    PIC X(2)  VALUE SPACES.
+           05  PRT-CHG-RET               PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(5)  VALUE " DPT ".
+           05  PRT-CHARGE-1-4            PIC X(4).
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  PRT-CHARGE-5-6            PIC X(2).
+           05  FILLER                    PIC X(2)  VALUE SPACES.
+           05  FILLER                    PIC X(5)  VALUE "ACCT ".
+           05  PRT-EXP-CLASS             PIC X(6).
+           05  CNTR-HD                   PIC X(5)  VALUE SPACES.
+           05  PRT-WORK-CENTER           PIC X(3).
+           05  FILLER                    PIC X(7)  VALUE "ONHAND ".
+           05  PRT-ONHAND                PIC -------9.
+      *01  CHARGE-DATA-DETAIL.
+      *    05  FILLER                    PIC X(1)  VALUE SPACES.
+      *    05  FILLER                    PIC X(10) VALUE "WORKORDER ".
+      *    05  PRT-WO                    PIC X(10).
+      *    05  FILLER                    PIC X(5)  VALUE SPACES.
+      *    05  FILLER                    PIC X(9)  VALUE "REQ DEPT ".
+      *    05  PRT-REQ-DEPT              PIC X(4).
+      *    05  FILLER                    PIC X(5)  VALUE SPACES.
+      *    05  PRT-CHG-RET               PIC X(6)  VALUE SPACES.
+      *    05  FILLER                    PIC X(6)  VALUE " DEPT ".
+      *    05  PRT-CHARGE-1-4            PIC X(4).
+      *    05  FILLER                    PIC X(2)  VALUE SPACES.
+      *    05  PRT-CHARGE-5-6            PIC X(2).
+      *    05  FILLER                    PIC X(4)  VALUE SPACES.
+      *    05  FILLER                    PIC X(8)  VALUE "ACCOUNT ".
+      *    05  PRT-EXP-CLASS             PIC X(6).
+      *    05  FILLER                    PIC X(3)  VALUE SPACES.
+      *    05  CNTR-HD                   PIC X(7)  VALUE SPACES.
+      *    05  PRT-WORK-CENTER           PIC X(3).
+      *    05  FILLER                    PIC X(7)  VALUE "ONHAND ".
+      *    05  PRT-ONHAND                PIC -------9.
+
+       01  EMPL-SIGNATURE-DETAIL.
+           05  FILLER                    PIC X(1) VALUE SPACES.
+           05  FILLER                    PIC X(7)  VALUE "EMPL - ".
+           05  PRT-EMPL                  PIC X(4).
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  PRT-EMPL-NAME             PIC X(16).
+           05  FILLER                    PIC X(2)  VALUE SPACES.
+           05  FILLER            PIC X(12) VALUE "SIGNATURE - ".
+           05  FILLER                    PIC X(30) VALUE ALL "_".
+
+       01  ASTERICK-LINE.
+           05  FILLER                    PIC X(80) VALUE ALL "*".
+
+       01  DASH-LINE.
+           05  FILLER                    PIC X(23) VALUE ALL "-".
+           05  FILLER            PIC X(19) VALUE " END OF WORKSHEET #".
+           05  PRT-WS-NO2                PIC 9(4)  VALUE 0.
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  FILLER                    PIC X(33) VALUE ALL "-".
+
+       01  PLANNER-LINE.
+           05  FILLER                    PIC X(3)  VALUE SPACES.
+           05  FILLER            PIC X(15) VALUE "PLANNER DATA - ".
+           05  PRT-PLANNER-DATA          PIC X(59).
+
+       01  ITEM-IS-REPAIRABLE-LINE.
+           05  FILLER                    PIC X(8)  VALUE ALL "*".
+           05  FILLER                    PIC X(12) VALUE "*** ITEM IS".
+           05  FILLER            PIC X(14) VALUE "REPAIRABLE ***".
+           05  FILLER                    PIC X(8)  VALUE ALL "*".
+
+       01  SPACES-LINE                   PIC X(132) VALUE SPACES.
+
+      **************************************************************
+      **                                                          **
+      **            L I N K A G E   S E C T I O N                 **
+      **                                                          **
+      **************************************************************
+
+       LINKAGE SECTION.
+
+       01  RET-CODE                      PIC X(2).
+       01  BASE                          PIC X(10).
+       01  BASE-MMISA                    PIC X(24).
+       COPY DBSTAT     IN COPYLIB.
+
+       01  SPOOL-PRT                     PIC S9(2) COMP-4.
+
+       01  WS-NO.
+           05  WRKL-NO-LIT               PIC X(2).
+           05  WRKL-NO-INC               PIC 9(4).
+
+       01  WORK-LIST-TABLE.
+           05  WLT-RCD OCCURS 14 TIMES.
+               10  WLT-CODE              PIC X(8).
+               10  WLT-CHARGE-DEPT.
+                   15  WLT-CHARGE-DEPT-1-4  PIC X(4).
+                   15  WLT-CHARGE-DEPT-5-6  PIC X(2).
+               10  WLT-WO                PIC X(10).
+               10  WLT-WORK-CENTER       PIC X(2).
+               10  WLT-EMPL              PIC X(4).
+               10  WLT-UM                PIC XX.
+               10  WLT-BIN-AREA.
+                   15  WLT-BINDATA OCCURS 6 TIMES.
+                       20  WLT-BIN       PIC X(12).
+                       20  WLT-QTY-X     PIC X(8).
+                       20  WLT-QTY REDEFINES WLT-QTY-X PIC 9(8).
+               10  WLT-REQ-DEPT          PIC X(4).
+               10  WLT-DISB-INSTR        PIC X(30).
+               10  WLT-EXP-CLASS         PIC X(6).
+
+       01  WS-PARMS.
+           05  HALF-SHEET-FLAG           PIC X(1).
+           05  BELL-FLAG                 PIC X(1).
+           05  PLANNER-DATA              PIC X(59).
+           05  RETURN-FLAG               PIC X(1).
+           05  AKRON-FLAG                PIC X(1).
+           05  REPRINT-FLAG              PIC X(1).
+           05  FILLER                    PIC X(3).
+      ************************************
+      **  NATIVE LANGUAGE SUPPORT AREA  **
+      ************************************
+
+       COPY LANGSUB  IN COPYLIB.
+
+       COPY ESCNAME IN COPYLIB.
+
+       01  BU-DISPLAY-MSG.
+           05  BU-DISPLAY-MSG-1-7        PIC X(7).
+           05  BU-DISPLAY-MSG-8-60       PIC X(53).
+
+       COPY MULTSTR IN COPYLIB.
+       PROCEDURE DIVISION USING RET-CODE, BASE, BASE-MMISA, STATUS-AREA,
+                           SPOOL-PRT, WS-NO, WORK-LIST-TABLE, WS-PARMS,
+                           LANGUAGE-PARMS, ESC-NAME,
+                           BU-DISPLAY-MSG, MULTIPLE-STR-DATA.
+       1-HOUSEKEEP.
+           MOVE 0                        TO  SUB.
+           MOVE 0                        TO  SUBP1.
+           MOVE 0                        TO  SUB2.
+           MOVE 0                        TO  TOTAL-QTY.
+           MOVE 0                        TO  NUM-ITEMS.
+           MOVE "N"                      TO  SWITCH-FLAG.
+
+           OPEN INPUT MSTORERM.
+           OPEN INPUT PER-PERSONNEL.
+
+           MOVE "00"                     TO  RET-CODE.
+
+           IF RETURN-FLAG = "R"
+               MOVE "  RETURN  "         TO  PRT-HEAD
+               MOVE " CR"                TO  PRT-CHG-RET
+           ELSE
+               MOVE "WITHDRAWAL"         TO  PRT-HEAD
+               MOVE "CHG"                TO  PRT-CHG-RET.
+
+      **********************************************************
+      **   THE WORK SHEET TO PRINT IS SORTED IN ORDER BY      **
+      **   PRIMARY BIN LOCATION - FOR STOREKEEPERS EASE OF    **
+      **   FINDING ITEMS.                                     **
+      **********************************************************
+
+
+       5-SORT-WL.
+           MOVE 0                        TO  SUB.
+           MOVE "N"                      TO  SWITCH-FLAG.
+       5-SORT-WL-LOOP.
+           ADD 1                         TO  SUB.
+           IF SUB > 13
+               IF SWITCH-FLAG = "Y"
+                   GO TO 5-SORT-WL
+               ELSE
+                   GO TO 60-START-SPOOL.
+           ADD 1, SUB GIVING SUBP1.
+           IF WLT-BIN (SUB, 1) > WLT-BIN (SUBP1, 1)
+                MOVE "Y"                 TO  SWITCH-FLAG
+               MOVE WLT-RCD (SUB)        TO  WLT-TEMP
+               MOVE WLT-RCD (SUBP1)      TO  WLT-RCD (SUB)
+               MOVE WLT-TEMP             TO  WLT-RCD (SUBP1).
+           GO TO 5-SORT-WL-LOOP.
+
+       60-START-SPOOL.
+
+      *    CALL "SPOOL2631'START" USING SPOOL-STAT SPOOL-MSG.
+
+           MOVE SPOOL-PRT                TO  OVRPRTF-TOFILE-NUM.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT ONLINE-PRT.
+
+      ****  WHEN THIS SUBPGM IS CALLED BY REMOTE WORKSHEETS, A "B"
+      ****  IS PASSED IN 2CD BYTE OF RET-CODE TO RING BELL
+      **** IN AKRON PLANTS, THE BELL IS RUNG MORE OFTEN.
+
+           IF AKRON-FLAG = "Y"
+               IF BELL-FLAG = "B"
+                   PERFORM 601-RING-BELL 3 TIMES.
+
+       601-RING-BELL.
+      *    IF BELL-FLAG = "B"
+      *        WRITE PRINT-RCD AFTER ADVANCING 0
+      *        WRITE PRINT-RCD AFTER ADVANCING 0
+      *        WRITE PRINT-RCD AFTER ADVANCING 0.
+       602-RING-BELL-X.
+
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-SLASH-OUT           TO  PRT-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  PRT-TIME.
+           MOVE WRKL-NO-INC              TO  PRT-WS-NO, PRT-WS-NO2.
+
+       61-PRINT-HEAD.
+           MOVE WRKL-NO-INC              TO  PRT-WS-NO.
+           WRITE PRINT-RCD FROM HDR-1 AFTER ADVANCING 1.
+           IF REPRINT-FLAG = "Y"
+               WRITE PRINT-RCD FROM REPRINT-HDR AFTER ADVANCING 1
+               WRITE PRINT-RCD FROM ASTERICK-LINE AFTER ADVANCING 1
+           ELSE
+               WRITE PRINT-RCD FROM ASTERICK-LINE AFTER ADVANCING 2.
+
+           MOVE 0                        TO  SUB.
+       62-PRINT-DETAIL-LOOP.
+           ADD 1                         TO  SUB.
+           IF SUB > 14
+               GO TO 64-FINISH-PRINT.
+           IF WLT-CODE (SUB) = SPACES
+               GO TO 62-PRINT-DETAIL-LOOP.
+
+           MOVE WLT-CODE (SUB)           TO  CODE-ARG.
+      *    CALL "DBGET" USING BASE, DSET-MSTORERM, MODE7, STATUS-AREA,
+      *      ALL-ITEMS, BUF-MSTORERM, CODE-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC.
+           READ MSTORERM INTO BUF-MSTORERM INVALID KEY
+                MOVE 17                  TO  COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "TWSPRT DBGET ERR MSTORE 63-FC" TO BU-DISPLAY-MSG
+               GO TO 65-EXIT.
+
+           MOVE STR-ONHAND               TO  PRT-ONHAND.
+           MOVE STR-DISB-INSTR           TO  PRT-DISB.
+
+           WRITE PRINT-RCD FROM CODE-HDR AFTER ADVANCING 1.
+
+           ADD 1                         TO  NUM-ITEMS.
+
+           MOVE 0                        TO  TOTAL-QTY.
+           ADD WLT-QTY (SUB, 1), WLT-QTY (SUB, 2), WLT-QTY (SUB, 3),
+             WLT-QTY (SUB, 4), WLT-QTY (SUB, 5), WLT-QTY (SUB, 6)
+                                         TO  TOTAL-QTY.
+
+       621-MOVE-CODE-DETAIL.
+
+           MOVE WLT-CODE (SUB)           TO  PRT-CODE.
+           MOVE WLT-CHARGE-DEPT-1-4 (SUB) TO  PRT-CHARGE-1-4.
+           MOVE WLT-CHARGE-DEPT-5-6 (SUB) TO  PRT-CHARGE-5-6.
+           MOVE WLT-WO  (SUB)            TO  PRT-WO.
+           MOVE WLT-WORK-CENTER (SUB)    TO  PRT-WORK-CENTER.
+           MOVE WLT-EMPL (SUB)           TO  PRT-EMPL.
+           MOVE WLT-UM (SUB)             TO  PRT-UM.
+           MOVE WLT-REQ-DEPT (SUB)       TO  PRT-REQ-DEPT.
+           MOVE WLT-EXP-CLASS (SUB)      TO  PRT-EXP-CLASS.
+           MOVE TOTAL-QTY                TO  PRT-T-QTY.
+
+           MOVE WLT-BIN (SUB, 1)         TO  PRT-LOC1.
+           MOVE WLT-BIN (SUB, 2)         TO  PRT-LOC2.
+           MOVE WLT-QTY (SUB, 1)         TO  PRT-QTY1.
+           MOVE WLT-QTY (SUB, 2)         TO  PRT-QTY2.
+
+           WRITE PRINT-RCD FROM CODE-DETAIL AFTER ADVANCING 1.
+
+       622-FURTHER-LOCATIONS.
+           IF WLT-QTY (SUB, 3) > 0 OR WLT-QTY (SUB, 4) > 0
+               MOVE WLT-BIN (SUB, 3)     TO  FPRT-LOC1
+               MOVE WLT-QTY (SUB, 3)     TO  FPRT-QTY1
+               MOVE WLT-BIN (SUB, 4)     TO  FPRT-LOC2
+               MOVE WLT-QTY (SUB, 4)     TO  FPRT-QTY2
+               WRITE PRINT-RCD FROM FURTHER-LOC-DETAIL
+                 AFTER ADVANCING 1.
+
+           IF WLT-QTY (SUB, 5) > 0 OR WLT-QTY (SUB, 6) > 0
+               MOVE WLT-BIN (SUB, 5)     TO  FPRT-LOC1
+               MOVE WLT-QTY (SUB, 5)     TO  FPRT-QTY1
+               MOVE WLT-BIN (SUB, 6)     TO  FPRT-LOC2
+               MOVE WLT-QTY (SUB, 6)     TO  FPRT-QTY2
+               WRITE PRINT-RCD FROM FURTHER-LOC-DETAIL
+                 AFTER ADVANCING 1.
+
+       63-FINISH-CODE.
+           MOVE 4                        TO  CDESC-LINES-TO-GET.
+           MOVE "N"                      TO  CDESC-LOCAL-DESC-OPTION.
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+             BU-DISPLAY-MSG2, WLT-CODE (SUB), CDESC-DATA.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               MOVE "TWSPRT"             TO  BU-DISPLAY-MSG-1-7
+               MOVE BU-DISPLAY-MSG2      TO  BU-DISPLAY-MSG-8-60
+               GO TO 65-EXIT.
+
+           MOVE CDESC (1)                TO  PRT-DESC.
+           WRITE PRINT-RCD FROM DESC-DETAIL AFTER ADVANCING 2.
+           MOVE CDESC (2)                TO  PRT-DESC.
+           WRITE PRINT-RCD FROM DESC-DETAIL AFTER ADVANCING 1.
+           IF CDESC-LINES-GOT > 2
+               MOVE CDESC (3)            TO  PRT-DESC
+               WRITE PRINT-RCD FROM DESC-DETAIL AFTER ADVANCING 1.
+           IF CDESC-LINES-GOT > 3
+               MOVE CDESC (4)            TO  PRT-DESC
+               WRITE PRINT-RCD FROM DESC-DETAIL AFTER ADVANCING 1.
+
+           IF PRT-DISB > SPACES
+               WRITE PRINT-RCD FROM DISB-INSTR-DETAIL
+                 AFTER ADVANCING 2.
+
+           IF AKRON-FLAG = "Y"
+               MOVE "CNTR-"            TO  CNTR-HD.
+
+           WRITE PRINT-RCD FROM CHARGE-DATA-DETAIL
+             AFTER ADVANCING 2.
+
+           IF STR-OUT-REP = "X" OR STR-MAINT = "X"
+               WRITE PRINT-RCD FROM ITEM-IS-REPAIRABLE-LINE
+                 AFTER ADVANCING 1
+           ELSE
+               WRITE PRINT-RCD FROM SPACES-LINE AFTER ADVANCING 1.
+
+      *------ GET THE EMPL NAME FROM MMIS DATABASE.  IF EMPL IS
+      *------ REPEATED FROM LAST ONE, SAVE SOME TIME.
+           IF SUB > 1
+               SUBTRACT 1 FROM SUB GIVING SUB2
+               IF WLT-EMPL (SUB) = WLT-EMPL (SUB2)
+                   NEXT SENTENCE
+               ELSE
+                   PERFORM 6900-GET-EMPL-MMIS
+           ELSE
+               PERFORM 6900-GET-EMPL-MMIS.
+
+           WRITE PRINT-RCD FROM EMPL-SIGNATURE-DETAIL
+             AFTER ADVANCING 1.
+
+           WRITE PRINT-RCD FROM ASTERICK-LINE AFTER ADVANCING 2.
+
+           GO TO 62-PRINT-DETAIL-LOOP.
+
+       64-FINISH-PRINT.
+           IF PLANNER-DATA > SPACES
+               MOVE PLANNER-DATA         TO  PRT-PLANNER-DATA
+               WRITE PRINT-RCD FROM PLANNER-LINE AFTER ADVANCING 2
+               MOVE SPACES               TO  PRINT-RCD
+               WRITE PRINT-RCD AFTER ADVANCING 1.
+
+           WRITE PRINT-RCD FROM DASH-LINE AFTER ADVANCING 1.
+
+      *    MOVE SPACES TO PRINT-RCD.
+      *    WRITE PRINT-RCD AFTER ADVANCING NEW-PAGE.
+      *    IF HALF-SHEET-FLAG = "H"
+      *        WRITE PRINT-RCD AFTER ADVANCING NEW-PAGE.
+      *
+      *--- MPLTINFO FLAGS TELL US HOW MANY ADVANCES AFTER
+      *--- A WORKSHEET WITH <= X ITEMS OR > X ITEMS.  THIS HANDLES
+      *--- VARIOUS PRINTER PROBLEMS FOR DIFFERENT AS/400 PRINTER
+      *--- SETUPS IN THE STOREROOM, AS WELL AS HALF-SHEET SETUPS,
+      *--- IN HP OR AS/400 PLANTS.  THE OLD METHOSD OF A 99 IN SPOOL
+      *--- NUM 5 OF THE SECURITY SYSTEM WILL BE ABANDONED.
+           IF ADV-AFTER-LE-X-WS NOT NUMERIC
+               MOVE 0                    TO  ADV-AFTER-LE-X-WS
+               MOVE 0                    TO  ADV-AFTER-GT-X-WS
+               MOVE 1                    TO  WS-ITEMS-SPLIT.
+           MOVE SPACES                   TO  PRINT-RCD.
+           IF NUM-ITEMS > WS-ITEMS-SPLIT
+               PERFORM ADV-AFTER-GT-X-WS TIMES
+                   WRITE PRINT-RCD AFTER ADVANCING NEW-PAGE
+               END-PERFORM
+           ELSE
+               PERFORM ADV-AFTER-LE-X-WS TIMES
+                   WRITE PRINT-RCD AFTER ADVANCING NEW-PAGE
+               END-PERFORM.
+
+      *    CALL "SPOOL2631'STOP" USING ONLINE-PRT SPOOL-PRT
+      *      SPOOL-COPIES SPOOL-PRIOR SPOOL-STAT SPOOL-MSG.
+           CLOSE ONLINE-PRT.
+           IF SPOOL-PRT > 0
+               MOVE "DLTOVR FILE(MCPRT)" TO  OVRPRTF-PARM1
+               CALL "QCMDEXC" USING OVRPRTF-PARM1, OVRPRTF-PARM2.
+
+       65-EXIT.
+           CLOSE MSTORERM.
+           CLOSE PER-PERSONNEL.
+           GOBACK.
+
+       6900-GET-EMPL-MMIS.
+           MOVE WLT-EMPL (SUB)           TO  EMPL-ARG.
+      *    CALL "DBGET" USING BASE-MMISA, DSET-PER-PERSONNEL, MODE7,
+      *      STATUS-AREA, ALL-ITEMS, BUF-PER-PERSONNEL, EMPL-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE EMPL-ARG TO PERCCNUM OF PER-PERSONNEL-REC.
+           READ PER-PERSONNEL INTO BUF-PER-PERSONNEL INVALID KEY
+                MOVE 17                  TO  COND-WORD.
+           IF GOOD-CALL
+               MOVE PER-EMP-NAME         TO  PRT-EMPL-NAME
+           ELSE
+           IF NO-ENTRY
+               MOVE SPACES               TO  PRT-EMPL-NAME
+           ELSE
+               MOVE "DBGET ERR 6900-GEM" TO  BU-DISPLAY-MSG.
+
+       COPY OVRPFCALL IN COPYLIB.

@@ -1,0 +1,242 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     TARIBAOVR.
+       AUTHOR.         EXLTECH, LLC - DAN RAUCH
+
+      *****************************************************************
+      **                    T A R I B A O V R
+      *****   -------------------------------------------------
+      **   READ OVERRIDE FILE AND RESTORE PREFERRENCE OVERRIDES
+      *****************************************************************
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      ***------------------------------------------------------------***
+      *   SEPT  15 2003      DAN RAUCH
+      *   INITIAL AUTHOR   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      *   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      ***------------------------------------------------------------***
+                                                                       *
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *================================================================
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+      *=== CATALOG FILE BY KEY - MANF\MANF PART\VNDR\VNDPART\AUXID     ====
+           SELECT CATALOG-FILE       ASSIGN TO DATABASE-MCFLAB2005
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+      *=== OVERRIDE FILE BY CORPCODE ========= UNIQUE KEY =========    ====
+           SELECT OVERRIDE-FILE      ASSIGN TO DATABASE-MCFLAB2702
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+      *============================================================    ====
+       DATA DIVISION.
+      *============================================================    ====
+       FILE SECTION.
+
+       FD  CATALOG-FILE.
+       01  CATALOG-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB2005.
+       COPY DARIBACAT   IN COPYLIB.
+
+       FD  OVERRIDE-FILE.
+       01  OVERRIDE-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB2702.
+       COPY DARIBAOVR   IN COPYLIB.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      * FILE STATUS AREA
+      *****************************************************************
+       COPY FILESTATUS  IN COPYLIB.
+       COPY DTSPARMS2   IN COPYLIB.
+       01  WS-MISCELLANEOUS-FLDS.
+           03  WS-SAVE-REASON-CODE         PIC X(04)     VALUE SPACE.
+
+      *=============================================================== ==
+      *===        P R O C E D U R E    D I V I S I O N              == =
+      *=============================================================== =
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           OPEN   I-O     OVERRIDE-FILE
+                          CATALOG-FILE.
+
+           PERFORM 0010-INITIALIZE    THRU 0010-EXIT.
+
+           PERFORM 1000-MAIN-LOGIC    THRU 1000-EXIT
+                        UNTIL FS-END-OF-FILE.
+
+           CLOSE          OVERRIDE-FILE
+                          CATALOG-FILE.
+
+         0000-PROGRAM-END.
+             GOBACK.
+
+      ***************************************************************  *
+      * PROGRAM INIT ROUTINE
+      ***************************************************************  *
+       0010-INITIALIZE.
+
+      *=====================================
+      * 1ST READ
+      *=====================================
+           PERFORM 9000-START-OVERRIDE THRU 9000-START-EXIT.
+           PERFORM 9000-READN-OVERRIDE THRU 9000-READN-EXIT.
+
+       0010-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * MAIN LOGIC
+      ***************************************************************  **
+       1000-MAIN-LOGIC.
+
+           MOVE BUF-DARIBOVR     TO BUF-DARIBCAT.
+
+           PERFORM 9001-READK-CATALOG      THRU 9001-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+      *=====================================
+      * CATALOG ITEM HAS BEEN DROPPED - RMV OVERRIDE RECORD
+      *=====================================
+               PERFORM 9000-DELET-OVERRIDE  THRU 9000-DELET-EXIT
+           ELSE
+             IF  FS-GOOD-FILE-IO
+
+      *=====================================
+      * SAVE REASON CODE & USE CATALOG REC TO REFRESH OVERRIDE REC
+      *=====================================
+                 MOVE ARIBAOVR-REASON-CODE  TO WS-SAVE-REASON-CODE
+                 MOVE BUF-DARIBCAT     TO BUF-DARIBOVR
+                 MOVE WS-SAVE-REASON-CODE TO ARIBAOVR-REASON-CODE
+      *=====================================
+      * CATALOG ITEM IS PREFERRED ITEM BECAUSE OF PRICE THEREFORE
+      * OVERRIDE NOT NECESSARY - SO DEACTIVATE OVERRIDE RECORD.
+      * DON'T DELETE OVERRIDE REC SINCE A PRICE CHANGE IS POSSIBLE
+      * WHICH WOULD REQUIRE "RESTORING" THE OVERRIDE
+      *=====================================
+                 IF  ARIBACAT-PREF-FLAG = "Y"
+                     MOVE "N"        TO ARIBAOVR-ACTIVE-FLAG
+                     MOVE SPACE      TO ARIBACAT-OVRD-FLAG
+                     MOVE SPACE      TO ARIBACAT-REASON-CODE
+                 END-IF
+
+      *=====================================
+      * RESTORE THE OVERRIDE ...........
+      *      1) UPDATE CATALOG OVERRIDE FLAG = "Y" AND REASON CODE
+      *      2) UPDATE OVERRIDE RECORD ACTIVE FLAG = "Y"
+      *=====================================
+                 IF  ARIBACAT-PREF-FLAG = SPACE
+                     MOVE "Y"                  TO ARIBAOVR-ACTIVE-FLAG
+                                                  ARIBACAT-OVRD-FLAG
+                     MOVE ARIBAOVR-REASON-CODE TO ARIBACAT-REASON-CODE
+                 END-IF
+
+             PERFORM 9001-REWRT-CATALOG   THRU 9001-REWRT-EXIT
+             PERFORM 9000-REWRT-OVERRIDE  THRU 9000-REWRT-EXIT
+
+             END-IF
+           END-IF.
+
+           PERFORM 9000-READN-OVERRIDE THRU 9000-READN-EXIT.
+
+       1000-EXIT.
+           EXIT.
+
+
+      *----------------------------------------------------------------
+      *
+      *          ALL DATABASE FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      **  START OVERRIDE FILE  BY CORPCODE
+      *****************************************************************
+       9000-START-OVERRIDE.
+
+           INITIALIZE BUF-DARIBOVR.
+
+           START OVERRIDE-FILE
+                 KEY IS NOT < EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9000-START-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ OVERRIDE FILE  NEXT RECORD
+      *****************************************************************
+       9000-READN-OVERRIDE.
+
+           READ OVERRIDE-FILE  NEXT RECORD
+           END-READ.
+
+       9000-READN-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  DELETE OVERRIDE RECORD
+      *****************************************************************
+       9000-DELET-OVERRIDE.
+
+           DELETE  OVERRIDE-FILE
+           END-DELETE.
+
+       9000-DELET-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  REWRITE OVERRIDE FILE
+      *****************************************************************
+       9000-REWRT-OVERRIDE.
+
+           REWRITE  OVERRIDE-REC
+           END-REWRITE.
+
+       9000-REWRT-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  REWRITE CATALOG FILE OUT
+      *****************************************************************
+       9001-REWRT-CATALOG.
+
+           REWRITE  CATALOG-REC
+           END-REWRITE.
+
+       9001-REWRT-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ CATALOG FILE BY KEY
+      *****************************************************************
+       9001-READK-CATALOG.
+
+           READ CATALOG-FILE
+           END-READ.
+
+       9001-READK-EXIT.
+           EXIT.
+
+      **************************************************************   ***
+      *            E N D   O F   S O U R C E   C O D E
+      **************************************************************   ***

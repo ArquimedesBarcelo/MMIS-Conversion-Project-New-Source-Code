@@ -1,0 +1,1268 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           SFRTMCHRTD.
+       AUTHOR.               KALMAN.
+       DATE-WRITTEN.         JUNE 1993.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *D* REMARKS.
+      *D*     THIS IS AN ONLINE PROGRAM THAT WILL ALLOW THE USER
+      *D*     TO MATCH MANUAL FREIGHT BILLS TO RATED BILLS.
+      *D*
+      *C* CHANGES.
+      *C*
+      *C* OCT 27, 1993     CR KALMAN
+      *C* ANY SUBFILE CHARGES FIELD THAT IS NOT BIG ENOUGH
+      *C* TO HOLD THE ENTIRE CHARGE AMOUNT WILL APPEAR IN
+      *C* INVERSE VIDEO.  THE ACTUAL AMOUNT CAN BE SEEN BY
+      *C* DOING AN INQUIRY ON THE INDIVIDUAL FREIGHT BILL.
+      *C*
+      *C* MAY 22, 1996       CA YODER
+      *C* INCREASED SIZE OF SUBFILE.  ORIGINALLY, 1000 RECORDS WERE
+      *C* PROVIDED FOR, BUT IT WAS INCREASED TO 4000 RECORDS BECAUSE
+      *C* FREQUENT BLOW-UPS WERE RECORDED DUE TO THE SUBFILE SIZE.
+      *C*
+      *C* ALSO CORRECTED PAGING LOGIC.  AN ERROR WOULD OCCUR WHEN 1->
+      *C* NO MORE MANUALS WERE FOUND IN LIST-REC PARAGRAPHS, 2-> THE
+      *C* LAST ONE FOUND IS THE 7TH ENTRY ON THE SCREEN (SUBFILE
+      *C* SIZE PER PAGE), AND 3-> DAPPLFRT-EOF WAS NOT ENCOUNTERED
+      *C* ON THAT 7TH ENTRY LAST FOUND.  WHEN THIS SITUATION OCCURS,
+      *C* THE PAGING COUNTERS ARE RESET TO THE VALUES THAT EXISTED
+      *C* BEFORE THEY WERE INCREMENTED FOR PERFORMING 600-LIST-ALL-
+      *C* RECS.  THIS ELIMINATES THE ERROR OF READING PAST THE SUBFILE
+      *C* EOF WHEN THE PAGE DOWN KEY IS USED.
+      *C*
+      *C*   01/08/2004    CA YODER
+      *C*     INCREASED RELATIVE RECORD NUMBER FIELD SIZE FROM 4 TO 5.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.      I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+      ******************************************************************
+       INPUT-OUTPUT SECTION.
+      ******************************************************************
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZFREIGHT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS SUBFILE-IX
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+           SELECT DAPPLFRT-O
+                  ASSIGN TO DATABASE-MCFPCA1100
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE IS DYNAMIC
+                  RELATIVE KEY IS DAPPLFRT-IX
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DAPPLFRT-PO-I
+                  ASSIGN TO DATABASE-MCFLCA1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DAPPLFRT-PCP-I
+                  ASSIGN TO DATABASE-MCFLCA1103
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DAPPLFRT-VS-I
+                  ASSIGN TO DATABASE-MCFLCA1105
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MACCOUNT-INFO-KEY-I
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+      ******************************************************************
+       DATA DIVISION.
+      ******************************************************************
+
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(1000).
+
+       FD  DAPPLFRT-O
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-REC-O.
+           COPY DDS-MCRPCA1100  OF MCFPCA1100.
+
+       FD  DAPPLFRT-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-PO-REC-I.
+           COPY DDS-MCRPCA1100  OF MCFLCA1101.
+
+       FD  DAPPLFRT-PCP-I
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-PCP-REC-I.
+           COPY DDS-MCRPCA1100  OF MCFLCA1103.
+
+       FD  DAPPLFRT-VS-I
+           LABEL RECORDS ARE STANDARD.
+       01  DAPPLFRT-VS-REC-I.
+           COPY DDS-MCRPCA1100  OF MCFLCA1105.
+
+       FD  MACCOUNT-INFO-KEY-I
+           LABEL RECORDS ARE STANDARD.
+       01  MACCOUNT-INFO-KEY-REC-I.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+      ******************************************************************
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+      *-----------------------------------------------------------------
+      *  Q C M D E X C   F I E L D S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  D A T E   &   T I M E   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  CUR-DATE.
+           05  CUR-DATE-CC                PIC X(2).
+           05  CUR-SYSTEM-DATE.
+               10  CUR-DATE-YY            PIC X(2).
+               10  CUR-DATE-MM            PIC X(2).
+               10  CUR-DATE-DD            PIC X(2).
+
+       01  CUR-TIME                      PIC X(6).
+
+       01  SAVE-MONTH-END-DATE.
+           05  SAVE-ME-DATE-CC           PIC X(2).
+           05  SAVE-ME-DATE-YMD.
+               10  SAVE-ME-DATE-YY       PIC X(2).
+               10  SAVE-ME-DATE-MMDD     PIC X(4).
+
+       01  SAVE-MONTH-END-TIME           PIC X(6).
+
+       01  CONVERT-DATE                  PIC X(10).
+
+      *-----------------------------------------------------------------
+      *  A R G U M E N T   V A L U E S
+      *-----------------------------------------------------------------
+
+       01  MACCT-ARG                PIC X(4)  VALUE SPACES.
+       01  PO-14-ARG                          VALUE SPACES.
+           05  PO-11-ARG.
+               10  PO-PREFIX-ARG    PIC X.
+               10  PO-10-ARG.
+                   15  PO-NUM-ARG   PIC X(7).
+                   15  PO-RLS-ARG   PIC X(3).
+           05  PO-RCVR-ARG          PIC X(3).
+       01  PO-14-ARG-DUP            REDEFINES PO-14-ARG.
+           05  PO-PREFIX-ARG-DUP    PIC X.
+           05  PO-13-ARG            PIC X(13).
+       01  RAIL-CAR-ARG             PIC X(10) VALUE SPACES.
+       01  SHIP-DATE-ARG.
+           05  SHIP-DATE-CC         PIC X(2).
+           05  SHIP-DATE-YYMMDD     PIC X(6).
+       01  RECNUM-ARG               PIC S9(5) COMP-4.
+       01  DATE-ARG                 PIC X(8).
+       01  CARRIER-ARG              PIC X(4).
+       01  PRO-NO-ARG               PIC X(16).
+      *-----------------------------------------------------------------
+      *  F L A G S   A N D   S W I T C H E S
+      *-----------------------------------------------------------------
+
+       01  DAPPLFRT-EOF             PIC X.
+
+       01  REC-LIST-OPTION          PIC X.
+       01  FKEY-LIST-OPTION         PIC X.
+       01  SEARCH-TOGGLE            PIC X.
+
+       01  SAVE-AVG-COST-CALC-SW    PIC X.
+       01  SAVE-PAY-FRT-TAX         PIC X.
+
+       01  IN-CLOSING-PERIOD        PIC X.
+
+       01  FRT-REC-APPLIED          PIC X.
+      *01  FRT-REC-APPLIED-SHOW-MSG PIC X.
+
+       01  RTD-DAPPLFRT-IX          PIC 9(5) COMP-4.
+       01  MNL-DAPPLFRT-IX          PIC 9(5) COMP-4.
+
+       01  FROM-PGM-NAME            PIC X(10).
+
+       01  SAVE-RECNUM              PIC S9(5) COMP-4.
+
+      *-----------------------------------------------------------------
+      *  I N D E X E S
+      *-----------------------------------------------------------------
+
+       01  SUBFILE-IX                    PIC  9(4).
+
+      *-----------------------------------------------------------------
+      *  A C C U M U L A T O R S
+      *-----------------------------------------------------------------
+
+       01  FLD-LEN                PIC 9.
+
+       01  TAXES-PAID             PIC S9(12)V99.
+       01  PAID-AMT               PIC S9(12)V99.
+       01  AMT-TO-APPLY           PIC S9(12)V99.
+
+       01  LOAD-LIMIT             PIC 999.
+           88  LOAD-LIMIT-REACHED VALUE 14.
+       01  SUBFILE-REC-CNT        PIC 9(4).
+
+      *-----------------------------------------------------------------
+      *  T A B L E S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  B U F F E R S
+      *-----------------------------------------------------------------
+
+      *SFL SCREEN.
+       01  BUF-SCREEN1.
+           05  S1-OPTION          PIC X(1).
+           05  S1-ACTION          PIC X(2).
+           05  S1-CARRIER         PIC X(4).
+           05  S1-PRONUM          PIC X(16).
+           05  S1-CAR             PIC X(10).
+           05  S1-SHIPDT          PIC X(8).
+           05  S1-CHARGES         PIC S9(4)V99.
+           05  S1-PAIDDT          PIC X(8).
+           05  S1-STAT            PIC X(1).
+           05  S1-RECNUM          PIC S9(5) COMP-4.
+           05  S1-TRUNC           PIC X(1).
+
+      *SFLCTL SCREEN.
+       01  BUF-SCREEN2.
+           05  S2-RELRCD          PIC S9(5).
+           05  S2-DSPREC          PIC S9(4).
+           05  S2-APPLMSG         PIC X(7).
+           05  S2-PO-RCVR         PIC X(15).
+           05  S2-PAIDDT          PIC X(10).
+           05  S2-SHIPDT          PIC X(10).
+           05  S2-CAR             PIC X(10).
+           05  S2-TERMS           PIC X(2).
+           05  S2-PCARR           PIC X(4).
+           05  S2-RCARR           PIC X(4).
+           05  S2-PPRONUM         PIC X(16).
+           05  S2-RPRONUM         PIC X(16).
+           05  S2-PCHARGES        PIC S9(10)V99.
+           05  S2-RCHARGES        PIC S9(10)V99.
+           05  S2-PTAXES          PIC S9(10)V99.
+           05  S2-PCHGAPPDT       PIC X(10).
+           05  S2-RCHGAPPDT       PIC X(10).
+           05  S2-PRCVDDT         PIC X(10).
+           05  S2-RRCVDDT         PIC X(10).
+           05  S2-STATUS          PIC X(10).
+           05  S2-STATDT          PIC X(10).
+           05  S2-STR-CARR        PIC X(4).
+           05  S2-STR-PRO         PIC X(16).
+           05  S2-STR-VEH         PIC X(10).
+
+      *FKEY & ERR MSG SCREEN FOR SFL.
+       01  BUF-SCREEN3.
+           05  S3-MSG-LINE        PIC X(79).
+
+       01  SAVE-BUF-DAPPLFRT      PIC X(200).
+
+       COPY DAPPLFRT OF COPYLIB.
+
+       01  BUF-RTD-DAPPLFRT       PIC X(200).
+       01  BUF-MNL-DAPPLFRT       PIC X(200).
+
+       01  BUF-BUILD-DAPPLFRT.
+           05  BLD-PO-14             PIC X(14).
+           05  BLD-TIS-PAID-DATE     PIC X(8).
+           05  BLD-TIS-SHIP-DATE     PIC X(8).
+           05  BLD-RAIL-CAR          PIC X(10).
+           05  BLD-TERMS             PIC X(2).
+           05  BLD-RATED-RCV-DATE    PIC X(8).
+           05  BLD-RATED-CARRIER     PIC X(4).
+           05  BLD-RATED-PRO-NO      PIC X(16).
+           05  BLD-RATED-AMT         PIC S9(12)V99.
+           05  BLD-RATED-APPL-DATE   PIC X(8).
+           05  BLD-RATED-APPL-TIME   PIC X(6).
+           05  BLD-PAID-RCV-DATE     PIC X(8).
+           05  BLD-PAID-CARRIER      PIC X(4).
+           05  BLD-PAID-PRO-NO       PIC X(16).
+           05  BLD-PAID-AMT          PIC S9(12)V99.
+           05  BLD-PAID-TAX          PIC S9(12)V99.
+           05  BLD-PAID-APPL-DATE    PIC X(8).
+           05  BLD-PAID-APPL-TIME    PIC X(6).
+           05                        PIC X(2).
+           05  BLD-STATUS.
+               10  BLD-STATUS-1      PIC X(1).
+               10                    PIC X(1).
+           05  BLD-STATUS-DATE       PIC X(8).
+           05                        PIC X(20).
+
+       COPY MACTINFO OF COPYLIB.
+
+       COPY FREIGHT  OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       COPY DBCSACCT OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+       01  IOFEEDBACK.
+           05  IO-OFFSET                       PIC S9(4) COMP-4.
+           05  IO-OUT-COUNT                    PIC S9(8) COMP-4.
+           05  IO-GET-COUNT                    PIC S9(8) COMP-4.
+           05  IO-PUT-GET-COUNT                PIC S9(8) COMP-4.
+           05  IO-OTHER-COUNT                  PIC S9(8) COMP-4.
+           05  FILLER                          PIC X.
+           05  IO-OPERATION                    PIC X.
+           05  IO-FORMAT                       PIC X(10).
+           05  IO-DEV-CLASS                    PIC X(2).
+           05  IO-PGM-DEVICE                   PIC X(10).
+           05  IO-REC-LEN                      PIC S9(8) COMP-4.
+           05  IO-RTG-DTA                      PIC X(80).
+           05  IO-BLK-REC                      PIC S9(4) COMP-4.
+           05  IO-RESV                         PIC X(4).
+           05  IO-BLK-CNT                      PIC S9(8) COMP-4.
+           05  FILLER                          PIC X(8).
+
+           05  FEEDBACK-SIZE                   PIC S9(8) COMP-4.
+           05  JOIN-LOGICAL                    PIC X(4).
+           05  KEY-OFFSET                      PIC S9(4) COMP-4.
+           05  LOCKED-RECORDS                  PIC S9(4) COMP-4.
+           05  MAX-FIELDS                      PIC S9(4) COMP-4.
+           05  FIELD-MAPPING-OFFSET            PIC S9(8) COMP-4.
+           05  CURRENT-FILE-POSITION           PIC X(1).
+           05  CURRENT-RECORD-DELETE           PIC X(1).
+           05  NO-OF-KEYS                      PIC S9(4) COMP-4.
+           05  RESERVED-FIELD                  PIC X(4).
+           05  KEY-LENGTH                      PIC S9(4) COMP-4.
+           05  DATA-MEMBER-NO                  PIC S9(4) COMP-4.
+           05  IO-RECNUM                       PIC S9(8) COMP-4.
+
+      *-----------------------------------------------------------------
+      *  T E M P O R A R Y   F I L E   P A R M S
+      *-----------------------------------------------------------------
+
+       COPY CCRTFILE IN COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY CATREAD OF COPYLIB.
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY TDATECHK OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+      *COPY DISPDATA OF COPYLIB.
+       01  WS-CONTROL.
+           05  FUNCTION-KEY       PIC XX.
+               88  ENTER-KEY-USED                       VALUE "00".
+               88  F1-KEY-USED                          VALUE "01".
+               88  F2-KEY-USED                          VALUE "02".
+               88  F3-KEY-USED                          VALUE "03".
+               88  F4-KEY-USED                          VALUE "04".
+               88  F5-KEY-USED                          VALUE "05".
+               88  F6-KEY-USED                          VALUE "06".
+               88  F7-KEY-USED                          VALUE "07".
+               88  F8-KEY-USED                          VALUE "08".
+               88  F9-KEY-USED                          VALUE "09".
+               88  F10-KEY-USED                         VALUE "10".
+               88  F11-KEY-USED                         VALUE "11".
+               88  F12-KEY-USED                         VALUE "12".
+               88  ROLLUP-KEY-USED                      VALUE "RU".
+           05  TERMINAL-ID        PIC X(10).
+           05  FORMAT-NAME        PIC X(10).
+
+       01  DISPLAY-STATUS         PIC X(2).
+
+       01  SRF-INDICATORS.
+           05  IND                PIC 1
+                                  OCCURS 99 TIMES
+                                  INDICATOR 1.
+               88  IND-OFF        VALUE B"0".
+               88  IND-ON         VALUE B"1".
+
+       01  OFF-SWITCH             PIC 1  VALUE B"0".
+       01  ON-SWITCH              PIC 1  VALUE B"1".
+
+      *-----------------------------------------------------------------
+      *  L I N K A G E   S E C T I O N
+      *-----------------------------------------------------------------
+
+       LINKAGE SECTION.
+
+       01  DAPPLFRT-IX            PIC 9(5) COMP-4.
+
+       01  RTN-CODE               PIC 9.
+
+      ******************************************************************
+       PROCEDURE DIVISION USING DAPPLFRT-IX, RTN-CODE.
+      ******************************************************************
+
+      *-----------------------------------------------------------------
+       MAIN SECTION.
+      *-----------------------------------------------------------------
+
+       0-CONTROL.
+
+           PERFORM 1-HSK.
+
+           PERFORM 6-LOOP THRU 6-LOOP-X.
+
+           PERFORM 2-EOJ.
+
+           GOBACK.
+
+       1-HSK.
+
+           OPEN INPUT      DAPPLFRT-PCP-I      MACCOUNT-INFO-KEY-I
+                           DAPPLFRT-PO-I
+                           DAPPLFRT-VS-I.
+           OPEN I-O        DISPLAY-FILE        DAPPLFRT-O.
+
+      *----AS OF MAR 93 THE CENTURY IS NOT AVAILABLE FROM THE SYSTEM.
+      *----UNTIL THE SITUATION CHANGES, THE FOLLOWING CODING IS A
+      *----TEMPORARY MEASURE. THIS CODING IS USED FOR ALL DATES IN
+      *----THIS PROGRAM THAT NEED CONVERSION.
+
+           ACCEPT CUR-SYSTEM-DATE FROM DATE.
+           IF CUR-DATE-YY < "40"
+              MOVE "20" TO CUR-DATE-CC
+           ELSE
+              MOVE "19" TO CUR-DATE-CC.
+
+      *----GET ACCOUNTING MONTH END DATE AND AVG COST FLAG.
+
+           MOVE "MTED" TO MACCT-ARG.
+           PERFORM 9999-READ-MACCOUNT-INFO-KEY-I.
+           MOVE MACCT-AVG-COST-CALC-SW TO SAVE-AVG-COST-CALC-SW.
+           MOVE MACCT-MONTH-END-TIME TO SAVE-MONTH-END-TIME.
+           MOVE MACCT-MONTH-END-DATE TO SAVE-ME-DATE-YMD.
+           IF SAVE-ME-DATE-YY < "40"
+              MOVE "20" TO SAVE-ME-DATE-CC
+           ELSE
+              MOVE "19" TO SAVE-ME-DATE-CC.
+           MOVE MACCT-PAY-FRT-TAX TO SAVE-PAY-FRT-TAX.
+
+           MOVE "3" TO REC-LIST-OPTION.
+           MOVE "1" TO FKEY-LIST-OPTION.
+           MOVE  1  TO S2-DSPREC.
+           INITIALIZE FRT-REC-APPLIED.
+
+      *----SAVE MANUAL'S REC NUMBER FOR FUTURE USE.
+
+           MOVE DAPPLFRT-IX TO RTD-DAPPLFRT-IX.
+
+       2-EOJ.
+
+           CLOSE   DAPPLFRT-PCP-I      MACCOUNT-INFO-KEY-I
+                   DAPPLFRT-PO-I       DAPPLFRT-O
+                   DAPPLFRT-VS-I       DISPLAY-FILE.
+
+      *-----------------------------------------------------------------
+       6-LOOP SECTION.
+      *-----------------------------------------------------------------
+
+       6-FIND-LOAD-RATED.
+
+      *----FIND DAPPLFRT-REC USING THE RELATIVE RECORD NUMBER.
+
+           MOVE RTD-DAPPLFRT-IX TO RECNUM-ARG.
+           PERFORM 9999-READ-DAPPLFRT-O-NO-LOCK.
+           IF FILE-STATUS-1 = "2"
+              MOVE "DAPPLFRT NOT FOUND*6-FLR" TO BU-DISPLAY-MSG
+              MOVE DAPPLFRT-IX      TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+
+      *----IF THERE IS A PAID APPLIED DATE IN THIS RECORD IT
+      *----MEANS THAT THE BILL HAS ALREADY BEEN APPLIED AND THE USER
+      *----IS TRYING TO APPLY IT AGAIN. SET THE FLAG TO STOP ANY
+      *----FURTHER ACTIVITY.
+
+           IF DAPPL-PAID-APPL-DATE > SPACES
+              MOVE "Y" TO FRT-REC-APPLIED
+              MOVE "3" TO FKEY-LIST-OPTION.
+
+           IF DAPPL-PO-NUM > SPACES
+              STRING DAPPL-PO-NUM   DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DAPPL-PO-RLS   DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DAPPL-PO-RCVR  DELIMITED BY SIZE INTO S2-PO-RCVR
+           ELSE
+              MOVE SPACES TO S2-PO-RCVR.
+
+           MOVE DAPPL-TIS-PAID-DATE        TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-PAIDDT.
+
+           MOVE DAPPL-TIS-SHIP-DATE        TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-SHIPDT.
+
+           MOVE DAPPL-RAIL-CAR             TO S2-CAR, S2-STR-VEH.
+           MOVE DAPPL-TERMS                TO S2-TERMS.
+
+           MOVE DAPPL-PAID-PRO-NO          TO S2-PPRONUM.
+           MOVE DAPPL-PAID-CARRIER         TO S2-PCARR.
+           MOVE DAPPL-PAID-AMT             TO S2-PCHARGES.
+           MOVE DAPPL-PAID-TAX             TO S2-PTAXES.
+
+           MOVE DAPPL-PAID-APPL-DATE       TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-PCHGAPPDT.
+
+           MOVE DAPPL-PAID-RCV-DATE        TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-PRCVDDT.
+
+           MOVE DAPPL-RATED-PRO-NO         TO S2-RPRONUM.
+           MOVE DAPPL-RATED-CARRIER        TO S2-RCARR, S2-STR-CARR.
+           MOVE DAPPL-RATED-AMT            TO S2-RCHARGES.
+
+           MOVE DAPPL-RATED-APPL-DATE      TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-RCHGAPPDT.
+
+           MOVE DAPPL-RATED-RCV-DATE       TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-RRCVDDT.
+
+           IF DAPPL-STATUS-1 = SPACES
+              MOVE "ACTIVE"                TO S2-STATUS.
+           IF DAPPL-STATUS-1 = "X"
+              MOVE "CANCELED"              TO S2-STATUS.
+
+           MOVE DAPPL-STATUS-DATE          TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-STATDT.
+
+      *----SAVE THE RATED RECORD BECAUSE THE SUBFILE WILL USE
+      *----THE SAME BUFFER. (THE REC NUM WAS ALREADY SAVED IN 1-HSK).
+
+           MOVE BUF-DAPPLFRT               TO BUF-RTD-DAPPLFRT.
+
+       60-LOAD-SCREEN.
+
+           INITIALIZE SUBFILE-IX, DAPPLFRT-EOF, SUBFILE-REC-CNT.
+
+      *----SHOW SFLCTL (71) AND CLEAR SFL (72), BUT DON'T SHOW IT (70).
+           MOVE ON-SWITCH TO IND (71)  IND (72).
+           MOVE OFF-SWITCH TO IND (70).
+
+           WRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN2
+              FORMAT IS "RMCHSFLCTL"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "PROBLEM ON INIT SFL WRITE" TO BU-DISPLAY-MSG
+              GO TO 9999-BLOWUP.
+
+      *----TURN CLEAR SFL OFF.
+
+           MOVE OFF-SWITCH TO IND (72).
+
+       60A-GET-LIST.
+
+           INITIALIZE BUF-SCREEN1, LOAD-LIMIT.
+           MOVE SUBFILE-REC-CNT TO SUBFILE-IX.
+
+      *----------------------------------------
+      * LIST OPTIONS:
+      *      3 = LIST BY PAID CARRIER/PRO NO
+      *      5 = LIST BY CAR/SHIP DT
+      *----------------------------------------
+
+           IF REC-LIST-OPTION = 3
+              PERFORM 603-LIST-BY-PD-CARR-PRO.
+           IF REC-LIST-OPTION = 5
+              PERFORM 605-LIST-BY-CAR-SHIPDT.
+
+           MOVE BUF-DAPPLFRT TO SAVE-BUF-DAPPLFRT.
+           MOVE IO-RECNUM    TO SAVE-RECNUM.
+
+      *------- RESET RECORD COUNTERS IF NO MORE MANUALS ARE FOUND
+      *------- AND THE LAST ONE FOUND IS IN THE 7TH ENTRY ON THE
+      *------- SCREEN.
+           IF S2-DSPREC > SUBFILE-REC-CNT
+               SUBTRACT 1 FROM S2-DSPREC
+               IF SUBFILE-IX > 0
+                   SUBTRACT 1 FROM SUBFILE-IX.
+
+       61-SHOW-SCREEN.
+
+      *----PUT UP CORRECT FUNCTION KEY SCREEN.
+
+           IF FKEY-LIST-OPTION = "1"
+              WRITE DISPLAY-REC FROM BUF-SCREEN3
+                    FORMAT IS "RMCHFKEY1"
+                    INDICATORS ARE SRF-INDICATORS.
+
+           IF FKEY-LIST-OPTION = "2"
+              WRITE DISPLAY-REC FROM BUF-SCREEN3
+                    FORMAT IS "RMCHFKEY2"
+                    INDICATORS ARE SRF-INDICATORS.
+
+           IF FKEY-LIST-OPTION = "3"
+              WRITE DISPLAY-REC FROM BUF-SCREEN3
+                    FORMAT IS "RMCHFKEY3"
+                    INDICATORS ARE SRF-INDICATORS.
+
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+      *----OVERLAY WITH SFLCTL AND SFL SCREENS.
+
+           IF SUBFILE-IX = ZERO
+              MOVE OFF-SWITCH TO IND (70)
+           ELSE
+              MOVE ON-SWITCH TO IND (70).
+           MOVE ON-SWITCH TO IND (71).
+
+           IF REC-LIST-OPTION  = "3"  MOVE ON-SWITCH  TO IND (03).
+           IF REC-LIST-OPTION  = "5"  MOVE ON-SWITCH  TO IND (05).
+
+           IF FKEY-LIST-OPTION = "1"  MOVE ON-SWITCH  TO IND (20)
+                                      MOVE ON-SWITCH  TO IND (21).
+           IF FKEY-LIST-OPTION = "2"  MOVE OFF-SWITCH TO IND (20)
+                                      MOVE ON-SWITCH  TO IND (21).
+           IF FKEY-LIST-OPTION = "3"  MOVE OFF-SWITCH TO IND (20)
+                                      MOVE OFF-SWITCH TO IND (21).
+
+           IF FRT-REC-APPLIED = "Y"
+              MOVE "APPLIED" TO S2-APPLMSG
+              MOVE ON-SWITCH TO IND(10).
+
+           IF DAPPLFRT-EOF = "Y"
+              MOVE ON-SWITCH  TO IND (73)
+           ELSE
+              MOVE OFF-SWITCH TO IND (73).
+
+           IF SEARCH-TOGGLE = "Y"
+              MOVE "N" TO SEARCH-TOGGLE
+              MOVE ON-SWITCH TO IND (30).
+
+           WRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN2
+              FORMAT IS "RMCHSFLCTL"
+              INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "PROBLEM ON SHOW SFL WRITE" TO BU-DISPLAY-MSG
+              MOVE SUBFILE-IX TO BU-DISPLAY-FLD (1)
+              MOVE DISPLAY-STATUS TO BU-DISPLAY-FLD (2)
+              GO TO 9999-BLOWUP.
+
+      *----READ USER INPUT.
+           READ DISPLAY-FILE INTO BUF-SCREEN2
+              FORMAT IS "RMCHSFLCTL"
+              INDICATORS ARE SRF-INDICATORS.
+           IF IND-ON (75)
+              SET ROLLUP-KEY-USED TO TRUE.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "PROBLEM ON READ SFL" TO BU-DISPLAY-MSG
+              GO TO 9999-BLOWUP.
+
+       62-ACTION.
+
+            IF ROLLUP-KEY-USED
+               COMPUTE S2-DSPREC = SUBFILE-REC-CNT + 1
+               MOVE SAVE-BUF-DAPPLFRT TO BUF-DAPPLFRT
+               MOVE SAVE-RECNUM       TO IO-RECNUM
+               GO TO 60A-GET-LIST.
+
+           IF ENTER-KEY-USED
+              GO TO 61-SHOW-SCREEN.
+
+           IF F2-KEY-USED
+              PERFORM 621-CALL-SFRTINQ
+              GO TO 61-SHOW-SCREEN.
+
+           IF F3-KEY-USED
+              EVALUATE FKEY-LIST-OPTION
+                 WHEN "1"
+                    IF FRT-REC-APPLIED = "Y"
+                       MOVE 0 TO RTN-CODE
+                    ELSE
+                       MOVE 1 TO RTN-CODE
+                    END-IF
+                    GO TO 6-LOOP-X
+                 WHEN "2"
+                    PERFORM 620-EXIT-APPLY-CANCEL-SCREEN
+                    PERFORM 6-FIND-LOAD-RATED
+                    GO TO 61-SHOW-SCREEN
+                 WHEN "3"
+                    MOVE 0 TO RTN-CODE
+                    GO TO 6-LOOP-X.
+
+           IF F5-KEY-USED
+              MOVE  1  TO S2-DSPREC
+              INITIALIZE S2-STR-CARR,  S2-STR-PRO,  S2-STR-VEH
+              MOVE RTD-DAPPLFRT-IX TO DAPPLFRT-IX
+              GO TO 6-FIND-LOAD-RATED.
+
+           IF F6-KEY-USED
+              MOVE "Y" TO SEARCH-TOGGLE
+              MOVE S2-RELRCD TO S2-DSPREC
+              IF S2-DSPREC = 0
+                 MOVE 1 TO S2-DSPREC
+              END-IF
+              GO TO 61-SHOW-SCREEN.
+
+           IF F7-KEY-USED
+              EVALUATE FKEY-LIST-OPTION
+                 WHEN "1"
+                    PERFORM 624-MATCH
+                    GO TO 61-SHOW-SCREEN
+                 WHEN "2"
+                    PERFORM 625-APPLY
+                    PERFORM 620-EXIT-APPLY-CANCEL-SCREEN
+                    GO TO 61-SHOW-SCREEN.
+
+           IF F10-KEY-USED
+              MOVE "3" TO REC-LIST-OPTION
+              MOVE  1  TO S2-DSPREC
+              GO TO 60-LOAD-SCREEN.
+
+           IF F12-KEY-USED
+              MOVE "5" TO REC-LIST-OPTION
+              MOVE  1  TO S2-DSPREC
+              GO TO 60-LOAD-SCREEN.
+
+       603-LIST-BY-PD-CARR-PRO.
+
+           IF NOT ROLLUP-KEY-USED
+              MOVE S2-STR-CARR  TO CARRIER-ARG
+              MOVE S2-STR-PRO   TO PRO-NO-ARG
+              PERFORM 9999-START-DAPPLFRT-I-GE-PCP
+              IF FILE-STATUS-1 = "2"
+                 MOVE "Y" TO DAPPLFRT-EOF
+              END-IF
+              IF DAPPLFRT-EOF NOT = "Y"
+                 PERFORM 9999-READ-NEXT-DAPPLFRT-PCP-I
+                 ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+
+           PERFORM UNTIL DAPPLFRT-EOF = "Y" OR LOAD-LIMIT-REACHED
+              IF DAPPL-TIS-PAID-DATE > SPACES
+                AND DAPPL-PO-13 = SPACES
+                 MOVE DAPPL-PAID-CARRIER   TO S1-CARRIER
+                 MOVE DAPPL-PAID-PRO-NO    TO S1-PRONUM
+                 MOVE DAPPL-RAIL-CAR       TO S1-CAR
+                 MOVE DAPPL-TIS-SHIP-DATE (3:6) TO DATE-ARG
+                 PERFORM 9999-CONVERT-DATE
+                 MOVE CONVERT-DATE         TO S1-SHIPDT
+                 MOVE DAPPL-PAID-AMT       TO S1-CHARGES
+9310CK           IF DAPPL-PAID-AMT > 9999.99
+  .                 MOVE "Y"              TO S1-TRUNC
+  .              ELSE
+  .                 MOVE "N"              TO S1-TRUNC
+9310CK           END-IF
+                 MOVE DAPPL-TIS-PAID-DATE (3:6) TO DATE-ARG
+                 PERFORM 9999-CONVERT-DATE
+                 MOVE CONVERT-DATE         TO S1-PAIDDT
+                 MOVE DAPPL-STATUS-1       TO S1-STAT
+                 MOVE IO-RECNUM            TO S1-RECNUM
+                 ADD 1 TO SUBFILE-IX, SUBFILE-REC-CNT, LOAD-LIMIT
+                 IF SUBFILE-IX > 4000
+                    MOVE "SUBFILE TOO SMALL-INCREASE RMCHSFL/ZFREIGHT"
+                       TO BU-DISPLAY-MSG
+                    MOVE SUBFILE-IX TO BU-DISPLAY-FLD (1)
+                    GO TO 9999-BLOWUP
+                 END-IF
+                 IF S1-TRUNC = "Y"
+                    MOVE ON-SWITCH TO  IND (40)
+                 ELSE
+                    MOVE OFF-SWITCH TO IND (40)
+                 END-IF
+                 WRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN1
+                    FORMAT IS "RMCHSFL"
+                    INDICATORS ARE SRF-INDICATORS
+                 END-WRITE
+                 MOVE OFF-SWITCH TO IND (40)
+                 IF DISPLAY-STATUS NOT = "00"
+                    MOVE "PROBLEM ON LOAD SFL WRITE -- #1"
+                                                     TO BU-DISPLAY-MSG
+                    MOVE SUBFILE-IX TO BU-DISPLAY-FLD (1)
+                    MOVE S1-CARRIER TO BU-DISPLAY-FLD (2)
+                    MOVE S1-PRONUM  TO BU-DISPLAY-FLD (3)
+                    GO TO 9999-BLOWUP
+                 END-IF
+              END-IF
+              PERFORM 9999-READ-NEXT-DAPPLFRT-PCP-I
+              ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA
+           END-PERFORM.
+
+       605-LIST-BY-CAR-SHIPDT.
+
+           IF NOT ROLLUP-KEY-USED
+              MOVE S2-STR-VEH   TO RAIL-CAR-ARG
+              PERFORM 9999-START-DAPPLFRT-I-GE-VS
+              IF FILE-STATUS-1 = "2"
+                 MOVE "Y" TO DAPPLFRT-EOF
+              END-IF
+              IF DAPPLFRT-EOF NOT = "Y"
+                 PERFORM 9999-READ-NEXT-DAPPLFRT-VS-I
+                 ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+
+           PERFORM UNTIL DAPPLFRT-EOF = "Y" OR LOAD-LIMIT-REACHED
+              IF DAPPL-TIS-PAID-DATE > SPACES
+                AND DAPPL-PO-13 = SPACES
+                 MOVE DAPPL-PAID-CARRIER   TO S1-CARRIER
+                 MOVE DAPPL-PAID-PRO-NO    TO S1-PRONUM
+                 MOVE DAPPL-RAIL-CAR       TO S1-CAR
+                 MOVE DAPPL-TIS-SHIP-DATE (3:6) TO DATE-ARG
+                 PERFORM 9999-CONVERT-DATE
+                 MOVE CONVERT-DATE         TO S1-SHIPDT
+                 MOVE DAPPL-PAID-AMT       TO S1-CHARGES
+9310CK           IF DAPPL-PAID-AMT > 9999.99
+  .                 MOVE "Y"              TO S1-TRUNC
+  .              ELSE
+  .                 MOVE "N"              TO S1-TRUNC
+9310CK           END-IF
+                 MOVE DAPPL-TIS-PAID-DATE (3:6) TO DATE-ARG
+                 PERFORM 9999-CONVERT-DATE
+                 MOVE CONVERT-DATE         TO S1-PAIDDT
+                 MOVE DAPPL-STATUS-1       TO S1-STAT
+                 MOVE IO-RECNUM            TO S1-RECNUM
+                 ADD 1 TO SUBFILE-IX, SUBFILE-REC-CNT, LOAD-LIMIT
+                 IF SUBFILE-IX > 4000
+                    MOVE "SUBFILE TOO SMALL-INCREASE RMCHSFL/ZFREIGHT"
+                       TO BU-DISPLAY-MSG
+                    MOVE SUBFILE-IX TO BU-DISPLAY-FLD (1)
+                    GO TO 9999-BLOWUP
+                 END-IF
+                 IF S1-TRUNC = "Y"
+                    MOVE ON-SWITCH TO  IND (40)
+                 ELSE
+                    MOVE OFF-SWITCH TO IND (40)
+                 END-IF
+                 WRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN1
+                    FORMAT IS "RMCHSFL"
+                    INDICATORS ARE SRF-INDICATORS
+                 END-WRITE
+                 MOVE OFF-SWITCH TO IND (40)
+                 IF DISPLAY-STATUS NOT = "00"
+                    MOVE "PROBLEM ON LOAD SFL WRITE -- #2"
+                                                     TO BU-DISPLAY-MSG
+                    MOVE SUBFILE-IX TO BU-DISPLAY-FLD (1)
+                    MOVE S1-CARRIER TO BU-DISPLAY-FLD (2)
+                    MOVE S1-PRONUM  TO BU-DISPLAY-FLD (3)
+                    GO TO 9999-BLOWUP
+                 END-IF
+              END-IF
+              PERFORM 9999-READ-NEXT-DAPPLFRT-VS-I
+              ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA
+           END-PERFORM.
+
+
+       620-EXIT-APPLY-CANCEL-SCREEN.
+
+      *----THE MATCH WAS EITHER APPLIED (F7) OR CANCELED (F3).
+      *----IF THE MATCH WAS CANCELLED, RESET FKEYS TO FULL CAPABILITY.
+      *----IF THE MATCH WAS APPLIED, RESET FKEYS TO ALLOW EXIT ONLY.
+      *----IN BOTH CASES, UPDATE SUBFILE REC.
+
+           MOVE S2-DSPREC TO SUBFILE-IX.
+           READ SUBFILE DISPLAY-FILE
+                INTO BUF-SCREEN1
+                FORMAT IS "RMCHSFL".
+           INITIALIZE S1-OPTION.
+           IF F7-KEY-USED
+              MOVE "7A" TO S1-ACTION
+              MOVE "3"  TO FKEY-LIST-OPTION.
+           IF F3-KEY-USED
+              MOVE "7C" TO S1-ACTION
+              MOVE "1"  TO FKEY-LIST-OPTION.
+           IF S1-TRUNC = "Y"
+              MOVE ON-SWITCH TO  IND (40)
+           ELSE
+              MOVE OFF-SWITCH TO IND (40).
+           REWRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN1
+              FORMAT IS "RMCHSFL"
+              INDICATORS ARE SRF-INDICATORS
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE OFF-SWITCH TO IND (40).
+
+       621-CALL-SFRTINQ.
+
+      *----FIND FIRST SUBFILE REC TO INQUIRE.
+
+           PERFORM UNTIL S1-OPTION = "X" OR DISPLAY-STATUS NOT = ZERO
+              READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+                   INTO BUF-SCREEN1
+                   FORMAT IS "RMCHSFL"
+           END-PERFORM
+
+           IF S1-OPTION = "X"
+              MOVE SUBFILE-IX TO S2-DSPREC
+           ELSE
+              MOVE S2-RELRCD TO S2-DSPREC.
+           IF S2-DSPREC < 1
+              MOVE 1 TO S2-DSPREC.
+
+           INITIALIZE RTN-CODE.
+
+           PERFORM UNTIL DISPLAY-STATUS NOT = ZERO
+
+              CALL "SFRTINQ" USING S1-RECNUM, RTN-CODE,
+                                   BU-DISPLAY-MSG, BU-DISPLAY-FLDS
+
+              IF RTN-CODE NOT = 0
+                 GO TO 9999-BLOWUP
+              END-IF
+
+      *-------UPDATE THE SUBFILE RECORD
+
+              MOVE "2" TO S1-ACTION
+              INITIALIZE S1-OPTION
+
+              IF S1-TRUNC = "Y"
+                 MOVE ON-SWITCH TO  IND (40)
+              ELSE
+                 MOVE OFF-SWITCH TO IND (40)
+              END-IF
+              REWRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN1
+                 FORMAT IS "RMCHSFL"
+                 INDICATORS ARE SRF-INDICATORS
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+              END-REWRITE
+              MOVE OFF-SWITCH TO IND (40)
+
+      *-------GET NEXT SUBFILE RECORD TO INQUIRE
+
+              PERFORM UNTIL S1-OPTION = "X" OR DISPLAY-STATUS NOT = ZERO
+                 READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+                      INTO BUF-SCREEN1
+                      FORMAT IS "RMCHSFL"
+                 END-READ
+              END-PERFORM
+
+           END-PERFORM.
+
+       624-MATCH.
+
+      *----FIND SUBFILE REC TO MATCH.
+
+           PERFORM UNTIL S1-OPTION = "X" OR DISPLAY-STATUS NOT = ZERO
+              READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+                   INTO BUF-SCREEN1
+                   FORMAT IS "RMCHSFL"
+           END-PERFORM
+
+           IF DISPLAY-STATUS NOT = ZERO
+              GO TO 61-SHOW-SCREEN.
+
+           IF S1-OPTION = "X"
+              MOVE SUBFILE-IX TO S2-DSPREC
+           ELSE
+              MOVE S2-RELRCD TO S2-DSPREC.
+           IF S2-DSPREC < 1
+              MOVE 1 TO S2-DSPREC.
+
+           INITIALIZE DAPPLFRT-EOF.
+
+      *----FIND THE RECORD IN DAPPLFRT
+
+           MOVE S1-RECNUM TO RECNUM-ARG.
+           PERFORM 9999-READ-DAPPLFRT-O-NO-LOCK.
+
+      *----SAVE THE BUFFER IN CASE THIS MATCHED REC SHOULD BE APPLIED.
+
+           MOVE BUF-DAPPLFRT TO BUF-MNL-DAPPLFRT.
+           MOVE RECNUM-ARG TO MNL-DAPPLFRT-IX.
+
+      *----UPDATE THE SFLCTL RECORD
+
+           MOVE DAPPL-TIS-PAID-DATE        TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE               TO S2-PAIDDT.
+
+           IF DAPPL-TIS-SHIP-DATE NOT = SPACES
+              MOVE DAPPL-TIS-SHIP-DATE        TO DATE-ARG
+              PERFORM 9999-CONVERT-DATE
+              MOVE CONVERT-DATE               TO S2-SHIPDT.
+
+           MOVE S1-CAR     TO S2-CAR.
+           MOVE DAPPL-TERMS TO S2-TERMS.
+
+           IF S1-CARRIER = SPACES
+              MOVE S2-RCARR TO S2-PCARR
+           ELSE
+              MOVE S1-CARRIER TO S2-PCARR.
+
+           IF S1-PRONUM = SPACES
+              MOVE S2-RPRONUM TO S2-PPRONUM
+           ELSE
+              MOVE S1-PRONUM TO S2-PPRONUM.
+
+9310CK*----USE THE BUFFER PAID AMT IN CASE THE SCREEN AMT GOT TRUNC.
+9310CK     MOVE DAPPL-PAID-AMT TO S2-PCHARGES.
+
+           MOVE CUR-DATE TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE TO S2-PCHGAPPDT.
+
+           MOVE DAPPL-PAID-RCV-DATE TO DATE-ARG.
+           PERFORM 9999-CONVERT-DATE.
+           MOVE CONVERT-DATE TO S2-PRCVDDT.
+
+      *----UPDATE THE SFL RECORD
+
+           MOVE "7M" TO S1-ACTION.
+
+           IF S1-TRUNC = "Y"
+              MOVE ON-SWITCH TO  IND (40)
+           ELSE
+              MOVE OFF-SWITCH TO IND (40).
+           REWRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN1
+              FORMAT IS "RMCHSFL"
+              INDICATORS ARE SRF-INDICATORS
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE OFF-SWITCH TO IND (40).
+
+      *----PREPARE TO SHOW SFLCTL WITH NEW FKEYS THAT WILL BE USED
+      *----FOR 625-APPLY PAR.
+
+           MOVE "2" TO FKEY-LIST-OPTION.
+
+       625-APPLY.
+
+      *----USE THE 2 DAPPLFRT BUFFERS (MNL & RTD) TO CREATE THE
+      *----FREIGHT BUFFER AND OTHER PARMS BEFORE CALLING SFRTAPPLY.
+
+           MOVE "02"                   TO FREIGHT-TRAN-CODE.
+           MOVE "P"                    TO FREIGHT-REC-TYPE.
+           INITIALIZE                     FREIGHT-MODE-CODE.
+
+           MOVE BUF-MNL-DAPPLFRT TO BUF-DAPPLFRT.
+           MOVE DAPPL-PAID-PRO-NO      TO FREIGHT-FB-NUM.
+           MOVE DAPPL-TIS-SHIP-DATE    TO FREIGHT-SHIP-DATE.
+           MOVE DAPPL-RAIL-CAR         TO FREIGHT-VEHICLE-NUM.
+           MOVE DAPPL-PAID-CARRIER     TO FREIGHT-PAY-CARR.
+           MOVE DAPPL-PAID-AMT         TO FREIGHT-CHARGES,
+                                          PAID-AMT
+                                          AMT-TO-APPLY.
+           MOVE DAPPL-TIS-PAID-DATE    TO FREIGHT-PAID-DATE.
+           MOVE DAPPL-TERMS            TO FREIGHT-TERMS.
+
+           MOVE BUF-RTD-DAPPLFRT TO BUF-DAPPLFRT.
+           MOVE DAPPL-PO-14            TO FREIGHT-PO-14.
+           IF FREIGHT-FB-NUM      = SPACES
+              MOVE DAPPL-RATED-PRO-NO  TO FREIGHT-FB-NUM.
+           IF FREIGHT-SHIP-DATE   = SPACES
+              MOVE DAPPL-TIS-SHIP-DATE TO FREIGHT-SHIP-DATE.
+           IF FREIGHT-VEHICLE-NUM = SPACES
+              MOVE DAPPL-RAIL-CAR      TO FREIGHT-VEHICLE-NUM.
+           MOVE DAPPL-RATED-CARRIER    TO FREIGHT-DELV-CARR.
+           IF FREIGHT-TERMS       = SPACES
+              MOVE DAPPL-TERMS         TO FREIGHT-TERMS.
+           SUBTRACT DAPPL-RATED-AMT FROM AMT-TO-APPLY.
+
+           INITIALIZE                  TAXES-PAID.
+
+           MOVE "SFRTMCHRTD"        TO FROM-PGM-NAME.
+
+           IF SAVE-PAY-FRT-TAX = "Y"
+              IF AMT-TO-APPLY = ZERO AND PAID-AMT = ZERO
+                 CONTINUE
+              ELSE
+                 CALL "SFRTAPPLY" USING BUF-FREIGHT, AMT-TO-APPLY,
+                                  PAID-AMT, TAXES-PAID, FROM-PGM-NAME.
+
+           IF SAVE-PAY-FRT-TAX NOT = "Y"
+              IF AMT-TO-APPLY = ZERO
+                 CONTINUE
+              ELSE
+                 CALL "SFRTAPPLY" USING BUF-FREIGHT, AMT-TO-APPLY,
+                                  PAID-AMT, TAXES-PAID, FROM-PGM-NAME.
+
+      *----USE THE RATED DAPPLFRT BUF AS A BASIS TO BUILD THE COMPLETED
+      *----DAPPLFRT REC. ADD INFORMATION FROM THE MANUAL DAPPLFRT BUF AND
+      *----THE FREIGHT BUF CREATED ABOVE.
+
+           MOVE RTD-DAPPLFRT-IX TO RECNUM-ARG.
+           PERFORM 9999-READ-DAPPLFRT-O.
+           MOVE BUF-DAPPLFRT TO BUF-BUILD-DAPPLFRT.
+           MOVE BUF-MNL-DAPPLFRT TO BUF-DAPPLFRT.
+
+           MOVE FREIGHT-PAID-DATE     TO BLD-TIS-PAID-DATE.
+           MOVE FREIGHT-SHIP-DATE     TO BLD-TIS-SHIP-DATE.
+           MOVE FREIGHT-VEHICLE-NUM   TO BLD-RAIL-CAR.
+           MOVE FREIGHT-TERMS         TO BLD-TERMS.
+           MOVE DAPPL-PAID-RCV-DATE   TO BLD-PAID-RCV-DATE.
+           MOVE DAPPL-PAID-CARRIER    TO BLD-PAID-CARRIER.
+           MOVE DAPPL-PAID-PRO-NO     TO BLD-PAID-PRO-NO.
+           MOVE DAPPL-PAID-AMT        TO BLD-PAID-AMT.
+           MOVE TAXES-PAID            TO BLD-PAID-TAX.
+           MOVE CUR-DATE              TO BLD-PAID-APPL-DATE.
+           ACCEPT CUR-TIME FROM TIME.
+           MOVE CUR-TIME              TO BLD-PAID-APPL-TIME.
+
+      *----WRITE OVER THE OLD RATED DAPPLFRT REC WITH THE NEWLY
+      *----BUILT COMPLETED DAPPLFRT REC.
+
+           MOVE BUF-BUILD-DAPPLFRT TO BUF-DAPPLFRT.
+           MOVE RTD-DAPPLFRT-IX TO RECNUM-ARG.
+           PERFORM 9999-REWRITE-DAPPLFRT-O.
+
+      *----DELETE THE MANUAL DAPPLFRT REC SINCE ITS INFORMATION HAS
+      *----BEEN MOVED TO THE NEWLY BUILT DAPPLFRT REC.
+
+           MOVE MNL-DAPPLFRT-IX TO RECNUM-ARG.
+           PERFORM 9999-READ-DAPPLFRT-O.
+           PERFORM 9999-DELETE-DAPPLFRT-O.
+
+           MOVE "Y" TO FRT-REC-APPLIED.
+           CALL "SFRTSTAMP".
+
+       6-LOOP-X.
+           EXIT.
+
+      *-----------------------------------------------------------------
+       9999-UTILITY SECTION.
+      *-----------------------------------------------------------------
+
+       9999-BLOWUP.
+           MOVE "SFRTMCHRTD" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+       9999-CONVERT-DATE.
+           INITIALIZE CONVERT-DATE, FLD-LEN.
+           INSPECT DATE-ARG TALLYING FLD-LEN
+              FOR CHARACTERS BEFORE INITIAL SPACE.
+           IF FLD-LEN = 8
+              STRING DATE-ARG (1:4) DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DATE-ARG (5:2) DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DATE-ARG (7:2) DELIMITED BY SIZE
+                     INTO CONVERT-DATE.
+           IF FLD-LEN = 6
+              STRING DATE-ARG (1:2) DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DATE-ARG (3:2) DELIMITED BY SIZE,
+                     "-"            DELIMITED BY SIZE,
+                     DATE-ARG (5:2) DELIMITED BY SIZE
+                     INTO CONVERT-DATE.
+           IF FLD-LEN = 0
+              MOVE SPACES TO CONVERT-DATE.
+
+       9999-WRITE-SCREEN.
+           WRITE DISPLAY-REC FORMAT IS VIEW-NFNAME
+              INDIC ARE SRF-INDICATORS.
+      *??? MOVE ALL B"0" TO SRF-INDICATORS.
+
+       9999-READ-SCREEN.
+           READ  DISPLAY-FILE FORMAT IS VIEW-NFNAME
+              INDIC ARE SRF-INDICATORS.
+      *??? MOVE ALL B"0" TO SRF-INDICATORS.
+
+      *--- A BAD STATUS MAY MEAN USER TURNED OFF TERMINAL.
+      *--- IF SO, SIMULATE THE F3 KEY TO EXIT PROGRAM.
+
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "03" TO FUNCTION-KEY.
+
+       9999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+
+      *---------------------------------
+      * DAPPLFRT
+      *---------------------------------
+
+       9999-READ-DAPPLFRT-O.
+           MOVE RECNUM-ARG TO DAPPLFRT-IX.
+           READ DAPPLFRT-O INTO BUF-DAPPLFRT
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ DAPPLFRT*9999-RDO" TO BU-DISPLAY-MSG
+              MOVE RECNUM-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+
+       9999-READ-DAPPLFRT-O-NO-LOCK.
+           MOVE RECNUM-ARG TO DAPPLFRT-IX.
+           READ DAPPLFRT-O INTO BUF-DAPPLFRT
+                WITH NO LOCK
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ DAPPLFRT*9999-RDONL" TO BU-DISPLAY-MSG
+              MOVE DAPPLFRT-IX     TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+
+       9999-REWRITE-DAPPLFRT-O.
+           MOVE RECNUM-ARG TO DAPPLFRT-IX.
+           REWRITE DAPPLFRT-REC-O FROM BUF-DAPPLFRT
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "REWRITE DAPPLFRT*9999-RDO" TO BU-DISPLAY-MSG
+              MOVE DAPPL-PO-14 TO BU-DISPLAY-FLD (1)
+              MOVE DAPPL-TIS-SHIP-DATE TO BU-DISPLAY-FLD (2)
+              MOVE DAPPL-RAIL-CAR TO BU-DISPLAY-FLD (3)
+              MOVE RECNUM-ARG TO BU-DISPLAY-FLD (4)
+              GO TO 9999-BLOWUP.
+
+       9999-DELETE-DAPPLFRT-O.
+           MOVE RECNUM-ARG TO DAPPLFRT-IX.
+           DELETE DAPPLFRT-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "DLT OF RATED REC DIDN'T WORK" TO BU-DISPLAY-MSG
+              MOVE RECNUM-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+
+       9999-START-DAPPLFRT-I-GE-VS.
+           MOVE RAIL-CAR-ARG TO FRTRAILCAR OF DAPPLFRT-VS-REC-I.
+           START DAPPLFRT-VS-I KEY >= FRTRAILCAR OF DAPPLFRT-VS-REC-I
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "START DAPPLFRT-VS*9999-SDIGV" TO BU-DISPLAY-MSG
+                 MOVE RAIL-CAR-ARG TO BU-DISPLAY-FLD (1)
+                 GO TO 9999-BLOWUP.
+
+       9999-READ-NEXT-DAPPLFRT-VS-I.
+           READ DAPPLFRT-VS-I NEXT INTO BUF-DAPPLFRT
+              AT END MOVE "Y" TO DAPPLFRT-EOF.
+
+       9999-START-DAPPLFRT-I-GE-PCP.
+           MOVE CARRIER-ARG TO PDCARRIER OF DAPPLFRT-PCP-REC-I.
+           MOVE PRO-NO-ARG  TO PDPRONO   OF DAPPLFRT-PCP-REC-I.
+           START DAPPLFRT-PCP-I KEY >= EXTERNALLY-DESCRIBED-KEY
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "START DAPPLFRT-PCP*9999-SDIGP" TO BU-DISPLAY-MSG
+                 MOVE CARRIER-ARG TO BU-DISPLAY-FLD (1)
+                 MOVE PRO-NO-ARG  TO BU-DISPLAY-FLD (2)
+                 GO TO 9999-BLOWUP.
+
+       9999-READ-NEXT-DAPPLFRT-PCP-I.
+           READ DAPPLFRT-PCP-I NEXT INTO BUF-DAPPLFRT
+              AT END MOVE "Y" TO DAPPLFRT-EOF.
+
+      *---------------------------------
+      * MACCOUNT-INFO
+      *---------------------------------
+
+       9999-READ-MACCOUNT-INFO-KEY-I.
+           MOVE MACCT-ARG TO INFOKEY OF MACCOUNT-INFO-KEY-REC-I.
+           READ MACCOUNT-INFO-KEY-I INTO BUF-MACCT-INFO
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ MACCOUNT-INFO*9999-RMIKO" TO BU-DISPLAY-MSG
+              MOVE MACCT-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+

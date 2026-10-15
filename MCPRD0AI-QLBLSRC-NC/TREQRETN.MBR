@@ -1,0 +1,560 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TREQRETN.
+       AUTHOR.        CA YODER.
+
+      **************************************************************
+      *                                                            *
+      *   T R E Q R E T N      THIS PROGRAM ALLOWS THE USER TO     *
+      *     RETURN A REQUISITION TO MATERIALS CONTROL FROM THE     *
+      *     SHIPPING RELEASE BATCH FILE (MCFPCS2900).              *
+      *                                                            *
+      *     THE PROGRAM WILL SET THE FIELDS IN MREQ (MCFPCS2000)   *
+      *     TO THE FOLLOWING:                                      *
+      *        REQ-RELEASE-STAT     =  SPACES                      *
+      *        REQ-REL-MC-DATE-CN   =  SPACES                      *
+      *        REQ-HOLD-STATUS-CODE =  "RT"                        *
+      *        REQ-HOLD-STATUS      =  "RETURNED"                  *
+      *                                                            *
+      *     THEN, THE RECORD IN MCFPCS2900 IS DELETED.             *
+      *                                                            *
+      *     REQUEST # 97-005                                       *
+      **************************************************************
+      *C
+      *C  1/18/1999    CA YODER
+      *C    ADDED LOGIC TO TAKE OUT THE "01" AND "99" RECORDS FROM
+      *C    DSHIPREL.  PREVIOUSLY, ONLY THE "00" RECORDS WERE BEING
+      *C    DELETED FROM THE FILE.
+      *C
+      *C  7/07/1999    CA YODER
+      *C    ASHEBORO FOUND A PROBLEM WHERE MULTIPLE ENTRIES WOULD
+      *C    BE DELETED IF THE REQS WERE FOR THE SAME BLANKET ORDER
+      *C    AND OCCURRED SEQUENTIALLY IN THE FILE.  ADDED LOGIC TO
+      *C    TO PREVENT THIS FROM HAPPENING.
+      *C
+      *C  2/08/2000    JE COFFMAN
+      *C    ALTERED STATEMENT 615.82 TO CHECK FOR SHIPPING RELEASE
+      *C    SEQUENCE NUMBER = 99 INSTEAD OF JUST > 0 WHEN
+      *C    LAWTON REPORTED PROBLEMS RETURNING REQUISITIONS AND
+      *C    SUBSEQUENTLY BLOWING THE PS2 PROCESSING. I FOUND THAT
+      *C    WHEN A LINE OF DESCRIPTION IS ADDED BY THE USER AS
+      *C    THEY ARE RELEASING, IT WAS CREATING RELEASE SEQUENCE 01
+      *C    THROUGH 03 FOR EACH LINE OF DESCRIPTION THAT WAS INCLUDED.
+      *C    WHEN THE RETURN PROGRAM WAS EXECUTED, IT WAS ONLY DELETING
+      *C    RECORDS 1 AND 2 IN DSHIPREL AND LEAVING WHATEVER WAS LEFT
+      *C    AS PART OF THE ORIGINAL RELEASE (I.E. EXITING ON THE
+      *C    CHECK OF DREL-SEQ-NO > 0.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZREQRETN-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DSHIPREL-IO
+                  ASSIGN TO DATABASE-MCFLCS2901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-O
+                  ASSIGN TO DATABASE-MCFLCS2001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC             PIC X(2000).
+      *    COPY DDS-ALL-FORMATS OF ZREQRETN.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DSHIPREL-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DSHIPREL-REC-IO.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2901.
+
+       FD  MREQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2001.
+
+       WORKING-STORAGE SECTION.
+       77  COMP-SCREEN-INDIC       PIC X(3)    VALUE SPACES.
+       77  ACT-KEY                 PIC 9(9)  VALUE ZEROS.
+       77  SAVE-PCPO-SW            PIC X.
+       77  SUB                     PIC S9(4)  VALUE ZEROS COMP-4.
+       77  DSHIPREL-EOF-SW         PIC X     VALUE "N".
+       77  REQ-FOUND-SW            PIC X     VALUE "N".
+       77  MREQ-FOUND-SW           PIC X     VALUE "N".
+       77  REQ-RETURNED-SW         PIC X     VALUE "N".
+       77  HOLD-NUMBER             PIC X(8)  VALUE SPACES.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  RETURN-MSG.
+           05  FILLER                   PIC X(5)   VALUE "REQ  ".
+           05  MSG-REQ-NUM              PIC X(12).
+           05  FILLER                   PIC X      VALUE SPACE.
+           05  MSG-LITERAL              PIC X(15).
+           05  FILLER                   PIC X(46)  VALUE SPACES.
+
+      **********************
+      *                    *
+      *  S W I T C H E S   *
+      *                    *
+      **********************
+
+       01  SWITCH-AREA.
+           05  FATAL-ERR-SW            PIC X       VALUE "N".
+           05  F6-VALID-SW             PIC X       VALUE "N".
+               88  F6-VALID                        VALUE "Y".
+           05  F7-VALID-SW             PIC X       VALUE "N".
+               88  F7-VALID                        VALUE "Y".
+           05  EOF-SW                  PIC X       VALUE "N".
+           05  ERR-SW                  PIC X       VALUE "N".
+
+
+       01  BUILD-PO-NUM.
+           05  FILLER                  PIC X    VALUE "P".
+           05  PO-NUM                  PIC X(7) VALUE SPACES.
+           05  PO-RLSE                 PIC X(3) VALUE "999".
+           05  PO-RCV                  PIC X(3) VALUE "000".
+
+       COPY VCOMAREA IN COPYLIB.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(64)    VALUE SPACE.
+           05  MSG-FLD               PIC X(12)    VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(11)9.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1       COMP-4.
+
+       01  PASSED-SPOOL-PRT          PIC S9(2)    VALUE ZEROS   COMP-4.
+
+       01  SCREEN-PRINT-PARMS.
+           05  PRINTCNTL             PIC S9(4)    VALUE ZERO    COMP-4.
+           05  PAGECNTL              PIC S9(4)    VALUE 49      COMP-4.
+           05  SPOOLFIL-OPEN-SW      PIC X        VALUE "N".
+
+       COPY CATREAD IN COPYLIB.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **             TERMINAL I/O DATA AREA                       **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       01  SCREEN-1.
+           05  DE-REQ-NUM              PIC X(12) VALUE SPACES.
+           05  DE-ITM-NUM              PIC 9(4).
+           05  DE1-MESSAGE-LINE        PIC X(79) VALUE SPACES.
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+
+       COPY DSHIPREL IN COPYLIB.
+
+       COPY MPLTINFO IN COPYLIB.
+
+       COPY MREQ IN COPYLIB.
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16)  VALUE SPACES.
+           05  DSET-DSHIPREL          PIC X(16)  VALUE "DSHIPREL;".
+           05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+           05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+           05  DSET-MREQ              PIC X(16)  VALUE "MREQ;".
+
+       COPY DATAB IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+           05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+           05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+           05  REQ-SEARCH             PIC X(12) VALUE "REQ-NUMBER;".
+
+       01 ARG-VALUES.
+           05  REQ-ARG                PIC X(12) VALUE SPACES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+
+       COPY CCHKOBJ IN COPYLIB.
+
+       COPY CCHKOBJM IN COPYLIB.
+
+       01  DATES-AND-TIMES.
+           05  HP-CUR-DATE.
+               10  MM               PIC XX.
+               10  FILLER           PIC X.
+               10  DD               PIC XX.
+               10  FILLER           PIC X.
+               10  YY               PIC XX.
+       01  CUR-DATE-CN.
+           05  CUR-CC               PIC XX.
+           05  CUR-DATE.
+               10  CUR-YY           PIC XX.
+               10  CUR-MM           PIC XX.
+               10  CUR-DD           PIC XX.
+
+       COPY TDATECHK IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY SEDIVNCK IN COPYLIB.
+
+       PROCEDURE DIVISION.
+
+       PROC-DIV SECTION 01.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           PERFORM 2-EOJ  THRU 2-EOJ-X.
+
+           GOBACK.
+
+       1-HSK.
+           MOVE  18 TO LANG-SETNUM.
+           MOVE  49 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO MSG-LITERAL.
+
+           OPEN I-O DISPLAY-FILE, DSHIPREL-IO, MREQ-O.
+           OPEN INPUT MPLTINFO-I, DPORECD-I.
+
+           MOVE "N"     TO  SAVE-PCPO-SW.
+           MOVE "PCPO"  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ FAILED IN TREQRETN" TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                 TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           IF MPLTINFO-PCPO-SW = " "
+               MOVE "N"                     TO  SAVE-PCPO-SW
+           ELSE
+           MOVE MPLTINFO-PCPO-SW            TO  SAVE-PCPO-SW.
+
+      **************************************************
+      *                                                *
+      *   GET CO. AND PRIME FROM MPLTINFO              *
+      *   USING 'P 01' AS THE ARGUMENT                 *
+      *                                                *
+      **************************************************
+
+           MOVE "P 01"  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET MPLTINFO 1-HSK P 01"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                 TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE MPLTINFO-COMPANY            TO  COMP-SCREEN-INDIC.
+           ACCEPT CUR-DATE FROM DATE.
+           IF CUR-YY > "70"
+               MOVE "19"                    TO  CUR-CC
+           ELSE
+               MOVE "20"                    TO  CUR-CC.
+
+       1-H-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE DISPLAY-FILE, MPLTINFO-I, DPORECD-I, DSHIPREL-IO,
+                 MREQ-O.
+
+       2-EOJ-X.
+            EXIT.
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "TREQRETN"              TO  BU-PGM-NAME.
+           MOVE DE-REQ-NUM              TO  BU-DISPLAY-FLD (1)
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND(FIELD-NUMBER), IND(99).
+           MOVE MESSAGE-BUFFER  TO DE1-MESSAGE-LINE.
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+           MOVE SPACES             TO  SEDIVNCK-PARMS.
+           MOVE "RETNSCRN"         TO  VIEW-NFNAME.
+           MOVE SPACES             TO  SCREEN-1.
+           MOVE 0                  TO  DE-ITM-NUM.
+           IF REQ-RETURNED-SW = "Y"
+               MOVE B"1" TO IND(99)
+               MOVE MESSAGE-BUFFER   TO  DE1-MESSAGE-LINE
+               MOVE "N"              TO  REQ-RETURNED-SW.
+
+       6-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1           TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC        TO SCREEN-1.
+
+           IF VIEW-LASTKEY = 3
+               GO TO 6-M-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+      *------ FIELD EDITS
+           IF DE-REQ-NUM = SPACES
+      *    REQUISITION NUMBER IS REQUIRED
+               MOVE 44111 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 20 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+           IF DE-ITM-NUM = 0
+      *    YOU MUST ENTER ITEM NUMBER
+               MOVE 66103 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 21 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+           MOVE "RLACTIVE" TO CHKOBJ-FILE-NAME.
+           CALL "CCHKOBJ" USING CHKOBJ-FILE-NAME,
+                                CHKOBJ-RETURN-STATUS.
+           IF CHKOBJ-RETURN-STATUS NOT = "00"
+               NEXT SENTENCE
+           ELSE
+      *        "RELEASES ARE BEING PROCESSED NOW; CANNOT PROCESS"
+               MOVE 18059 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 20 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+           PERFORM 70-START-DRELFILE.
+           IF REQ-FOUND-SW = "N"
+      *    REQUISITION NUMBER DOES NOT EXIST
+               MOVE 18005 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 20 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+           IF DREL-DSHIPREL-CODE = "NON-STR"
+      *    REQUISITION IS NOT A CODED REQ.
+               MOVE 18015 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 20 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+           PERFORM 71-RETURN-REQ.
+           IF MREQ-FOUND-SW = "N"
+      *    REQUISITION NUMBER DOES NOT EXIST
+               MOVE 18005 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 20 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+
+           MOVE "Y"             TO  REQ-RETURNED-SW.
+           MOVE DE-REQ-NUM      TO  MSG-REQ-NUM.
+           MOVE RETURN-MSG      TO  MESSAGE-BUFFER.
+           PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X.
+           GO TO 6-MAIN.
+
+       6-M-X.
+           EXIT.
+
+      *-------- SEARCH FOR REQUISITION IN BATCH FILE.
+       70-START-DRELFILE.
+           MOVE "N"             TO  DSHIPREL-EOF-SW
+                                    REQ-FOUND-SW.
+      *------- DO A START GREATER THAN SPACES TO POSITION TO BEGINNING
+      *------- OF THE FILE
+      *----------- CHANGE KEY TO DATECYMD INSTEAD OF DLYTCDTE SINCE
+      *----------- CENTURY DATABASE CHANGES.
+           MOVE SPACES TO DATECYMD OF DSHIPREL-REC-IO.
+           START DSHIPREL-IO KEY > DATECYMD OF DSHIPREL-REC-IO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE "Y"           TO  DSHIPREL-EOF-SW
+                   MOVE "N"           TO  REQ-FOUND-SW
+               ELSE
+                   MOVE "START DSHIPREL * 70-SD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF DSHIPREL-EOF-SW = "N"
+               READ DSHIPREL-IO NEXT INTO BUF-DSHIPREL
+                   AT END MOVE "Y"    TO  DSHIPREL-EOF-SW.
+
+           IF DSHIPREL-EOF-SW = "N"
+               PERFORM 70-READ-DRELFILE UNTIL DSHIPREL-EOF-SW = "Y" OR
+                                              REQ-FOUND-SW = "Y".
+
+       70-READ-DRELFILE.
+           IF DE-REQ-NUM = DREL-REQ-NO AND DREL-SEQ-NO = 0
+                                       AND DREL-ITEM-NO = DE-ITM-NUM
+               MOVE "Y"               TO  REQ-FOUND-SW
+               MOVE DREL-NUMBER       TO  HOLD-NUMBER
+           ELSE
+               READ DSHIPREL-IO NEXT INTO BUF-DSHIPREL
+                   AT END MOVE "Y"    TO  DSHIPREL-EOF-SW.
+
+       71-RETURN-REQ.
+           MOVE DE-REQ-NUM        TO  REQ-ARG.
+           MOVE REQ-ARG TO REQNO OF MREQ-REC-O.
+           READ MREQ-O INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "N"               TO  MREQ-FOUND-SW
+           ELSE
+               MOVE "Y"               TO  MREQ-FOUND-SW
+               MOVE SPACES            TO  REQ-RELEASE-STAT
+                                          REQ-REL-MC-DATE-CN
+               MOVE "RT"              TO  REQ-HOLD-STATUS-CODE
+               MOVE "RETURNED"        TO  REQ-HOLD-STATUS
+               MOVE CUR-DATE-CN       TO  REQ-DATE-RETURN-CN
+               PERFORM 72-REWRITE-MREQ
+               PERFORM 73-DELETE-DSHIPREL.
+
+       72-REWRITE-MREQ.
+           REWRITE MREQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBUPDATE MREQ *6211-BR" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       73-DELETE-DSHIPREL.
+           DELETE DSHIPREL-IO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DELETE DSHIPREL 72-DD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+           PERFORM UNTIL (DREL-NUMBER NOT = HOLD-NUMBER) OR
+                         (DREL-ITEM-NO NOT = DE-ITM-NUM) OR
+                         (DREL-SEQ-NO = 99)              OR
+                         DSHIPREL-EOF-SW = "Y"
+               READ DSHIPREL-IO NEXT INTO BUF-DSHIPREL
+                   AT END MOVE "Y"    TO  DSHIPREL-EOF-SW
+               END-READ
+               IF DREL-NUMBER = HOLD-NUMBER AND
+                  DREL-ITEM-NO = DE-ITM-NUM AND
+                  DREL-SEQ-NO > 0
+                   DELETE DSHIPREL-IO
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                   END-DELETE
+               END-IF
+           END-PERFORM.
+
+       CAT-READ SECTION.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       COPY DISPCALL IN COPYLIB.
+

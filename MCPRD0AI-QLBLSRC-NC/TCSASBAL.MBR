@@ -1,0 +1,379 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TCSASBAL.
+       AUTHOR.               BRUCE GEISER.
+       DATE-WRITTEN.         MARCH 27, 2003.
+      ******************************************************************
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.              *
+      *                                                                *
+      *REMARKS.              THIS PROGRAM WILL READ THROUGH THE        *
+      *                      MATERIAL ACCUM DATA SET BY CLASS AND      *
+      *                      COMPUTE A NEW BEGINNING BALANCE FOR EACH  *
+      *                      CORPORATE CODE IN SPECIFIC CLASSES.       *
+      *                      THIS DATA WILL BE KEPT IN A FILE WITH     *
+      *                      AN ACCOUNTING MONTH FIELD. THE FILE       *
+      *                      CAN BE USED BY AUDITORS TO VALIDATE       *
+      *                      MONTH END MATERIAL CODE BALANCES.         *
+      *                                                                *
+      ******************************************************************
+      *    03/25/2003   BE GEISER                                      *
+      *      BRAND SPANKING NEW PROGRAM                                *
+      ******************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      AS-400.
+       OBJECT-COMPUTER.      AS-400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MMATL-ACCUM-I
+               ASSIGN TO DATABASE-MCFLCA0601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DCODE-I
+               ASSIGN TO DATABASE-MCFLCS3402
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MACCOUNT-INFO-I
+               ASSIGN TO DATABASE-MCFLCA0101
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT CSASBAL-O
+               ASSIGN TO DATABASE-MCFLCA1301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  MMATL-ACCUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MMATL-ACCUM-REC-I.
+           COPY DDS-MCRPCA0600  OF MCFLCA0601.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DCODE-I
+           LABEL RECORDS ARE STANDARD.
+       01  DCODE-REC-I.
+           COPY DDS-MCRPCS3400  OF MCFLCS3402.
+
+       FD  MACCOUNT-INFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MACCOUNT-INFO-REC-I.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+       FD  CSASBAL-O
+           LABEL RECORDS ARE STANDARD.
+       01  CSASBAL-REC-O.
+           COPY DDS-MCRPCA1300  OF MCFLCA1301.
+
+
+       WORKING-STORAGE SECTION.
+
+       01  WS-WORKING-STORAGE.
+           05  PLT-CODE            PIC  X(03)  VALUE SPACES.
+           05  ACCT-MONTH          PIC  X(02)  VALUE SPACES.
+           05  ACCT-YEAR           PIC  X(02)  VALUE SPACES.
+           05  MCXCBLERR-SCOPE     PIC  X(01)  VALUE "C".
+
+       COPY SOPNRAV IN COPYLIB.
+
+
+      ************************************************************
+      **                                                        **
+      **           D A T A B A S E   B U F F E R S              **
+      **                                                        **
+      ************************************************************
+
+       COPY MATLACUM IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY DCODE    IN COPYLIB.
+
+       COPY MACTINFO IN COPYLIB.
+
+       COPY CSASBAL  IN COPYLIB.
+
+      **********************************************************
+      *              D A T A    B A S E                        *
+      **********************************************************
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1     PIC X(01)  VALUE "0".
+           05  FILE-STATUS-2     PIC X(01)  VALUE "0".
+
+       COPY DBSTAT   IN COPYLIB.
+       COPY DBCSACCT IN COPYLIB.
+
+       01  IMAGE-ARGS.
+           05  MATL-CODE-ARG     PIC X(08)  VALUE SPACES.
+           05  MSTR-CODE-ARG.
+               10  MSTR-CODE-1-4 PIC X(04)  VALUE SPACES.
+               10  FILLER        PIC X(03)  VALUE SPACES.
+           05  CLASS-ARG         PIC X(04)  VALUE SPACES.
+           05  MACCT-KEY         PIC X(04)  VALUE SPACES.
+
+      *******************************************************
+      *   PARAMETERS USED IN 'TBLOWUP' ROUTINE              *
+      *******************************************************
+
+       COPY TBLOWUP IN COPYLIB.
+
+      *******************************************************
+      *   PROCEDURE DIVISION                                *
+      *******************************************************
+       PROCEDURE DIVISION.
+
+       0000-START-HERE.
+      *INITIALIZATION.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+           PERFORM 9999-OPEN-FILES.
+           PERFORM 0100-GET-MACCOUNT-INFO.
+           PERFORM 9999-INIT-MMATL-ACCUM-I.
+           PERFORM 0400-GET-MMATL-ACCUM.
+
+      *MAINLINE.
+           PERFORM 0200-PROCESS-DETAIL
+               UNTIL END-OF-FILE.
+
+      *FINALIZATION.
+           PERFORM 9999-CLOSE-FILES.
+           GOBACK.
+
+
+      *********************************************************
+      **   GET PLANT CODE, ACCOUNTING MONTH AND YEAR TO PLACE *
+      **   ON EVERY OUTPUT RECORD.                            *
+      *********************************************************
+       0100-GET-MACCOUNT-INFO.
+           MOVE "PLT "                       TO MACCT-KEY.
+           PERFORM 9999-DBGET-MACCOUNT-I.
+           IF GOOD-CALL
+               MOVE MACCT-PLT-CODE           TO PLT-CODE
+           ELSE
+               MOVE MACCT-KEY                TO BU-DISPLAY-FLD (1)
+               MOVE "DBGET MACCOUNT-INFO1"   TO BU-DISPLAY-MSG
+               PERFORM 9990-BLOWUP.
+
+
+           MOVE "MY  "                       TO MACCT-KEY.
+           PERFORM 9999-DBGET-MACCOUNT-I.
+           IF GOOD-CALL
+               MOVE MACCT-MONTH              TO ACCT-MONTH
+               MOVE MACCT-YEAR               TO ACCT-YEAR
+           ELSE
+               MOVE MACCT-KEY                TO BU-DISPLAY-FLD (1)
+               MOVE "DBGET MACCOUNT-INFO2"   TO BU-DISPLAY-MSG
+               PERFORM 9990-BLOWUP.
+
+
+      ***********************************************************
+      **   CONTROL READING THROUGH MATERIAL ACCUM FILE, PROCESS *
+      **   ONLY THOSE CODES WITH A VAILD RAW MATERIAL CLASS     *
+      ***********************************************************
+
+       0200-PROCESS-DETAIL.
+           IF (MATL-CLASS > 099 AND MATL-CLASS < 200) OR
+              (MATL-CLASS > 399 AND MATL-CLASS < 500)
+
+              MOVE MATL-STORES-CODE        TO MSTR-CODE-ARG
+              IF MSTR-CODE-1-4 = "ACCR" OR "INTR" OR "OPNR"
+                  NEXT SENTENCE
+              ELSE
+                  PERFORM 0600-BUILD-CBAL-REC.
+
+           PERFORM 0400-GET-MMATL-ACCUM.
+
+
+      ********************************************************
+      **   GET THE NEXT MATERIAL ACCUM RECORD                *
+      ********************************************************
+       0400-GET-MMATL-ACCUM.
+           PERFORM 9999-DBGET-MMATL-ACCUM-I.
+           IF GOOD-CALL OR END-OF-FILE
+               NEXT SENTENCE
+           ELSE
+               MOVE MATL-STORES-CODE    TO BU-DISPLAY-FLD (1)
+               MOVE "DBGET MMATL-ACCUM * 400-GMA" TO BU-DISPLAY-MSG
+               PERFORM 9990-BLOWUP.
+
+
+      ********************************************************
+      **   BUILD AND CALCULATE THE OUTPUT RECORD             *
+      ********************************************************
+       0600-BUILD-CBAL-REC.
+
+           MOVE MATL-STORES-CODE        TO SOPNRAV-MATL-CODE
+                                           BU-DISPLAY-FLD (1).
+           PERFORM 9999-DBGET-MSTORERM-I.
+           PERFORM 9999-DBGET-DCODE-I.
+      ********************************************************
+      **   CALL 'SOPNRAV' TO GET STOREROOM OPEN BALANCES     *
+      ********************************************************
+           CALL "SOPNRAV" USING ACCTG-BASE,
+                                SOPNRAV-PARMS,
+                                STATUS-AREA,
+                                BU-DISPLAY-MSG,
+                                BU-DISPLAY-FLDS.
+
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE ZEROS               TO S-STR-OPEN-RCVR-UNITS
+                                           S-STR-OPEN-INV-UNITS
+                                           S-STR-OPEN-RCVR-DLRS
+                                           S-STR-OPEN-INV-DLRS.
+
+           MOVE PLT-CODE                TO CBAL-PLT-CODE.
+           MOVE ACCT-MONTH              TO CBAL-ACCT-MONTH.
+           MOVE ACCT-YEAR               TO CBAL-ACCT-YEAR.
+           MOVE MATL-CLASS              TO CBAL-ACCT-CLASS.
+           MOVE MATL-STORES-CODE        TO CBAL-CORP-CODE.
+
+           COMPUTE CBAL-END-BAL-DOLLARS ROUNDED = MATL-BEG-BAL-DOLLARS
+                                                + S-STR-OPEN-RCVR-DLRS
+                                                + S-STR-OPEN-INV-DLRS.
+
+           COMPUTE CBAL-END-BAL-UNITS = MATL-BEG-BAL-UNITS
+                                      + S-STR-OPEN-RCVR-UNITS
+                                      + S-STR-OPEN-INV-UNITS.
+
+           MOVE MATL-UNIT-MEASURE       TO CBAL-UM.
+           MOVE STR-AVG-COST            TO CBAL-AVG-COST.
+           MOVE STR-STD-COST            TO CBAL-STD-COST.
+           MOVE STR-CONS-IND            TO CBAL-CONSIGNED-FLAG.
+           MOVE CODE-KEYWORD-MOD        TO CBAL-KEYWORD-MOD.
+
+           PERFORM 9999-DBUPDATE-CSASBAL-O.
+
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               MOVE "DBUPDATE CSASBAL * 600-" TO BU-DISPLAY-MSG
+               PERFORM 9990-BLOWUP.
+
+      ***************************************************************
+      **   CALL 'TBLOWUP' WHEN A ERROR OCCURS.                     **
+      ***************************************************************
+       9990-BLOWUP.
+
+           MOVE "TCSASBAL"   TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING  ACCTG-BASE,
+                                 BU-PGM-NAME,
+                                 STATUS-AREA,
+                                 DUMMY-VIEW-AREA,
+                                 FILE-STATUS,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+
+      ***************************************************************
+      **   DATABASE CALLS                                          **
+      ***************************************************************
+
+       9999-INIT-MMATL-ACCUM-I.
+           MOVE SPACES TO MATLCODE OF MMATL-ACCUM-REC-I.
+           START MMATL-ACCUM-I KEY >= MATLCODE OF MMATL-ACCUM-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-DBGET-MMATL-ACCUM-I.
+           MOVE 0 TO COND-WORD.
+           READ MMATL-ACCUM-I NEXT INTO BUF-MATLACUM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1" OR FILE-STATUS = "46"
+               MOVE 11 TO COND-WORD
+           ELSE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD.
+
+       9999-DBGET-MACCOUNT-I.
+           MOVE 0 TO COND-WORD.
+           MOVE MACCT-KEY TO INFOKEY OF MACCOUNT-INFO-REC-I.
+           READ MACCOUNT-INFO-I INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD.
+
+       9999-DBGET-MSTORERM-I.
+           MOVE 0 TO COND-WORD.
+           MOVE MSTR-CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+              INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE ZEROS  TO COND-WORD
+                              STR-STD-COST
+                              STR-AVG-COST
+               MOVE SPACES TO STR-CONS-IND
+           ELSE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD.
+
+           IF COND-WORD NOT = 0
+               MOVE "GET MSTORERM" TO BU-DISPLAY-MSG
+               GO TO 9990-BLOWUP.
+
+       9999-DBGET-DCODE-I.
+           MOVE 0 TO COND-WORD.
+           MOVE MSTR-CODE-ARG TO CORPCDE OF DCODE-REC-I.
+           READ DCODE-I INTO BUF-DCODE
+              INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE ZERO           TO COND-WORD
+               MOVE "MISSING DESC" TO CODE-KEYWORD-MOD
+           ELSE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD.
+
+           IF COND-WORD NOT = 0
+               MOVE "GET DCODE" TO BU-DISPLAY-MSG
+               GO TO 9990-BLOWUP.
+
+       9999-DBUPDATE-CSASBAL-O.
+           MOVE 0 TO COND-WORD.
+           WRITE CSASBAL-REC-O FROM BUF-CSASBAL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-OPEN-FILES.
+           OPEN INPUT MMATL-ACCUM-I
+                      MSTORERM-I
+                      DCODE-I
+                      MACCOUNT-INFO-I.
+           OPEN I-O   CSASBAL-O.
+
+       9999-CLOSE-FILES.
+           CLOSE      MMATL-ACCUM-I
+                      MSTORERM-I
+                      DCODE-I
+                      MACCOUNT-INFO-I
+                      CSASBAL-O.
+

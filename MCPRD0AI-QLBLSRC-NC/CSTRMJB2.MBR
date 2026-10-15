@@ -1,0 +1,314 @@
+001100 IDENTIFICATION DIVISION.
+001200 PROGRAM-ID.          CSTRMJB2.
+001300 AUTHOR.              C HILLES.
+001400 DATE-WRITTEN.        02/23/90.
+001500 DATE-COMPILED.
+001700
+001900
+002000*    THIS SUBPROGRAM IS THE IBM VERSION OF THE STREAM JOB
+002100*    SUBPROGRAM.  THERE IS ALSO 'TSTRMJOB' WHICH USES THE
+002200*    'SBMJOB' COMMAND (SUBMIT JOB): BUT THAT ONE IS NO GOOD
+002300*    BECAUSE YOU CAN'T HAVE 'ACCEPT' STATMENTS IN YOUR JOB,
+002400*    YOU CAN ONLY PASS THE INFO TO THE PROGRAM USING PARAMETERS.
+002500*    THEN YOU HAVE TO ADD PARAMETERS AND A LINKAGE SECTION TO
+002600*    YOUR PROGRAM, AND THE PARAMETERS ARE LIMITED IN SIZE.
+002700*    WITH THIS SUBPROGRAM, WE USE THE 'START DATABASE READER'    NG
+002800*    COMMAND, WHICH USES THE CL SOURCE COMMANDS RATHER THAN A
+002900*    COMPILED CL PROGRAM.  WITH THIS COMMAND WE CAN BUILD UP THE S,
+003000*    JOB JUST LIKE ON THE HP, WITH ACCEPT LINES IN THE JOB STREAM
+003100*    THAT CAN BE ACCEPTED BY THE JOB PROGRAM.
+003200
+003300*   PARAMETERS
+003400*   ----------
+003500*
+      *   NOTE!  THE JOB IS BUILT UP FROM THE PARAMETERS PASSED
+      *   IN THE ORDER THE PARAMETERS COME IN.  HERE IS THE ORDER
+      *   OF STUFF THAT WILL BE PUT IN THE JOB FILE:
+      *     1.  PROGRAM-CREATED JOBCARD (IF JOBCARD FLAG SET)
+      *     2.  TOP-FILE                (IF TOP-FILE NAME NOT SPACES)
+      *     3.  RUN-CARDS               (ANY RUN CARD > SPACES)
+      *     4.  DATA-FILE               (IF DATA-FILE NAME NOT SPACES)
+      *     5.  BOTTOM-FILE             (IF BOTTOMFILE NAME NOT SPACES)
+      *
+      *   CSTRMJOB-RET-CODE
+      *     RETURNS '00' OF SUCCESSFUL, SOMETHING ELSE IF NOT
+      *   CSTRM-JOBCARD-FLAG
+      *     PUT A 'Y' HERE IF YOU WANT 'CSTRMJB2' TO AUTOMATICALLY
+      *     CREATE THE JOBCARD FOR YOU, ANYTHING ELSE IF YOU ARE
+      *     PASSING THE JOBCARD EITHER IN TOP-FILE OR PRE-RUN CARDS.
+      *     NOTE: IF YOU PUT A 'Y' HERE, THE END-OF-JOB CARD WILL
+      *     ALSO BE AUTOMATICALLY WRITTEN.
+      *   CSTRM-TOP-FILE
+      *     THIS IS THE NAME OF A MEMBER IF FILE 'QJOBSRC'.  IF THIS
+      *     MEMBER NAME IS NOT SPACES, THEN THIS FILE BECOMES THE
+      *     BEGINNING OF THE JOB TO BE STREAMED.
+      *   CSTRM-RUN-CARDS
+      *     YOU CAN PASS UP TO 30 RUN CARDS.  NORMALLY YOU WOULD
+      *     USE EITHER TOP/BOTTOM FILES, OR RUN CARDS, NOT
+      *     BOTH (BUT YOU CAN IF YOU WANT).  ANY OF THESE RUN
+      *     CARDS THAT IS NOT SPACES IS TACKED ON TO THE JOB STREAM.
+      *   CSTRM-DATA-FILE
+      *     THIS IS A PHYSICAL FILE THAT YOU CAN PASS IF YOU WANT.
+      *     THIS WOULD BE USED IF YOU HAD A JOB THAT USED A VARIABLE
+      *     NUMBER OF INPUT CARDS.  FOR EXAMPLE, IN THE STOREROOM
+      *     LABEL PROGRAM, THEY CAN USE THE SINGLE CODE OPTION
+      *     TO INPUT ANY NUMBER OF CORP CODES TO PRINT LABELS FOR.
+      *     THESE WOULD BE WRITTEN TO A TEMPORARY FILE AND WHEN
+      *     'CSTRMJB2' IS CALLED, THAT TEMPORARY FILE WOULD BE
+      *     APPENDED AFTER THE RUN CARD.  THIS IS ALWAYS ASSUMED TO
+      *     BE A TEMPORARY FILE.  FOR IBM, CSTRMJB2 WILL PREFIX
+      *     "QTEMP/"
+      *   CSTRM-BOTTOM-FILE
+      *     LIKE THE TOP-FILE, THIS IS A MEMBER NAME IN 'QJOBSRC'
+      *     THAT CONTAINS ANY STATEMENTS YOU WANT IN THE JOB
+      *     FOLLOWING THE RUN CARD.  IF SPACES THIS IS IGNORED.
+      *
+      *C 09/16/96  JEFF BUNGO
+      *C    WHEN WRITTING THE RUN CARDS, WRITE THE RUN CARDS EVEN
+      *C    IF SPACES.  SOME PROGRAMS' ACCEPT STATEMENTS ARE
+      *C    EXPECTING BLANK DATA LINES, IF THESE ARE REMOVED THEN
+      *C    THE ACCEPTS IN THE PROGRAM WILL BLOW UP.
+      *C
+010940
+011000 ENVIRONMENT DIVISION.
+011100 CONFIGURATION SECTION.
+011200 SOURCE-COMPUTER.  HP-3000.
+011300 OBJECT-COMPUTER.  HP-3000.
+011400 INPUT-OUTPUT SECTION.
+011500 FILE-CONTROL.
+           SELECT TOP-BOTTOM-FILE ASSIGN TO DATABASE-TOPFILE.
+           SELECT DATA-FILE       ASSIGN TO DATABASE-DATAFILE.
+           SELECT JOB-FILE        ASSIGN TO DATABASE-JOBFILE.
+011800
+011900 DATA DIVISION.
+012000 FILE SECTION.
+       FD  TOP-BOTTOM-FILE
+           RECORD CONTAINS 92 CHARACTERS.
+       01  TOP-BOTTOM-FILE-REC.
+           05  FILLER                    PIC X(12).
+           05  TOP-BOTTOM-FILE-DATA.
+               10  JOBCARD-STUFF-1       PIC X(14).
+               10  CHK-JOBNAME           PIC X(8).
+               10  JOBCARD-STUFF-2       PIC X(58).
+
+       FD  DATA-FILE
+           RECORD CONTAINS 80 CHARACTERS.
+       01  DATA-FILE-REC                 PIC X(80).
+
+       FD  JOB-FILE
+           RECORD CONTAINS 92 CHARACTERS.
+       01  JOB-FILE-REC.
+           05  JOB-SEQ-NUMBER-1          PIC 9(4).
+           05  JOB-SEQ-NUMBER-2          PIC 9(2).
+           05  JOB-DATE                  PIC X(6).
+           05  JOB-FILE-DATA             PIC X(80).
+
+013200 WORKING-STORAGE SECTION.
+       01  SAVE-DATE                     PIC X(6).
+       01  SEQ-CNT                       PIC 9(4).
+       01  OVERRIDE-FILE-NAME            PIC X(26).
+       01  SUB                           PIC S9(4) BINARY.
+       01  END-OF-FILE                   PIC X(1).
+       01  WORK-LINE                     PIC X(80).
+       01  JB-LIB                        PIC X(10) VALUE SPACES.
+       01  JB-FILE                       PIC X(10) VALUE "QJOBSRC".
+       01  JB-OBJ-TYPE                   PIC X(10) VALUE "*FILE".
+       01  JB-STATUS                     PIC X(2).
+       01  UNSTRING-HOLD-AREA            PIC X(80) VALUE SPACES.
+
+       01  JB-MEMBER.
+           05  FILLER                    PIC X(2)  VALUE "JB".
+           05  JB-TIME                   PIC 9(8).
+
+       COPY COMMAND IN COPYLIB.
+019100 LINKAGE SECTION.
+       COPY CSTRMJB2 IN COPYLIB.
+       COPY VCOMLINK IN COPYLIB.
+019200
+021700 PROCEDURE DIVISION USING CSTRMJB2-PARMS VIEW-COMAREA.
+       1000-HOUSEKEEP.
+           MOVE ZERO                     TO  SEQ-CNT.
+           ACCEPT SAVE-DATE FROM DATE.
+           ACCEPT JB-TIME FROM TIME.
+           MOVE "00"                     TO  CSTRM-RET-CODE.
+
+      *------ MAKE SURE THE 'JB' MEMBER TO CREATE DOESN'T ALREADY
+      *------ EXIST.
+           MOVE "00"                     TO  JB-STATUS.
+           MOVE ZERO                     TO  SUB.
+           PERFORM UNTIL JB-STATUS > "00" OR SUB > 900
+               CALL "CCHKOBJM" USING JB-LIB, JB-FILE, JB-MEMBER,
+                 JB-OBJ-TYPE, JB-STATUS
+               IF JB-STATUS = "00"
+                   ADD 1                 TO  JB-TIME
+                   ADD 1                 TO  SUB
+               END-IF
+           END-PERFORM.
+
+      *------ FIRST CREATE THE MEMBER FOR THE JOB FILE
+           MOVE SPACES                   TO  COMMAND.
+           STRING "ADDPFM FILE(QJOBSRC) MBR(" DELIMITED BY SIZE,
+                   JB-MEMBER DELIMITED BY SIZE,
+                   ")" DELIMITED BY SIZE
+               INTO COMMAND.
+           CALL "QCMDEXC" USING COMMAND, COMMAND-LEN.
+
+           MOVE SPACES                   TO  COMMAND.
+           STRING "OVRDBF FILE(JOBFILE) TOFILE(QJOBSRC)",
+                 " MBR(", JB-MEMBER, ")" DELIMITED BY SIZE
+              INTO COMMAND.
+           CALL "QCMDEXC" USING COMMAND, COMMAND-LEN.
+           OPEN OUTPUT JOB-FILE.
+
+021800 6000-MAIN.
+      *------ IF THEY WANT TO AUTO-CREATE THE JOBCARD, WE USE THE
+      *------ SOURCE FILE "JOBCARD" (JUST LIKE THE TOP AND BOTTOM
+      *------ FILES) BUT WE STRING IN THE JOBNAME TO THE JOB CARD
+           IF CSTRM-JOBCARD-FLAG = "Y"
+               MOVE "JOBCARD"            TO  OVERRIDE-FILE-NAME
+               PERFORM 9010-OVERRIDE-TOP-BOTTOM
+               OPEN INPUT TOP-BOTTOM-FILE
+               PERFORM 6900-WRITE-JOBCARD THRU 6990-WJ-X
+               CLOSE TOP-BOTTOM-FILE.
+
+           IF CSTRM-TOP-FILE > SPACES
+               MOVE CSTRM-TOP-FILE       TO  OVERRIDE-FILE-NAME
+               PERFORM 9010-OVERRIDE-TOP-BOTTOM
+               OPEN INPUT TOP-BOTTOM-FILE
+               PERFORM 6500-WRITE-TO-JOBREC THRU 6590-WTJ-X
+               CLOSE TOP-BOTTOM-FILE.
+
+           PERFORM 6600-WRITE-RUN-CARDS THRU 6690-WRC-X.
+
+           IF CSTRM-DATA-FILE > SPACES
+               PERFORM 6700-WRITE-DATA-FILE THRU 6790-WDF-X.
+
+           IF CSTRM-BOTTOM-FILE > SPACES
+               MOVE CSTRM-BOTTOM-FILE    TO  OVERRIDE-FILE-NAME
+               PERFORM 9010-OVERRIDE-TOP-BOTTOM
+               OPEN INPUT TOP-BOTTOM-FILE
+               PERFORM 6500-WRITE-TO-JOBREC THRU 6590-WTJ-X
+               CLOSE TOP-BOTTOM-FILE.
+
+           IF CSTRM-JOBCARD-FLAG = "Y"
+               MOVE "//ENDBCHJOB"        TO  JOB-FILE-DATA
+               PERFORM 9000-WRITE-JOB-REC.
+
+           CLOSE JOB-FILE.
+
+      **********************************************************
+      *       NOW STREAM THE JOB, THEN DELETE THE FILE MEMBER! *
+      **********************************************************
+           MOVE SPACES                   TO  COMMAND.
+           STRING "STRDBRDR FILE(*LIBL/QJOBSRC) MBR(" DELIMITED BY SIZE
+                  JB-MEMBER DELIMITED BY SPACES,
+                  ") JOBQ(HBATCH) RDR(" DELIMITED BY SIZE,
+                  JB-MEMBER DELIMITED BY SPACES,
+                  ")" DELIMITED BY SIZE
+              INTO COMMAND.
+           CALL "QCMDEXC" USING COMMAND, COMMAND-LEN.
+
+      *    MOVE SPACES TO COMMAND.
+      *    STRING "RMVM FILE(QJOBSRC) MBR(JB",
+      *           JB-MEMBER, ")" DELIMITED BY SIZE INTO COMMAND.
+      *    CALL "QCMDEXC" USING COMMAND, COMMAND-LEN.
+      *
+           GOBACK.
+
+       6500-WRITE-TO-JOBREC.
+           MOVE "N"                      TO  END-OF-FILE.
+           PERFORM UNTIL END-OF-FILE = "Y"
+               READ TOP-BOTTOM-FILE AT END
+                   MOVE "Y"              TO  END-OF-FILE
+               END-READ
+               IF END-OF-FILE = "N"
+                   MOVE TOP-BOTTOM-FILE-DATA TO JOB-FILE-DATA
+                   PERFORM 9000-WRITE-JOB-REC
+               END-IF
+           END-PERFORM.
+       6590-WTJ-X.
+           EXIT.
+
+       6600-WRITE-RUN-CARDS.
+           MOVE ZERO                     TO  SUB.
+           PERFORM 30 TIMES
+               ADD 1                     TO  SUB
+      *        IF CSTRM-RUN-CARD (SUB) > SPACES
+                 IF CSTRM-RUN-CARD-1-6(SUB) = ":RUN X" OR "!RUN X"
+                   MOVE "CALL T" TO CSTRM-RUN-CARD-1-6(SUB)
+                   UNSTRING CSTRM-RUN-CARD(SUB) DELIMITED BY "."
+                     INTO UNSTRING-HOLD-AREA
+                   END-UNSTRING
+                   MOVE UNSTRING-HOLD-AREA TO CSTRM-RUN-CARD
+                 END-IF
+                 MOVE CSTRM-RUN-CARD (SUB) TO JOB-FILE-DATA
+                 PERFORM 9000-WRITE-JOB-REC
+      *        END-IF
+           END-PERFORM.
+       6690-WRC-X.
+           EXIT.
+
+       6700-WRITE-DATA-FILE.
+           MOVE SPACES                   TO  COMMAND.
+           STRING "OVRDBF FILE(DATAFILE) TOFILE(QTEMP/"
+                  DELIMITED BY SIZE,
+                  CSTRM-DATA-FILE DELIMITED BY SPACES,
+                  ")" DELIMITED BY SIZE
+              INTO COMMAND.
+           CALL "QCMDEXC" USING COMMAND, COMMAND-LEN.
+
+           MOVE "N"                      TO  END-OF-FILE.
+           OPEN INPUT DATA-FILE.
+           PERFORM UNTIL END-OF-FILE = "Y"
+               READ DATA-FILE AT END
+                   MOVE "Y"              TO  END-OF-FILE
+               END-READ
+               IF END-OF-FILE = "N"
+                   MOVE DATA-FILE-REC    TO  JOB-FILE-DATA
+                   PERFORM 9000-WRITE-JOB-REC
+               END-IF
+           END-PERFORM.
+
+           CLOSE DATA-FILE.
+       6790-WDF-X.
+           EXIT.
+
+       6900-WRITE-JOBCARD.
+           MOVE "N"                      TO  END-OF-FILE.
+           PERFORM UNTIL END-OF-FILE = "Y"
+               READ TOP-BOTTOM-FILE AT END
+                   MOVE "Y"              TO  END-OF-FILE
+               END-READ
+               IF END-OF-FILE = "N"
+                   IF CHK-JOBNAME = "JOBNAME."
+                       STRING JOBCARD-STUFF-1 DELIMITED BY SIZE,
+                       CSTRM-JOBNAME DELIMITED BY SPACES,
+                       JOBCARD-STUFF-2 DELIMITED BY SIZE
+                          INTO WORK-LINE
+                       MOVE WORK-LINE    TO  JOB-FILE-DATA
+                       PERFORM 9000-WRITE-JOB-REC
+                   ELSE
+                       MOVE TOP-BOTTOM-FILE-DATA TO JOB-FILE-DATA
+                       PERFORM 9000-WRITE-JOB-REC
+                   END-IF
+               END-IF
+           END-PERFORM.
+       6990-WJ-X.
+           EXIT.
+
+       9000-WRITE-JOB-REC.
+           ADD 1                         TO  SEQ-CNT.
+           MOVE SEQ-CNT                  TO  JOB-SEQ-NUMBER-1.
+           MOVE ZERO                     TO  JOB-SEQ-NUMBER-2.
+           MOVE SAVE-DATE                TO  JOB-DATE.
+           WRITE JOB-FILE-REC.
+
+       9010-OVERRIDE-TOP-BOTTOM.
+           MOVE SPACES                   TO  COMMAND.
+           STRING "OVRDBF FILE(TOPFILE) TOFILE(QJOBSRC) MBR("
+                     DELIMITED BY SIZE,
+                  OVERRIDE-FILE-NAME DELIMITED BY SPACES,
+                  ")" DELIMITED BY SIZE
+              INTO COMMAND.
+           CALL "QCMDEXC" USING COMMAND, COMMAND-LEN.
+

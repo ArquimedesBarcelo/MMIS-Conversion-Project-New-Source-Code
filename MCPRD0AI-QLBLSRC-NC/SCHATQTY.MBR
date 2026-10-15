@@ -1,0 +1,682 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SCHATQTY.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER. AS400.
+       OBJECT-COMPUTER. AS400.
+
+      **************************************************************
+      *  SCHATQTY
+      *     THIS PROGRAM, WHEN PASSED A CORPORATE CODE WILL:
+      *     1) DISPLAY A LIST OF CHAT NUMBERS THAT HAVE BEEN ASSIGNED
+      *         TO THAT CORP CODE;
+      *     2) AND GIVE THE USER THE OPTION TO ASSIGN A QUANTITY TO
+      *         CHAT NUMBERS.
+      *
+      *     THIS ASSIGNMENT OF CHAT NUMBERS IS DONE AT THE CORPORATE
+      *      MAINFRAME IN THE CHESS SYSTEM.  THE FILE, WHICH WE WILL
+      *      READ IN THE PROGRAM, MCFPCS5500 IS DOWNLOADED FROM CHESS
+      *      TO EACH PLANT.
+      **************************************************************
+      *C 06/12/96   JEFF BUNGO
+      *C   EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C   RECOMPILE PROGRAM TO PICK UP NEW FILE FORMATS.
+      ***************************************************************
+
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZPURORD-SI
+               ORGANIZATION IS TRANSACTION
+               FILE STATUS IS FILE-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+
+           SELECT DCHATNO
+               ASSIGN TO DATABASE-MCFLCS5501
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC
+               ASSIGN TO DATABASE-MCFLCS1601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                   PIC X(2000).
+
+       FD  DCHATNO
+           LABEL RECORDS ARE STANDARD.
+       01  DCHATNO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS5501.
+
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0501.
+
+       FD  DDAILYTC
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS1601.
+
+       WORKING-STORAGE SECTION.
+
+       77  BASE                       PIC X(10).
+       77  MAX-ENTRIES                PIC 9(2)        VALUE 5.
+       77  SCREEN-SUB                 PIC 9(2).
+       77  WS-CONV-POUNDS             PIC S9(11)V9(4) VALUE ZEROS.
+       77  WS-CONV-GALLONS            PIC S9(11)V9(4) VALUE ZEROS.
+       77  TRANS-WRITTEN-SW           PIC X(01)       VALUE "N".
+
+       01  TEST-CORP-CODE             PIC X(08).
+
+       01  WS-CHAT-TRANS-DATE.
+           05  WS-CT-YR               PIC X(02).
+           05  WS-CT-MO               PIC X(02).
+           05  WS-CT-DY               PIC X(02).
+
+       01  WS-CHAT-TRANS-TIME.
+           05  FILLER                 PIC X(06) VALUE "000001".
+
+       01  PLT-ARG                    PIC X(4)  VALUE "P 01".
+
+       COPY CATREAD  OF COPYLIB.
+       COPY DCHATNO  IN COPYLIB.
+       COPY MSTORERM IN COPYLIB.
+       COPY MPLTINFO IN COPYLIB.
+       COPY DDAILYTC IN COPYLIB.
+       COPY TC341    IN COPYLIB.
+       COPY TUMCF    IN COPYLIB.
+       COPY TDATECHK IN COPYLIB.
+       COPY LANGSUB  IN COPYLIB.
+       COPY CPYIND   OF COPYLIB.
+       COPY IOFEEDBACK OF COPYLIB.
+       COPY WSCONTROL  OF COPYLIB.
+       COPY TBLOWUP    OF COPYLIB.
+
+       01  COUNTERS.
+           05  CURRENT-SCREEN-NO         PIC 99 COMP-3 VALUE 0.
+           05  ENTRIES-ON-SCREEN         PIC 99 COMP-3 VALUE 0.
+           05  SCREEN-INDEX              PIC 99 COMP-3 VALUE 1.
+
+       COPY DBSTAT IN COPYLIB.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X     VALUE "0".
+           05  FILE-STATUS-2             PIC X     VALUE "0".
+
+       01  SWITCHES.
+           05  EOF-SW                    PIC X     VALUE "N".
+           05  TOF-SW                    PIC X     VALUE "N".
+           05  FULL-SCREEN-SW            PIC X     VALUE "N".
+           05  TOP-OF-CURRENT-SCREEN-SW  PIC X     VALUE "N".
+
+       01  WS-DISPLAY-AREA.
+           05    FILLER                  PIC XX.
+           05  WS-DISPLAY-MSG            PIC X(27).
+           05    FILLER                  PIC XX.
+           05  WS-DISPLAY-STAT           PIC S9(4).
+           05    FILLER                  PIC XX.
+           05  WS-DISPLAY-FLD            PIC X(14).
+           05    FILLER                  PIC XX.
+
+       01  DEFAULT-MESSAGE.
+           05  FILLER                  PIC X(74)  VALUE
+                 "ERROR WITH CORPCODE/CHAT NO - PLEASE RETRY".
+
+       01  GOOD-TRANS-WRITE-MSG.
+           05  FILLER                    PIC X(38)  VALUE
+                 "CHAT NUMBER TRANSACTIONS FOR CORPCODE ".
+           05  GTWM-CORP-CODE            PIC X(07).
+           05  FILLER                    PIC X(21)  VALUE
+                 " WRITTEN SUCCESSFULLY".
+
+       01  MESSAGE-BUFFER.
+           05  FILLER                    PIC X(80).
+
+       01  WS-SCREEN.
+           05  DISP-CORP-CODE            PIC X(7).
+           05  DISP-PRIM-UM              PIC X(2).
+           05  DISP-DATE.
+               10  DISP-DATE-YR          PIC X(2).
+               10  FILLER                PIC X(1).
+               10  DISP-DATE-MO          PIC X(2).
+               10  FILLER                PIC X(1).
+               10  DISP-DATE-DY          PIC X(2).
+           05  DISP-ENTRIES.
+               10  DISP-ENTRY OCCURS 5 TIMES.
+                   15  DISP-CHAT-QTY     PIC S9(08).
+                   15  DISP-CHAT-NO      PIC X(6).
+                   15  DISP-MFR          PIC X(26).
+                   15  DISP-TRADE        PIC X(79).
+           05  DISP-COMMAND-LINE         PIC X(79).
+           05  DISP-MESSAGE-LINE         PIC X(79).
+
+      ***************************************
+      *     L I N K A G E  S E C T I O N    *
+      ***************************************
+       LINKAGE SECTION.
+
+       01  PASS-CORP-CODE        PIC X(07).
+
+       COPY VCOMLINK    OF COPYLIB.
+
+       PROCEDURE DIVISION  USING
+                                 PASS-CORP-CODE,
+                                 VIEW-COMAREA.
+
+       START-PROGRAM.
+           PERFORM 1-HOUSEKEEPING THRU 1-EXIT.
+           PERFORM 6-MAIN         THRU 6-EXIT
+           PERFORM 2-END-OF-JOB   THRU 2-EXIT.
+
+       1-HOUSEKEEPING.
+           MOVE "CHATQTY" TO VIEW-NFNAME.
+           MOVE SPACES TO BUF-DCHATNO.
+           MOVE 0      TO CURRENT-SCREEN-NO.
+           MOVE 0      TO ENTRIES-ON-SCREEN.
+           MOVE 1      TO SCREEN-INDEX.
+           MOVE ZEROS  TO STATUS-AREA.
+           MOVE ZEROS  TO FILE-STATUS.
+           MOVE SPACES TO WS-SCREEN.
+           MOVE "N"    TO   EOF-SW,
+                            TOF-SW,
+                            FULL-SCREEN-SW,
+                            TOP-OF-CURRENT-SCREEN-SW.
+           OPEN I-O  DDAILYTC DISPLAY-FILE.
+           OPEN INPUT DCHATNO MSTORERM MPLTINFO.
+           MOVE SPACES       TO BU-DISPLAY-MSG.
+
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  WS-CHAT-TRANS-DATE.
+
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "DBGET ERR MPLTINFO" TO BU-DISPLAY-MSG
+              GO TO 2-BLOWUP.
+
+       1-EXIT.
+           EXIT.
+
+       2-END-OF-JOB.
+           CLOSE DCHATNO MSTORERM MPLTINFO DDAILYTC.
+           CLOSE DISPLAY-FILE.
+           GOBACK.
+       2-EXIT.
+           EXIT.
+
+       2-BLOWUP.
+           MOVE "SCHATQTY" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+             VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG, BU-DISPLAY-AREA.
+
+       30-READ-FORWARD.
+           READ DCHATNO NEXT
+             INTO BUF-DCHATNO
+               AT END
+                 MOVE "Y" TO EOF-SW.
+           IF FILE-STATUS = "10" OR "14" OR "46"
+               MOVE "Y" TO EOF-SW.
+       30-EXIT.
+           EXIT.
+
+       31-READ-BACKWARD.
+           READ DCHATNO PRIOR
+             INTO BUF-DCHATNO
+               AT END
+                 MOVE "Y" TO TOF-SW.
+       31-EXIT.
+           EXIT.
+
+       6-MAIN.
+           MOVE SPACES TO WS-SCREEN.
+           MOVE PASS-CORP-CODE TO DISP-CORP-CODE
+                                  CORPCDE OF MSTORERM-REC.
+           MOVE DATE-SLASH-OUT TO DISP-DATE.
+
+           START MSTORERM KEY NOT < CORPCDE OF MSTORERM-REC
+             INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           IF FILE-STATUS NOT = "00"
+              MOVE "START ERR MSTORERM 6-MAIN" TO BU-DISPLAY-MSG
+              MOVE  PASS-CORP-CODE             TO BU-DISPLAY-FLD (1)
+              PERFORM 2-BLOWUP.
+           MOVE 0 TO COND-WORD.
+
+           READ MSTORERM NEXT INTO BUF-MSTORERM
+             AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ NXT ERR MSTORERM 6-MAIN" TO BU-DISPLAY-MSG
+              MOVE PASS-CORP-CODE                 TO BU-DISPLAY-FLD (1)
+              PERFORM 2-BLOWUP.
+
+           IF CORP-CODE = PASS-CORP-CODE
+              MOVE STR-UM TO DISP-PRIM-UM
+           ELSE
+      *M****************************************************************
+      *M   Message Set: 03   Number: 097
+      *M   CORPORATE CODE DOES NOT EXIST IN THIS STOREROOM
+      *M****************************************************************
+              MOVE   3        TO CATREAD-MSG-SET
+              MOVE  97        TO CATREAD-MSG-NUM
+              PERFORM  999-CATREAD THRU 999-CATREAD-EXIT
+              PERFORM 9999-MOVE-CATREAD-MSG THRU 9999-EXIT
+              GO TO 6-PUT-BUFFER.
+
+           PERFORM 60-START-LIST THRU 60-EXIT.
+
+       6-PUT-BUFFER.
+      *-----INITIALIZE NUMERIC SCREEN FIELD
+           MOVE 1 TO SCREEN-INDEX.
+           PERFORM UNTIL SCREEN-INDEX > MAX-ENTRIES
+              IF DISP-CHAT-QTY (SCREEN-INDEX) NOT NUMERIC
+                 MOVE ZEROS TO DISP-CHAT-QTY (SCREEN-INDEX)
+              END-IF
+              ADD 1 TO SCREEN-INDEX
+           END-PERFORM.
+      *-----TURN ON INDICATOR TO DISPLAY MESSAGE FOR TRANS MESSAGE
+           IF TRANS-WRITTEN-SW = "Y"
+              MOVE B"1" TO INDS (99)
+              MOVE "N" TO TRANS-WRITTEN-SW.
+           MOVE WS-SCREEN TO DSPLY-REC.
+
+       6-SHOW.
+           PERFORM 99-SCREEN-WRITE THRU 99-EXIT.
+
+       6-READ.
+           PERFORM 98-SCREEN-READ  THRU 98-EXIT.
+           MOVE DSPLY-REC TO WS-SCREEN.
+           MOVE SPACES TO DISP-MESSAGE-LINE.
+
+           IF VIEW-LASTKEY NOT = 3
+               MOVE 3                        TO  DATE-MODE
+               MOVE DISP-DATE                TO  DATE-VALIDATE-IN
+               CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+               IF DATE-RET-CODE = 1
+      *M****************************************************************
+      *M   Message Set: 35   Number: 028
+      *M   INVALID DATE
+      *M****************************************************************
+                  MOVE  35        TO CATREAD-MSG-SET
+                  MOVE  28        TO CATREAD-MSG-NUM
+                  PERFORM  999-CATREAD THRU 999-CATREAD-EXIT
+                  PERFORM 9999-MOVE-CATREAD-MSG THRU 9999-EXIT
+                  GO TO 6-PUT-BUFFER
+               ELSE
+                  MOVE DATE-YMD-OUT             TO  WS-CHAT-TRANS-DATE
+               END-IF
+           END-IF.
+
+       6-PROCESS.
+           IF VIEW-LASTKEY = 3
+             GO TO 6-EXIT
+           ELSE
+             IF VIEW-LASTKEY = 7
+                 PERFORM 61-PROCESS-QUANTITY THRU 61-EXIT
+                 IF TOF-SW = "Y"
+                     MOVE "Y" TO TOP-OF-CURRENT-SCREEN-SW
+                     PERFORM 60-START-LIST THRU 60-EXIT
+                     GO TO 6-PUT-BUFFER
+                 ELSE
+                     IF EOF-SW = "Y"
+                         PERFORM VARYING SCREEN-SUB FROM 1 BY 1
+                           UNTIL SCREEN-SUB > ENTRIES-ON-SCREEN
+                            MOVE B"1" TO INDS(SCREEN-SUB)
+                         END-PERFORM
+                         GO TO 6-PUT-BUFFER
+                     ELSE
+                         PERFORM 67-NEXT-SCREEN THRU 67-EXIT
+                         GO TO 6-PUT-BUFFER
+             ELSE
+               IF VIEW-LASTKEY = 6
+                 PERFORM 61-PROCESS-QUANTITY THRU 61-EXIT
+                 IF EOF-SW = "Y"
+                     MOVE PASS-CORP-CODE TO CORPCDE OF DCHATNO-REC
+                     START DCHATNO
+                         KEY > CORPCDE OF DCHATNO-REC
+                         INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                     END-START
+                     IF FILE-STATUS NOT = "00"
+                         READ DCHATNO LAST INTO BUF-DCHATNO
+                         END-READ
+                     ELSE
+                         PERFORM 31-READ-BACKWARD THRU 31-EXIT
+                     END-IF
+                     MOVE "N" TO TOP-OF-CURRENT-SCREEN-SW
+                     PERFORM 66-PREVIOUS-SCREEN THRU 66-EXIT
+                     GO TO 6-PUT-BUFFER
+                 ELSE
+                     PERFORM 66-PREVIOUS-SCREEN THRU 66-EXIT
+                     GO TO 6-PUT-BUFFER.
+
+           PERFORM 61-PROCESS-QUANTITY THRU 61-EXIT.
+           PERFORM VARYING SCREEN-SUB FROM 1 BY 1
+             UNTIL SCREEN-SUB > ENTRIES-ON-SCREEN
+             MOVE B"1" TO INDS(SCREEN-SUB)
+           END-PERFORM.
+           GO TO 6-PUT-BUFFER.
+
+       6-EXIT.
+           EXIT.
+
+       60-START-LIST.
+           MOVE PASS-CORP-CODE TO CORPCDE OF DCHATNO-REC.
+           START DCHATNO
+               KEY NOT < CORPCDE OF DCHATNO-REC
+                 INVALID KEY
+                   MOVE FILE-STATUS TO FILE-STATUS.
+
+           IF FILE-STATUS NOT = "00"
+              MOVE "START ERR DCHATNO 60-SL" TO BU-DISPLAY-MSG
+              MOVE  PASS-CORP-CODE           TO BU-DISPLAY-FLD (1)
+              PERFORM 2-BLOWUP.
+
+           PERFORM 30-READ-FORWARD THRU 30-EXIT.
+
+           IF EOF-SW = "N" AND
+            CHAT-CORP-CODE = PASS-CORP-CODE
+             PERFORM 67-NEXT-SCREEN THRU 67-EXIT
+           ELSE
+      *M****************************************************************
+      *M   Message Set: 14   Number: 126
+      *M   NO CHATNO RECORDS EXIST FOR THIS CORPORATE CODE
+      *M****************************************************************
+              MOVE  14        TO CATREAD-MSG-SET
+              MOVE 126        TO CATREAD-MSG-NUM
+              PERFORM  999-CATREAD THRU 999-CATREAD-EXIT
+              PERFORM 9999-MOVE-CATREAD-MSG THRU 9999-EXIT.
+
+       60-EXIT.
+           EXIT.
+
+       61-PROCESS-QUANTITY.
+           MOVE DSPLY-REC TO WS-SCREEN.
+           MOVE   1       TO SCREEN-INDEX.
+           PERFORM 610-CHECK-FOR-QTY THRU 610-EXIT.
+           IF TRANS-WRITTEN-SW = "Y"
+              MOVE DISP-CORP-CODE TO GTWM-CORP-CODE
+              MOVE GOOD-TRANS-WRITE-MSG TO DISP-MESSAGE-LINE.
+
+       61-EXIT.
+           EXIT.
+
+       610-CHECK-FOR-QTY.
+           IF SCREEN-INDEX > ENTRIES-ON-SCREEN  OR
+              SCREEN-INDEX > MAX-ENTRIES
+              GO TO 610-EXIT.
+
+           IF DISP-CHAT-QTY (SCREEN-INDEX) > 0 OR < 0
+              MOVE "Y" TO TRANS-WRITTEN-SW
+              PERFORM 6100-CONV-POUNDS       THRU 6100-EXIT
+              PERFORM 6101-CONV-GALLONS      THRU 6101-EXIT
+              PERFORM 6102-CUT-CHATQTY-TRANS THRU 6102-EXIT.
+           ADD 1 TO SCREEN-INDEX.
+           GO TO 610-CHECK-FOR-QTY.
+
+       610-EXIT.
+           EXIT.
+
+       6100-CONV-POUNDS.
+           IF DISP-PRIM-UM = "LB"
+              MOVE DISP-CHAT-QTY (SCREEN-INDEX) TO WS-CONV-POUNDS
+           ELSE
+      *----------  DETERMINE RECEIVED CHAT AMOUNT IN GALLONS
+              MOVE "00"                     TO  UMCF-RET-CODE
+              MOVE "LB"                     TO  UMCF-DEST-UM
+              MOVE "LB"                     TO  UMCF-SOURCE-UM
+              MOVE DISP-CHAT-QTY (SCREEN-INDEX)
+                                            TO  UMCF-SOURCE-QTY
+              CALL "TUMCF" USING UMCF-RET-CODE, STR-UM-AREA,
+                                 UMCF-QUANTITY-AREA
+              IF UMCF-RET-CODE = "NF"
+                 MOVE ZEROS                  TO WS-CONV-POUNDS
+              ELSE
+                 IF UMCF-RET-CODE = "00"
+                   MOVE UMCF-QTY-STR-UM-DEC TO WS-CONV-POUNDS
+                 ELSE
+                   MOVE "CONVERSION ERROR 6100 -POUNDS"
+                     TO BU-DISPLAY-MSG
+                   MOVE UMCF-RET-CODE        TO  BU-DISPLAY-FLD (1)
+                   PERFORM 2-BLOWUP.
+
+       6100-EXIT.
+           EXIT.
+
+       6101-CONV-GALLONS.
+           IF DISP-PRIM-UM = "GL"
+              MOVE DISP-CHAT-QTY (SCREEN-INDEX) TO WS-CONV-GALLONS
+           ELSE
+      *----------  DETERMINE RECEIVED CHAT AMOUNT IN GALLONS
+              MOVE "00"                     TO  UMCF-RET-CODE
+              MOVE "GL"                     TO  UMCF-DEST-UM
+              MOVE "GL"                     TO  UMCF-SOURCE-UM
+              MOVE DISP-CHAT-QTY (SCREEN-INDEX)
+                                            TO  UMCF-SOURCE-QTY
+              CALL "TUMCF" USING UMCF-RET-CODE, STR-UM-AREA,
+                                 UMCF-QUANTITY-AREA
+              IF UMCF-RET-CODE = "NF"
+                 MOVE ZEROS                  TO WS-CONV-GALLONS
+              ELSE
+                 IF UMCF-RET-CODE = "00"
+                   MOVE UMCF-QTY-STR-UM-DEC TO WS-CONV-GALLONS
+                 ELSE
+                   MOVE "CONVERSION ERROR 6101 -GALLONS"
+                     TO BU-DISPLAY-MSG
+                   MOVE UMCF-RET-CODE        TO  BU-DISPLAY-FLD (1)
+                   PERFORM 2-BLOWUP.
+
+       6101-EXIT.
+           EXIT.
+
+       6102-CUT-CHATQTY-TRANS.
+           MOVE SPACES                        TO BUF-DDAILYTC.
+           MOVE 1                             TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE WS-CHAT-TRANS-DATE            TO DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT     TO DDAILYTC-TIME.
+           MOVE "341"                         TO DDAILYTC-TC.
+           MOVE MPLTINFO-COMPANY              TO DDAILYTC-PLT.
+           MOVE DISP-CORP-CODE                TO TC341-CORPCODE.
+           MOVE DISP-CHAT-NO  (SCREEN-INDEX)  TO TC341-CHAT-NO.
+           MOVE DISP-CHAT-QTY (SCREEN-INDEX)  TO TC341-QTY-RCVD.
+           MOVE DISP-PRIM-UM                  TO TC341-UM-RCVD.
+           MOVE WS-CONV-POUNDS                TO TC341-QTY-UM-LB.
+           MOVE WS-CONV-GALLONS               TO TC341-QTY-UM-GAL.
+           MOVE 0 TO COND-WORD.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "ADD ERR 6102-CUT-CHATQTY-TRANS"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2-BLOWUP.
+
+       6102-EXIT.
+           EXIT.
+
+       66-PREVIOUS-SCREEN.
+           IF CURRENT-SCREEN-NO = 1
+             PERFORM VARYING SCREEN-SUB FROM 1 BY 1
+              UNTIL SCREEN-SUB > ENTRIES-ON-SCREEN
+                 MOVE B"1" TO INDS(SCREEN-SUB)
+             END-PERFORM
+             GO TO 66-EXIT
+           ELSE
+             IF EOF-SW = "Y"
+               MOVE ENTRIES-ON-SCREEN TO SCREEN-INDEX
+             ELSE
+               MOVE MAX-ENTRIES TO SCREEN-INDEX.
+
+           MOVE SPACES TO DISP-ENTRIES.
+           MOVE ALL B"0" TO INDICS.
+
+           IF TOP-OF-CURRENT-SCREEN-SW = "N"
+             MOVE "N" TO FULL-SCREEN-SW
+             PERFORM 660-FILL-PREVIOUS THRU 660-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+             MOVE MAX-ENTRIES TO SCREEN-INDEX
+             MOVE "N" TO FULL-SCREEN-SW
+             PERFORM 660-FILL-PREVIOUS THRU 660-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+             MOVE "Y" TO TOP-OF-CURRENT-SCREEN-SW
+           ELSE
+             MOVE "N" TO FULL-SCREEN-SW
+             PERFORM 660-FILL-PREVIOUS THRU 660-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y".
+
+           MOVE MAX-ENTRIES TO ENTRIES-ON-SCREEN.
+           MOVE "N" TO EOF-SW.
+           SUBTRACT 1 FROM CURRENT-SCREEN-NO.
+       66-EXIT.
+           EXIT.
+
+       660-FILL-PREVIOUS.
+           IF EOF-SW NOT = "Y"
+               PERFORM 31-READ-BACKWARD THRU 31-EXIT
+           ELSE
+               MOVE "N" TO EOF-SW.
+           IF CHAT-CORP-CODE NOT = PASS-CORP-CODE
+             MOVE "Y" TO TOF-SW
+             PERFORM 30-READ-FORWARD THRU 30-EXIT.
+
+           IF TOF-SW = "Y"
+             MOVE 0 TO SCREEN-INDEX
+             GO TO 660-CHECK.
+
+           MOVE ZEROS            TO  DISP-CHAT-QTY (SCREEN-INDEX).
+           MOVE CHAT-CHAT-NO     TO  DISP-CHAT-NO (SCREEN-INDEX).
+           MOVE CHAT-MFR         TO  DISP-MFR (SCREEN-INDEX).
+           MOVE CHAT-TRADE       TO  DISP-TRADE (SCREEN-INDEX).
+           MOVE B"1"             TO  INDS(SCREEN-INDEX).
+           SUBTRACT 1 FROM SCREEN-INDEX.
+
+       660-CHECK.
+           IF TOF-SW = "Y"
+             MOVE "Y" TO FULL-SCREEN-SW
+           ELSE
+             IF SCREEN-INDEX < 1
+               MOVE "Y" TO FULL-SCREEN-SW.
+       660-EXIT.
+           EXIT.
+
+       67-NEXT-SCREEN.
+           IF EOF-SW = "Y"
+              GO TO 67-EXIT.
+
+           MOVE SPACES TO DISP-ENTRIES.
+           MOVE ALL B"0" TO INDICS.
+           MOVE   1    TO SCREEN-INDEX.
+           MOVE  "N"   TO FULL-SCREEN-SW.
+
+           IF TOP-OF-CURRENT-SCREEN-SW = "N"
+             PERFORM 670-FILL-NEXT THRU 670-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+           ELSE
+             PERFORM 670-FILL-NEXT THRU 670-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+             MOVE SPACES TO DISP-ENTRIES
+             MOVE ALL B"0" TO INDICS
+             MOVE  "N"   TO FULL-SCREEN-SW
+             MOVE   1    TO SCREEN-INDEX
+             PERFORM 670-FILL-NEXT THRU 670-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y".
+
+           MOVE "N"  TO TOP-OF-CURRENT-SCREEN-SW.
+           ADD   1   TO CURRENT-SCREEN-NO.
+       67-EXIT.
+           EXIT.
+
+       670-FILL-NEXT.
+           MOVE ZEROS        TO DISP-CHAT-QTY (SCREEN-INDEX).
+           MOVE CHAT-CHAT-NO TO DISP-CHAT-NO (SCREEN-INDEX).
+           MOVE CHAT-MFR     TO DISP-MFR (SCREEN-INDEX).
+           MOVE CHAT-TRADE   TO DISP-TRADE (SCREEN-INDEX).
+           MOVE B"1"         TO INDS(SCREEN-INDEX).
+           ADD  1            TO SCREEN-INDEX.
+
+       670-READ.
+           PERFORM 30-READ-FORWARD THRU 30-EXIT
+           IF EOF-SW = "Y"   OR
+               CHAT-CORP-CODE NOT = PASS-CORP-CODE
+             SUBTRACT 1 FROM SCREEN-INDEX
+             MOVE SCREEN-INDEX  TO ENTRIES-ON-SCREEN
+             MOVE      "Y"      TO FULL-SCREEN-SW,
+                                   EOF-SW.
+
+           IF SCREEN-INDEX > MAX-ENTRIES
+             IF EOF-SW NOT = "Y"
+               MOVE MAX-ENTRIES TO ENTRIES-ON-SCREEN
+               MOVE "Y" TO FULL-SCREEN-SW.
+       670-EXIT.
+           EXIT.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-NFNAME
+               INDICATORS ARE INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF FILE-STATUS NOT = "00"
+             MOVE 3 TO VIEW-LASTKEY
+           ELSE
+             MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+       98-EXIT.
+           EXIT.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-NFNAME
+               INDICATORS ARE INDICS.
+       99-EXIT.
+           EXIT.
+
+       999-CATREAD.
+           MOVE SPACES TO MESSAGE-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.
+           EXIT.
+
+       9999-MOVE-CATREAD-MSG.
+            MOVE B"1" TO INDS (99).
+            IF CATREAD-MSG-TEXT = SPACES
+               MOVE DEFAULT-MESSAGE TO DISP-MESSAGE-LINE
+            ELSE
+               MOVE MESSAGE-BUFFER  TO DISP-MESSAGE-LINE
+            END-IF.
+            MOVE SPACES TO MESSAGE-BUFFER.
+
+       9999-EXIT.
+            EXIT.

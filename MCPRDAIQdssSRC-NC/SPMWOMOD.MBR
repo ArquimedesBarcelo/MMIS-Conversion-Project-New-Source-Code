@@ -1,0 +1,894 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             SPMWOMOD.
+       AUTHOR.                 W. ROXBURY.
+      *C************************************************************************
+      *C***  PLANNER/ENGINEER/SCHEDULER VALIDATION CHECK REMOVED PER         ***
+      *C***  NAPANEE/DANVILLE REQUEST OUT OF THE PM SEMINAR IN NAPANEE IN    ***
+      *C***  OCT. 1992                     WDR  OCT. 19, 1992                ***
+      *C************************************************************************
+      *C***  ADDED ABILITY TO INPUT EXPENSE CLASS WHEN GENERATING A NEW      ***
+      *C***  PM MASTER WORKORDER - REQUEST# 6313 - WDR 11/18/92              ***
+      *C************************************************************************
+      *C***  REMOVED CALLS TO BUDGET CONTROL SYSTEM                          ***
+      *C***                        REQUEST# 6609 - WDR 06/27/96              ***
+      *C************************************************************************
+      *C***  CORRECTED SPELLING TYPO ON ERROR MESSAGE                        ***
+      *C***                                        WDR 10/24/97              ***
+      *C************************************************************************
+      *C
+      *C  01/04/2010  CA YODER  2010-00142425-001
+      *C     UPDATE LOGIC ASSIGNING WORKORDER LETTER SUFFIX.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZPMMAINT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-JOBPLAN
+                  ASSIGN       TO DATABASE-MCFLMM4101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT MVALIDPLTDATA
+                  ASSIGN       TO DATABASE-MCFLCS1701
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-MSTR-SCHED
+                  ASSIGN       TO DATABASE-MCFLMM4301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       FD  WO-PLANNED
+           LABEL RECORDS       ARE STANDARD.
+       01  WO-PLANNED-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  PM-JOBPLAN
+           LABEL RECORDS       ARE STANDARD.
+       01  PM-JOBPLAN-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4101.
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-EQUIPMENT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS       ARE STANDARD.
+       01  PER-PERSONNEL-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  MVALIDPLTDATA
+           LABEL RECORDS       ARE STANDARD.
+       01  MVPD-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS1701.
+
+       FD  PM-MSTR-SCHED
+           LABEL RECORDS       ARE STANDARD.
+       01  PMS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4301.
+
+       WORKING-STORAGE SECTION.
+       77  CC-CTR              PIC 9      VALUE 0.
+       77  CC-KEY              PIC X(04).
+       77  APPR-SW             PIC 9(04)  VALUE 0.
+       77  JP-NAME-KEY         PIC X(10).
+       77  EQP-NUM-KEY         PIC X(06).
+       77  P-WONUM             PIC X(10).
+       77  LABOR-ESTIMATE      PIC 9(16).
+       77  STORE-ESTIMATE      PIC 9(16).
+       77  PURCH-ESTIMATE      PIC 9(16).
+       77  MVALPLT-DATA        PIC X(30)  VALUE SPACES.
+       77  TRUE-VAL            PIC 1      VALUE B"1".
+       77  HOLD-SCH-BUF        PIC X(10).
+       77  STOP-CALENDAR-SW    PIC X(01)  VALUE "N".
+       77  PM-QUEUE-MSG-SW     PIC X(01)  VALUE SPACES.
+       77  BASE                PIC X(24).
+      *---- 01/04/2010:  ADDED PARAMETER FOR CMMISYR.
+       77  MMIS-LETTER                PIC X.
+
+       01  DISPLAY-STATUS      PIC X(02).
+       01  WS-CONTROL.
+           02  FUNCTION-NUM    PIC X(02).
+           02  TERMINAL-ID     PIC X(10).
+           02  FORMAT-NAME     PIC X(10).
+       01  SRF-INDICATORS.
+           05  IND OCCURS 99 TIMES PIC 1 INDICATOR 01.
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM PIC X(08) VALUE "SPMWOMOD".
+           05  PROGRAM-TYPE    PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A PIC X(60) VALUE
+           "ALLOWS CHANGES TO A PM MASTER WORKORDER AS LONG AS THERE ".
+               10  PROG-DESC-B PIC X(60) VALUE
+           "ARE NOT YET ANY SUFFIXED WORKORDERS GENERATED.          " .
+               10  PROG-FUNCT  PIC X(60) VALUE
+           "                                                         ".
+           05  PASSWORD-FLAG   PIC X.
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X   VALUE "0".
+           05 FILE-STAT-2      PIC X   VALUE "0".
+
+       01  CURDATE-BUFF.
+           05 Y-BUFF           PIC 9(2).
+           05 M-BUFF           PIC 9(2).
+           05 D-BUFF           PIC 9(2).
+
+       01  TODAYS-DATE.
+           05  TD-CT           PIC 99.
+           05  TD-YY           PIC 99.
+           05  TD-MM           PIC 99.
+           05  TD-DD           PIC 99.
+
+       01  TIME-BUF.
+           05  TIME-HHMM       PIC 9(04).
+           05  TIME-REST       PIC 9(04).
+
+       01  SCREEN-BUFFER.
+           05  WONUM-MOD.
+               10  WO-NUM-BUF  PIC X(06).
+               10  WO-YEAR-BUF PIC X.
+               10  WO-SUF-BUF  PIC XXX.
+           05  CHANGE-DATA.
+               10  APPRVL-BUF  PIC X(01).
+               10  REQR-BUF    PIC X(16).
+               10  EQP-NUM-BUF PIC X(06).
+               10  MSTR-SCH-BUF PIC X(10).
+               10  JP-KEY-BUF  PIC X(10).
+               10  REQST-BUF   PIC X(12).
+               10  BUDGET-BUF  PIC X(16).
+               10  EXPCLS-BUF.
+                   15  ECB     OCCURS 8 TIMES PIC X.
+               10  PLNR-BUF    PIC X(04).
+               10  ENGR-BUF    PIC X(04).
+               10  SCHD-BUF    PIC X(04).
+               10  WO-DESC-BUF PIC X(30).
+               10  DESC-2-BUF  PIC X(66).
+               10  DESC-3-BUF  PIC X(66).
+               10  MSG-BUF     PIC X(70).
+           05  CMDMSG          PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+       01  CHECK-YEAR.
+           05  DATE-BUF-YY.
+               10  FILLER      PIC X.
+               10  YEAR-NUM    PIC X.
+           05  DATE-BUF-MM     PIC XX.
+           05  DATE-BUF-DD     PIC XX.
+
+       01  TIME-BUFFER.
+           05  CUR-TIME.
+               10  CUR-HRS     PIC XX.
+               10  CUR-MINS    PIC XX.
+           05  CUR-SECS        PIC XX.
+
+       01  ARG-DEFN.
+           05  ARG-DEF-8.
+               10  ARG-F2      PIC X(02).
+               10  FILLER      PIC X(06).
+           05  FILLER          PIC X(02).
+
+       01  WHO-VARIABLES.
+           05  USERNAME        PIC X(10).
+           05  TERMNUM         PIC X(10).
+           05  CURLIB          PIC X(10).
+           05  JOBLIBX         PIC X(1).
+
+       01  RETURN-COD.
+           05  RET-CODE        PIC X.
+           05  FILLER          PIC X.
+
+       01  RETURN-ERROR.
+           05  ERROR-TEXT      PIC X(68).
+           05  ERROR-NUM       PIC X(08).
+           05  ERROR-CODE      REDEFINES ERROR-NUM
+                               PIC ZZZZZZZ9.
+
+       01  DB-ERROR.
+           05  DB-TYPE         PIC X(08) VALUE SPACES.
+           05  DB-FILE         PIC X(16) VALUE SPACES.
+           05  FILLER          PIC X(21) VALUE " ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY TBLOWUP        IN COPYLIB.
+
+           COPY IOFEEDBACK     OF COPYLIB.
+
+       01  MESSAGE-FILE-DATA.  COPY ERRORLIN IN COPYLIB.
+
+       01  WO-EQP-DATA.        COPY MEQPFILE IN COPYLIB.
+
+       01  WO-PLANNED-DATA.    COPY DWOPLAN  IN COPYLIB.
+
+       01  PERSONNEL-DATA.     COPY MPERSONL IN COPYLIB.
+
+       01  WO-TRACK-DATA.      COPY DWOTRACK IN COPYLIB.
+
+       01  PM-JOBPLAN-DATA.    COPY DPMJBPLN IN COPYLIB.
+
+       01  PM-AUDIT-DATA.      COPY DPMAUDIT IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS  IN COPYLIB.
+
+           COPY VCOMLINK       IN COPYLIB.
+
+           COPY LANGSUB        IN COPYLIB.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               VIEW-COMAREA
+                               LANGUAGE-PARMS.
+       CHECK-PASSWORD.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               GOBACK.
+
+       START-PROCESSING.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN I-O            WO-PLANNED.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          PM-JOBPLAN.
+           OPEN INPUT          PM-MSTR-SCHED.
+           OPEN INPUT          MVALIDPLTDATA.
+
+           ACCEPT CHECK-YEAR   FROM DATE.
+           MOVE SPACES         TO WO-TRACK-DATA.
+           CALL "CLWHO"        USING USERNAME TERMNUM CURLIB JOBLIBX.
+           MOVE USERNAME       TO USER-NAME.
+           MOVE TERMNUM        TO USER-TERM.
+           MOVE SPACES         TO SCREEN-BUFFER.
+
+           ACCEPT CURDATE-BUFF FROM DATE.
+           MOVE Y-BUFF         TO TD-YY.
+           MOVE M-BUFF         TO TD-MM.
+           MOVE D-BUFF         TO TD-DD.
+           MOVE 20             TO TD-CT.
+           IF TD-YY > 90
+               MOVE 19         TO TD-CT.
+
+       6-MAIN.
+           MOVE 0              TO APPR-SW.
+           MOVE "VPMWOMOD"     TO VIEW-NFNAME.
+           MOVE "000"          TO WO-SUF-BUF.
+      *------- 01/04/2010:  UPDATED WORKORDER LETTER SUFFIX LOGIC.
+      *    IF YEAR-NUM = 0
+      *        MOVE "A"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 1
+      *        MOVE "B"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 2
+      *        MOVE "C"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 3
+      *        MOVE "D"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 4
+      *        MOVE "E"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 5
+      *        MOVE "F"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 6
+      *        MOVE "G"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 7
+      *        MOVE "H"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 8
+      *        MOVE "J"        TO WO-YEAR-BUF
+      *    ELSE
+      *    IF YEAR-NUM = 9
+      *        MOVE "K"        TO WO-YEAR-BUF.
+
+           CALL "CMMISYR" USING MMIS-LETTER.
+           MOVE MMIS-LETTER    TO WO-YEAR-BUF.
+      *-------
+
+       61-SHOWFORM.
+           MOVE SCREEN-BUFFER  TO DISPLAY-REC.
+           WRITE DISPLAY-REC   FORMAT IS VIEW-NFNAME
+                               INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0"       TO SRF-INDICATORS.
+
+           READ DISPLAY-FILE   FORMAT IS VIEW-NFNAME
+                               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK   FROM I-O-FEEDBACK-AREA.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3          TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+           MOVE DISPLAY-REC    TO SCREEN-BUFFER.
+
+           IF VIEW-LASTKEY = 3 OR 8
+               GO TO 2-EOJ
+           ELSE
+           IF VIEW-LASTKEY NOT = 0
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO RET-CODE.
+           CALL "TALWONO"      USING WONUM-MOD RETURN-COD.
+           IF RET-CODE = "1"
+      *M********************************************************************
+      *M    MESSAGE 035/040:
+      *M INVALID WORKORDER NUMBER
+      *M********************************************************************
+               MOVE  35        TO LANG-SETNUM
+               MOVE  40        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 32         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       61-GET-DATA.
+           MOVE WONUM-MOD      TO WONUM OF WO-PLANNED.
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+      *M********************************************************************
+      *M    MESSAGE 035/040:
+      *M INVALID WORKORDER NUMBER
+      *M********************************************************************
+               MOVE  35        TO LANG-SETNUM
+               MOVE  40        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 32         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-TYPE
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 32         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       62-MAIN.
+           IF LAST-SUFFIX-INIT = "    " OR "000 " OR "0000"
+               MOVE "VPMWOMOD_S" TO VIEW-NFNAME
+           ELSE
+               MOVE "VPMWOMOD_W" TO VIEW-NFNAME.
+
+       62-WRITE-SCREEN.
+           MOVE APPROVAL-CODE-P   TO APPRVL-BUF.
+           IF APPROVAL-CODE-P = "A"
+               MOVE 1             TO APPR-SW.
+           MOVE REQUESTER-P       TO REQR-BUF.
+           MOVE EQUIP-NUM-P       TO EQP-NUM-BUF.
+           MOVE PM-SCHEDULE-KEY   TO MSTR-SCH-BUF  HOLD-SCH-BUF.
+           MOVE PM-JOBPLAN-KEY    TO JP-KEY-BUF.
+           MOVE REQUEST-NO        TO REQST-BUF.
+           MOVE BUDGET-NO         TO BUDGET-BUF.
+           MOVE EXP-CLASS-P       TO EXPCLS-BUF.
+           MOVE PLANNER-P         TO PLNR-BUF.
+           MOVE ENGINEER-P        TO ENGR-BUF.
+           MOVE SCHEDULER-P       TO SCHD-BUF.
+           MOVE DESCRIPTION-1-P   TO WO-DESC-BUF.
+           MOVE DESCRIPTION-2-1-P TO DESC-2-BUF.
+           MOVE DESCRIPTION-2-2-P TO DESC-3-BUF.
+
+       62-SHOWFORM.
+           MOVE SCREEN-BUFFER  TO DISPLAY-REC.
+           WRITE DISPLAY-REC   FORMAT IS VIEW-NFNAME
+                               INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0"       TO SRF-INDICATORS.
+
+           READ DISPLAY-FILE   FORMAT IS VIEW-NFNAME
+                               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK   FROM I-O-FEEDBACK-AREA.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3          TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+           IF VIEW-LASTKEY = 3 OR 8
+               GO TO 2-EOJ.
+
+           IF VIEW-LASTKEY = 6
+               MOVE SPACES     TO SCREEN-BUFFER
+               GO TO 6-MAIN.
+
+           IF VIEW-LASTKEY = 1
+               IF VIEW-NFNAME = "VPMWOMOD_S"
+                   MOVE "VPMWOMODSS" TO VIEW-NFNAME
+               ELSE IF VIEW-NFNAME = "VPMWOMOD_W"
+                   MOVE "VPMWOMODWS" TO VIEW-NFNAME
+               ELSE IF VIEW-NFNAME = "VPMWOMODSS"
+                   MOVE "VPMWOMOD_S" TO VIEW-NFNAME
+               ELSE IF VIEW-NFNAME = "VPMWOMODWS"
+                   MOVE "VPMWOMOD_W" TO VIEW-NFNAME
+               END-IF
+               END-IF
+               END-IF
+               END-IF
+               GO TO 62-SHOWFORM.
+
+           MOVE DISPLAY-REC    TO SCREEN-BUFFER.
+
+       62-EDIT-CHECKS.
+           IF APPRVL-BUF = "A" OR "U" OR "R"
+               NEXT SENTENCE
+           ELSE
+      *M********************************************************************
+      *M    MESSAGE 035/023:
+      *M INVALID APPROVAL CODE - MUST BE A, U, OR R
+      *M********************************************************************
+               MOVE  35        TO LANG-SETNUM
+               MOVE  23        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 31         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF REQR-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 044/028:
+      ** REQUESTER REQUIRED
+      **********************************************************************
+               MOVE  44        TO LANG-SETNUM
+               MOVE  28        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF EQP-NUM-BUF = SPACES
+      *M********************************************************************
+      *M    MESSAGE 031/016:
+      *M EQUIPMENT NUMBER IS REQUIRED
+      *M********************************************************************
+               MOVE  31        TO LANG-SETNUM
+               MOVE  16        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE EQP-NUM-BUF    TO EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO WO-EQP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "23"
+      *M********************************************************************
+      *M    MESSAGE 035/004:
+      *M INVALID EQUIPMENT NUMBER
+      *M********************************************************************
+               MOVE  35        TO LANG-SETNUM
+               MOVE   4        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-TYPE
+               MOVE "EQP-EQUIPMENT" TO DB-FILE
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF MSTR-SCH-BUF NOT = SPACES
+               MOVE MSTR-SCH-BUF   TO PMSCHEDKEY OF PM-MSTR-SCHED
+               MOVE "01"           TO PMLEVEL    OF PM-MSTR-SCHED
+               READ PM-MSTR-SCHED
+                   INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 039/054:
+      *M MASTER SCHEDULE MUST BE CREATED PRIOR TO MASTER WORKORDER
+      *M********************************************************************
+                   MOVE  39    TO LANG-SETNUM
+                   MOVE  54    TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  40    TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 62-SHOWFORM.
+
+           IF JP-KEY-BUF = SPACES
+      *M********************************************************************
+      *M    MESSAGE 036/013:
+      *M JOBPLAN MUST BE CREATED PRIOR TO MASTER WORKORDER
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE  13        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 30         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE JP-KEY-BUF     TO PMJOBPKEY OF PM-JOBPLAN.
+           START PM-JOBPLAN    KEY = PMJOBPKEY OF PM-JOBPLAN
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 036/013:
+      *M JOBPLAN MUST BE CREATED PRIOR TO MASTER WORKORDER
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE  13        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 30         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF EXPCLS-BUF = SPACES
+               MOVE EQP-EXP-CLASS TO EXPCLS-BUF.
+
+           IF ECB(8) = " "
+             IF ECB(7) = " "
+               IF ECB(6) = " "
+                 IF ECB(5) = " "
+                   IF ECB(4) = " "
+                     IF ECB(3) = " "
+                       IF ECB(2) = " "
+                         MOVE ECB(1)     TO ECB(8)
+                         MOVE "0"        TO ECB(7) ECB(6)
+                                            ECB(5) ECB(4)
+                                            ECB(3) ECB(2)
+                                            ECB(1)
+                       ELSE
+                       MOVE ECB(2)       TO ECB(8)
+                       MOVE ECB(1)       TO ECB(7)
+                       MOVE "0"          TO ECB(6) ECB(5)
+                                            ECB(4) ECB(3)
+                                            ECB(2) ECB(1)
+                     ELSE
+                     MOVE ECB(3)         TO ECB(8)
+                     MOVE ECB(2)         TO ECB(7)
+                     MOVE ECB(1)         TO ECB(6)
+                     MOVE "0"            TO ECB(5) ECB(4)
+                                            ECB(3) ECB(2)
+                                            ECB(1)
+                   ELSE
+                   MOVE ECB(4)           TO ECB(8)
+                   MOVE ECB(3)           TO ECB(7)
+                   MOVE ECB(2)           TO ECB(6)
+                   MOVE ECB(1)           TO ECB(5)
+                   MOVE "0"              TO ECB(4) ECB(3)
+                                            ECB(2) ECB(1)
+                 ELSE
+                 MOVE ECB(5)             TO ECB(8)
+                 MOVE ECB(4)             TO ECB(7)
+                 MOVE ECB(3)             TO ECB(6)
+                 MOVE ECB(2)             TO ECB(5)
+                 MOVE ECB(1)             TO ECB(4)
+                 MOVE "0"                TO ECB(3) ECB(2)
+                                            ECB(1)
+               ELSE
+               MOVE ECB(6)               TO ECB(8)
+               MOVE ECB(5)               TO ECB(7)
+               MOVE ECB(4)               TO ECB(6)
+               MOVE ECB(3)               TO ECB(5)
+               MOVE ECB(2)               TO ECB(4)
+               MOVE ECB(1)               TO ECB(3)
+               MOVE "0"                  TO ECB(2) ECB(1)
+             ELSE
+             MOVE ECB(7)                 TO ECB(8)
+             MOVE ECB(6)                 TO ECB(7)
+             MOVE ECB(5)                 TO ECB(6)
+             MOVE ECB(4)                 TO ECB(5)
+             MOVE ECB(3)                 TO ECB(4)
+             MOVE ECB(2)                 TO ECB(3)
+             MOVE ECB(1)                 TO ECB(2)
+             MOVE "0"                    TO ECB(1).
+
+           MOVE SPACES         TO ARG-DEFN.
+           MOVE EXPCLS-BUF     TO ARG-DEF-8.
+           MOVE "EC"           TO ARG-F2.
+           MOVE ARG-DEFN       TO VALDTAKEY OF MVALIDPLTDATA.
+           READ MVALIDPLTDATA  INTO MVALPLT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "NW"       TO ARG-F2
+               MOVE ARG-DEFN   TO VALDTAKEY OF MVALIDPLTDATA
+               READ MVALIDPLTDATA INTO MVALPLT-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT NOT = "00"
+      **********************************************************************
+      **    MESSAGE 035/009:
+      ** INVALID EXPENSE CLASS
+      **********************************************************************
+                   MOVE 35     TO LANG-SETNUM
+                   MOVE 09     TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 35     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 62-SHOWFORM.
+
+       62-CONTINUE-EDIT-CHECKS.
+           MOVE 0              TO CC-CTR.
+           MOVE "00"           TO FILE-STAT.
+           IF PLNR-BUF NOT = SPACES
+               MOVE PLNR-BUF   TO CC-KEY
+               ADD 1           TO CC-CTR
+               PERFORM 65-CHECK-CC.
+
+           IF FILE-STAT NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 035/047:
+      *M INVALID CLOCK CARD NUMBER
+      *M********************************************************************
+               MOVE 35         TO LANG-SETNUM
+               MOVE 47         TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 15         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE "00"           TO FILE-STAT.
+           IF ENGR-BUF NOT = SPACES
+               MOVE ENGR-BUF   TO CC-KEY
+               ADD 1           TO CC-CTR
+               PERFORM 65-CHECK-CC.
+
+           IF FILE-STAT NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 035/047:
+      *M INVALID CLOCK CARD NUMBER
+      *M********************************************************************
+               MOVE 35         TO LANG-SETNUM
+               MOVE 47         TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 16         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE "00"           TO FILE-STAT.
+           IF SCHD-BUF NOT = SPACES
+               MOVE SCHD-BUF   TO CC-KEY
+               ADD 1           TO CC-CTR
+               PERFORM 65-CHECK-CC.
+
+           IF FILE-STAT NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 035/047:
+      *M INVALID CLOCK CARD NUMBER
+      *M********************************************************************
+               MOVE 35         TO LANG-SETNUM
+               MOVE 47         TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 17         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF CC-CTR = 0
+      *M********************************************************************
+      *M    MESSAGE 041/009:
+      *M ONE OR MORE OF PLANNER, ENGINEER AND SCHEDULER MUST BE SELECTED
+      *M********************************************************************
+               MOVE  41        TO LANG-SETNUM
+               MOVE   9        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 15         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF WO-DESC-BUF = SPACES
+      *M********************************************************************
+      *M    MESSAGE 030/042:
+      *M DESCRIPTION REQUIRED
+      *M********************************************************************
+               MOVE  30        TO LANG-SETNUM
+               MOVE  42        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+       62-STOP-SCHEDULE.
+           IF MSTR-SCH-BUF NOT = HOLD-SCH-BUF
+               MOVE SPACES     TO BU-DISPLAY-MSG
+               MOVE "N" TO STOP-CALENDAR-SW
+               IF MSTR-SCH-BUF = SPACES
+                   MOVE "N"    TO PM-QUEUE-MSG-SW
+               ELSE
+                   MOVE "Y"    TO PM-QUEUE-MSG-SW
+               END-IF
+               CALL "SPMSKSTP" USING DBPARAMETERS WONUM-MOD
+                               STOP-CALENDAR-SW
+                               PM-QUEUE-MSG-SW
+                               BU-DISPLAY-MSG
+                               BU-DISPLAY-FLDS.
+
+       62-DB-WRITE.
+           MOVE WONUM-MOD      TO WONUM OF WO-PLANNED P-WONUM.
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-TYPE
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 31         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           MOVE APPRVL-BUF     TO APPROVAL-CODE-P.
+           MOVE REQR-BUF       TO REQUESTER-P.
+           MOVE EQP-NUM-BUF    TO EQUIP-NUM-P.
+           MOVE EQP-EQUIP-NAME TO EQUIP-NAME-P.
+           MOVE EQP-TYPE       TO TYPE-NUM-P.
+           MOVE EQP-DEPT       TO DEPT-P.
+           MOVE EQP-MAINT-ZONE TO ZONE-P.
+           MOVE MSTR-SCH-BUF   TO PM-SCHEDULE-KEY.
+           MOVE JP-KEY-BUF     TO PM-JOBPLAN-KEY.
+           MOVE REQST-BUF      TO REQUEST-NO.
+           MOVE BUDGET-BUF     TO BUDGET-NO.
+           MOVE EXPCLS-BUF     TO EXP-CLASS-P.
+           MOVE PLNR-BUF       TO PLANNER-P.
+           MOVE ENGR-BUF       TO ENGINEER-P.
+           MOVE SCHD-BUF       TO SCHEDULER-P.
+           MOVE WO-DESC-BUF    TO DESCRIPTION-1-P.
+           MOVE DESC-2-BUF     TO DESCRIPTION-2-1-P.
+           MOVE DESC-3-BUF     TO DESCRIPTION-2-2-P.
+
+           REWRITE WO-PLANNED-REC FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "REWRITE " TO DB-TYPE
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 31         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 62-SHOWFORM.
+
+           IF APPRVL-BUF = "U"
+               GO TO 62-DB-WRITE-CONT.
+
+           IF APPRVL-BUF = "A" AND APPR-SW = 1
+               GO TO 62-DB-WRITE-CONT.
+
+           MOVE ZEROES         TO LABOR-ESTIMATE STORE-ESTIMATE
+                                  PURCH-ESTIMATE.
+      *    CALL "TGETESTM"     USING DBPARAMETERS
+      *                        P-WONUM
+      *                        LABOR-ESTIMATE
+      *                        STORE-ESTIMATE
+      *                        PURCH-ESTIMATE.
+
+       62-DB-WRITE-CONT.
+           ACCEPT TIME-BUFFER  FROM TIME.
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE WONUM-MOD      TO WO-NUM-TRACK.
+           MOVE TODAYS-DATE    TO DATE-STAMP-CN.
+           MOVE CUR-TIME       TO TIME-STAMP.
+           MOVE WO-START-STATUS TO WO-TYPE-STATUS.
+           MOVE "PMMA"         TO USER-ID.
+           MOVE SPACES         TO CLOCK-CARD.
+           MOVE WO-STATUS-P    TO WO-STATUS-TRACK.
+           MOVE SPACES         TO TRANS-STATUS.
+           MOVE "SPMWOMOD"     TO PROGRAM-NAME.
+
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+           PERFORM WRITE-AUDIT THRU WA-EXIT.
+
+           MOVE SPACES         TO SCREEN-BUFFER.
+           IF MSTR-SCH-BUF NOT = HOLD-SCH-BUF
+             IF MSTR-SCH-BUF NOT = SPACES
+               MOVE "SCHEDULE CHANGED AND STOPPED, MUST REINITIATE WO"
+                 TO ERRMSG
+             ELSE
+               MOVE "MASTER SCHEDULE REMOVED, SCHEDULE STOPPED"
+                 TO ERRMSG
+             END-IF
+           ELSE
+               MOVE "MASTER WO HAS BEEN CHANGED"
+                 TO ERRMSG
+           END-IF.
+
+           GO TO 6-MAIN.
+
+       65-CHECK-CC.
+           MOVE "00"           TO FILE-STAT.
+      *C************************************************************************
+      *C***  PLANNER/ENGINEER/SCHEDULER VALIDATION CHECK REMOVED PER         ***
+      *C***  NAPANEE/DANVILLE REQUEST OUT OF THE PM SEMINAR IN NAPANEE IN    ***
+      *C***  OCT. 1992                     WDR  OCT. 19, 1992                ***
+      *C************************************************************************
+      *    IF CC-KEY NOT = SPACES
+      *        MOVE CC-KEY     TO PERCCNUM OF PER-PERSONNEL
+      *        READ PER-PERSONNEL INTO PERSONNEL-DATA
+      *            INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+
+       WRITE-AUDIT.
+           MOVE SPACES         TO  PM-AUDIT-DATA RETURN-ERROR.
+           MOVE TODAYS-DATE    TO  AUDIT-DATE AUDIT-YRMO.
+           ACCEPT TIME-BUF     FROM TIME.
+           MOVE TIME-HHMM      TO  AUDIT-TIME.
+           MOVE "OO"           TO  AUDIT-TRANS AUDIT-WO-STATUS.
+           MOVE EQP-NUM-BUF    TO  AUDIT-EQUIP-NUM.
+           MOVE WONUM-MOD      TO  AUDIT-WO-NUM.
+           MOVE "  "           TO  AUDIT-PM-LEVEL-X.
+           MOVE "MASTER PM WORKORDER MODIFIED  "
+                               TO  AUDIT-DESC.
+
+           CALL "SPMAUDIT"     USING PM-AUDIT-DATA
+                               DBPARAMETERS
+                               RETURN-ERROR.
+
+       WA-EXIT.                EXIT.
+
+       65-ERROR.
+           MOVE TRUE-VAL       TO IND (FIELD-NUMBER)  IND (99).
+
+       2-EOJ.
+           CLOSE               DISPLAY-FILE.
+           CLOSE               WO-PLANNED.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               PM-JOBPLAN.
+           CLOSE               PM-MSTR-SCHED.
+           CLOSE               MVALIDPLTDATA.
+           GOBACK.
+
+       999-CATREAD.
+           MOVE SPACES         TO CATREAD-MSG-TEXT.
+           MOVE LANG-SETNUM    TO CATREAD-MSG-SET.
+           MOVE LANG-MSGNUM    TO CATREAD-MSG-NUM.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           IF CATREAD-MSG-NOT-FOUND
+                MOVE "**CATREAD ERROR**" TO CATREAD-MSG-TEXT.
+           MOVE CATREAD-MSG-TEXT TO ERRMSG.
+
+       999-CATREAD-EXIT.       EXIT.
+
+      ************************  END OF FILE  ********************************

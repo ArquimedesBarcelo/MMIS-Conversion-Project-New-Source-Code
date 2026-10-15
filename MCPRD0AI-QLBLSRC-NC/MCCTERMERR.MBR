@@ -1,0 +1,223 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.          MCCTERMERR.
+000400 AUTHOR.              C HILLES.
+000500 DATE-WRITTEN.        7/23/90.
+000600 DATE-COMPILED.
+009400 ENVIRONMENT DIVISION.
+009500 CONFIGURATION SECTION.
+009600 SOURCE-COMPUTER.  HP-3000.
+009700 OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT REPORT-IN-FILE ASSIGN TO DISK-MCFWRKSPLF.
+           SELECT PRINT-FILE ASSIGN TO PRINTER-MCPRT.
+
+010200 DATA DIVISION.
+010300 FILE SECTION.
+010400
+       FD  REPORT-IN-FILE
+           RECORD CONTAINS 132 CHARACTERS.
+       01  REPORT-IN-REC.
+           05  IN-DATE                   PIC X(8).
+           05  FILLER                    PIC X(21).
+           05  TERMINAL-NAME             PIC X(10).
+           05  FILLER                    PIC X(1).
+           05  PROGRAM-NAME              PIC X(10).
+           05  FILLER                    PIC X(1).
+           05  MSGNUM                    PIC X(7).
+           05  FILLER                    PIC X(1).
+           05  STMNT-NUM                 PIC X(5).
+           05  FILLER                    PIC X(1).
+           05  DEVICE-CHK                PIC X(21).
+           05  FILLER                    PIC X(46).
+
+       FD  PRINT-FILE
+           RECORD CONTAINS 132 CHARACTERS.
+       01  PRINT-REC                     PIC X(132).
+
+       WORKING-STORAGE SECTION.
+       01  LAST-TERM-SUB                 PIC 9(4).
+       01  SUB                           PIC 9(4).
+       01  SUB2                          PIC 9(4).
+       01  EOF-FLAG                      PIC X(1).
+       01  TERM-ERR-FLAG                 PIC X(1).
+       01  WORK-LINE                     PIC X(132).
+       01  FOUND-TERM-FLAG               PIC X(1).
+       01  LOWEST-DATE                   PIC X(6).
+       01  HIGHEST-DATE                  PIC X(6).
+       01  LOWEST-DATE-SLASH             PIC X(8).
+       01  HIGHEST-DATE-SLASH            PIC X(8).
+       01  SWITCH-FLAG                   PIC X(1).
+       01  TOTAL-TERM-ERRORS             PIC 9(4).
+
+       COPY TDATECHK IN COPYCSIS.
+       COPY OVRPFDAT IN COPYCSIS.
+
+       01  HOLD-TERM-LINE                PIC X(204).
+
+       01  TERMINAL-ERROR-TABLE.
+           05  TERM-LINE OCCURS 100 TIMES.
+               10  TERM-NAME             PIC X(10).
+               10  TERM-COUNT            PIC 9(4).
+               10  ERROR-LINE OCCURS 10 TIMES.
+                   15  ERROR-NAME.
+                       20  ERROR-NAME-A  PIC X(7).
+                       20  ERROR-NAME-B  PIC X(8).
+                   15  ERROR-COUNT       PIC 9(4).
+
+       01  PRT-DETAIL-1.
+           05  FILLER                    PIC X(5)  VALUE SPACES.
+           05  PRT-TERM-NAME             PIC X(10).
+           05  FILLER                    PIC X(1)  VALUE SPACES.
+           05  PRT-TERM-COUNT            PIC ZZZ9.
+
+       PROCEDURE DIVISION.
+
+       1000-START.
+           MOVE ZERO                     TO  LAST-TERM-SUB.
+           MOVE 3                        TO  DATE-MODE.
+           MOVE SPACES                   TO  HIGHEST-DATE.
+           MOVE "999999"                 TO  LOWEST-DATE.
+           MOVE ZERO                     TO  TOTAL-TERM-ERRORS.
+
+           MOVE ZERO                     TO  SUB.
+           PERFORM 100 TIMES
+               ADD 1                     TO  SUB
+               MOVE ZERO                 TO  TERM-COUNT (SUB)
+               MOVE ZERO                 TO  SUB2
+               PERFORM 10 TIMES
+                   ADD 1                 TO  SUB2
+                   MOVE ZERO             TO  ERROR-COUNT (SUB, SUB2)
+               END-PERFORM
+           END-PERFORM.
+
+       6000-MAIN.
+           MOVE "N"                      TO  EOF-FLAG.
+           MOVE "N"                      TO  TERM-ERR-FLAG.
+           OPEN INPUT REPORT-IN-FILE.
+
+      *------ OVERRIDE THE PRINT FILE FOR SHARED ACCESS PATH SO
+      *------ THAT WHEN WE CALL 'TBLPRTB' AT THE END THE BLOWUP
+      *------ REPORT WILL BE IN THE SAME SPOOLFILE
+           MOVE "00"                     TO  OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"                   TO  OVRPRTF-SHARED.
+           MOVE 1                        TO  OVRPRTF-COPIES.
+           MOVE "MCPRT"                  TO  OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+
+           OPEN OUTPUT PRINT-FILE.
+           PERFORM UNTIL EOF-FLAG = "Y"
+               READ REPORT-IN-FILE AT END
+                   MOVE "Y"              TO  EOF-FLAG
+               END-READ
+               IF EOF-FLAG = "N"
+                   IF TERMINAL-NAME > SPACES
+                      AND (MSGNUM = "CPF5140" OR "CPF5170" OR "CPF5144"
+                          OR "CPF4168" OR "CPF5423" OR "CPF9846")
+                      OR  (DEVICE-CHK = "Device response code ")
+                          PERFORM 7000-FIND-OR-PUT-TERM
+                          ADD 1             TO  TOTAL-TERM-ERRORS
+                          MOVE "Y"          TO  TERM-ERR-FLAG
+                   END-IF
+                   MOVE IN-DATE          TO  DATE-VALIDATE-IN
+                   CALL "TDATECHK" USING DATE-CHECK-AREA
+                   IF DATE-YMD-OUT > SPACES
+                   AND DATE-YMD-OUT < LOWEST-DATE
+                       MOVE DATE-YMD-OUT TO  LOWEST-DATE
+                   ELSE
+                   IF DATE-YMD-OUT > HIGHEST-DATE
+                       MOVE DATE-YMD-OUT TO  HIGHEST-DATE
+                   END-IF
+                   END-IF
+                   IF TERM-ERR-FLAG = "N"
+                       WRITE PRINT-REC FROM REPORT-IN-REC
+                          AFTER ADVANCING 1
+                       END-WRITE
+                   END-IF
+                   IF TERMINAL-NAME = "----------"
+                       MOVE "N"          TO  TERM-ERR-FLAG
+                   END-IF
+               END-IF
+           END-PERFORM.
+           CLOSE REPORT-IN-FILE.
+
+           MOVE SPACES                   TO  WORK-LINE.
+           MOVE 4                        TO  DATE-MODE.
+           MOVE LOWEST-DATE              TO  DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO  LOWEST-DATE-SLASH.
+           MOVE HIGHEST-DATE             TO  DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO  HIGHEST-DATE-SLASH.
+           STRING "TERM ERRS FROM ",
+                  LOWEST-DATE-SLASH,
+                  " TO  ",
+                  HIGHEST-DATE-SLASH
+             DELIMITED BY SIZE INTO WORK-LINE.
+           WRITE PRINT-REC FROM WORK-LINE AFTER ADVANCING 3.
+           PERFORM 7100-SORT-TABLE.
+           MOVE ZERO                     TO  SUB.
+           PERFORM 100 TIMES
+               ADD 1                     TO  SUB
+               IF TERM-NAME (SUB) > SPACES
+                   MOVE TERM-NAME (SUB)  TO  PRT-TERM-NAME
+                   MOVE TERM-COUNT (SUB) TO  PRT-TERM-COUNT
+                   WRITE PRINT-REC FROM PRT-DETAIL-1
+                     AFTER ADVANCING 1
+                   END-WRITE
+               END-IF
+           END-PERFORM.
+           MOVE SPACES                   TO  WORK-LINE.
+           STRING "TOTAL TERMINAL ERRORS IS         ",
+                  TOTAL-TERM-ERRORS
+             DELIMITED BY SIZE INTO WORK-LINE.
+           WRITE PRINT-REC FROM WORK-LINE AFTER ADVANCING 2.
+           MOVE SPACES                   TO  WORK-LINE.
+           STRING "TOTAL TERMINALS WITH AN ERROR IS ",
+                  LAST-TERM-SUB
+             DELIMITED BY SIZE INTO WORK-LINE.
+           WRITE PRINT-REC FROM WORK-LINE AFTER ADVANCING 1.
+
+       6990-MAIN-X.
+      *------ NOW PRINT THE BLOWUP FILE, STARTING FROM THE DATE
+      *------ OF THE EARLIEST MCABEND BLOWUP.
+           CALL "TBLPRTB" USING LOWEST-DATE.
+           CLOSE PRINT-FILE.
+           GOBACK.
+
+       7000-FIND-OR-PUT-TERM.
+            MOVE ZERO                    TO  SUB.
+            MOVE "N"                     TO  FOUND-TERM-FLAG.
+            PERFORM UNTIL SUB > LAST-TERM-SUB OR FOUND-TERM-FLAG = "Y"
+                ADD 1                    TO  SUB
+                IF TERM-NAME (SUB) = TERMINAL-NAME
+                    MOVE "Y"             TO  FOUND-TERM-FLAG
+                    ADD 1                TO  TERM-COUNT (SUB)
+                END-IF
+            END-PERFORM.
+            IF FOUND-TERM-FLAG = "N"
+                ADD 1                    TO  LAST-TERM-SUB
+                MOVE TERMINAL-NAME       TO  TERM-NAME (LAST-TERM-SUB)
+                MOVE 1 TO TERM-COUNT (LAST-TERM-SUB).
+
+       7100-SORT-TABLE.
+           MOVE "Y"                      TO  SWITCH-FLAG.
+           PERFORM UNTIL SWITCH-FLAG = "N"
+               MOVE ZERO                 TO  SUB
+               MOVE 1                    TO  SUB2
+               MOVE "N"                  TO  SWITCH-FLAG
+               PERFORM 99 TIMES
+                   ADD 1                 TO  SUB
+                   ADD 1                 TO  SUB2
+                   IF TERM-COUNT (SUB2) > TERM-COUNT (SUB)
+                       MOVE "Y"          TO  SWITCH-FLAG
+                       MOVE TERM-LINE (SUB) TO HOLD-TERM-LINE
+                       MOVE TERM-LINE (SUB2) TO TERM-LINE (SUB)
+                       MOVE HOLD-TERM-LINE TO TERM-LINE (SUB2)
+                   END-IF
+               END-PERFORM
+           END-PERFORM.
+
+       COPY OVRPFCAL IN COPYCSIS.

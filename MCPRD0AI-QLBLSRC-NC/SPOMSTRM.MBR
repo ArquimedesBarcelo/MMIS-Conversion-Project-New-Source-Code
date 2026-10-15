@@ -1,0 +1,361 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.  SPOMSTRM.
+000500 AUTHOR.      KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+000800
+000900***************************************************************
+001000*                                                             *
+001100*D  S P O M S T R M                                           *
+001200*                                                             *
+001300*D  THIS SUB PROGRAM UPDATES ALL THE 'MSTORERM' DATA SET OF   *
+001400*D  NECESSARY INFORMATION FOR A PO ITEM.  THE FIELDS UPDATED  *
+001500*D  ARE - STR-MKT-COST, STR-REPAIR-COST, STR-LAST-PO, AND     *
+001600*D  STR-LAST-VENDOR.  IT ALSO RETURNS BACK PO QTY AND PRICE   *
+001700*D  IN TERMS OF STOREROOM UNITS.                              *
+001800***************************************************************
+      *                                                             *
+      *C  06/18/1996  CA YODER                                      *
+      *C    RECOMPILED TO PICK UP CENTURY DATABASE CHANGES.         *
+      *C                                                            *
+      *C  06/20/1997  CA YODER                                      *
+      *C    DO NOT UPDATE STOREROOM MARKET COST WHEN THE CODE IS    *
+      *C    A FRANCHISED ITEM.  PRICE IS SET BY 832 PRICE CATALOG   *
+      *C    UPDATES.                                                *
+      *C                                                            *
+      *C  03/29/1999  CA YODER                                      *
+      *C    BY REQUEST OF LAWTON, DO NOT UPDATE MARKET COST IF      *
+      *C    PO IS AN "IT" ORDER.                                    *
+      *C                                                            *
+      *C  04/13/1999  CA YODER                                      *
+      *C   IF SPOMSTRM-STR-PRICE ISN'T NUMERIC, MOVE 0 TO THE       *
+      *C   FIELD TO AVOID A BLOWUP OF THE PROGRAM.                  *
+      *C                                                            *
+      *C  04/13/1999  CA YODER   NAPANEE REQUEST                    *
+      *C   IF REPAIR ORDER, UPDATE STR-MKT-COST WITH UNIT VALUE.    *
+      *C                                                            *
+      *C  03/01/2000  CA YODER   NAPANEE REQUEST  (D. STUBBS)       *
+      *C   CHANGED LOGIC TO NO LONGER UPDATE MARKET COST WITH UNIT  *
+      *C   VALUE FROM A REPAIR ORDER.                               *
+      *C                                                            *
+      *C  11/2/00     JE COFFMAN                                    *
+      *C   REMOVED VALLEYFIELD ONLY LOGIC FOR CALCULATING AVERAGE   *
+      *C   COST SINCE THEY ARE EXECUTING CSAS AND THE AVERAGE       *
+      *C   COSTS SHOULD BE GETTING UPDATED FROM THAT SYSTEM.        *
+      *C   PROBLEM WAS NOT UNCOVERED UNTIL NOW AS WE DID NOT        *
+      *C   KNOW THIS LOGIC EVEN EXISTED UNTIL CALLED TO MY          *
+      *C   ATTENTION BY ANDRE BENJAMIN AND ANDRE GADBOIS.           *
+      ***************************************************************
+002000 ENVIRONMENT DIVISION.
+002100 CONFIGURATION SECTION.
+002200 SOURCE-COMPUTER.  HP-3000.
+002300 OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MSTORERM-O
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+002400
+002500 DATA DIVISION.
+       FILE SECTION.
+       FD  MSTORERM-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+
+002600
+002700 WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+002800 77  PREV-STR-TOT-VALUE           PIC S9(11)V9(4) VALUE ZEROS.
+002900 77  PO-TOT-VALUE                 PIC S9(11)V9(4) VALUE ZEROS.
+003000 77  TOT-VALUE                    PIC S9(11)V9(4) VALUE ZEROS.
+003100 77  TOT-UNITS                    PIC S9(8)       VALUE ZEROS.
+003200
+003300
+003400**************************************************************
+003500**************************************************************
+003600**                                                          **
+003700**                DATABASE I/O BUFFER AREA                  **
+003800**                                                          **
+003900**************************************************************
+004000**************************************************************
+004100
+004200 COPY MSTORERM   IN COPYLIB.
+004300
+004400*********************
+004500*                   *
+004600*   DATA SET NAMES  *
+004700*                   *
+004800*********************
+004900
+005000 01  DSET-NAMES.
+005100     05  DSET-MSTORERM          PIC X(16)  VALUE "MSTORERM;".
+005200
+005300 01 ITEMS-LISTING.
+005400     05  ALL-ITEMS              PIC XX    VALUE "@;".
+005500
+005900
+006100*************************************
+006200**  PARM AREA FOR CALLING 'SCURCONV'
+006300*************************************
+006400
+006500 COPY SCURCONV   IN COPYLIB.
+006600
+006700
+006800 LINKAGE SECTION.
+006900
+007000 01  BASE                         PIC X(10).
+007100
+007200 01  CODE-ARG                     PIC X(8).
+007300
+007400 COPY SPOMSTRM   IN COPYLIB.
+007500
+007600 01  ZBILL-PO-SW                  PIC X.
+007700     88  ZBILL-PO                        VALUE "1".
+007800
+007900 COPY DBSTAT     IN COPYLIB.
+008000
+008100 01  BU-DISPLAY-MSG.
+008200     05  BU-DISPLAY-MSG-1         PIC X(1).
+008300     05  FILLER                   PIC X(59).
+008400
+008500 01  BU-DISPLAY-FLDS.
+008600     05  BU-DISPLAY-LINE  OCCURS 5 TIMES.
+008700         10  BU-DISPLAY-FLD       PIC X(14).
+008800         10  BU-DISPLAY-FLD9      PIC S9(8).
+008900
+009000
+009100
+009200 PROCEDURE DIVISION USING  BASE,
+009300                           CODE-ARG,
+009400                           SPOMSTRM-PARMS,
+009500                           ZBILL-PO-SW,
+009600                           STATUS-AREA,
+009700                           BU-DISPLAY-MSG,
+009800                           BU-DISPLAY-FLDS.
+009900
+010000
+010100 SPOMSTRM SECTION 02.
+010200
+010300 BEGIN-HERE.
+           OPEN I-O MSTORERM-O.
+
+010400     PERFORM 6-MAIN THRU 6-M-X.
+
+           CLOSE MSTORERM-O.
+010500
+010600     GOBACK.
+010700
+010800
+010900******************************************************
+011000**                                                  **
+011100**   BLOWUP ROUTINE                                 **
+011200**                                                  **
+011300******************************************************
+011400
+011500 2-BLOWUP.
+011600     MOVE "SPOMSTRM"             TO  BU-DISPLAY-FLD (5).
+011700     MOVE CODE-ARG               TO  BU-DISPLAY-FLD (4).
+011800     GOBACK.
+011900
+012000
+012100 6-MAIN.
+012200*************************************
+012300**   UPDATE MSTORERM INFORMATION
+012400*************************************
+012500     PERFORM 60-UPDATE-MSTORERM  THRU  60-UM-X.
+012600
+012700 6-M-X.
+012800     EXIT.
+012900
+013000**************************************************
+013100**   THIS PROCEDURE UPDATES MSTORERM INFO FOR
+013200**   A PO ITEM-  STR-MKT-COST/STR-REPAIR-COST,
+013300**   STR-LAST-PO, STR-LAST-VENDOR.
+013400**************************************************
+013500
+013600 60-UPDATE-MSTORERM.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-O.
+           READ MSTORERM-O INTO BUF-MSTORERM
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+014700*    CALL "DBGET" USING BASE, DSET-MSTORERM, MODE7,
+014800*        STATUS-AREA, ALL-ITEMS, BUF-MSTORERM, CODE-ARG.
+014900     IF COND-WORD NOT = ZERO
+015000         MOVE "GET MSTORERM * 60-UM" TO BU-DISPLAY-MSG
+015100         GO TO 2-BLOWUP.
+015200
+           IF SPOMSTRM-STR-PRICE NOT NUMERIC
+               MOVE ZEROS               TO  SPOMSTRM-STR-PRICE.
+015300     MOVE ZEROS                   TO  SPOMSTRM-STR-QTY.
+015400     MOVE STR-UM                  TO  SPOMSTRM-STR-UM.
+015500     IF SPOMSTRM-QTY-UM = STR-UM
+015600         ADD SPOMSTRM-QTY TO SPOMSTRM-STR-QTY ROUNDED
+015700     ELSE
+015800     IF SPOMSTRM-QTY-UM = STR-UM1
+015900         MULTIPLY  SPOMSTRM-QTY BY STR-UM1-CF
+016000                         GIVING SPOMSTRM-STR-QTY ROUNDED
+016100     ELSE
+016200     IF SPOMSTRM-QTY-UM = STR-UM2
+016300         MULTIPLY SPOMSTRM-QTY BY STR-UM2-CF
+016400                         GIVING SPOMSTRM-STR-QTY ROUNDED
+016500     ELSE
+016600         MOVE "QTY UM PROBLEM *60-UM" TO BU-DISPLAY-MSG
+016700         MOVE SPOMSTRM-QTY-UM  TO  BU-DISPLAY-FLD (2)
+016800         GO TO 2-BLOWUP.
+016900
+017000     IF SPOMSTRM-PRICE = ZEROS
+017100         MOVE ZEROS               TO  SPOMSTRM-STR-PRICE
+017200     ELSE
+017300     IF SPOMSTRM-PRICE-UM = STR-UM
+017400         MOVE SPOMSTRM-PRICE      TO  SPOMSTRM-STR-PRICE
+017500     ELSE
+017600     IF SPOMSTRM-PRICE-UM = STR-UM1
+017700         DIVIDE SPOMSTRM-PRICE BY STR-UM1-CF
+017800             GIVING SPOMSTRM-STR-PRICE ROUNDED
+017900     ELSE
+018000     IF SPOMSTRM-PRICE-UM = STR-UM2
+018100         DIVIDE SPOMSTRM-PRICE BY STR-UM2-CF
+018200             GIVING SPOMSTRM-STR-PRICE ROUNDED
+018300     ELSE
+018400         MOVE "PRICE UM PROBLEM *60-UM" TO BU-DISPLAY-MSG
+018500         MOVE SPOMSTRM-QTY-UM  TO  BU-DISPLAY-FLD (2)
+018600         GO TO 2-BLOWUP.
+018700
+018800*******************************************************
+018900**  IF PO PRICE CONVERTED TO STORE UM IS ZERO THAN
+019000**  DONT UPDATE MARKET COST.  IF THIS IS A MEMO-ZBILL
+019100**  PO (REPAIR ORDER) THAN UPDATE OUTSIDE REPAIR
+019200**  COST OTHERWISE UPDATE MARKET COST.
+019300*******************************************************
+      *------- IF THIS IS A FRANCHISED ITEM, DO NOT UPDATE
+      *------- MARKET COST.
+      *------- IF THIS IS AN "IT" ORDER, DO NOT UPDATE MARKET COST.
+019400
+           IF STR-CODE-OWNER > SPACE
+               NEXT SENTENCE
+           ELSE
+           IF SPOMSTRM-PO-NUM (1:2) = "IT"
+               NEXT SENTENCE
+           ELSE
+019500     IF SPOMSTRM-STR-PRICE = ZEROS
+019600         NEXT SENTENCE
+019700     ELSE
+019800         PERFORM 601-CURRENCY-CONVERSION  THRU  601-CC-X
+019900         IF ZBILL-PO
+020000             MOVE SCURCONV-PRICE-DEC   TO  STR-OUT-REPAIR-COST
+020100         ELSE
+020200             MOVE SCURCONV-PRICE-DEC   TO  STR-MKT-COST.
+020300
+020400******
+020500** HERE LAST PO AND LAST VENDOR ARE UPDATED
+020600******
+020700
+020800     IF SPOMSTRM-LAST-PO = SPACES
+020900         NEXT SENTENCE
+021000     ELSE
+021100         MOVE SPOMSTRM-LAST-PO    TO  STR-LAST-PO-RLSE.
+021200     IF SPOMSTRM-VEN-CODE = SPACES
+021300         NEXT SENTENCE
+021400     ELSE
+021500         MOVE SPOMSTRM-VEN-CODE   TO  STR-LAST-VENDOR.
+021600
+021700**************************************************************
+021800*                                                            *
+021900*  NEXT THE PLANT CODE IS 629 (VALLEYFIELD) THEN CALCULATE   *
+022000*  AN AVERAGE COST USING THE FOLLOWING FORMULA.              *
+022100*                                                            *
+022200*   (CURRENT ONHAND x CURRENT AVG COST) + (PO QTY x PO PRICE)*
+022300*   ---------------------------------------------------------*
+022400*                  CURRENT ONHAND + PO QTY                   *
+022500*                                                            *
+022600*  THIS IS DONE BECAUSE VALLEYFIELD HAS NOT AVERAGE COST     *
+022700*  SYSTEM AND THIS IS THE BEST THEY HAVE.  OH WELL           *
+022800**************************************************************
+022900
+023000*    IF SPOMSTRM-STR-PRICE = ZEROS
+023100*        NEXT SENTENCE
+023200*    ELSE
+023300*    IF SPOMSTRM-COMPANY-SAVE  =  "629"
+023400*        MOVE STR-AVG-COST        TO  STR-PREV-AVG
+023500*        COMPUTE PREV-STR-TOT-VALUE ROUNDED = STR-AVG-COST *
+023600*                                             STR-ONHAND
+023700*        COMPUTE PO-TOT-VALUE ROUNDED = SCURCONV-PRICE-DEC *
+023800*                                       SPOMSTRM-STR-QTY
+023900*        COMPUTE TOT-VALUE = PREV-STR-TOT-VALUE + PO-TOT-VALUE
+024000*        COMPUTE TOT-UNITS = STR-ONHAND + SPOMSTRM-STR-QTY
+024100*        COMPUTE STR-AVG-COST ROUNDED = TOT-VALUE / TOT-UNITS.
+024200
+      *----------- NO LONGER UPDATE MARKET COST ON REPAIR ORDERS.
+      *****IF ZBILL-PO AND SPOMSTRM-UNIT-VALUE NUMERIC
+      *****    PERFORM 602-CURRENCY-CONVERSION  THRU  602-CC-X
+      *****    MOVE SCURCONV-PRICE-DEC    TO  STR-MKT-COST.
+
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+024300*    CALL "DBUPDATE" USING BASE, DSET-MSTORERM, MODE1,
+024400*        STATUS-AREA, ALL-ITEMS, BUF-MSTORERM.
+024500     IF COND-WORD NOT = ZERO
+024600         MOVE "UPDATE MSTORERM * 60-UM" TO BU-DISPLAY-MSG
+024700         GO TO 2-BLOWUP.
+024800
+025500 60-UM-X.
+025600     EXIT.
+025700
+025800**************************************************
+025900**   CALL 'SCURCONV' TO CONVERT PO PRICE IN
+026000**   STOREROOM UNITS TO LOCAL CURRENCY IF IT IS
+026100**   CURRENTLY IN A FOREIGN CURRENCY BEFORE
+026200**   UPDATING 'MSTORERM'
+026300**************************************************
+026400
+026500 601-CURRENCY-CONVERSION.
+026600     MOVE SPOMSTRM-STR-PRICE      TO  SCURCONV-PRICE-DEC.
+026700     IF SPOMSTRM-CUR-CODE = SPACES
+026800         GO TO 601-CC-X.
+026900     MOVE SPOMSTRM-CUR-CODE       TO  SCURCONV-CUR-CODE.
+027000     MOVE ZEROS                   TO  SCURCONV-PRICE-WHL.
+027100     MOVE "Y"                     TO  SCURCONV-OVERRIDE-CONV-SW.
+027200     CALL "SCURCONV" USING BASE,
+027300                           SCURCONV-PARMS,
+027400                           STATUS-AREA,
+027500                           BU-DISPLAY-MSG,
+027600                           BU-DISPLAY-FLDS.
+027700     IF BU-DISPLAY-MSG-1 NOT = SPACES
+027800         MOVE "SCURCONV"          TO  BU-DISPLAY-FLD (3)
+027900         GO TO 2-BLOWUP.
+028000
+028100 601-CC-X.
+028200     EXIT.
+
+      *-------- 03/01/00  COMMENTED OUT PARAGRAPH.
+      *602-CURRENCY-CONVERSION.
+      ***  MOVE SPOMSTRM-UNIT-VALUE     TO  SCURCONV-PRICE-DEC.
+      ***  IF SPOMSTRM-CUR-CODE = SPACES
+      ***      GO TO 602-CC-X.
+      ***  MOVE SPOMSTRM-CUR-CODE       TO  SCURCONV-CUR-CODE.
+      ***  MOVE ZEROS                   TO  SCURCONV-PRICE-WHL.
+      ***  MOVE "Y"                     TO  SCURCONV-OVERRIDE-CONV-SW.
+      ***  CALL "SCURCONV" USING BASE,
+      ***                        SCURCONV-PARMS,
+      ***                        STATUS-AREA,
+      ***                        BU-DISPLAY-MSG,
+      ***                        BU-DISPLAY-FLDS.
+      ***  IF BU-DISPLAY-MSG-1 NOT = SPACES
+      ***      MOVE "SCURCONV"          TO  BU-DISPLAY-FLD (3)
+      ***      GO TO 2-BLOWUP.
+      ***
+      *602-CC-X.
+      ***  EXIT.

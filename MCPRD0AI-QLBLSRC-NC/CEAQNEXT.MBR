@@ -1,0 +1,525 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          CEAQNEXT.
+       AUTHOR.              C HILLES.
+       DATE-WRITTEN.        12/18/87.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.
+      *D   ELECTRONIC REQUISITION APPROVALS - QUE TO NEXT APPROVER.
+      *D   WHEN THE REQ IS INITIALLY CREATED, ALL THE 'DREQQUE' ENTRIES
+      *D   ARE PUT OUT BY 'CEAQUE', BUT THE 'QUEUED-DATE' IS NOT PUT
+      *D   IN.  THIS SHOWS ALL THE PEOPLE WHO MUST APPROVE THE REQ, BUT
+      *D   DOES NOT SHOW UP IN THEIR APPROVAL QUEUE YET.  THEN THIS
+      *D   SUBPROG IS CALLED TO QUE TO THE NEXT APPROVER(S). IF ALL THE
+      *D   LEVELS FOR THE PATH ARE SIMULTANEOUS, ALL APPROVERS WILL
+      *D   BE QUEUED.  IF ALL ARE IN ORDER, THE FIRST APPROVER ONLY
+      *D   WILL HAVE QUEUED-DATE UPDATED.  IF THE FIRST 3 ARE
+      *D   SIMULTANEOUS, WITH THE NEXT 2 IN ORDER, THE FIRST 2 WILL
+      *D   BE QUEUED, AND SO ON.
+      *D   NOTE:  CALLING PROGRAM MUST HANDLE THE LOCKING.
+      *C
+      *C 08/14/96  JEFF BUNGO
+      *C   EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C   INCLUDE CENTURY FOR APPROVED AND QUEUED DATES.
+      *C
+      *C NOV 1997  JE COFFMAN
+      *C   I ADDED A CHECK IN PARAGRAPH 6090-GET-OLD-DREQQUE
+      *C   TO SET THE REQ-RELEASE STATUS FLAG WHEN CERTAIN
+      *C   CONDITIONS EXISTED. SEE NOTE BELOW.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DREQQUE-RQ-O
+               ASSIGN TO DATABASE-MCFLCS4401
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+       FD  DREQQUE-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQQUE-RQ-REC-O.
+           COPY DDS-MCRPCS4400  OF MCFLCS4401.
+
+       FD  MREQ-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-RQ-REC-O.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+
+       77  FIRST-TIME-FLAG               PIC X(1).
+       77  FOUND-DUP-FLAG                PIC X(1).
+       77  REQ-SEARCH                    PIC X(16) VALUE "REQ-NUMBER;".
+       77  SUB                           PIC S9(4) COMP.
+       77  SUB2                          PIC S9(4) COMP.
+       77  UPDATE-FLAG                   PIC X(1).
+       77  SAVE-APPROVALS-LEFT           PIC 9(2).
+       77  TEST-EMPL                     PIC X(4).
+       77  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+
+       01  SAVE-EMPL-TABLE.
+           05  SAVE-EMPL-LINE OCCURS 50 TIMES.
+               10  SAVE-EMPL-QUEUED      PIC X(4).
+               10  SAVE-LEVEL-NUM        PIC XX.
+               10  SAVE-QUEUED-DATE-CN   PIC X(8).
+               10  SAVE-APPROVE-DATE-CN  PIC X(8).
+
+      **************************************************************
+      **                                                          **
+      **            D A T A B A S E   W O R K                     **
+      **                                                          **
+      **************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16) VALUE SPACES.
+           05  DSET-MREQ                 PIC X(16) VALUE "MREQ;".
+           05  DSET-DREQQUE              PIC X(16) VALUE "DREQQUE;".
+
+       01  MODE-AREA.
+           05  DB-MODE                   PIC S9(4)   COMP       VALUE 0.
+           05  MODE1                     PIC S9(4)   COMP       VALUE 1.
+           05  MODE2                     PIC S9(4)   COMP       VALUE 2.
+           05  MODE3                     PIC S9(4)   COMP       VALUE 3.
+           05  MODE4                     PIC S9(4)   COMP       VALUE 4.
+           05  MODE5                     PIC S9(4)   COMP       VALUE 5.
+           05  MODE7                     PIC S9(4)   COMP       VALUE 7.
+
+       01  ALL-ITEMS                     PIC X(2)  VALUE "@;".
+       01  REQ-ARG                       PIC X(12).
+
+      ******************************************************************
+      **                                                              **
+      **          S U B P R O G R A M   A R E A S                     **
+      **                                                              **
+      ******************************************************************
+       COPY TDATECHK   IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **            L I N K A G E   S E C T I O N                 **
+      **                                                          **
+      **************************************************************
+
+       LINKAGE SECTION.
+       01  BASE                          PIC X(10).
+       COPY DBSTAT     IN COPYLIB.
+       COPY REQGLOBS   IN COPYLIB.
+       COPY MREQ       IN COPYLIB.
+       COPY DREQQUE    IN COPYLIB.
+       COPY CEAQNEXT   IN COPYLIB.
+       COPY BUMSG      IN COPYLIB.
+
+       PROCEDURE DIVISION USING          BASE,
+                                         STATUS-AREA,
+                                         REQ-GLOBALS,
+                                         BUF-MREQ,
+                                         BUF-DREQQUE,
+                                         QNEXT-PARMS,
+                                         BU-DISPLAY-MSG.
+
+       6000-MAIN.
+           PERFORM 9999-OPEN-STUFF.
+
+      *------ THIS SUBPROGRAM MAY CHANGE THE NUM OF APPROVALS LEFT IF
+      *------ THERE ARE DUPLICATE EMPL AT 2 OR MORE LEVELS.  THIS CAN
+      *------ HAPPEN LIKE SO:
+      *------ 1.  REQ IS CREATED, APPROVALS LOOK LIKE THIS:
+      *------    LEV    EMPL   QUEUED   APPROVED     APPROVALS LEFT = 4
+      *------     00    1111   1/14/88  1/14/88
+      *------     01 O  2222   1/14/88
+      *------     03 S  3333
+      *------     04 S  2222   1/14/88
+      *------     05 O  4444
+      *------
+      *------ 2.  LEVEL 01, EMPL 2222 APPROVES THE REQ. NOW WE HAVE
+      *------    LEV    EMPL   QUEUED   APPROVED     APPROVALS LEFT = 2
+      *------     00    1111   1/14/88  1/14/88
+      *------     01 O  2222   1/14/88  1/15/88
+      *------     03 S  3333
+      *------     04 S  2222   1/14/88  1/15/88
+      *------     05 O  4444
+      *------
+      *------     'CEAAPPRV' SUBTRACTED 1, BUT WE HAVE TO SUBTRACT
+      *------     1 MORE IN THIS SUBPROGRAM FOR THE DUPLICATE.
+      *------
+      *------ NOTE: WHEN EMPL IS DUPLICATED, IF IT GETS QUEUED TO HIM
+      *------ AT ONE LEVEL, IT GETS QUEUED TO HIM AT ANY OTHER LEVELS HE
+      *------ IS AT, REGARDLESS OF THE 'IN ORDER' OR 'SIMULTANEOUS'
+      *------ PARMS.  SAME WITH WHEN HE APPROVES IT.
+      *------
+
+      *------ THE FOLLOWING IS A DESRIPTION OF HOW THE QUEUEING WORKS IN
+      *------ THIS SYSTEM. EACH PATH MAY HAVE A COMBINATION OF QUEUEING
+      *------ IN ORDER OR SIMULTANEOUSLY. FOR EXAMPLE, THEY MAY WANT THE
+      *------ REQ TO QUEUE TO THE DEPT MANAGER FIRST.  THEN, TO
+      *------ ACCOUNTING AND ENGINEERING MANAGER SIMULTANEOUSLY.  THEN,
+      *------ TO PLANT MANAGER LAST.  HERE ARE SOME EXAMPLES.  'O'
+      *------ MEANS IN ORDER, 'S' MEANS SIMULTANEOUSLY:
+      *------
+      *------          EXAMPLE 1     EXAMPLE 2     EXAMPLE 3
+      *------ ENTRY 1     S             O             O
+      *------ ENTRY 2     O             S             S
+      *------ ENTRY 3     O             S             O
+      *------ ENTRY 4     S             S             S
+      *------ ENTRY 5     S             O             O
+      *------
+      *------ IN EXAMPLE 1:
+      *------  - REQ GOES TO APPROVER 1 FIRST AND STOPS
+      *------  - APPROVER 1 APPROVES REQ, GOES TO APPROVER 2 AND STOPS
+      *------  - APPROVER 2 APPROVES REQ, GOES TO APPROVER 3 AND STOPS
+      *------  - APPROVER 3 APPROVERS REQ, GOES TO 4 AND 5 SIMULTANEOUS
+      *------  - AFTER BOTH 4 & 5 APPROVE, GOES TO PURCH
+      *------
+      *------ IN EXAMPLE 2:
+      *------  - REQ GOES TO APPROVER 1 FIRST AND STOPS
+      *------  - APPROVER 1 APPROVES, GOES TO 2, 3, & 4 SIMULTANEOUS
+      *------  - AFTER 2, 3, AND 4 HAVE APPROVED, GOES TO 5
+      *------  - AFTER 5 APPROVES, RELEASED TO PURCH
+      *------
+      *------ IN EXAMPLE 3, WOULD BE THE SAME AS ALL 'IN ORD': GOES
+      *------ TO 1 AND STOPS, 1 APPROVES GOES TO 2 AND STOPS, ETC.
+      *------
+      *------ SOME EXAMPLES OF HOW THEY ARE PROCESSED.  THE ARROW
+      *------ SHOWS THE ENTRY THAT IS CURRENTLY BEING APPROVED.
+      *------ (THE CURRENT ITEM APPROVE DATE IS SHOWN ALREADY
+      *------ UPDATED, BECAUSE THE "QUEUE NEXT" LOGIC STARTS AFTER THE
+      *------ UPDATE).
+      *------
+      *------      QUEUED DATE    APPROVE DATE     S/O
+      *------ 1      871217          871217         O
+      *------ 2      871217          ------         S
+      *------ 3      871217          ------         S
+      *------ 4      871217          871217         S   <-----
+      *------ 5      ------          ------         O
+      *------
+      *------  - DO NOTHING (ENTRIES 2 & 3 MUST BE APPROVED BEFORE
+      *------   ENTRY 5 WILL BE QUEUED)
+      *------
+      *----------------------------------------------------------------
+      *------      QUEUED DATE    APPROVE DATE     S/O
+      *------ 1      871217          871217         O
+      *------ 2      871217          871217         S   <-----
+      *------ 3      871217          871217         S
+      *------ 4      871217          871217         S
+      *------ 5      ------          ------         O
+      *------
+      *------  - QUEUE ENTRY 5
+      *------
+      *----------------------------------------------------------------
+      *------      QUEUED DATE    APPROVE DATE     S/O
+      *------ 1      871217          871217         O   <-----
+      *------ 2      ------          ------         S
+      *------ 3      ------          ------         S
+      *------ 4      ------          ------         S
+      *------ 5      ------          ------         O
+      *------
+      *------  - QUEUE 2, 3, AND 4
+      *------
+      *----------------------------------------------------------------
+
+      ******************************************************************
+      **                                                              **
+      **             QUEUE UP TO NEXT APPROVER                        **
+      **                                                              **
+      ******************************************************************
+
+      *------ IF ANY REQ HAS BEEN QUEUED BUT NOT APPROVED, QUIT.
+      *------ ONCE ALL REQS QUEUED UP ARE APPROVED, WE CAN ADVANCE
+      *------ TO NEXT LEVEL.
+      *------
+      *------ STEPS:
+      *------  1.  PASS UP AL REQS QUEUED/APPROVED
+      *------        - IF ANY QUEUED/NOT APPROVED, QUIT
+      *------  2.  IF YOU HIT AN 'O' NEXT, QUEUE IT UP AND STOP
+      *------  3.  IF YOU HIT AN 'S' NEXT, QUEUE UNTIL YOU HIT AN 'O'
+      *------
+      *------ CASE QUEUED DATE     APPROVE DATE      ACTION
+      *------ ---- ----------     ------------      ------
+      *------  1    NUMERIC          NUMERIC         BYPASS
+      *------  2    NUMERIC          SPACES          QUIT
+      *------  3    SPACES           SPACES          UPDATE (POSSIBLY)
+      *------  4    SPACES           NUMERIC         NOT POSSIBLE (BYPASS)
+
+       6005-GET-UPDATE-DREQQUE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+
+       6007-QNEXT-AGAIN.
+      *------ SAVE CURRENT 'DREQQUE' RECORD SO WE CAN GET IT BACK
+      *------ THE 'DBUPDATE' GAVE US CURRENT REC ADDRESS.
+           MOVE "Y"                      TO  FIRST-TIME-FLAG.
+
+           MOVE MREQ-NUMBER              TO  REQ-ARG.
+           PERFORM 9999-CHAINHD-DREQQUE-RQ-O.
+       6010-GET-UPDATE-LOOP.
+           PERFORM 9999-GETNEXT-DREQQUE-RQ-O.
+           IF END-OF-CHAIN
+               GO TO 6080-CHECK-DUPLICATE-EMPL.
+
+      *---- CASE 1 OR 4
+           IF DRQQ-APPROVE-DATE-CN NUMERIC
+               GO TO 6010-GET-UPDATE-LOOP.
+
+      *------ CASE 2
+           IF DRQQ-QUEUED-DATE-CN NUMERIC AND
+               (DRQQ-APPROVE-DATE-CN NOT NUMERIC)
+               GO TO 6080-CHECK-DUPLICATE-EMPL.
+
+      *------SET CENTURY FOR QUEUED DATE
+           MOVE DATE-YMD-OUT             TO  DRQQ-QUEUED-DATE.
+           IF DRQQ-QUEUED-DATE-YY > "70"
+               MOVE "19" TO DRQQ-QUEUED-DATE-CC
+           ELSE
+               MOVE "20" TO DRQQ-QUEUED-DATE-CC.
+
+      *------ AT THIS POINT, WE ARE LOOKING AT AN ITEM WITH
+      *------ QUEUED/APPROVED DATE OF SPACES (CASE 3).
+           IF FIRST-TIME-FLAG = "Y"
+               MOVE "N"                  TO  FIRST-TIME-FLAG
+               IF DRQQ-INORD-SIMEL = "O"
+                   PERFORM 9999-UPDATE-DREQQUE-RQ-O
+                   GO TO 6080-CHECK-DUPLICATE-EMPL.
+
+      *------ THIS IF CHECKS FOR AN 'O' AFTER PREVIOUS 'S' ENTRIES.
+           IF DRQQ-INORD-SIMEL = "O"
+               GO TO 6080-CHECK-DUPLICATE-EMPL.
+
+           PERFORM 9999-UPDATE-DREQQUE-RQ-O.
+
+           GO TO 6010-GET-UPDATE-LOOP.
+
+       6080-CHECK-DUPLICATE-EMPL.
+      *------ IF ANY EMPL IS DUPLICATED IN THE APPROVAL QUEUE, WE MUST
+      *------ MATCH ANY PREVIOUS DUPLICATE ENTRIES.  IE IF IT QUEUES TO
+      *------ EMPL1234 AT LEVEL 01 SIMULTANEOUS, AND ALSO TO EMPL 1234
+      *------ AT LEVEL 05 IN ORDER, UPDATE THE QUEUED DATE FOR LEVEL 05
+      *------ EVEN THOUGH IT NORMALLY WOULDNT BE.  THIS IS BECAUSE 1
+      *------ 1 EMPL WILL BE QUEUED TO AND WILL APPROVE THE REQ ONLY
+      *------ ONCE.
+           PERFORM 9999-CHAINHD-DREQQUE-RQ-O.
+
+           MOVE ZERO                     TO  SUB,
+                                             SAVE-APPROVALS-LEFT.
+           MOVE "N"                      TO  FOUND-DUP-FLAG.
+
+       6085-CHECK-DUP-EMPL-LOOP.
+           PERFORM 9999-GETNEXT-DREQQUE-RQ-O.
+           IF END-OF-CHAIN
+               GO TO 6090-GET-OLD-DREQQUE.
+
+           ADD 1                         TO  SUB.
+           IF SUB > 50
+               GO TO 6090-GET-OLD-DREQQUE.
+
+           MOVE DRQQ-EMPL-QUEUED         TO  SAVE-EMPL-QUEUED (SUB).
+           MOVE DRQQ-LEVEL-NUM           TO  SAVE-LEVEL-NUM (SUB).
+           MOVE DRQQ-QUEUED-DATE-CN      TO  SAVE-QUEUED-DATE-CN (SUB).
+           MOVE DRQQ-APPROVE-DATE-CN     TO  SAVE-APPROVE-DATE-CN (SUB).
+
+           IF SUB > 1
+               MOVE SUB                  TO  SUB2
+               MOVE "N"                  TO  UPDATE-FLAG
+               MOVE SPACES               TO  TEST-EMPL
+               PERFORM 9000-CHECK-BACKWARDS THRU 9010-CB-X
+                 UNTIL SUB2 < 2
+                 OR TEST-EMPL = DRQQ-EMPL-QUEUED
+               IF UPDATE-FLAG = "Y"
+                MOVE SAVE-QUEUED-DATE-CN (SUB2) TO DRQQ-QUEUED-DATE-CN
+                MOVE SAVE-APPROVE-DATE-CN (SUB2) TO DRQQ-APPROVE-DATE-CN
+                MOVE "Y"              TO  FOUND-DUP-FLAG
+                PERFORM 9999-UPDATE-DREQQUE-RQ-O.
+
+           IF DRQQ-APPROVE-DATE-CN = SPACES
+               ADD 1                     TO  SAVE-APPROVALS-LEFT.
+
+           GO TO 6085-CHECK-DUP-EMPL-LOOP.
+
+       6090-GET-OLD-DREQQUE.
+           IF REQ-APPROVALS-LEFT NOT NUMERIC
+           OR SAVE-APPROVALS-LEFT NOT = REQ-APPROVALS-LEFT-9
+               MOVE SAVE-APPROVALS-LEFT  TO  REQ-APPROVALS-LEFT-9
+      ****************************************************************
+      *    I ADDED THE FOLLOWING LOGIC TO TRY TO HANDLE A PROBLEM    *
+      *    DECATUR UNCOVERED WHEREBY THE ORIGINATOR AND THE          *
+      *    APPROVER WERE THE SAME CLOCK CARD AND THE ONLY LEVELS     *
+      *    ON A PATH. WHEN PURCHASING RETURNED A REQUISITION TO THE  *
+      *    ORIGINATOR THE REQ-RELEASE STATUS FLAG WAS REMOVED. WHEN  *
+      *    THE ORIGINATOR RE-RELEASED THE REQ, HIS APPROVAL LEVEL    *
+      *    WAS AUTOMATICALLY APPROVED SINCE IT WAS THE SAME CLOCK    *
+      *    CARD BUT THE RELEASE FLAG WAS NOT GETTING TURNED BACK ON  *
+      *    AND THE REQUISITION WAS LEFT HANGING.                     *
+      ****************************************************************
+               IF REQ-APPROVALS-LEFT-9 < 1
+017100             MOVE DATE-YMD-OUT     TO   REQ-REL-MC-DATE
+                   IF REQ-REL-MC-DATE-YY > "70"
+                       MOVE "19"         TO   REQ-REL-MC-DATE-CC
+                   ELSE
+                       MOVE "20" TO REQ-REL-MC-DATE-CC
+                   END-IF
+                   MOVE "X " TO REQ-RELEASE-STAT
+               END-IF
+               MOVE MREQ-NUMBER          TO  REQ-ARG
+               PERFORM 9999-UPDATE-MREQ-RQ-O.
+
+      *------ UPDATING A DUPLICATE EMPL MAY BE CAUSE TO UPDATE QUEUED
+      *------ DATE FOR NEXT PERSON.  THIS FLAG SHOULD BE HIT ONCE
+      *------ AT MOST.
+           IF FOUND-DUP-FLAG = "Y"
+               GO TO 6007-QNEXT-AGAIN.
+
+      *------ WHEN INITIALLY QUEUEING A REQ (CALLED FROM 'CEAQUE'
+      *------ INSTEAD OF 'CEAAPPRV'), THERE IS NO DREQQUE ENTRY TO
+      *------ RE-GET.
+           IF QNEXT-REC-NO = ZERO
+               GO TO 6990-MAIN-X.
+
+      *    CALL "DBGET" USING BASE, DSET-DREQQUE, MODE4, STATUS-AREA,
+      *      ALL-ITEMS, BUF-DREQQUE, QNEXT-REC-NO.
+      *    IF NOT GOOD-CALL
+      *        MOVE "CEAQNEXT DBGET ERR MODE4 6080-GOR"
+      *                                  TO   BU-DISPLAY-MSG
+      *        GO TO 6990-MAIN-X.
+
+
+       6990-MAIN-X.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               MOVE FILE-STATUS          TO  BU-DISPLAY-PARA.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       9000-CHECK-BACKWARDS.
+           SUBTRACT 1 FROM SUB2.
+           IF SUB2 < 1
+               GO TO 9010-CB-X.
+
+           MOVE SAVE-EMPL-QUEUED (SUB2)  TO  TEST-EMPL.
+           IF TEST-EMPL = DRQQ-EMPL-QUEUED
+               IF SAVE-QUEUED-DATE-CN (SUB2) = DRQQ-QUEUED-DATE-CN
+               AND SAVE-APPROVE-DATE-CN (SUB2) = DRQQ-APPROVE-DATE-CN
+                   NEXT SENTENCE
+               ELSE
+               IF QNEXT-MODE = "U"
+                   IF SAVE-LEVEL-NUM (SUB2) = "00"
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE "Y"              TO  UPDATE-FLAG
+                   GO TO 9010-CB-X
+               ELSE
+               MOVE "Y"                  TO UPDATE-FLAG
+               GO TO 9010-CB-X.
+
+       9010-CB-X.
+           EXIT.
+
+       2100-BLOWUP.
+           GO TO 6990-MAIN-X.
+
+       9999-CHAINHD-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY = REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CLOSE-STUFF.
+           CLOSE DREQQUE-RQ-O.
+           CLOSE MREQ-RQ-O.
+       9999-GETKEY-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF MREQ-RQ-REC-O.
+           READ MREQ-RQ-O INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MREQ-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF MREQ-RQ-REC-O.
+           START MREQ-RQ-O KEY > REQNO OF MREQ-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQQUE-RQ-O NEXT INTO BUF-DREQQUE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQQUE-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQQUE-RQ-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQQUE-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQQUE-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQQUE-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY > REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-OPEN-STUFF.
+           OPEN I-O DREQQUE-RQ-O.
+           OPEN I-O MREQ-RQ-O.
+       9999-UPDATE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE DREQQUE-RQ-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MREQ-RQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+

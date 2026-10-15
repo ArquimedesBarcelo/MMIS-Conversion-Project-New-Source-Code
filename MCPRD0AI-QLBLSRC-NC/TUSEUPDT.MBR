@@ -1,0 +1,672 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TUSEUPDT.
+       AUTHOR.              C HILLES.
+       DATE-WRITTEN.        APRIL, 1982.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+
+      *REMARKS. THIS IS THE DAILY & MONTHLY USAGE UPDATE PROGRAM.
+      *
+      *    THIS PROGRAM IS RUN IN THE JOB STREAM BCUTOFF IN FRONT OF
+      *    "XCDLYABS.OBJECT", AND PERFORMS 4 FUNCTIONS.
+      *
+      *      1.  EACH DAY, THE "YESTERDAY USAGE" FIGURE FOR EACH
+      *          CORP CODE IN THE KSAM USAGE FILE IS SET TO ZERO.
+      *
+      *      2.  EACH DAY, THE "RECEIVED YESTERDAY" FIGURE FOR EACH
+      *          CORP CODE IN THE RECEIPTS FILE IS SET TO ZERO.
+      *
+      *      3.  DETERMINES WHETHER IT IS A NEW MONTH.  IF SO, CURRENT
+      *          MONTH USAGE FIGURE OVERLAYS PREVIOUS MONTH, AND
+      *          CURRENT MONTH IS SET TO ZERO.
+      *
+      *      4.  IF IT IS A NEW MONTH.  THE CURRENT MONTH RECEIPTS
+      *          FIGURE OVERLAYS PREVIOUS MONTH, AND CURRENT MONTH IS
+      *          SET TO ZERO.
+      *
+      *C   ON AUGUST 8, 1984, CHANGED THE NEW MONTH INDICATION PART
+      *C   OF THIS PROGRAM.  THE PROGRAM USED TO INDICATE A NEW MONTH
+      *C   TO "XCDLYABS" BY SETTING THE 3RD FIELD OF THE "00000000"
+      *C   RECORD IN "USAGEFIL" TO 1.  NOW IT SETS THE JCW
+      *C   "MONTHEND" TO 1, AND TO 0 IF IT IS NOT A NEW MONTH.
+      *C   THIS IS SO THAT A STEP IN THE "BCUTOFF" JOB CAN
+      *C   CHECK THAT JCW AND STREAM THE AVERAGE MONTHLY USAGE
+      *C   UPDATE JOB IF IT IS A NEW MONTH.  (THAT IS A NEW
+      *C   JOB THAT UPDATES "STR-MTH-FCST" IN "MSTORERM" FROM
+      *C   THE USAGE DATA).  CIH.
+      *C
+      *C  02DEC1992        DAVE PLUM       REQUEST #6323
+      *C  REVISED PGM TO ONLY CLOSE THE USED-YEST-FILE AFTER IT
+      *C  HAS BEEN OPENED.  THE PROGRAM WAS BLOWING UP WHEN THE
+      *C  NEWMONTH LOGIC WAS BEING EXECUTED, SINCE USED-YEST-FILE
+      *C  IS NEVER OPENED AND A CLOSE IS ATTEMPTED IN 2-EOJ.
+      *C
+      *C  10DEC1993        DAVE PLUM       REQUEST #6452
+      *C  REVISED TO INITIALIZE THE BU-PGM-NAME FIELD WITH THE
+      *C  VALUE "TUSEUPDT" INSTEAD OF "TUSNMUPD".
+      *C
+      *C   07MAR1994    DAVE PLUM
+      *C     ADDED CALL TO THE COBOL ERROR HANDLER - MCXCBLERR.
+      *C
+      *C   12SEP1994    JEFF BUNGO
+      *C     ADDED LOGIC TO MONTHLY PROCESSING TO WRITE A TRANSACTION
+      *C     342 FOR MONTHLY USAGE FOR CORPORATE CODES THAT HAVE A
+      *C     CHAT NUMBER ASSIGNED TO IT AND USAGE > 0.
+      *C
+      *C   09/12/96  JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     RECOMPILE TO PICK UP COPYLIB CHANGES.
+      *C
+      *C   1/20/97    BILL ROXBURY REQ #95-012
+      *C     UPDATE ENTRIES FROM NEW RECEIVING FILE (MCFLCSRCPT).
+      *C
+      *C  11/25/97    JEFF BUNGO   REQ #97-017
+      *C     ADD USAGE FIELDS FOR DIRECT DELIVERY.  DD USAGE
+      *C     TO BE STORED IN ADDITIONAL FIELD AND TOTAL USAGE.
+      *C     STORE ISSUE USAGE CALCULATED BY TOTAL USAGE - DD USAGE.
+      *C
+      *C  27JAN1998   DAVE PLUM
+      *C     CORRECTED A BUG IN THE NEW RECEIVING FILE LOGIC WHICH
+      *C     CAUSED THE PROGRAM TO "GO TO" THE WRONG LOCATION.
+      *C
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT USED-YEST-FILE ASSIGN TO DISK-USYESFIL.
+
+           SELECT RECD-YEST-FILE ASSIGN TO DISK-RECDYSFIL.
+
+           SELECT USAGEFIL-O
+                  ASSIGN TO DATABASE-MCFLCSUSAG
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT RECEIPTFIL-O
+                  ASSIGN       TO DATABASE-MCFLCSRCPT
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT MCHATNO-I
+                  ASSIGN TO DATABASE-MCFLCS5501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-O
+                  ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  USED-YEST-FILE
+           LABEL RECORDS ARE STANDARD
+           RECORD CONTAINS 18 CHARACTERS
+           DATA RECORD IS USED-YEST-RCD.
+       01  USED-YEST-RCD.
+           05  USED-YEST-CODE       PIC X(8).
+           05  USED-YEST-QTY        PIC S9(8).
+           05  USED-YEST-MONTH      PIC 9(2).
+
+       FD  RECD-YEST-FILE
+           LABEL RECORDS       ARE STANDARD
+           RECORD CONTAINS     18 CHARACTERS
+           DATA RECORD         IS RECD-YEST-RCD.
+       01  RECD-YEST-RCD.
+           05  RECD-YEST-CODE  PIC X(8).
+           05  RECD-YEST-QTY   PIC S9(8).
+           05  RECD-YEST-MONTH PIC 9(2).
+
+       FD  USAGEFIL-O
+           LABEL RECORDS ARE STANDARD.
+       01  USAGEFIL-REC-O.
+           COPY DDS-MCRPCSUSAG  OF MCFLCSUSAG.
+
+       FD  RECEIPTFIL-O
+           LABEL RECORDS       ARE STANDARD.
+       01  RECEIPTFIL-REC-O.
+           COPY DDS-MCRPCSRCPT OF MCFLCSRCPT.
+
+       FD  MCHATNO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCHATNO-REC-I.
+           COPY DDS-MCRPCS5500  OF MCFLCS5501.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DDAILYTC-O
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC-O.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+
+       WORKING-STORAGE SECTION.
+       77  NEW-MONTH-FLAG                PIC X     VALUE "N".
+       77  LAST-MONTH-WORK               PIC 99.
+       77  MONTH-MINUS-1                 PIC 99.
+       77  PLANT-WORK                    PIC 9(3).
+       77  UPDATE-CNT                    PIC 9(5)  VALUE 0.
+       77  RECEIPT-CNT                   PIC 9(5)  VALUE 0.
+       77  MCXCBLERR-SCOPE               PIC X(1)  VALUE "C".
+
+       01  YMD-WORK.
+           05  YY-WORK                   PIC 99.
+           05  MM-WORK                   PIC 99.
+           05  DD-WORK                   PIC 99.
+
+       01  TIME-WORK                     PIC 9(8).
+
+       COPY TUMCF    IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTP01  IN COPYLIB.
+
+       COPY DDAILYTC IN COPYLIB.
+       COPY TC342    IN COPYLIB.
+
+      *************************************************************
+      **                                                          **
+      **          C O M M U N I C A T I O N S   A R E A S         **
+      **                                                          **
+      **************************************************************
+
+      *** PARMS FOR CALL TO "TBLOWUP"
+      ***
+       01  BU-DISPLAY-MSG               PIC X(60) VALUE SPACES.
+      *** 01  BU-PGM-NAME                  PIC X(8)  VALUE "TUSNMUPD".
+       01  BU-PGM-NAME                  PIC X(8)  VALUE "TUSEUPDT".
+       01  DUMMY-BASE                    PIC X(10) VALUE SPACES.
+       01  DUMMY-STATUS-AREA             PIC S9(4) COMP-4 VALUE 0.
+       01  BU-DISPLAY-AREA              PIC X(110) VALUE ALL "0".
+       01  BU-DISPLAY-FLDS REDEFINES BU-DISPLAY-AREA.
+           05  BU-DISPLAY-LINE OCCURS 5 TIMES.
+               10  BU-DISPLAY-FLD        PIC X(14).
+               10  BU-DISPLAY-FLD9       PIC S9(8).
+       01  DUMMY-VIEW-AREA.
+           05  FILLER                    PIC X(118) VALUE ALL "0".
+           05  FILLER                    PIC S9(4) COMP-4 VALUE 9999.
+
+       COPY SETJCW IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **               K S A M   W O R K                          **
+      **                                                          **
+      **************************************************************
+       01  KEY-VALUE                    PIC X(8).
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  USAGE-REC.
+           05  FILLER              PIC XX.
+           05  K-CORP-CODE         PIC X(8).
+           05  K-MONTHS            OCCURS 14 TIMES.
+               10  K-MTH-USAGE     PIC S9(9) COMP-4.
+           05  K-MONTHS-DD         OCCURS 14 TIMES.
+               10  K-MTH-USAGE-DD  PIC S9(9) COMP-4.
+
+       01  RECEIPT-REC.
+           05  R-CORP-CODE         PIC  X(8).
+           05  R-MONTHS            OCCURS 14 TIMES.
+               10  R-MTH-RECEIPTS  PIC S9(9)      COMP-4.
+
+       PROCEDURE DIVISION.
+       1-HOUSEKEEP SECTION.
+       10-BEGIN-HOUSEKEEP.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+           DISPLAY "* BEGINNING USAGE UPDATE PGM *".
+           MOVE "N" TO NEW-MONTH-FLAG.
+           MOVE ZERO TO UPDATE-CNT RECEIPT-CNT.
+
+      *    CALL "CKOPENSHR" USING FILE-TABLE KSAM-STATUS.
+           OPEN I-O            USAGEFIL-O.
+           OPEN I-O            RECEIPTFIL-O.
+           OPEN INPUT MSTORERM-I
+                      MCHATNO-I
+                      MPLTINFO-I.
+
+           OPEN I-O DDAILYTC-O.
+
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKOPENSHR ERR 10-BH" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           ACCEPT YMD-WORK FROM DATE.
+           IF MM-WORK = 1
+               MOVE 12 TO MONTH-MINUS-1
+           ELSE
+               SUBTRACT 1 FROM MM-WORK GIVING MONTH-MINUS-1.
+
+           MOVE YMD-WORK TO DDAILYTC-DATE.
+
+           MOVE "P 01" TO PLTINFOKEY OF MPLTINFO-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+           END-READ.
+           MOVE MPLTINFO-COMPANY TO DDAILYTC-PLT.
+
+           PERFORM 6-UPDATE-USAGE-FILE THRU 6-UUF-X.
+           IF BU-DISPLAY-MSG = SPACES
+               GO TO 2-EOJ.
+
+       2-BLOWUP.
+           MOVE MM-WORK  TO  BU-DISPLAY-FLD (1).
+           MOVE KEY-VALUE  TO  BU-DISPLAY-FLD (2).
+           CALL "TBLOWUP" USING DUMMY-BASE BU-PGM-NAME
+             DUMMY-STATUS-AREA, DUMMY-VIEW-AREA, FILE-STATUS,
+             BU-DISPLAY-MSG, BU-DISPLAY-FLDS.
+
+       2-EOJ.
+           DISPLAY "* END OF USAGE UPDATE PGM *".
+
+           CLOSE USAGEFIL-O
+                 RECEIPTFIL-O
+                 MSTORERM-I
+                 MCHATNO-I
+                 MPLTINFO-I
+                 DDAILYTC-O.
+      *****CLOSE USED-YEST-FILE.
+           GOBACK.
+
+       6-UPDATE-USAGE-FILE.
+       60-NEW-MONTH.
+
+      **************************************************************
+      **   HERE WE DETERMINE WHETHER IT IS A NEW MONTH, AND WHAT  **
+      **   PLANT WE ARE AT.  THIS INFO IS KEPT IN A SPECIAL RECORD**
+      **   WITH A CORP-CODE KEY OF "00000000".  THE MONTH OF THE  **
+      **   LAST CUTOFF IS KEPT IN USAGE BUCKET 1, AND THE PLANT # **
+      **   IS KEPT IN USAGE BUCKET 2. IF CURRENT MONTH IS GREATER **
+      **   THAN LAST CUTOFF MONTH, WE KNOW TO DO NEW-MONTH PROC-  **
+      **   CESSING.                                               **
+      **************************************************************
+
+           MOVE "00000000" TO KEY-VALUE.
+      *    CALL "CKREADBYKEY" USING FILE-TABLE KSAM-STATUS USAGE-REC
+      *      KEY-VALUE KEY-LOC RECSIZE.
+           MOVE KEY-VALUE TO CORPCDE OF USAGEFIL-REC-O.
+           READ USAGEFIL-O INTO USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREADBYKEY ERR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           MOVE K-MTH-USAGE (1)  TO  LAST-MONTH-WORK.
+           MOVE K-MTH-USAGE (2)  TO  PLANT-WORK.
+
+      **************************************************************
+      **   K-MTH-USAGE (3) IS USED TO TELL XCDLYABS THAT WE ARE   **
+      **   IN A NEW MONTH.  THIS IS USED FOR AKRON ONLY TO HOLD   **
+      **   BACK ALL TRANSACTIONS EXCEPT RAW MATERIALS FOR MONTH   **
+      **   END PROCESSING BY ACCOUNTING.                          **
+      **************************************************************
+
+           DISPLAY "* LAST CUTOFF WAS ON MONTH ", LAST-MONTH-WORK,
+             " *".
+
+           DISPLAY "* CURRENT MONTH IS ", MM-WORK, " *".
+
+
+           IF MM-WORK > LAST-MONTH-WORK
+               MOVE "Y"          TO  NEW-MONTH-FLAG
+               MOVE MM-WORK      TO K-MTH-USAGE (1)
+           ELSE
+           IF MM-WORK = LAST-MONTH-WORK
+               MOVE "N"          TO  NEW-MONTH-FLAG
+           ELSE
+           IF MM-WORK = 1 AND LAST-MONTH-WORK = 12
+               MOVE "Y"          TO NEW-MONTH-FLAG
+               MOVE MM-WORK      TO K-MTH-USAGE (1)
+           ELSE
+               MOVE "LAST MONTH > CURRENT MONTH" TO BU-DISPLAY-MSG
+               GO TO 6-UUF-X.
+
+           IF NEW-MONTH-FLAG = "Y"
+               DISPLAY "* NEW MONTH PROCEDURE WILL BE EXECUTED *"
+           ELSE
+               DISPLAY "* SAME MONTH PROCEDURE WILL BE EXECUTED *".
+
+      **************************************************************
+      **   IF IT IS A NEW MONTH, THE CURRENT MONTH IS MOVED INTO  **
+      **   THE KSAM FILE (BUCKET 1).                              **
+      **************************************************************
+
+      *    CALL "CKREWRITE" USING FILE-TABLE KSAM-STATUS USAGE-REC
+      *      RECSIZE.
+           REWRITE USAGEFIL-REC-O FROM USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREWRITE ERR 60-NM" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+      **************************************************************
+      **   SET THE JCW "NEWMONTH" TO TELL OTHER STEPS OF CUTOFF   **
+      **   WHETHER THE MONTH-END PROCEDURES SHOULD BE EXECUTED.   **
+      **   A VALUE OF 0 SAYS THAT THE NORMAL PROCEDURE SHOULD BE  **
+      **   DONE, AND A VALUE OF 1 SAYS THAT THE MONTH-END         **
+      **   PROCEDURE SHOULD BE EXECUTED.                          **
+      **************************************************************
+
+      *    CALL INTRINSIC "PUTJCW" USING JCW-NAME, JCW-VALUE, JCW-STATUS.
+           MOVE NEW-MONTH-FLAG TO SETJCW-VALUE.
+           MOVE 282            TO SETJCW-STARTING-POS.
+           MOVE 1              TO SETJCW-LENGTH.
+           CALL "SETJCW" USING SETJCW-VALUE,
+                               SETJCW-STARTING-POS,
+                               SETJCW-LENGTH,
+                               SETJCW-STATUS.
+           IF SETJCW-STATUS NOT = "00"
+               MOVE "PUTJCW ERROR OF NEW MTH FLAG" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           IF NEW-MONTH-FLAG = "Y"
+               PERFORM 61-SEQUENTIAL-READ THRU 61-SR-X
+           ELSE
+               PERFORM 61-UPDATE-YEST THRU 61-UY-X.
+
+           DISPLAY "* ", UPDATE-CNT,  " CODES UPDATED  *".
+           DISPLAY "* ", RECEIPT-CNT, " CODES RECEIVED *".
+
+           GO TO 6-UUF-X.
+
+       61-SEQUENTIAL-READ.
+           MOVE SPACES TO CORPCDE OF USAGEFIL-REC-O.
+           START USAGEFIL-O KEY >= CORPCDE OF USAGEFIL-REC-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "START ERROR ON USAGEFIL 61-SR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+       61-SEQUENTIAL-READ-LOOP.
+
+      *    CALL "CKREAD" USING FILE-TABLE KSAM-STATUS USAGE-REC
+      *      RECSIZE.
+           READ USAGEFIL-O NEXT INTO USAGE-REC
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "10"
+               GO TO 61-SR-UNLOCK
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREAD ERR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           IF K-CORP-CODE = "00000000"
+               GO TO 61-SEQUENTIAL-READ-LOOP.
+
+           ADD 1 TO UPDATE-CNT.
+
+      **************************************************************
+      **   MOVE 0 TO YESTERDAY'S USAGE.  IF NEW MONTH, MOVE       **
+      **   MONTH-TO-DATE USAGE TO LAST MONTH'S BUCKET, AND MOVE 0 **
+      **   TO MONTH-TO-DATE.                                      **
+      **************************************************************
+
+           MOVE 0 TO K-MTH-USAGE (14).
+           MOVE K-MTH-USAGE (13) TO K-MTH-USAGE (MONTH-MINUS-1).
+           MOVE 0                TO K-MTH-USAGE (13).
+           MOVE 0 TO K-MTH-USAGE-DD (14).
+           MOVE K-MTH-USAGE-DD (13) TO K-MTH-USAGE-DD (MONTH-MINUS-1).
+           MOVE 0                TO K-MTH-USAGE-DD (13).
+
+      *    CALL "CKREWRITE" USING FILE-TABLE KSAM-STATUS USAGE-REC
+      *        RECSIZE.
+           REWRITE USAGEFIL-REC-O FROM USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREWRITE ERROR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           PERFORM 611-CHAT-TC THRU 611-CHAT-TC-X.
+
+           GO TO 61-SEQUENTIAL-READ-LOOP.
+
+       61-SR-UNLOCK.
+           PERFORM 62-SEQUENTIAL-READ THRU 62-SR-X.
+
+       61-SR-X.                EXIT.
+
+       61-UPDATE-YEST.
+           OPEN INPUT USED-YEST-FILE.
+
+       61-UPDATE-YEST-LOOP.
+           READ USED-YEST-FILE AT END
+               GO TO 61-CLOSE.
+
+      *********GO TO 61-UY-X.
+
+           ADD 1 TO UPDATE-CNT.
+
+           MOVE USED-YEST-CODE TO KEY-VALUE.
+      *    CALL "CKREADBYKEY" USING FILE-TABLE KSAM-STATUS USAGE-REC
+      *      KEY-VALUE KEY-LOC RECSIZE.
+           MOVE KEY-VALUE TO CORPCDE OF USAGEFIL-REC-O.
+           READ USAGEFIL-O INTO USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               DISPLAY "* CODE NOT FOUND. CODE = ", KEY-VALUE, " *"
+               GO TO 61-UNLOCK
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREADBYKEY 61-UYL" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           MOVE 0 TO K-MTH-USAGE (14).
+           MOVE 0 TO K-MTH-USAGE-DD (14).
+      *    CALL "CKREWRITE" USING FILE-TABLE KSAM-STATUS USAGE-REC
+      *      RECSIZE.
+           REWRITE USAGEFIL-REC-O FROM USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREWRITE ERR 61-UYL" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+       61-UNLOCK.
+           GO TO 61-UPDATE-YEST-LOOP.
+
+       61-CLOSE.
+           CLOSE USED-YEST-FILE.
+           PERFORM 62-UPDATE-YEST THRU 62-UY-X.
+
+       61-UY-X.                EXIT.
+
+       62-SEQUENTIAL-READ.
+           MOVE SPACES         TO CORPCDE OF RECEIPTFIL-REC-O.
+           START RECEIPTFIL-O  KEY >= CORPCDE OF RECEIPTFIL-REC-O
+              INVALID KEY      MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "START ERROR ON RECEIPTFIL 62-SR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+       62-SEQUENTIAL-READ-LOOP.
+           READ RECEIPTFIL-O   NEXT INTO RECEIPT-REC
+               AT END          MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "10"
+               GO TO 62-SR-UNLOCK
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREAD ERR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           ADD 1               TO RECEIPT-CNT.
+
+      **************************************************************
+      **   MOVE 0 TO YESTERDAY'S RECEIPTS.  IF NEW MONTH, MOVE    **
+      **   MONTH-TO-DATE RECEIPTS TO LAST MONTH'S BUCKET, AND     **
+      **   MOVE 0 TO MONTH-TO-DATE.                               **
+      **************************************************************
+
+           MOVE 0              TO R-MTH-RECEIPTS(14).
+           MOVE R-MTH-RECEIPTS(13)
+                               TO R-MTH-RECEIPTS(MONTH-MINUS-1).
+           MOVE 0              TO R-MTH-RECEIPTS(13).
+
+           REWRITE RECEIPTFIL-REC-O FROM RECEIPT-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREWRITE ERROR" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           GO TO 62-SEQUENTIAL-READ-LOOP.
+
+       62-SR-UNLOCK.
+
+       62-SR-X.                EXIT.
+
+       62-UPDATE-YEST.
+           OPEN INPUT          RECD-YEST-FILE.
+
+       62-UPDATE-YEST-LOOP.
+           READ RECD-YEST-FILE
+               AT END          GO TO 62-CLOSE.
+
+           ADD 1               TO RECEIPT-CNT.
+
+           MOVE RECD-YEST-CODE TO KEY-VALUE.
+           MOVE KEY-VALUE      TO CORPCDE OF RECEIPTFIL-REC-O.
+           READ RECEIPTFIL-O   INTO RECEIPT-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               DISPLAY "* CODE NOT FOUND. CODE = ", KEY-VALUE, " *"
+               GO TO 62-UNLOCK
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREADBYKEY 62-UYL" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+           MOVE 0              TO R-MTH-RECEIPTS(14).
+           REWRITE RECEIPTFIL-REC-O FROM RECEIPT-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREWRITE ERR 62-UYL" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+       62-UNLOCK.
+DP9801*****GO TO 61-UPDATE-YEST-LOOP.
+DP9801     GO TO 62-UPDATE-YEST-LOOP.
+
+       62-CLOSE.
+           CLOSE               RECD-YEST-FILE.
+
+       62-UY-X.                EXIT.
+
+       6-UUF-X.                EXIT.
+
+       611-CHAT-TC.
+      *-----IF USAGE FOR THE MONTH IS 0, SKIP IT
+           IF K-MTH-USAGE (MONTH-MINUS-1) = 0
+              GO TO 611-CHAT-TC-X.
+
+      *-----ONLY CONTINUE IF THIS CODE HAS A CHAT # ASSIGNED
+           MOVE K-CORP-CODE TO CORPCDE OF MCHATNO-I.
+           READ MCHATNO-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+           END-READ.
+           IF FILE-STATUS NOT = "00"
+               GO TO 611-CHAT-TC-X.
+
+      *-----GET CODE'S UM INFO FOR UM CONVERSION
+           MOVE K-CORP-CODE TO CORPCDE OF MSTORERM-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+           END-READ.
+           IF FILE-STATUS NOT = "00"
+               GO TO 611-CHAT-TC-X.
+
+           MOVE SPACES TO BUF-TC342.
+
+           ACCEPT TIME-WORK FROM TIME.
+           MOVE TIME-WORK TO DDAILYTC-TIME.
+
+           MOVE "342" TO DDAILYTC-TC.
+
+           MOVE STR-UM TO TC342-UM.
+           MOVE K-CORP-CODE TO TC342-CORP-CODE.
+           MOVE K-MTH-USAGE (MONTH-MINUS-1) TO TC342-MTH-USAGE.
+
+      *-----TRY TO CONVERT QTY TO LB
+           MOVE "00" TO UMCF-RET-CODE.
+           IF STR-UM = "LB"
+               MOVE TC342-MTH-USAGE TO TC342-USG-UM-LB
+           ELSE
+               MOVE "LB" TO UMCF-DEST-UM
+               MOVE TC342-UM TO UMCF-SOURCE-UM
+               MOVE TC342-MTH-USAGE TO UMCF-SOURCE-QTY
+               CALL "TUMCF" USING UMCF-RET-CODE STR-UM-AREA
+                                  UMCF-QUANTITY-AREA
+               IF UMCF-RET-CODE = "00"
+                   MOVE UMCF-DEST-QTY TO TC342-USG-UM-LB
+               ELSE
+                   MOVE ZEROS TO TC342-USG-UM-LB
+               END-IF
+           END-IF.
+
+      *-----TRY TO CONVERT UM TO GL
+           MOVE "00" TO UMCF-RET-CODE.
+           IF STR-UM = "GL"
+               MOVE TC342-MTH-USAGE TO TC342-USG-UM-GL
+           ELSE
+               MOVE "GL" TO UMCF-DEST-UM
+               MOVE TC342-UM TO UMCF-SOURCE-UM
+               MOVE TC342-MTH-USAGE TO UMCF-SOURCE-QTY
+               CALL "TUMCF" USING UMCF-RET-CODE STR-UM-AREA
+                                  UMCF-QUANTITY-AREA
+               IF UMCF-RET-CODE = "00"
+                   MOVE UMCF-DEST-QTY TO TC342-USG-UM-GL
+               ELSE
+                   MOVE ZEROS TO TC342-USG-UM-GL
+               END-IF
+           END-IF.
+
+      *-----WRITE THE 342 TRANSACTION
+           WRITE DDAILYTC-REC-O FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+           END-WRITE.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE ERR DDAILYTC" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP
+           END-IF.
+
+       611-CHAT-TC-X.          EXIT.
+

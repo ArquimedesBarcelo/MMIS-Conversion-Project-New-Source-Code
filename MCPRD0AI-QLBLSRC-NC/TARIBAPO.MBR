@@ -1,0 +1,3855 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TARIBAPO.
+       AUTHOR.        B FONAGY.
+
+      ************************************************************
+      **                                                        **
+      **                  T A R I B A P O                       **
+      **               ---------------------                    **
+      **                                                        **
+      **   THIS PROGRAM IS THE MAIN PROGRAM FOR LOADING         **
+      **   AND VALIDATING PURCHASE ORDER INFORMATION BEING      **
+      **   SENT DOWN TO CSIS FROM ARIBA BUYER. THIS INFORMATION **
+      **   IS SENT DOWN USING SEVERAL DIFFERENT RECORD TYPES:   **
+      **                                                        **
+      **      TYPE 1 = HEADER DATA (NEW PO)                     **
+      **           2 = LINE DATA   (NEW PO)                     **
+      **           3 = HEADER DATA (CHG PO)                     **
+      **           4 = LINE DATA   (CHG PO)                     **
+      **           5 = HEADER DATA (CHG PO - CANCEL)            **
+      **   DCR08   6 = ITEM DESC   (NEW PO & PO CHG)            **
+      **                                                        **
+      **   ADD NEW PO'S                                         **
+      **   RECORD TYPE 1 & 2:                                   **
+      **   ------------------                                   **
+      **                                                        **
+      **   THE NEW PURCHASE ORDER INFORMATION CAN ORIGINATE     **
+      **   FROM A REQUISITION THAT WAS FIRST SENT UP TO ARIBA   **
+      **   BUYER FROM CSIS -OR- WAS CREATED IN ARIBA BUYER.     **
+      **   THIS PROGRAM WILL PROCESS ANY PO'S BEING SENT DOWN   **
+      **   FROM ARIBA BUYER. IT WILL LINK THE HEADER AND ITEMS  **
+      **   TOGETHER BASED ON THE ARIBA PO NUMBER. ONCE ALL      **
+      **   RELATED RECORDS ARE FOUND, THE HEADER RECORD IS THEN **
+      **   VALIDATED. WHEN THE HEADER IS VALIDATED, THE ITEMS   **
+      **   ARE PASSED VIA AN ARRAY TO CARIBITM FOR VALIDATION.  **
+      **   IF CARIBITM RETURNS ALL OF THE ITEMS AS VALID THEN   **
+      **   IT WILL THEN CALL "CGENARIB" TO GENERATE A NEW CSIS  **
+      **   PO NUMBER. ALL RELATED PO FILES  ARE UPDATED WITH    **
+      **   THE NEW PO DATA AND A SUCCESSFUL RESULT IS LOGGED    **
+      **   IN FILE MCFPARRSLT TO BE PASSED BACK TO ARIBA BUYER. **
+      **                                                        **
+      **   CHANGE\CANCEL PO'S                                   **
+      **   RECORD TYPE 3, 4, 5 & 6:                             **
+      **   -----------------------                              **
+      **                                                        **
+      **   CHANGES CAN OCCUR IN ARIBA BUYER TO EXISTING PO'S    **
+      **   AND ARE SENT DOWN TO CSIS AS FOLLOWS:                **
+      **                                                        **
+      **       1) RECORD TYPE 3 = HEADER DATA CHANGE            **
+      **          CHANGES LIMITED TO FIELDS:                    **
+      **          @@ FREIGHT TERMS                              **
+      **          @@ FOB                                        **
+      **                                                        **
+      **       2) RECORD TYPE 4 = LINE ITEM CHANGE              **
+      **          CHANGES LIMITED TO FOLLOWING FLDS:            **
+      **          @@ ACCT'G DATA                                **
+      **          @@ PRICE                                      **
+      **          @@ QTY                                        **
+      **          @@ ITM DESCRIPTION                            **
+      **          @@ ITM UOM                                    **
+      **          @@ PRC UOM                                    **
+      **          @@ TAX CODE                                   **
+      **          SEE LINE ITEM EDIT RULES IN PGM CARIBITM      **
+      **                                                        **
+      ** DCR08 3) RECORD TYPE 6 = LINE ITEM DESCRIPTION CHG     **
+      **          CHANGES LIMITED TO FOLLOWING FLDS:            **
+      ** DCR08    @@ ITM DESCRIPTION (MULTIPLE LINES)           **
+      **                                                        **
+      **                                                        **
+      **   ARIBA BUYER CAN ALSO CANCEL AN EXISTING PO           **
+      **                                                        **
+      **       3) RECORD TYPE 5 = CANCELS THE ENTIRE PO BY      **
+      **          CALLING PGM SCOMPPO TO ZERO OUT ALL           **
+      **          REMAINING ON ORDER QUANTITIES.  THE ENTIRE    **
+      **          PO IS SENT DOWN BUT ONLY THE HEADER RECORD    **
+      **          IS PROCESSED.                                 **
+      **                                                        **
+      **--------------------------------------------------------**
+      ** MISC NOTES:                                            **
+      **                                                        **
+      ** @ INPUT RECORDS ARE SEQUENCED BY ARIBA BUYER PO NUMBER **
+      **   AND DESCENDING RECORD TYPE. THIS PLACES THE HEADER   **
+      **   RECORD LAST FOR DATA ACCOUNTABILITY PURPOSES.        **
+      **                                                        **
+      ** @ THE ENTIRE PO IS SENT DOWN WHEN A CHANGE OCCURS BUT  **
+      **   ONLY RECORDS WHERE THE 2ND POSITION OF THE REC-IND   **
+      **   FIELD = "C" ARE ACTUALLY PROCESSED FOR CHANGED DATA. **
+      **   ALL OTHER RECORDS JUST "TAG ALONG FOR THE RIDE"      **
+      **                                                        **
+      **--------------------------------------------------------**
+      **                                                        **
+      **   PROGRAMS CALLED:    CARIBITM   CARIBDEL   SPOTRACK   **
+      **                       SEDIVNCK   STC360     SPOMSTRM   **
+      **                       SCURCONV   SVENPRC    CPORMVUSR  **
+      **                       CGENARIB   SREQLINK   SVENITM    **
+      **                       SCOMPPO    GETDTSTMP2 CPOLOG     **
+      **                       CMPLTINFO  CPOFOBWDW  CPOVIAWDW  **
+      **                       SCALCBGT   SMODBDGT   GETJOBACL  **
+      **                       CVALID(COMMENTED OUT)            **
+      **                                                        **
+      *****************************************************************
+      **                MODIFICATION   HISTORY
+      *****************************************************************
+      ** --------- ----------  ----------------------------------------
+      **    WHO       WHEN     WHAT (DESCRIPTION)
+      ** --------- ----------  ----------------------------------------
+      ** D.RAUCH   12/16/2002  FILLED DPORECD FAX/PRINT DATE WITH
+      **   DCR01               CURRENT DATE(YMD) PER DAVE PLUM
+      ** --------- ----------  ----------------------------------------
+      ** D.RAUCH   06/19/2003  ADD CODE FOR CHANGE/CANCEL PROCESS.
+      **   DCR02  DCR03        SEE CARIBITM FOR LINE ITEM EDITS.
+      ** --------- ----------  ----------------------------------------
+      ** B. FONAGY 10/21/2003  IF ARIBAPO-INVOICELESS-IND = 'Y'
+      **                       CHANGED TO 'X'
+      ** --------- ----------  ----------------------------------------
+      ** D. RAUCH  12/16/2003  RECORD LOCK OCCURS IN SMODBDGT WHILE
+      ** DCR04                 ATTEMPTING TO CANCEL A PO. MADE CHANGE
+      **                       TO CC200-CANCEL-PO TO RETRIEVE DPORECD
+      **                       USING NO LOCK OPTION.
+      ** --------- ----------  ----------------------------------------
+      ** D. RAUCH  01/07/2004  MOVE REQUISITION EDIT AND PO LINK'G
+      ** DCR05                 TO ITEM LEVEL PROCESS. ADDED REQ# TO
+      **                       TRAILING FILLER OF COPY MBR ARIBAPOITM
+      ** --------- ----------  ----------------------------------------
+      ** D. RAUCH  03/18/2004  CHECK FOR SAP VENDOR NBR AND CONVERT IT
+      ** DCR06                 TO CSIS 10 CHAR FMT
+      ** --------- ----------  ----------------------------------------
+      ** D. RAUCH  05/27/2004  ADDED CODE TO UPDATE BUDGET AMT DURING
+      ** DCR07                 LINE ITEM QTY OR PRICE CHANGE
+      ** --------- ----------  ----------------------------------------
+      ** D. RAUCH  07/07/2004  ADDED CODE TO PROCESS EXTENDED ITEM DESC
+      ** DCR08                 RECORD TYPE "6"
+      ** --------- ----------  ----------------------------------------
+      ************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MBUYER-FILE       ASSIGN TO DATABASE-MCFLCS0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MPORCV-FILE       ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MVALIDUM-FILE     ASSIGN TO DATABASE-MCFLCS0401
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MCOMMENT-FILE     ASSIGN TO DATABASE-MCFLCS1801
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MREQ-FILE         ASSIGN TO DATABASE-MCFLCS2001
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DARIBAPO-FILE     ASSIGN TO DATABASE-MCFLAB0102
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MVENDOR-FILE      ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DARBRSLT-FILE     ASSIGN TO DATABASE-MCFLAB0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DARBRSLT-FILE2    ASSIGN TO DATABASE-MCFLAB0401
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DPORECD-FILE      ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DPODATA-FILE      ASSIGN TO DATABASE-MCFLCS1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DPOITEM-FILE      ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT DDAILYTC-FILE     ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT MSTOREROOM-FILE   ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  MBUYER-FILE.
+       01  MBUYER-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0601.
+       COPY MBUYER   IN COPYLIB.
+
+       FD  MPORCV-FILE.
+       01  MPORCV-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0101.
+       COPY MPORCV   IN COPYLIB.
+
+       FD  MVALIDUM-FILE.
+       01  MVALIDUM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0401.
+       COPY MVALIDUM IN COPYLIB.
+
+       FD  MCOMMENT-FILE.
+       01  MCOMMENT-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1801.
+       COPY MCOMMENT IN COPYLIB.
+
+       FD  MREQ-FILE.
+       01  MREQ-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS2001.
+       COPY MREQ     IN COPYLIB.
+
+       FD  MVENDOR-FILE.
+       01  MVENDOR-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0701.
+       COPY AVENCODE IN COPYLIB.
+
+       FD  DARIBAPO-FILE.
+       01  DARIBAPO-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB0102.
+       COPY DARIBAPO IN COPYLIB.
+
+       FD  DARBRSLT-FILE.
+       01  DARBRSLT-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB0301.
+       COPY DARBRSLT IN COPYLIB.
+
+       FD  DARBRSLT-FILE2.
+       01  DARBRSLT-REC2.
+       COPY DDS-ALL-FORMATS OF MCFLAB0401.
+       COPY DARBRSLT2  IN COPYLIB.
+
+       FD  DPODATA-FILE.
+       01  DPODATA-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1101.
+       COPY DPODATA  IN COPYLIB.
+
+       FD  DPOITEM-FILE.
+       01  DPOITEM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1002.
+       COPY DPOITEM  IN COPYLIB.
+
+       FD  DPORECD-FILE.
+       01  DPORECD-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0901.
+       COPY DPORECD  IN COPYLIB.
+
+       FD  DDAILYTC-FILE.
+       01  DDAILYTC-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1601.
+       COPY DDAILYTC IN COPYLIB.
+       COPY TC370    IN COPYLIB.
+
+       FD  MSTOREROOM-FILE.
+       01  MSTOREROOM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0201.
+       COPY MSTORERM IN COPYLIB.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+       COPY FILESTATUS IN COPYLIB.
+
+      *****************************************************************
+      *  MISCELLANEOUS WORK FIELDS
+      *****************************************************************
+       01  WS-MISCELLANEOUS-WORK-FLDS.
+           03  WS-CURR-ARIBA-PO-NUMBER PIC X(50)     VALUE LOW-VALUES.
+           03  WS-PREV-ARIBA-PO-NUMBER PIC X(50)     VALUE SPACE.
+           03  WS-SAVE-ARIBA-PO-NUMBER PIC X(50)     VALUE SPACE.
+
+DCR06      03  WS-INP-VENDOR-CODE      PIC X(10)     VALUE SPACE.
+DCR06      03  WS-CNV-VENDOR-CODE      PIC X(10)     VALUE SPACE.
+
+DCR02      03  WS-NEW-QTY-ORDERD    PIC S9(08)V9(4)    VALUE +0.
+DCR02      03  WS-NEW-UNIT-PRICE    PIC S9(11)V9(4) COMP-3 VALUE +0.
+DCR02      03  WS-OLD-QTY-ORDERD    PIC S9(08)V9(4)    VALUE +0.
+DCR02      03  WS-OLD-UNIT-PRICE    PIC S9(11)V9(4) COMP-3 VALUE +0.
+DCR07      03  WS-OLD-BUDGET-AMT    PIC S9(11)      COMP-3 VALUE +0.
+
+DCR08      03  WS-NON-STOREROOM     PIC X(08)       VALUE "NON-STR".
+DCR08      03  WS-NO-DESC-DATA      PIC X(06)       VALUE ": : ::".
+DCR08      03  WS-DLIM1             PIC X(04)       VALUE " : :".
+
+DCR08      03  WS-MANUF-DATA.
+DCR08          05  WS-MFG-NAME       PIC X(26)       VALUE SPACE.
+DCR08          05  FILLER            PIC X(02)       VALUE SPACE.
+DCR08          05  WS-MFG-PARTNO     PIC X(20)       VALUE SPACE.
+
+           03  WS-CHECK-DATE.
+               05  WS-CD-CC          PIC 9(02)       VALUE ZERO.
+               05  WS-CD-YY          PIC 9(02)       VALUE ZERO.
+               05  WS-CD-MM          PIC 9(02)       VALUE ZERO.
+               05  WS-CD-DD          PIC 9(02)       VALUE ZERO.
+
+           03  WS-VALID-DATE.
+               05  WS-VALID-CC       PIC 9(02)       VALUE ZERO.
+               05  WS-VALID-YY       PIC 9(02)       VALUE ZERO.
+               05  WS-VALID-MM       PIC 9(02)       VALUE ZERO.
+               05  WS-VALID-DD       PIC 9(02)       VALUE ZERO.
+
+      *****************************************************************
+      *  PROGRAM MESSAGES
+      *****************************************************************
+       01  WS-PROGRAM-MESSAGES.
+           03  WS-VENDOR-NFND-MSG1     PIC X(80)     VALUE
+              "ERR - ASSOCIATED PAYTO VENDOR NFND".
+           03  WS-VENDOR-NFND-MSG2     PIC X(80)     VALUE
+              "ERR - ORDER FROM VENDOR NFND".
+           03  WS-VENDOR-NFND-MSG3     PIC X(80)     VALUE
+              "ERR - EEC VENDOR NFND  ".
+           03  WS-CURR-CODE-MSG1       PIC X(80)     VALUE
+              "ERR - CURRENCY CODE IS REQUIRED IN THIS PLANT".
+           03  WS-CURR-CODE-NFND-MSG1  PIC X(80)     VALUE
+              "ERR - CURRENCY CODE NFND".
+           03  WS-CURR-CODE-MSG2       PIC X(80)     VALUE
+              "ERR - INVALID CURRENCY CODE - OBSOLETE".
+           03  WS-FRGHT-CODE-MSG1      PIC X(80)     VALUE
+              "ERR - INVALID FRT TERMS; VALID TERMS = (G,P,C,U,D)".
+           03  WS-FRGHT-CODE-MSG2      PIC X(80)     VALUE
+              "ERR - INVALID FRT TERMS; INVOICELESS CAN'T BE BLANK".
+           03  WS-FRGHT-CODE-MSG3      PIC X(80)     VALUE
+              "ERR - INVALID FRT TERMS; INVOICELESS CAN'T BE 'P'".
+           03  WS-FRGHT-CODE-MSG4      PIC X(80)     VALUE
+              "ERR - INVALID FRT TERMS; NFND IN MPLTINFO".
+           03  WS-BUYER-CODE-MSG1    PIC X(80)     VALUE
+              "ERR - BUYER CODE NFND".
+           03  WS-PAY-TERMS-MSG1     PIC X(80)     VALUE
+              "ERR - INVALID PAYMENT TERMS % ==> NFND".
+           03  WS-PAY-TERMS-MSG2     PIC X(80)     VALUE
+              "ERR - INVALID PAYMENT TERMS (DUE) ==> NFND".
+DCR02      03  WS-VIA-CODE-MSG1      PIC X(80)     VALUE
+DCR02         "ERR - VIA CODE CAN NOT BE BLANK".
+DCR02      03  WS-VIA-CODE-MSG2      PIC X(80)     VALUE
+DCR02         "ERR - VIA CODE/DESCRIPTION NFND".
+           03  WS-FOB-CODE-MSG1      PIC X(80)     VALUE
+              "ERR - FOB CODE CAN NOT BE BLANK".
+           03  WS-FOB-CODE-MSG2      PIC X(80)     VALUE
+              "ERR - FOB CODE/DESCRIPTION NFND".
+           03  WS-NATURE-MSG         PIC X(80)     VALUE
+              "ERR - FOB CODE NFND".
+           03  WS-INVLESS-MSG1       PIC X(80)     VALUE
+              "ERR - ONLY BLANK AND 'Y' ARE VALID ENTRIES".
+           03  WS-INVLESS-MSG2       PIC X(80)     VALUE
+              "ERR - P.O. CANNOT BE MADE INVOICELESS/VENDOR NOT".
+           03  WS-HEADER-NFND-MSG1   PIC X(80)     VALUE
+              "ERR - ARIBA HEADER RECORD NFND FOR THIS PO".
+           03  WS-DETAIL-NFND-MSG1   PIC X(80)     VALUE
+              "ERR - ARIBA ITEM RECORDS NFND FOR THIS PO".
+           03  WS-DUPE-PO-MSG1       PIC X(80)     VALUE
+              "ERR - THIS PO HAS ALREADY BEEN PROCESSED".
+           03  WS-SHPDTE-ERROR-MSG   PIC X(80)     VALUE
+              "ERR - SHIP DATE MUST BE VALID DATE - CCYYMMDD FMT".
+           03  WS-EXPDTE-ERROR-MSG   PIC X(80)     VALUE
+              "ERR - EXPECT DATE MUST BE VALID DATE - CCYYMMDD FMT".
+DCR02      03  WS-GOOD-PO-ADD-MSG    PIC X(80)     VALUE
+DCR02         "PO SUCCESSFULLY ADDED TO CSIS DATABASE          ".
+DCR02      03  WS-CC-ITM-CHG-MSG        PIC X(80)     VALUE
+DCR02         "CHG\CNL - PO ITEM DATA CHANGED       ".
+DCR02      03  WS-CC-HDR-CHG-MSG        PIC X(80)     VALUE
+DCR02         "CHG\CNL - PO HEADER DATA CHANGED ".
+DCR02      03  WS-CC-BTH-CHG-MSG        PIC X(80)     VALUE
+DCR02         "CHG\CNL - PO HEADER & ITEM DATA CHANGED".
+DCR02      03  WS-CC-PO-CNL-FAIL-MSG1   PIC X(80)  VALUE
+DCR02         "CHG\CNL ERR - PO CANCEL FAILED - CSIS HDR(DPOREC) NFND".
+DCR02      03  WS-CC-PO-CNL-YES-MSG  PIC X(80)     VALUE
+DCR02         "CHG\CNL - PO HAS BEEN CANCELLED            ".
+DCR02      03  WS-CC-PO-NBR-MISSING-MSG PIC X(80)     VALUE
+DCR02         "CHG\CNL ERR - ARIBA HEADER - CSIS PO NUMBER MISSING ".
+DCR02      03  WS-CC-HDR-NFND-MSG PIC X(80)     VALUE
+DCR02         "CHG\CNL ERR - CSIS PO HEADER(DPORECD) NFND".
+
+DCR08      03  WS-UNKNOWN-NAME-MSG  PIC X(80)     VALUE
+DCR08         "UNKNOWN MANUFACTURER".
+
+       01  WS-PLANT-INFO-KEYS.
+           03  WS-PLTINFO-KEY     PIC X(04)    VALUE SPACE.
+      **** FOB KEY
+           03  WS-FOB-KEY         PIC X(04)    VALUE "ZFOB".
+      **** VIA KEY
+           03  WS-VIA-KEY         PIC X(04)    VALUE "ZVIA".
+      **** ARIBA KEY
+           03  WS-ARIBA-KEY       PIC X(04)    VALUE "ARIB".
+      **** COMPANY KEY
+           03  WS-CMPNY-KEY       PIC X(04)    VALUE "P 01".
+      **** RECEIVING DEPT KEY
+           03  WS-RDEPT-KEY       PIC X(04)    VALUE "P 03".
+      **** ADDITIONAL DATA KEY
+           03  WS-ADATA-KEY       PIC X(04)    VALUE "POPT".
+      **** EECM - EEC SWITCHES
+           03  WS-EECM-KEY        PIC X(04)    VALUE "EECM".
+      **** LEGIT EEC COUNTRIES KEY
+           03  WS-EECL-KEY        PIC X(04)    VALUE "EECL".
+      **** LEGIT EEC COUNTRIES 2
+           03  WS-ECL2-KEY        PIC X(04)    VALUE "ECL2".
+
+      **********************
+      *                    *
+      *  S W I T C H E S   *
+      *                    *
+      **********************
+
+       01  SWITCH-AREA.
+           05  EEC-MBR-SW                 PIC X  VALUE SPACE.
+           05  EEC-COMM-COD-SW            PIC X  VALUE SPACE.
+
+           05  HEADER-VALID-SW            PIC X  VALUE SPACES.
+               88  HEADER-IS-VALID-YES           VALUE "Y".
+               88  HEADER-IS-VALID-NO            VALUE "N".
+
+           05  SUCCESS-FLAG               PIC X  VALUE SPACES.
+               88  SUCCESS-FLAG-RESET            VALUE " ".
+               88  SUCCESS-YES                   VALUE "S".
+               88  SUCCESS-NO                    VALUE "F".
+
+           05  HEADER-FOUND-SW            PIC X  VALUE "N".
+               88  HEADER-RECORD-FOUND-YES       VALUE "Y".
+               88  HEADER-RECORD-FOUND-NO        VALUE "N".
+
+           05  DETAIL-FOUND-SW            PIC X  VALUE "N".
+               88  DETAIL-RECORD-FOUND-YES       VALUE "Y".
+               88  DETAIL-RECORD-FOUND-NO        VALUE "N".
+
+           05  ITEM-MAXX-SW               PIC X  VALUE "N".
+               88  ITEM-MAXX-YES                 VALUE "Y".
+               88  ITEM-MAXX-NO                  VALUE "N".
+
+           05  VEN-PAYTO-EQ-ORDFRM-SW     PIC X  VALUE SPACES.
+           05  CUR-CODE-REQUIRED-SW       PIC X  VALUE SPACES.
+           05  EEC-PO-IND-SW              PIC X  VALUE SPACES.
+           05  ZBILL-PO-SW                PIC X  VALUE SPACES.
+           05  TC370-CUT-SW               PIC X  VALUE SPACES.
+               88  TC370-CUT                     VALUE "Y".
+               88  TC370-NOT-CUT                 VALUE "N".
+
+           05  WS-CHECK-DATE-ERROR-SW     PIC X  VALUE SPACE.
+               88 CHECK-DATE-ERROR-YES           VALUE "Y".
+               88 CHECK-DATE-ERROR-NO            VALUE "N".
+
+DCR02      05  USE-FOB-DB-SW             PIC X  VALUE "N".
+DCR02          88  USE-FOB-DB-YES               VALUE "Y".
+DCR02          88  USE-FOB-DB-NO                VALUE "N".
+
+DCR02      05  USE-VIA-DB-SW             PIC X  VALUE "N".
+DCR02          88  USE-VIA-DB-YES               VALUE "Y".
+DCR02          88  USE-VIA-DB-NO                VALUE "N".
+
+DCR02      05  HDR-CHANGED-SW            PIC X  VALUE "N".
+DCR02          88  HDR-CHANGED-YES              VALUE "Y".
+DCR02          88  HDR-CHANGED-NO               VALUE "N".
+
+DCR02      05  ITM-CHANGED-SW            PIC X  VALUE "N".
+DCR02          88  ITM-CHANGED-YES              VALUE "Y".
+DCR02          88  ITM-CHANGED-NO               VALUE "N".
+
+DCR02      05  PO-CHANGE-SW              PIC X  VALUE "0".
+DCR02          88  PO-NO-CHG-YES                VALUE "0".
+DCR02          88  PO-HDR-WAS-CHGD-YES          VALUE "1".
+DCR02          88  PO-ITM-WAS-CHGD-YES          VALUE "2".
+DCR02          88  PO-BOTH-CHGD-YES             VALUE "3".
+
+DCR02      05  QTY-PRICE-SW              PIC X  VALUE "N".
+DCR02          88  QTY-PRICE-CHG-YES            VALUE "Y".
+DCR02          88  QTY-PRICE-CHG-NO             VALUE "N".
+
+DCR02      05  EDIT-ERRORS-SW            PIC X  VALUE "N".
+DCR02          88  EDIT-ERRORS-YES              VALUE "Y".
+DCR02          88  EDIT-ERRORS-NO               VALUE "N".
+DCR02
+DCR02      05  WS-EOJ-SW                 PIC X  VALUE "N".
+DCR02          88  END-OF-JOB-YES               VALUE "Y".
+DCR02          88  END-OF-JOB-NO                VALUE "N".
+DCR02
+DCR08      05  WS-DESC-RECORD-SW         PIC X  VALUE "N".
+DCR08          88  DSC-RECORDS-YES              VALUE "Y".
+DCR08          88  DSC-RECORDS-NO               VALUE "N".
+DCR02
+DCR02  01  PO-TRACK-DATA.
+DCR02      COPY DPOTRACK  IN COPYLIB.
+
+DCR02 *==============================================================
+DCR02 * EXTRA PO LOGGING FLDS
+DCR02 *==============================================================
+DCR02  01  WS-Z000-EXTRA-FLDS.
+DCR02      03  WS-Z000-PGM       PIC X(10)        VALUE "TARIBAPO".
+DCR02      03  WS-Z000-LAST-PO-LOGGED PIC X(14)   VALUE HIGH-VALUE.
+DCR02  COPY POLOGSUBWS  IN COPYLIB.
+DCR02 *==============================================================
+DCR02  COPY CPOLOGPRM   IN COPYLIB.
+
+DCR02  COPY ZMPLTWS     IN COPYLIB.
+DCR02  COPY ZFOBCDWS    IN COPYLIB.
+DCR02  COPY ZVIACDWS    IN COPYLIB.
+
+
+       01  SCOMPPO-SWITCH-PARMS.
+           10  SCOMPPO-FATAL-ERR-SW       PIC X       VALUE SPACE.
+           10  SCOMPPO-CMPNY-SAVE         PIC X(3)    VALUE SPACE.
+
+       01  SAVE-LAST-ARIBAPO              PIC X(50) VALUE SPACES.
+       01  SAVE-RCV-DEPT                  PIC X(4)  VALUE SPACES.
+       01  SAVE-COMPANY                   PIC X(3)  VALUE SPACES.
+       01  SAVE-PRIME                     PIC X(3)  VALUE SPACES.
+       01  SAVE-EEC-CTRY.
+           05  SAVE-EEC-COUNTRY           PIC X(3)  VALUE SPACES.
+           05  SEC-OK                     PIC X     VALUE SPACES.
+       01  SAVE-VEN-CTRY.
+           05  SAVE-VEN-COUNTRY           PIC X(3)  VALUE SPACES.
+           05  SVC-OK                     PIC X     VALUE SPACES.
+       01  SAVE-EDIT-ADDTL-DATA           PIC X     VALUE "N".
+       01  SAVE-CSIS-PO                   PIC X(14) VALUE SPACES.
+
+       01  SUB-AREA.
+           03  SUB1                       PIC 9(4)  VALUE ZEROS.
+
+           03  SUB                        PIC 9(4)  VALUE ZEROS.
+           03  SUB-MAXX                   PIC 9(4)  VALUE 100.
+
+DCR08      03  DSUB1                      PIC 9(4)  VALUE ZEROS.
+DCR08      03  DSUB1-MAXX                 PIC 9(4)  VALUE 100.
+
+DCR08      03  DSUB2                      PIC 9(3)  VALUE ZEROS.
+DCR08      03  DSUB2-MAXX                 PIC 9(3)  VALUE 099.
+DCR08      03  DSUB2-QUIT                 PIC 9(3)  VALUE 198.
+
+       COPY DTSPARMS2 IN COPYLIB.
+
+       01  ECL2-RECORD.
+           05  ECL2-CTRY               OCCURS 20 TIMES
+                                       PIC X(3).
+
+       01  EECL-RECORD.
+           05  EECL-CTRY               OCCURS 20 TIMES
+                                       PIC X(3).
+
+       01  FORMFILE.
+           05  FORM-FNAME                PIC X(7)  VALUE "FPURORD".
+           05  FILLER                    PIC X     VALUE ".".
+           05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+
+
+       01  WORK-AREA-KEYS.
+           05  BUILD-PO-SEARCH.
+               10  PO-PREFIX              PIC X       VALUE SPACE.
+               10  PO-NO-REL.
+                   15  PO-NO              PIC X(7)    VALUE SPACE.
+                   15  PO-REL             PIC X(3)    VALUE SPACE.
+               10  PO-RCV                 PIC X(3)    VALUE SPACE.
+
+           05  BUILD-VEN-SEARCH.
+               10  VEN-CODE-1-7.
+                   15  VEN-T              PIC X.
+                   15  FILLER             PIC X(6).
+               10  VEN-CODE-8-10          PIC X(3).
+
+           05  BUILD-TM-DISCOUNT-KEY.
+               10  FILLER                   PIC X(3)  VALUE "TMP".
+               10  BUILD-TM-DISCOUNT-VALUE  PIC X     VALUE SPACES.
+
+           05  BUILD-TM-DUE-DATE-KEY.
+               10  FILLER                   PIC X(3)  VALUE "TMD".
+               10  BUILD-TM-DATE-VALUE      PIC X     VALUE SPACES.
+
+           05  BUILD-FB-KEY.
+               10  FILLER                   PIC X(2)  VALUE "FB".
+               10  BUILD-FB-VALUE           PIC X(2)  VALUE SPACES.
+
+           05  BUILD-FRT-KEY.
+               10  FILLER                   PIC X(3)  VALUE "FRT".
+               10  BUILD-FRT-VALUE          PIC X     VALUE SPACE.
+
+           05  BUILD-TM-KEY.
+               10  FILLER                   PIC X(2)  VALUE "MT".
+               10  BUILD-TM-VALUE           PIC X(2)  VALUE SPACES.
+
+           05  BUILD-D-KEY.
+               10  FILLER                   PIC X     VALUE "D".
+               10  BUILD-TOD-VALUE          PIC XXX   VALUE SPACES.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TXT                      PIC X(66) VALUE SPACE.
+           05  MSG-FLD                      PIC X(14) VALUE SPACE.
+
+       COPY ARIBAPOHDR  IN COPYLIB.
+       COPY ARIBAPOITM  IN COPYLIB.
+DCR08  COPY ARIBAPODSC  IN COPYLIB.
+       COPY MPLTINFO    IN COPYLIB.
+
+       01  BUF-ARIBAPO-ITEM.
+           05  ARIBAPO-ITEM   OCCURS 100 TIMES
+                              PIC X(260).
+
+       01  TAB-ARIBAPO-ITEM-DESC.
+           03  TAB-ARIBAPO-I          OCCURS 100 TIMES.
+               05  TAB-ARIBAPO-ITEM   PIC X(260).
+                   10  TAB-ARIBAPO-R          OCCURS 99 TIMES.
+                       15  TAB-ARIBADSC-RECRD  PIC X(260).
+
+       01  ARIBAITEM-FIELDS.
+           05  NON-RECV-SW                  PIC X      VALUE SPACES.
+           05  ITEM-CNT                     PIC 9(3)   VALUE ZEROS.
+           05  ITEM-REQ-NO                  PIC X(12)  VALUE SPACES.
+           05  INVOICELESS-SW               PIC X      VALUE SPACES.
+           05  ITEM-VALID-SW                PIC X      VALUE SPACES.
+           05  ADD-EDIT-ADDTL-DATA-SW       PIC X      VALUE SPACES.
+           05  SAVE-PCPO-SW                 PIC X      VALUE SPACES.
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       COPY DATAB      IN COPYLIB.
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+
+       01  DSET-NAMES.
+           05  DSET-NAME              PIC X(16)  VALUE SPACES.
+           05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+           05  DSET-MBUYER            PIC X(16)  VALUE "MBUYER;".
+           05  DSET-MPORCV            PIC X(16)  VALUE "MPORCV;".
+           05  DSET-MVALIDUM          PIC X(16)  VALUE "MVALIDUM;".
+           05  DSET-MCOMMENT          PIC X(16)  VALUE "MCOMMENT;".
+           05  DSET-MSTORERM          PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-MREQ              PIC X(16)  VALUE "MREQ;".
+           05  DSET-AVENDCODE         PIC X(16)  VALUE "AVENDCODE;".
+           05  DSET-DVENDOR           PIC X(16)  VALUE "DVENDOR;".
+           05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+           05  DSET-DPODATAITM        PIC X(16)  VALUE "DPODATAITM;".
+           05  DSET-DARIBAPO          PIC X(16)  VALUE "DARIBAPO;".
+           05  DSET-DARIBARSLT        PIC X(16)  VALUE "DARIBARSLT;".
+           05  DSET-DPOITEM           PIC X(16)  VALUE "DPOITEM;".
+           05  DSET-DDAILYTC          PIC X(16)  VALUE "DDAILYTC;".
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+           05  VEN-SEARCH             PIC X(10) VALUE "VEN-CODE;".
+           05  PO-SEARCH              PIC X(12) VALUE "ARIBA-PO-NO;".
+           05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+           05  REQ-SEARCH             PIC X(12) VALUE "REQ-NUMBER;".
+           05  PO2-SEARCH             PIC X(10) VALUE "PO-RCV-NO;".
+
+       01 ARG-VALUES.
+           03  PLT-ARG                PIC X(4)  VALUE SPACE.
+           03  BUYER-ARG              PIC X(4)  VALUE SPACE.
+           03  VEN-ARG                PIC X(10) VALUE SPACE.
+           03  PO-ARG                 PIC X(50) VALUE SPACE.
+           03  UM-ARG                 PIC X(2)  VALUE SPACE.
+           03  CODE-ARG               PIC X(8)  VALUE SPACE.
+           03  REQ-ARG                PIC X(12) VALUE SPACE.
+           03  PO2-ARG                PIC X(14) VALUE SPACE.
+           03  COMMENT-ARG            PIC X(4)  VALUE SPACE.
+           03  CC-ARG.
+               05  FILLER             PIC X(2)  VALUE "CC".
+               05  CC-KEY             PIC X(2)  VALUE SPACE.
+
+       01  DB-LOG-TEXT.
+           05  FILLER            PIC X(8)  VALUE "TARIBAPO".
+
+       01  DB-LOG-TEXT-LEN       PIC S9(4) COMP VALUE -8.
+
+       COPY CVALID     IN COPYLIB.
+
+       COPY SREQLINK   IN COPYLIB.
+
+       COPY SSIUPDT    IN COPYLIB.
+
+      *************************************
+      *
+      *  PARAMETERS FOR CALLING 'STC360'
+      *  WHICH IS THE SUBROUTINE FOR CUTTING
+      *  TC 360 AND 361s
+      *************************************
+
+       01  STC360-TC                    PIC X(3) VALUE SPACES.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  STC320.SOURCE
+      *
+      ************************************
+
+       COPY STC320  IN COPYLIB.
+
+      *************************************
+      *  PARAMETERS FOR CALLING 'SEDIVNCK'
+      *  WHICH IS THE SUBROUTINE FOR
+      *  CHECKING IF VENDOR IS EDI OR NOT
+      *************************************
+
+       COPY SEDIVNCK IN COPYLIB.
+
+      **********************************************
+      *  PARAMETERS FOR CALLING 'SMODBDGT' WHICH IS A
+      *  SUBROUTINE FOR MODIFYING BUDGET AMOUNT
+      **********************************************
+       COPY SMODBDGT IN COPYLIB.
+
+      **********************************************
+      *  PARAMETERS FOR CALLING 'SCALCBGT" WHICH IS A
+      *  SUBROUTINE FOR MODIFYING BUDGET AMOUNT
+      **********************************************
+       COPY SCALCBGT IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SPOMSTRM.SOURCE
+      *
+      ************************************
+       COPY SPOMSTRM  IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SCURCONV.SOURCE
+      *
+      ************************************
+       COPY SCURCONV  IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SVENPRC.SOURCE
+      *
+      ************************************
+
+       COPY SVENPRC  IN COPYLIB.
+
+      *************************************************************
+      **                                                         **
+      **          E R R O R   M E S S A G E   A R E A S          **
+      **                                                         **
+      *************************************************************
+
+       COPY TBLOWUP   IN COPYLIB.
+       COPY LANGUAGE  IN COPYLIB.
+
+      *************************************************************
+      **             P R O C E D U R E    D I V I S I O N
+      *************************************************************
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           OPEN  INPUT     MBUYER-FILE
+                           MVENDOR-FILE
+                           MVALIDUM-FILE
+                           MCOMMENT-FILE
+                           MREQ-FILE
+                           MSTOREROOM-FILE
+                 I-O       MPORCV-FILE
+                           DARIBAPO-FILE
+                           DARBRSLT-FILE
+                           DARBRSLT-FILE2
+                           DPORECD-FILE
+                           DPOITEM-FILE
+                           DDAILYTC-FILE
+                           DPODATA-FILE.
+
+           PERFORM 1-HSK             THRU 1-H-X.
+
+           PERFORM 6-MAIN        THRU 6-M-X
+                   UNTIL  END-OF-JOB-YES.
+
+           CLOSE           MBUYER-FILE
+                           MPORCV-FILE
+                           MVALIDUM-FILE
+                           MCOMMENT-FILE
+                           MREQ-FILE
+                           MVENDOR-FILE
+                           MSTOREROOM-FILE
+                           DARIBAPO-FILE
+                           DARBRSLT-FILE
+                           DARBRSLT-FILE2
+                           DPODATA-FILE
+                           DPOITEM-FILE
+                           DPORECD-FILE
+                           DDAILYTC-FILE.
+
+       0000-PROGRAM-EXIT.
+           GOBACK.
+
+      *****************************************************************
+      ** HOUSEKEEPING ROUTINE
+      *****************************************************************
+       1-HSK.
+
+           PERFORM 8000-GET-DATE-TIME    THRU 8000-GDT-EXIT.
+           MOVE WS-SYSTEM-DATE2      TO  WS-VALID-DATE.
+
+DCR02 *****************************************************************
+DCR02 *   DETERMINE IF FOB FLD COMES FROM DB OR USER "FREE STYLE"
+DCR02 *****************************************************************
+DCR02      SET USE-FOB-DB-NO       TO TRUE.
+DCR02      MOVE WS-FOB-KEY         TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      IF  WS-ZMPLT-PLTINFODTA(1:1) = "Y"
+DCR02          SET USE-FOB-DB-YES      TO TRUE
+DCR02      END-IF.
+
+DCR02 *****************************************************************
+DCR02 *   DETERMINE IF VIA FLD COMES FROM DB OR USER "FREE STYLE"
+DCR02 *****************************************************************
+DCR02      SET USE-VIA-DB-NO       TO TRUE.
+DCR02      MOVE WS-VIA-KEY         TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      IF  WS-ZMPLT-PLTINFODTA(1:1) = "Y"
+DCR02          SET USE-VIA-DB-YES      TO TRUE
+DCR02      END-IF.
+
+      *****************************************************************
+      *
+      *   DETERMINE IF COMPANY IS ARIBA BUYER ENABLED
+      *
+      *****************************************************************
+DCR02      MOVE WS-ARIBA-KEY       TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE "PLANT IS NOT ARIBA ENABLED" TO MESSAGE-BUFFER
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET END-OF-JOB-YES   TO TRUE
+               GO TO 1-H-X
+           END-IF.
+
+DCR02 *****************************************************************
+DCR02 *   DETERMINE IF PO LOGGING IS ACTIVE USING PLTINFO KEY "POLG"
+DCR02 *****************************************************************
+DCR02      MOVE HIGH-VALUE          TO WS-Z000-LAST-PO-LOGGED.
+DCR02      SET  Z000-POLG-ACTIVE-NO TO TRUE.
+
+DCR02      MOVE WS-Z000-POLG-KEY   TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      IF  WS-ZMPLT-PLTINFODTA(1:1) = "Y"
+DCR02          SET  Z000-POLG-ACTIVE-YES TO TRUE
+DCR02      END-IF.
+
+DCR02 **---------------------------------------------------------------
+DCR02 *** IF PO LOGGING IS ACTIVE GET JOB ATTRIBUTES - USER/JOB/JNBR
+DCR02 **---------------------------------------------------------------
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          CALL "GETJOBACL"   USING WS-Z000-USER
+DCR02                                   WS-Z000-JOBN
+DCR02                                   WS-Z000-JNBR
+DCR02      END-IF.
+
+      *****************************************************************
+      *
+      *   GET COMPANY CODE
+      *
+      *****************************************************************
+DCR02      MOVE WS-CMPNY-KEY   TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE "GET MPLTINFO 1-HSK" TO MSG-TXT
+               MOVE PLT-ARG TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET END-OF-JOB-YES   TO TRUE
+               GO TO 1-H-X
+           END-IF.
+
+
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+
+DCR02      MOVE MPLTINFO-COMPANY  TO  WS-Z000-PLANT-CODE.
+DCR02      MOVE MPLTINFO-COMPANY  TO  SCOMPPO-CMPNY-SAVE.
+           MOVE MPLTINFO-COMPANY  TO  SAVE-COMPANY.
+           MOVE MPLTINFO-PRIME    TO  SAVE-PRIME.
+
+      *****************************************************************
+      *
+      *   GET RECEIVING DEPARTMENT
+      *
+      *****************************************************************
+DCR02      MOVE WS-RDEPT-KEY   TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF  FS-RECORD-NOT-FOUND
+               MOVE "GET MPLTINFO 'P 03'*1HSK" TO MSG-TXT
+               MOVE PLT-ARG TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET END-OF-JOB-YES   TO TRUE
+               GO TO 1-H-X
+           END-IF.
+
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+DCR02      MOVE MPLTINFO-RECV-DEPT   TO  SAVE-RCV-DEPT.
+
+      *****************************************************************
+      *
+      *   GET ADDITIONAL MPLTINFO DATA
+      *
+      *****************************************************************
+           MOVE WS-ADATA-KEY   TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           IF FS-RECORD-NOT-FOUND
+               MOVE "GET MPLTINFO 'POPT'*1HSK" TO MSG-TXT
+               MOVE PLT-ARG TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET END-OF-JOB-YES   TO TRUE
+               GO TO 1-H-X
+           END-IF.
+
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+
+DCR02      MOVE MPLTINFO-CUR-CODE-REQUIRED-SW TO CUR-CODE-REQUIRED-SW.
+DCR02      MOVE MPLTINFO-ADDTL-DATA-EDIT-SW TO SAVE-EDIT-ADDTL-DATA.
+      *****************************************************************
+      *
+      *   GET EEC SWITCHES
+      *
+      *****************************************************************
+
+           MOVE "N" TO EEC-MBR-SW, EEC-COMM-COD-SW.
+      **** MOVE WS-EECM-KEY   TO  WS-ZMPLT-KEY.
+      *    PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+      *    MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+      *    MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+      *    IF FS-GOOD-FILE-IO
+      *        MOVE MPLTINFO-EEC-MEMBR TO EEC-MBR-SW
+      *        MOVE MPLTINFO-EEC-CODE  TO SAVE-EEC-COUNTRY
+      *        MOVE MPLTINFO-EEC-PO    TO EEC-COMM-COD-SW
+      **** END-IF.
+
+      *****************************************************************
+      *
+      *   GET EECL RECORD CONTAINING LEGIT EEC COUNTRIES
+      *
+      *****************************************************************
+
+           MOVE WS-EECL-KEY   TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+           IF FS-GOOD-FILE-IO
+               MOVE MPLTINFO-DATA      TO EECL-RECORD
+           ELSE
+               MOVE SPACES             TO EECL-RECORD
+           END-IF.
+
+      *****************************************************************
+      *
+      *   GET ECL2 RECORD CONTAINING LEGIT EEC COUNTRIES
+      *
+      *****************************************************************
+
+           MOVE WS-ECL2-KEY   TO  WS-ZMPLT-KEY.
+DCR02      PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+DCR02      MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+DCR02      MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+           IF FS-GOOD-FILE-IO
+               MOVE MPLTINFO-DATA      TO ECL2-RECORD
+           ELSE
+               MOVE SPACES             TO ECL2-RECORD
+           END-IF.
+
+      *****************************************************************
+      *           --- FIRST READ ---
+      *   DETERMINE IF ANY PO'S WERE PUSHED DOWN
+      *****************************************************************
+      **
+      **  CHECK THE ARIBA BUYER PURCHASE ORDER "PUSH"
+      **  DATASET FOR ANY ENTRIES.  IF IT IS EMPTY,
+      **  THEN NOTHING WAS "PUSHED" DOWN AND WE
+      **  WILL EXIT AND THE PERFORM "UNTIL" WILL NOT
+      **  EXECUTE BECAUSE "END-OF-JOB-YES" CONDITION
+      **  WILL ALREADY BE SATISFIED
+      **
+      *****************************************************************
+           PERFORM 9008-READN-DARIBAPO   THRU 9008-READN-EXIT.
+
+       1-H-X.
+           EXIT.
+
+       2-EOJ.
+
+
+       2-EOJ-X.
+            EXIT.
+
+      *****************************************************************
+      **  MAIN LOGIC LOOP
+      *****************************************************************
+       6-MAIN.
+
+           INITIALIZE BUF-ARIBAPO-HEADER
+                      BUF-ARIBAPO-DETAIL
+                      ARIBAITEM-FIELDS
+                      MESSAGE-BUFFER  SUB  DSUB1  DSUB2.
+
+           MOVE WS-CURR-ARIBA-PO-NUMBER TO WS-PREV-ARIBA-PO-NUMBER.
+           MOVE SAVE-EDIT-ADDTL-DATA TO ADD-EDIT-ADDTL-DATA-SW.
+           MOVE SPACE         TO HEADER-VALID-SW  ITEM-VALID-SW
+                                               BUILD-PO-SEARCH.
+
+           SET SUCCESS-FLAG-RESET      TO TRUE.
+           SET HEADER-RECORD-FOUND-NO  TO TRUE.
+           SET DETAIL-RECORD-FOUND-NO  TO TRUE.
+           SET ITEM-MAXX-NO            TO TRUE.
+           SET DSC-RECORDS-NO          TO TRUE.
+
+           MOVE 1               TO SUB.
+           PERFORM 0011-INIT-DETAIL-TAB   THRU 0011-EXIT
+                   UNTIL SUB  >  SUB-MAXX.
+
+           MOVE 1               TO DSUB1.
+           PERFORM 0010-INIT-DESC-TAB     THRU 0010-EXIT
+                   UNTIL DSUB1  >  DSUB1-MAXX.
+
+      *=-------------------------------------------------------------
+      *  "PO'S WERE PUSHED DOWN ....NOW PROCESS THEM
+      *=-------------------------------------------------------------
+           PERFORM 61-BUILD-EDIT-ARRAY  THRU 61-EAP-X
+                   UNTIL FS-END-OF-GROUP.
+
+
+      *=-------------------------------------------------------------
+      *    PROCESS THE NEXT PO
+      *=-------------------------------------------------------------
+           IF NOT FS-END-OF-FILE
+              PERFORM 9008-START-DARIBAPO   THRU 9008-START-EXIT
+              PERFORM 9008-READN-DARIBAPO   THRU 9008-READN-EXIT
+           END-IF.
+
+       6-M-X.
+           EXIT.
+
+      *****************************************************************
+      **  INITIALIZE DESCRIPTION ARRAY
+      *****************************************************************
+       0010-INIT-DESC-TAB.
+
+           MOVE SPACE           TO TAB-ARIBAPO-ITEM(DSUB1).
+
+           MOVE 1               TO DSUB2.
+           PERFORM UNTIL DSUB2 > DSUB2-MAXX
+                   MOVE SPACE   TO TAB-ARIBADSC-RECRD(DSUB1 DSUB2)
+                   ADD  1       TO DSUB2
+           END-PERFORM.
+           ADD  1               TO DSUB1.
+
+       0010-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  INITIALIZE ITEM DETAIL ARRAY
+      *****************************************************************
+       0011-INIT-DETAIL-TAB.
+
+           MOVE SPACE           TO  ARIBAPO-ITEM(SUB).
+           ADD  1               TO  SUB.
+
+       0011-EXIT.
+           EXIT.
+
+      *****************************************************************
+      *
+      *    GET ALL PO HEADER AND DETAIL RECS
+      *      1) MOVE EACH RECORD TO IT'S RESPECTIVE BUFFER
+      *      2) MOVE EACH DETAIL REC TO ITEM ARRAY
+      *      3) "AT END" EDIT HEADER AND DETAIL RECS
+      *
+      *****************************************************************
+       61-BUILD-EDIT-ARRAY.
+
+      *================================================================
+      *== PROCESS A HEADER RECORD THEN READ AGAIN
+      *================================================================
+           IF  ARIBAPO-REC-TYPE = "1"
+           OR  ARIBAPO-REC-TYPE = "3"
+DCR02      OR  ARIBAPO-REC-TYPE = "5"
+               MOVE BUF-DARIBAPO TO BUF-ARIBAPO-HEADER
+               SET HEADER-RECORD-FOUND-YES TO TRUE
+               GO TO 61-READ-NEXT
+           END-IF.
+
+
+      *==============================================================
+      *== PROCESS A DETAIL RECORD THEN READ AGAIN - LOAD ITEM ARRAY
+      *==============================================================
+           IF  ARIBAPO-REC-TYPE = "2"
+DCR02      OR  ARIBAPO-REC-TYPE = "4"
+DCR08      OR  ARIBAPO-REC-TYPE = "6"
+
+
+      *=-------------------------------------------------------------
+      *== MOVE DATA RECORD TO DETAIL AREA TO ACCESS ITEM NUMBER
+      *=-------------------------------------------------------------
+DCR08          IF  ARIBAPO-REC-TYPE = "2"
+DCR08          OR  ARIBAPO-REC-TYPE = "4"
+                   MOVE BUF-DARIBAPO TO BUF-ARIBAPO-DETAIL
+                   SET DETAIL-RECORD-FOUND-YES TO TRUE
+DCR08          END-IF
+
+      *=-------------------------------------------------------------
+      *== MOVE DESCRIPTION RECORD TO ARRAY
+      *=-------------------------------------------------------------
+DCR08          IF  ARIBAPO-REC-TYPE = "6"
+DCR08              MOVE BUF-DARIBAPO TO BUF-ARIBAPO-DESC
+      *=-------------------------------------------------------------
+      *== USE ITEM SEQNO AS SUBSCRIPT AND SAVE ITEM DESC TO ARRAY
+      *=-------------------------------------------------------------
+DCR08              SET DSC-RECORDS-YES TO TRUE
+DCR08              MOVE ARIBADSC-ITEM-NUMBER TO DSUB1
+DCR08              MOVE ARIBADSC-ITEM-SEQNO  TO DSUB2
+DCR08             MOVE BUF-DARIBAPO TO TAB-ARIBADSC-RECRD(DSUB1 DSUB2)
+DCR08              GO TO 61-READ-NEXT
+DCR08          END-IF
+
+
+      *=-------------------------------------------------------------
+      *= SAVE THE HIGHEST ITEM NUMBER TO ITEM COUNT FIELD
+      *=-------------------------------------------------------------
+               IF  ARIBAITM-ITEM-NUMBER > ITEM-CNT
+                   MOVE ARIBAITM-ITEM-NUMBER TO ITEM-CNT
+               END-IF
+
+      *=-------------------------------------------------------------
+      *== IF MAXX LINE ITEMS REACHED, JUST READ AGAIN
+      *=-------------------------------------------------------------
+               IF  ITEM-MAXX-NO
+
+      *=-------------------------------------------------------------
+      *== IF MAXX LINE ITEMS REACHED, SET MAXX ITEM SW
+      *=-------------------------------------------------------------
+                   IF  ITEM-CNT > SUB-MAXX
+                       SET ITEM-MAXX-YES           TO TRUE
+                   ELSE
+      *=-------------------------------------------------------------
+      *== USE ITEM NUMBER AS SUBSCRIPT AND SAVE ITEM RECORD TO ARRAY
+      *=-------------------------------------------------------------
+                       MOVE ARIBAITM-ITEM-NUMBER TO SUB
+                       MOVE BUF-DARIBAPO TO ARIBAPO-ITEM(SUB)
+                   END-IF
+
+               END-IF
+           END-IF.
+
+      *==============================================================
+      *== READ NEXT INPUT RECORD
+      *==============================================================
+       61-READ-NEXT.
+
+           PERFORM 9008-READN-DARIBAPO   THRU 9008-READN-EXIT.
+           IF  FS-END-OF-GROUP
+
+               PERFORM 61A-PROCESS-EDIT-ARRAY  THRU 61A-EXIT
+               IF  END-OF-JOB-YES
+                   SET FS-END-OF-FILE  TO TRUE
+               ELSE
+                   SET FS-END-OF-GROUP TO TRUE
+               END-IF
+
+           END-IF.
+
+       61-EAP-X.
+           EXIT.
+
+      *****************************************************************
+      *
+      *    PROCESS EDIT ARRAY
+      *
+      *****************************************************************
+       61A-PROCESS-EDIT-ARRAY.
+
+           SET SUCCESS-NO              TO TRUE.
+      **===============================================================
+      * IF NO HEADER RECORD
+      *    - SEND MESSAGE BACK TO ARIBA
+      *    - EXIT AND PROCESS NEXT PO (DONT DELETE INPUT - LEAVE IT)
+      **===============================================================
+           IF HEADER-RECORD-FOUND-NO
+      ****   "NO HEADER RECORD FOUND FOR THIS PO"
+              MOVE  WS-HEADER-NFND-MSG1 TO MSG-TXT
+              MOVE  WS-PREV-ARIBA-PO-NUMBER  TO MSG-FLD
+              PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+              SET  HEADER-IS-VALID-NO   TO TRUE
+      *==> DON'T DELETE REMAINING RECORDS - LEAVE FOR NEXT PGM CYCLE
+              GO TO 61A-EXIT
+           END-IF.
+
+
+DCR02      IF  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(1:1) = "3"
+DCR02      OR  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(1:1) = "5"
+DCR02          PERFORM 62CC-EDIT-PO-HEADER THRU 62CC-EXIT
+DCR02          IF  HEADER-IS-VALID-NO
+DCR02              GO TO 61A-DELETE
+DCR02          END-IF
+DCR02      END-IF.
+
+
+DCR02 *==============================================================
+DCR02 *== PROCESS A CANCEL REQUEST
+DCR02 *==  @@ RECORD TYPE "5"  ==>  PO CANCEL REQUEST
+DCR02 *==============================================================
+DCR02      IF  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(1:1) = "5"
+DCR02          PERFORM CC200-PO-CANCEL     THRU CC200-EXIT
+DCR02          GO TO 61A-DELETE
+DCR02      END-IF.
+
+
+      **===============================================================
+      * "RETRIEVED ALL RECORDS RELATING TO CURRENT
+      *  ARIBA PURCHASE ORDER, NOW PROCESS EVERYTHING"
+      *   1) EDIT HEADER ...IF ERRORS THEN DEL & EXIT
+      *   2) EDIT ITEMS  ...IF ERRORS THEN WRITE LOG RSLT, DEL & EXIT
+      *   3) PROCESS THIS PO
+      **===============================================================
+           PERFORM 62-EDIT-PO-HEADER THRU 62-EPH-X.
+           IF HEADER-IS-VALID-NO
+              GO TO 61A-DELETE
+           END-IF.
+
+
+           IF DETAIL-RECORD-FOUND-NO
+      ****   "NO PO LINE ITEMS FOUND FOR THIS PO"
+              MOVE  WS-DETAIL-NFND-MSG1 TO MSG-TXT
+              MOVE  ARIBAPO-NUMBER  TO MSG-FLD
+              PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+              MOVE  "N"   TO ITEM-VALID-SW
+              GO TO 61A-DELETE
+           END-IF.
+
+
+      **** EDIT ITEM ARRAY
+           MOVE ARIBAPO-INVOICELESS-IND TO INVOICELESS-SW.
+           MOVE ARIBAPO-NON-RECV-IND TO NON-RECV-SW.
+           MOVE ARIBAPO-REQ-NUMBER TO ITEM-REQ-NO.
+           MOVE SPACE         TO ITEM-VALID-SW.
+           CALL "CARIBITM" USING BASE
+                                 BUF-ARIBAPO-ITEM
+                                 ARIBAITEM-FIELDS
+                                 LANGUAGE-PARMS
+                                 MESSAGE-BUFFER.
+
+      **** IF ANY ITEM ERRORS, THEN LOG RSLTS & DEL
+           IF  ITEM-VALID-SW = "N"
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               GO TO 61A-DELETE
+           END-IF.
+
+      **** IF PROCESSING A PO CHANGE, THEN DO IT & DEL
+DCR02      IF  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(1:1) = "3"
+DCR02          PERFORM CC100-PO-CHANGE      THRU CC100-EXIT
+DCR02          GO TO 61A-DELETE
+DCR02      END-IF.
+
+      *---------------------------------------------------------------
+      **** IF PROCESSING A PO ADD, THEN DO IT & LOG AN INSERT & DEL
+      ****   E L S E
+      **** BACKOUT THE NEW PO LOG RSLTS & DEL
+      *---------------------------------------------------------------
+           PERFORM 63-PROCESS-ARIBA-PO    THRU 63-PAP-X.
+           IF  SUCCESS-NO
+               PERFORM 66-BACK-OUT-PO     THRU 66-BOP-X
+           ELSE
+      **** LOG A PO *INSERT TO LOGGING TABLES
+DCR02          IF  Z000-POLG-ACTIVE-YES
+DCR02              MOVE BUILD-PO-SEARCH TO WS-Z000-PORCVNO
+DCR02              PERFORM Z998-INSERT-PO-LOG  THRU Z998-INS-EXIT
+DCR02          END-IF
+DCR02          MOVE  WS-GOOD-PO-ADD-MSG  TO MSG-TXT
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+           END-IF.
+
+       61A-DELETE.
+
+           PERFORM 997-DELETE-INPUT-PO  THRU 997-DEL-EXIT.
+
+       61A-EXIT.
+           EXIT.
+
+      *****************************************************************
+      *
+      *    EDIT PO HEADER SECTION
+      *
+      *****************************************************************
+       62-EDIT-PO-HEADER.
+
+           INITIALIZE EEC-PO-IND-SW,
+                      VEN-PAYTO-EQ-ORDFRM-SW.
+
+
+      **==============================================================
+      ** READ GOODYEAR COPY OF RESULTS FILE TO DETERMINE IF THIS PO
+      ** HAS ALREADY BEEN SUCCESSFULLY PROCESSED
+      **==============================================================
+           PERFORM 9014-READK-DARBRSL2-NLOCK THRU 9014-READK-NL-EXIT.
+           IF FS-GOOD-FILE-IO
+      ****    "THIS PO HAS ALREADY BEEN PROCESSED"
+               MOVE  WS-DUPE-PO-MSG1     TO MSG-TXT
+               MOVE  ARIBAPO-NUMBER      TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+DCR02 *================================================================
+DCR02 *=  SKIP THE REST WHEN CANCELLING
+DCR02 *================================================================
+DCR02      IF  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(1:1) = "5"
+DCR02          GO TO  62-GOOD-HEADER
+DCR02      END-IF.
+
+      *****************************************************************
+      *
+      *   EDIT REQUISITION
+      *
+      *****************************************************************
+
+       62-EDIT-REQ-NO.
+
+DCR05 *****************************************************************
+DCR05 * REQ# HAS BEEN ADDED TO ARIBAITM RECORD - SO REQUISITION EDITS
+DCR05 * AND LINKING ARE NOW DONE AT THE ITEM LEVEL RATHER THAN HEADER
+DCR05 * SEE SUBROUTINE 631-UPDATE-ITEM-DATA
+DCR05 *****************************************************************
+DCR05 *    MOVE ARIBAPO-REQ-NUMBER TO REQ-ARG.
+DCR05 *    PERFORM 9006-READK-MREQ        THRU 9006-READK-EXIT.
+DCR05 *    IF FS-RECORD-NOT-FOUND
+DCR05 *        "REQUISITION PUSHED DOWN DOES NOT EXIST"
+DCR05 *        MOVE SPACES TO ARIBAPO-REQ-NUMBER
+DCR05 *        GO TO 62-EDIT-VENDOR
+DCR05 *    END-IF.
+DCR05 *****************************************************************
+
+      **********************
+      *                    *
+      *    V E N D O R     *
+      *                    *
+      **********************
+
+       62-EDIT-VENDOR.
+
+DCR06      MOVE ARIBAPO-VENDOR-CODE  TO WS-INP-VENDOR-CODE.
+DCR06 *---------------------------------------------------------------
+DCR06 *--- CHECK FOR SAP VENDOR NBR(6 CHAR) AND CONVERT IT TO CSIS
+DCR06 *--- 10 CHAR FORMAT (IE: 0000123456 ===> S123456000)
+DCR06 *---------------------------------------------------------------
+DCR06      MOVE SPACE                TO WS-CNV-VENDOR-CODE.
+DCR06      IF  ARIBAPO-VENDOR-CODE(1:4) = "0000"
+DCR06          MOVE "S"                TO WS-CNV-VENDOR-CODE(1:1)
+DCR06          MOVE ARIBAPO-VENDOR-CODE(5:6) TO WS-CNV-VENDOR-CODE(2:6)
+DCR06          MOVE "000"              TO WS-CNV-VENDOR-CODE(8:3)
+DCR06          MOVE WS-CNV-VENDOR-CODE TO ARIBAPO-VENDOR-CODE
+DCR06      END-IF.
+DCR06 *---------------------------------------------------------------
+
+           MOVE ARIBAPO-VENDOR-CODE TO SEDIVNCK-VEN-CODE.
+           CALL "SEDIVNCK" USING BASE,
+                                 SEDIVNCK-PARMS.
+
+      **************************************************************
+      *    CHECK TO SEE IF VENDOR ENTERED IS AN EDI VENDOR OR NOT
+      *    NOT - SEDIVNCK-EDI-IND = "Y" IF YES
+      *    ALSO CHECK TO SEE IF VENDOR IS INVOICELESS OR NOT -
+      *    SEDIVNCK-INVLESS-IND = "Y" IF YES
+      **************************************************************
+           MOVE "N"     TO VEN-PAYTO-EQ-ORDFRM-SW.
+           IF ARIBAPO-VEND-SUFFIX = "000"
+               MOVE "Y"     TO VEN-PAYTO-EQ-ORDFRM-SW
+           END-IF.
+
+           MOVE ARIBAPO-VEND-CODE TO  VEN-CODE-1-7.
+           MOVE ZEROS             TO  VEN-CODE-8-10.
+           MOVE BUILD-VEN-SEARCH  TO  VEN-ARG.
+           PERFORM 9007-READK-MVENDOR     THRU 9007-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+      ****    "ASSOCIATED PAYTO VENDOR NOT ON FILE"
+               MOVE  WS-VENDOR-NFND-MSG1 TO MSG-TXT
+DCR06 ******** MOVE  VEN-ARG             TO MSG-FLD
+DCR06 **** SEND BACK THE SAME VENDOR NBR AND FORMAT ARIBA SENT DOWN
+DCR06          MOVE  WS-INP-VENDOR-CODE  TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+           IF VEN-PAYTO-EQ-ORDFRM-SW = "Y"
+               GO TO 62-EDIT-EEC-INFO
+           END-IF.
+
+           MOVE ARIBAPO-VEND-SUFFIX TO VEN-CODE-8-10.
+           MOVE BUILD-VEN-SEARCH TO VEN-ARG.
+           PERFORM 9007-READK-MVENDOR     THRU 9007-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+      *       "'ORDER FROM' VENDOR NOT ON FILE"
+               MOVE  WS-VENDOR-NFND-MSG2 TO MSG-TXT
+DCR06 ******** MOVE  VEN-ARG             TO MSG-FLD
+DCR06 **** SEND BACK THE SAME VENDOR NBR AND FORMAT ARIBA SENT DOWN
+DCR06          MOVE  WS-INP-VENDOR-CODE  TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+      ************************************
+      *   EDIT EEC MEMBER VENDORS TO
+      *   VALIDATE PARTNER COUNTRY,
+      *   COUNTRY OF ORIGIN AND VAT
+      *   NUMBER HAVE BEEN PRE-LOADED
+      *   IF NOT, ALLOW USER TO LOAD THEM
+      ************************************
+       62-EDIT-EEC-INFO.
+
+           GO TO 62-EDIT-CURRENCY-CODE.
+
+      *****************************************************************
+      **** EEC CODE COMMENTED OUT - NOT USED AT PRESENT
+      *****************************************************************
+      **** IF EEC-MBR-SW = "N"
+      ****     GO TO 62-EDIT-CURRENCY-CODE
+      **** ELSE
+      ****     MOVE VEN-PARTNER-CTRY TO SAVE-VEN-COUNTRY
+      **** END-IF.
+
+      **** MOVE ARIBAPO-VENDOR-CODE TO VEN-ARG.
+      **** PERFORM 9007-READK-MVENDOR     THRU 9007-READK-EXIT.
+      **** IF FS-RECORD-NOT-FOUND
+      ****     MOVE  WS-VENDOR-NFND-MSG3 TO MSG-TXT
+      ****     MOVE VEN-ARG TO MSG-FLD
+      ****     PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ****     SET  HEADER-IS-VALID-NO   TO TRUE
+      ****     GO TO 62-EPH-X
+      **** END-IF.
+
+      *62-EEI-LOOP.
+
+      ***  CALL "DBGET" USING BASE, DSET-DVENDOR,
+      ***                     MODE5, STATUS-AREA,
+      ***                     ALL-ITEMS, BUF-DVENDOR,
+      ***                     VEN-ARG.
+      ***  IF COND-WORD = 15
+      ***      IF VEN-ITM-NO = 15
+      ***          IF VEN-PARTNER-CTRY = SPACES
+      *                "EEC PARTNER COUNTRY IS EMPTY"
+      ***              MOVE   4 TO LANG-SETNUM
+      ***              MOVE  75 TO LANG-MSGNUM
+      ***              PERFORM 999-CATREAD THRU
+      ***                      999-CATREAD-EXIT
+      ***              PERFORM 998-ARIBA-LOG-RESULTS THRU
+      ***                      998-ALR-X
+      ****             SET  HEADER-IS-VALID-NO   TO TRUE
+      ***              GO TO 62-EPH-X
+      ***          ELSE
+      ***              GO TO 62-EDIT-CURRENCY-CODE
+      ***          END-IF
+      ***      ELSE
+      *            "EEC PARTNER INFORMATION NOT LOADED"
+      ***          MOVE   4 TO LANG-SETNUM
+      ***          MOVE  76 TO LANG-MSGNUM
+      ***          PERFORM 999-CATREAD THRU
+      ***                  999-CATREAD-EXIT
+      ***          PERFORM 998-ARIBA-LOG-RESULTS THRU
+      ***                  998-ALR-X
+      ***          SET  HEADER-IS-VALID-NO   TO TRUE
+      ***          GO TO 62-EPH-X
+      ***      END-IF
+
+      ***  IF COND-WORD NOT = 0
+      ***      MOVE "EEC VENDOR INFO NOT RETRIEVABLE"
+      ***           TO MSG-TXT
+      ***      MOVE VEN-ARG TO MSG-FLD
+      ***      PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***      SET  HEADER-IS-VALID-NO   TO TRUE
+      ***      GO TO 62-EPH-X
+      ***  END-IF.
+
+      ***  IF VEN-ITM-NO = 15
+      ***      IF VEN-PARTNER-CTRY = SPACES
+      *            "EEC PARTNER COUNTRY IS EMPTY"
+      ***          MOVE   4 TO LANG-SETNUM
+      ***          MOVE  75 TO LANG-MSGNUM
+      ***          PERFORM 999-CATREAD THRU
+      ***                  999-CATREAD-EXIT
+      ***          PERFORM 998-ARIBA-LOG-RESULTS THRU
+      ***                  998-ALR-X
+      ***          SET  HEADER-IS-VALID-NO   TO TRUE
+      ***          GO TO 62-EPH-X
+      ***      ELSE
+      ***          GO TO 62-EDIT-CURRENCY-CODE
+      ***      END-IF
+      ***  ELSE
+      ***      GO TO 62-EEI-LOOP
+      ***  END-IF.
+      **************************************************************
+
+
+      *****************************************************************
+      *
+      *   EDIT CURRENCY CODE
+      *
+      *****************************************************************
+
+       62-EDIT-CURRENCY-CODE.
+
+           IF ARIBAPO-CURRENCY-CODE = SPACES
+               IF CUR-CODE-REQUIRED-SW = "Y"
+      *        "CURRENCY CODE IS REQUIRED IN YOUR PLANT"
+                   MOVE WS-CURR-CODE-MSG1 TO MSG-TXT
+                   MOVE ARIBAPO-CURRENCY-CODE  TO MSG-FLD
+                   PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+                   SET  HEADER-IS-VALID-NO   TO TRUE
+                   GO TO 62-EPH-X
+               ELSE
+                   GO TO 62-EDIT-FREIGHT-TERMS
+               END-IF
+           END-IF.
+
+           MOVE ARIBAPO-CURRENCY-CODE TO UM-ARG.
+           PERFORM 9003-READK-MVALIDUM    THRU 9003-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+      *        "CURRENCY CODE DOES NOT EXIST"
+               MOVE WS-CURR-CODE-NFND-MSG1   TO MSG-TXT
+               MOVE ARIBAPO-CURRENCY-CODE    TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+      *-------------------------------------------------------------
+      *------FLD MPLTINFO-CC-OBS NOT DEFINED
+      *------------- DO NOT ALLOW USE OF OBSOLETE CURRENCY CODES.
+      *-------------------------------------------------------------
+      *    MOVE ARIBAPO-CURRENCY-CODE TO CC-KEY.
+      *    MOVE CC-ARG                TO WS-ZMPLT-KEY.
+      *    PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+      *    MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+      *    MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+      *    IF FS-GOOD-FILE-IO
+      *        IF MPLTINFO-CC-OBS = "X"
+      *            "INVALID CURRENCY CODE"
+      *            MOVE WS-CURR-CODE-MSG2 TO MESSAGE-BUFFER
+      *            PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      *            SET  HEADER-IS-VALID-NO   TO TRUE
+      *            GO TO 62-EPH-X
+      *        END-IF
+      *    END-IF.
+      *****************************************************************
+
+
+      *****************************************************************
+      *
+      *   EDIT FREIGHT TERMS
+      *
+      *****************************************************************
+       62-EDIT-FREIGHT-TERMS.
+
+           IF  ARIBAPO-FREIGHT-TERMS NOT = "G"
+           AND ARIBAPO-FREIGHT-TERMS NOT = "P"
+           AND ARIBAPO-FREIGHT-TERMS NOT = "C"
+           AND ARIBAPO-FREIGHT-TERMS NOT = "U"
+           AND ARIBAPO-FREIGHT-TERMS NOT = "D"
+           AND ARIBAPO-FREIGHT-TERMS NOT = " "
+      *******  "INVALID FREIGHT TERMS; VALID TERMS ARE (G,P,C,U,D)
+               MOVE WS-FRGHT-CODE-MSG1    TO MSG-TXT
+               MOVE ARIBAPO-FREIGHT-TERMS TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+WRF01      IF ARIBAPO-INVOICELESS-IND = "Y"
+               IF ARIBAPO-FREIGHT-TERMS = SPACES
+                   MOVE WS-FRGHT-CODE-MSG2   TO MSG-TXT
+                   MOVE ARIBAPO-FREIGHT-TERMS TO MSG-FLD
+                   PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+                   SET  HEADER-IS-VALID-NO   TO TRUE
+                   GO TO 62-EPH-X
+               ELSE
+                   IF ARIBAPO-FREIGHT-TERMS = "P"
+                       MOVE WS-FRGHT-CODE-MSG3   TO MSG-TXT
+                       MOVE ARIBAPO-FREIGHT-TERMS TO MSG-FLD
+                       PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+                       SET  HEADER-IS-VALID-NO   TO TRUE
+                       GO TO 62-EPH-X
+                   ELSE
+                       MOVE ARIBAPO-FREIGHT-TERMS TO BUILD-FRT-VALUE
+                       MOVE BUILD-FRT-KEY TO PLT-ARG
+                       MOVE PLT-ARG       TO WS-ZMPLT-KEY
+                       PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT
+                       MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS
+                       MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA
+                       IF FS-RECORD-NOT-FOUND
+                           MOVE WS-FRGHT-CODE-MSG4   TO MSG-TXT
+                           MOVE PLT-ARG              TO MSG-FLD
+                           PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+                           SET  HEADER-IS-VALID-NO   TO TRUE
+                           GO TO 62-EPH-X
+                       END-IF
+                   END-IF
+               END-IF
+           END-IF.
+
+      *****************************************************************
+      *
+      *  EDIT BUYER CODE USING THE 'MBUYER' DATA SET
+      *  THE BUYER NAME IS TAKEN FROM 'MBUYER'  DATA SET
+      *  FOR DPORECD
+      *
+      *****************************************************************
+
+       62-EDIT-BUYER-CODE.
+           MOVE ARIBAPO-BUYER-CODE TO BUYER-ARG.
+           PERFORM 9001-READK-MBUYER   THRU 9001-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+      *        "BUYER CODE DOES NOT EXIST"
+               MOVE WS-BUYER-CODE-MSG1   TO MSG-TXT
+               MOVE BUYER-ARG            TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+      *****************************************************************
+      *
+      *   EDIT SHIP DATE
+      *
+      *****************************************************************
+       62-EDIT-SHIP-DATE.
+
+           IF ARIBAPO-SHIP-DATE NOT NUMERIC
+               GO TO 62-EDIT-EXPECT-DATE
+           END-IF.
+
+           MOVE ARIBAPO-SHIP-DATE TO WS-CHECK-DATE.
+           PERFORM 994-CHECK-DATE       THRU 994-EXIT.
+           IF CHECK-DATE-ERROR-YES
+               MOVE WS-SHPDTE-ERROR-MSG  TO MSG-TXT
+               MOVE ARIBAPO-SHIP-DATE TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+      *****************************************************************
+      *
+      *  EDIT EXPECT DATE USING 'TDATECHK'
+      *
+      *****************************************************************
+       62-EDIT-EXPECT-DATE.
+
+           IF ARIBAPO-EXPECT-DATE NOT NUMERIC
+               GO TO 62-EDIT-PAYMENT-TERMS
+           END-IF.
+
+           MOVE ARIBAPO-EXPECT-DATE TO WS-CHECK-DATE.
+           PERFORM 994-CHECK-DATE      THRU 994-EXIT.
+           IF CHECK-DATE-ERROR-YES
+               MOVE WS-EXPDTE-ERROR-MSG  TO MSG-TXT
+               MOVE ARIBAPO-EXPECT-DATE  TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+      *****************************************************************
+      *
+      *   EDIT PAYMENT TERMS
+      *
+      *****************************************************************
+
+       62-EDIT-PAYMENT-TERMS.
+
+           MOVE ARIBAPO-POTERMS-PCT   TO  BUILD-TM-DISCOUNT-VALUE.
+           MOVE BUILD-TM-DISCOUNT-KEY TO  PLT-ARG.
+           MOVE PLT-ARG               TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+           IF  FS-RECORD-NOT-FOUND
+      *       "INVALID PAYMENT TERMS % : DOES NOT EXIST"
+               MOVE WS-PAY-TERMS-MSG1  TO MSG-TXT
+               MOVE ARIBAPO-POTERMS-PCT TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+           MOVE ARIBAPO-POTERMS-DUE   TO  BUILD-TM-DATE-VALUE.
+           MOVE BUILD-TM-DUE-DATE-KEY TO  PLT-ARG.
+           MOVE PLT-ARG               TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+           MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+           IF  FS-RECORD-NOT-FOUND
+      *       "INVALID PAYMENT TERMS; TERMS DOES NOT EXIST"
+               MOVE WS-PAY-TERMS-MSG2  TO MSG-TXT
+               MOVE ARIBAPO-POTERMS-DUE  TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+
+      *@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+      *@@@ COMMENT OUT EEC RELATED CODE - SKIP THIS ROUTINE
+      *@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+      *****************************************************************
+      *  VALIDATE VIA CODE FOR EEC MEMBERS
+      *****************************************************************
+      *    IF EEC-MBR-SW = "Y"
+      *        MOVE "EECMT "  TO CVALID-CODE-TYPE
+      *        MOVE ARIBAPO-VIA-CODE TO CVALID-CODE-KEY
+      *        CALL "CVALID" USING BASE, STATUS-AREA,
+      *                            BU-DISPLAY-MSG, CVALID-PARMS
+      *        IF BU-DISPLAY-MSG NOT = SPACES
+      *            MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+      *            PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***          SET  HEADER-IS-VALID-NO   TO TRUE
+      *            GO TO 62-EPH-X
+      *        ELSE
+      *            IF CVALID-ERROR-CODE NOT = ZEROES
+      *                MOVE CVALID-ERROR-SET-NUM TO LANG-SETNUM
+      *                MOVE CVALID-ERROR-MSG-NUM TO LANG-MSGNUM
+      *                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *                PERFORM 998-ARIBA-LOG-RESULTS THRU
+      *                        998-ALR-X
+      ***              SET  HEADER-IS-VALID-NO   TO TRUE
+      *                GO TO 62-EPH-X
+      *            ELSE
+      *                MOVE CVALID-CODE-DESC TO ARIBAPO-VIA-3-20
+      *            END-IF
+      *        END-IF
+      **** END-IF.
+
+DCR02 *****************************************************************
+DCR02 *  EDIT VIA FIELD AGAINST DB FILE IF TMS PO LOGGING IS ACTIVE
+DCR02 *****************************************************************
+
+DCR02 **---------------------------------------------------------------
+DCR02 ** BYPASS THE REST IF VIA DOES NOT COME FROM DATABASE FILE
+DCR02 **---------------------------------------------------------------
+DCR02      IF  USE-VIA-DB-NO
+DCR02          GO TO 62-GET-FOB-DESC
+DCR02      END-IF.
+
+DCR02      MOVE SPACE TO WS-ZVIA-VIA-CODE   WS-ZVIA-VIA-DESC.
+DCR02 **---------------------------------------------------------------
+DCR02 ***VIA CODE CAN NOT BE BLANK
+DCR02 **---------------------------------------------------------------
+DCR02      IF  ARIBAPO-VIA  = SPACE
+DCR02 **      "VIA CODE CAN NOT BE BLANK"
+DCR02          MOVE WS-VIA-CODE-MSG1  TO MSG-TXT
+DCR02          MOVE ARIBAPO-VIA       TO MSG-FLD
+DCR02          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR02          SET  HEADER-IS-VALID-NO   TO TRUE
+DCR02          GO TO 62-EPH-X
+DCR02      END-IF.
+
+DCR02 **---------------------------------------------------------------
+DCR02 ** DETERMINE WHAT'S BEEN ENTERED:  CODE OR DESCRIPTION
+DCR02 **---------------------------------------------------------------
+DCR02      IF  ARIBAPO-VIA(1:3)  NOT = SPACE
+DCR02          IF ARIBAPO-VIA(4:16) NOT = SPACE
+DCR02             MOVE ARIBAPO-VIA        TO WS-ZVIA-VIA-DESC
+DCR02          ELSE
+DCR03             MOVE ARIBAPO-VIA(1:3)   TO WS-ZVIA-VIA-CODE
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02 **---------------------------------------------------------------
+DCR02 ** CALL VIA SUBROUTINE TO VALIDATE ENTRY AGAINST FILE MCFPCS7200
+DCR02 ** RETURN ERROR FLAG - BLANK OR "E"
+DCR02 **---------------------------------------------------------------
+DCR02      PERFORM ZVIA-READK-VIADSC     THRU ZVIA-READK-EXIT.
+DCR02      IF  ZVIA-VIA-VALIDATION-ERROR
+DCR02 ***     "VIA CODE IS INVALID OR DOES NOT EXIST"
+DCR02          MOVE WS-VIA-CODE-MSG2  TO MSG-TXT
+DCR02          MOVE ARIBAPO-VIA       TO MSG-FLD
+DCR02          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR02          SET  HEADER-IS-VALID-NO   TO TRUE
+DCR02          GO TO 62-EPH-X
+DCR02      END-IF.
+
+
+      *****************************************************************
+      *
+      *  CHECK FOR FOB CODE IF ONE WAS ENTERED AND
+      *  GO GET THE FOB DESCRIPTION SO IT CAN BE
+      *  STORED IN DPORECD. ALSO FOR EEC MEMBERS
+      *  VALIDATE TERMS OF DELIVERY
+      *
+      *****************************************************************
+
+       62-GET-FOB-DESC.
+      *****************************************************************
+      *    IF EEC-MBR-SW = "Y"
+      *        IF ARIBAPO-FOB-4-20 = SPACES
+      *            MOVE "EECDT " TO CVALID-CODE-TYPE
+      *            MOVE ARIBAPO-FOB-CODE1 TO CVALID-CODE-KEY
+      *            CALL "CVALID" USING BASE, STATUS-AREA,
+      *                          BU-DISPLAY-MSG, CVALID-PARMS
+      *            IF BU-DISPLAY-MSG NOT = SPACES
+      *                MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+      *                PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***              SET  HEADER-IS-VALID-NO   TO TRUE
+      *                GO TO 62-EPH-X
+      *            ELSE
+      *                IF CVALID-ERROR-CODE = ZEROS
+      *                    MOVE CVALID-CODE-DESC TO ARIBAPO-FOB
+      *                    GO TO 62-VALIDATE-NATURE
+      *                ELSE
+      *                    MOVE CVALID-ERROR-SET-NUM TO LANG-SETNUM
+      *                    MOVE CVALID-ERROR-MSG-NUM TO LANG-MSGNUM
+      *                    PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *                    PERFORM 998-ARIBA-LOG-RESULTS THRU
+      *                            998-ALR-X
+      ***                  SET  HEADER-IS-VALID-NO   TO TRUE
+      *                    GO TO 62-EPH-X
+      *                END-IF
+      *            END-IF
+      *        ELSE
+      *            GO TO 62-VALIDATE-NATURE
+      *        END-IF
+      *    END-IF.
+
+      *    IF ARIBAPO-FOB-3-20 = SPACES
+      *        NEXT SENTENCE
+      *    ELSE
+      *        GO TO 62-VALIDATE-NATURE
+      *    END-IF.
+      *****************************************************************
+
+
+DCR02      MOVE SPACE TO WS-ZFOB-FOB-CODE   WS-ZFOB-FOB-DESC.
+      **---------------------------------------------------------------
+      ***FOB CODE CAN NOT BE BLANK
+      **---------------------------------------------------------------
+           IF  ARIBAPO-FOB-CODE = SPACE
+      **      "FOB CODE CAN NOT BE BLANK"
+               MOVE WS-FOB-CODE-MSG1  TO MSG-TXT
+               MOVE ARIBAPO-FOB-CODE  TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+DCR02 **---------------------------------------------------------------
+DCR02 ** BYPASS THE REST IF FOB DOES NOT COME FROM DATABASE FILE
+DCR02 **---------------------------------------------------------------
+DCR02      IF  USE-FOB-DB-NO
+DCR02          GO TO 62-VALIDATE-NATURE
+DCR02      END-IF.
+
+DCR02 **---------------------------------------------------------------
+DCR02 ** DETERMINE WHAT'S BEEN ENTERED:  CODE OR DESCRIPTION
+DCR02 **---------------------------------------------------------------
+DCR02      IF  ARIBAPO-FOB(1:3) NOT = SPACE
+DCR02          IF ARIBAPO-FOB(4:16) NOT = SPACE
+DCR02             MOVE ARIBAPO-FOB        TO WS-ZFOB-FOB-DESC
+DCR02          ELSE
+DCR03             MOVE ARIBAPO-FOB(1:3)   TO WS-ZFOB-FOB-CODE
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02 **---------------------------------------------------------------
+DCR02 ** CALL FOB SUBROUTINE TO VALIDATE ENTRY AGAINST FILE MCFPPOFOB
+DCR02 ** RETURN ERROR FLAG - BLANK OR "E"
+DCR02 **---------------------------------------------------------------
+DCR02      PERFORM ZFOB-READK-FOBDSC     THRU ZFOB-READK-EXIT.
+DCR02      IF  ZFOB-FOB-VALIDATION-ERROR
+DCR02 ***     "FOB CODE IS INVALID OR DOES NOT EXIST"
+DCR02          MOVE WS-FOB-CODE-MSG2  TO MSG-TXT
+DCR02          MOVE ARIBAPO-FOB       TO MSG-FLD
+DCR02          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR02          SET  HEADER-IS-VALID-NO   TO TRUE
+DCR02          GO TO 62-EPH-X
+DCR02      END-IF.
+
+      *****************************************************************
+      *    MOVE ARIBAPO-FOB-CODE TO BUILD-FB-VALUE.
+      *    MOVE BUILD-FB-KEY TO PLT-ARG.
+      *    MOVE PLT-ARG               TO  WS-ZMPLT-KEY.
+      *    PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+      *    MOVE WS-ZMPLT-FILE-STATUS  TO  WS-FILE-STATUS.
+      *    MOVE WS-ZMPLT-PLTINFODTA TO MPLTINFO-DATA.
+      *    IF FS-RECORD-NOT-FOUND
+      *       "FOB CODE IS INVALID OR DOES NOT EXIST"
+      *        MOVE WS-FOB-CODE-MSG1  TO MSG-TXT
+      *        MOVE ARIBAPO-FOB-CODE  TO MSG-FLD
+      *        PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***      SET  HEADER-IS-VALID-NO   TO TRUE
+      *        GO TO 62-EPH-X
+      *    END-IF.
+
+      **********************
+      *                    *
+      *   VALIDATE NATURE  *
+      *   OF TRANSACTION   *
+      *                    *
+      **********************
+       62-VALIDATE-NATURE.
+
+      *@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+      *@@@ COMMENT OUT EEC RELATED CODE - SKIP THIS ROUTINE
+      *@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+           GO TO 62-EDIT-INVOICELESS.
+
+      *****IF EEC-MBR-SW = "N"
+      **       GO TO 62-EDIT-INVOICELESS
+      *    END-IF.
+
+      *    IF ARIBAPO-EEC-NATURE-TRANS = SPACES
+      *        MOVE WS-NATURE-MSG     TO MESSAGE-BUFFER
+      *        PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***      SET  HEADER-IS-VALID-NO   TO TRUE
+      *        GO TO 62-EPH-X
+      *    END-IF.
+
+      *    MOVE "EECNT " TO CVALID-CODE-TYPE.
+      *    MOVE ARIBAPO-EEC-NATURE-TRANS TO CVALID-CODE-KEY.
+      *    CALL "CVALID" USING BASE, STATUS-AREA,
+      *                        BU-DISPLAY-MSG, CVALID-PARMS.
+
+      *    IF BU-DISPLAY-MSG NOT = SPACES
+      *        MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+      *        PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***      SET  HEADER-IS-VALID-NO   TO TRUE
+      *        GO TO 62-EPH-X
+      *    END-IF.
+
+      *    IF CVALID-ERROR-CODE NOT = ZEROS
+      *        MOVE WS-NATURE-MSG     TO MESSAGE-BUFFER
+      *        PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+      ***      SET  HEADER-IS-VALID-YES  TO TRUE
+      *        GO TO 62-EPH-X
+      *    END-IF.
+
+      *    PERFORM 621-SET-EEC-PO THRU 621-SEP-X.
+      *    IF SVC-OK = "1" AND SEC-OK = "1"
+      *        MOVE "Y" TO EEC-PO-IND-SW
+      *    ELSE
+      *        MOVE SPACES TO EEC-PO-IND-SW
+      *    END-IF.
+      *****************************************************************
+
+       62-EDIT-INVOICELESS.
+
+           IF  ARIBAPO-INVOICELESS-IND NOT = SPACES
+           AND ARIBAPO-INVOICELESS-IND NOT =  "Y"
+      *        "ONLY ' ' AND 'Y' ARE VALID ENTRIES"
+               MOVE WS-INVLESS-MSG1   TO MSG-TXT
+               MOVE ARIBAPO-INVOICELESS-IND TO MSG-FLD
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               SET  HEADER-IS-VALID-NO   TO TRUE
+               GO TO 62-EPH-X
+           END-IF.
+
+           IF ARIBAPO-INVOICELESS-IND = "Y"
+               IF SEDIVNCK-INVLESS-IND = "Y"
+                   NEXT SENTENCE
+               ELSE
+      *            "P.O. CANNOT BE MADE INVOICELESS/VENDOR NOT"
+                   MOVE WS-INVLESS-MSG2   TO MSG-TXT
+                   MOVE SEDIVNCK-INVLESS-IND TO MSG-FLD
+                   PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+                   SET  HEADER-IS-VALID-NO   TO TRUE
+                   GO TO 62-EPH-X.
+
+DCR02  62-GOOD-HEADER.
+      *************************************
+      *                                   *
+      *   HEADER HAS BEEN VALIDATED       *
+      *   SO SET HEADER-VALID-SW TO 'Y'   *
+      *                                   *
+      *************************************
+
+           SET  HEADER-IS-VALID-YES        TO TRUE.
+
+       62-EPH-X.
+           EXIT.
+
+       621-SET-EEC-PO.
+           INITIALIZE SVC-OK, SEC-OK, SUB1
+           IF SAVE-EEC-COUNTRY = SAVE-VEN-COUNTRY
+               GO TO 621-SEP-X
+           END-IF.
+
+       621-SEP-LOOP.
+           ADD 1 TO SUB1.
+           IF SUB1 > 20
+               MOVE ZEROS TO SUB1
+               GO TO 621-SEP2-LOOP
+           END-IF.
+
+           IF EECL-CTRY (SUB1) = SPACES
+               GO TO 621-SEP-X
+           END-IF.
+
+           IF SAVE-VEN-COUNTRY = EECL-CTRY (SUB1)
+                MOVE "1" TO SVC-OK
+           END-IF.
+
+           IF SAVE-EEC-COUNTRY = EECL-CTRY (SUB1)
+               MOVE "1" TO SEC-OK
+           END-IF.
+
+           GO TO 621-SEP-LOOP.
+
+       621-SEP2-LOOP.
+
+           ADD 1 TO SUB1.
+           IF SUB1 > 20
+                GO TO 621-SEP-X
+           END-IF.
+
+           IF ECL2-CTRY (SUB1) = SPACES
+           IF SAVE-VEN-COUNTRY = ECL2-CTRY (SUB1)
+               MOVE "1" TO SVC-OK
+           END-IF.
+
+           IF SAVE-EEC-COUNTRY = ECL2-CTRY (SUB1)
+               MOVE "1" TO SEC-OK
+           END-IF.
+
+           GO TO 621-SEP2-LOOP.
+
+       621-SEP-X.
+           EXIT.
+
+DCR02******************************************************************
+DCR02**
+DCR02**  CHG\CNL HEADER EDITS
+DCR02**
+DCR02******************************************************************
+DCR02  62CC-EDIT-PO-HEADER.
+
+DCR02      IF  ARIBAPO-CSISPO-NUMBER = SPACE
+DCR02 ****   "CSIS PO NUMBER MISSNG"
+DCR02          MOVE  WS-CC-PO-NBR-MISSING-MSG  TO MSG-TXT
+DCR02          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR02          SET  HEADER-IS-VALID-NO   TO TRUE
+DCR02          GO TO 62CC-EXIT
+DCR02      END-IF.
+
+DCR02      MOVE "P"                   TO  PO-PREFIX.
+DCR02      MOVE ARIBAPO-CSISPO-NUMBER TO  PO-NO.
+DCR02      MOVE ZERO                  TO  PO-REL.
+DCR02      MOVE ZERO                  TO  PO-RCV.
+DCR02      MOVE BUILD-PO-SEARCH       TO  PO2-ARG  WS-Z000-PORCVNO.
+
+DCR02      PERFORM 9011-READK-DPORECD-NLOCK THRU 9011-READK-NL-EXIT.
+DCR02      IF  FS-RECORD-NOT-FOUND
+DCR02 ****   "PO HEADER(DPORECD) NOT FOUND"
+DCR02          MOVE  WS-CC-HDR-NFND-MSG    TO MSG-TXT
+DCR02          MOVE  BUILD-PO-SEARCH       TO MSG-FLD
+DCR02          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR02          SET  HEADER-IS-VALID-NO   TO TRUE
+DCR02          GO TO 62CC-EXIT
+DCR02      END-IF.
+
+DCR02  62CC-EXIT.
+DCR02       EXIT.
+
+      *****************************************************************
+      *
+      *  HERE IS WHERE WE TRY TO ADD ALL THE INFORMATION
+      *  TO ALL DATA SETS.  IF IT FAILS, FOR ANY REASON
+      *  WE EXIT.  WE ALSO GENERATE AND RETURN A 'CSIS'
+      *  PURCHASE ORDER NUMBER IF EVERYTHING IS 'OK'.
+      *
+      *****************************************************************
+
+       63-PROCESS-ARIBA-PO.
+
+      *****************************************************************
+      *
+      *   FIRST WE RETRIEVE THE NEXT CSIS PURCHASE
+      *   ORDER NUMBER BY CALLING 'CGENARIB'.
+      *
+      *****************************************************************
+           MOVE SPACE        TO  BUILD-PO-SEARCH
+                                 MESSAGE-BUFFER.
+
+           CALL "CGENARIB" USING BUILD-PO-SEARCH
+                                 MESSAGE-BUFFER.
+
+           IF MESSAGE-BUFFER NOT = SPACES
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               GO TO 63-PAP-X
+           END-IF.
+
+      *****************************************************************
+      *
+      *   NOW THAT WE HAVE THE NEW CSIS PO NUMBER,
+      *   ADD PURCHASE ORDER HEADER INFORMATION.
+      *   DATA SETS = 'MPORCV' AND 'DPORECD'
+      *
+      *****************************************************************
+
+      **********************
+      *                    *
+      *   BUILD MPORCV     *
+      *                    *
+      **********************
+
+       63-BUILD-MPORCV.
+
+           SET SUCCESS-FLAG-RESET    TO TRUE.
+
+           INITIALIZE BUF-MPORCV.
+           MOVE BUILD-PO-SEARCH TO M-PO-RCV-NO.
+           PERFORM 9002-WRITE-MPORCV   THRU 9002-WRITE-EXIT.
+           IF FS-ANY-FILE-ERROR
+               MOVE "MPORCV WRITE ERROR"   TO MSG-TXT
+               MOVE BUILD-PO-SEARCH TO MSG-FLD
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               GO TO 63-PAP-X
+           END-IF.
+
+      **********************
+      *                    *
+      *   BUILD DPORECD    *
+      *                    *
+      **********************
+       63-BUILD-DPORECD.
+
+           INITIALIZE BUF-DPORECD.
+
+DCR01      PERFORM 8000-GET-DATE-TIME    THRU 8000-GDT-EXIT.
+
+           MOVE BUILD-PO-SEARCH      TO PO-RCV-NO.
+           MOVE ARIBAPO-REQ-NUMBER   TO PO-REQ-NUMBER.
+           MOVE ARIBAPO-REC-DEPT     TO PO-RCV-DEPT.
+           MOVE ARIBAPO-FOR-DEPT     TO PO-FOR-DEPT.
+           MOVE ARIBAPO-ORDER-DATE   TO PO-DATE-CN.
+           MOVE ARIBAPO-SHIP-DATE    TO PO-SHIP-DATE-CN.
+           MOVE ARIBAPO-EXPECT-DATE  TO PO-EXPECT-DATE-CN.
+********** MOVE ARIBAPO-ACCT-CLASS   TO PO-ACCTG-INFO.
+DP         MOVE SPACES               TO PO-ACCTG-INFO.
+DP         MOVE ARIBAPO-COMPANY      TO PO-CO.
+DP         MOVE ARIBAPO-PRIME        TO PO-PRIME.
+DP         MOVE ARIBAPO-SUB          TO PO-SUB.
+DP         MOVE ARIBAPO-SUB-DETL     TO PO-SUB-DET.
+DP         MOVE ARIBAPO-ADDL-DATA    TO PO-ADDL-DATA.
+***********************************************************************
+           MOVE ARIBAPO-NOCHK-IND    TO PO-NO-CHECK-INDIC.
+           MOVE EEC-PO-IND-SW        TO PO-EEC-PO-INDIC.
+           MOVE ARIBAPO-BUDGET-NO    TO PO-BUDGET-NUMBER.
+           MOVE ARIBAPO-BUDGET-AMT   TO PO-BUDGET-AMT.
+           MOVE ARIBAPO-FREIGHT-TERMS TO PO-FREIGHT-TERMS.
+           MOVE ARIBAPO-POTERMS-PCT  TO PO-TERMS-PCT.
+           MOVE ARIBAPO-POTERMS-DUE  TO PO-TERMS-DUE-DATE.
+           MOVE ARIBAPO-BUYER-NAME   TO PO-BUYER-TYP.
+           MOVE ARIBAPO-VIA          TO PO-VIA.
+           MOVE ARIBAPO-FOB          TO PO-FOB.
+           MOVE ARIBAPO-VENDOR-CODE  TO PO-VEN-CODE.
+           MOVE ARIBAPO-BUYER-CODE   TO PO-BUYER-CODE.
+           MOVE ARIBAPO-ALT-REMIT    TO PO-ALT-REMIT-INDIC.
+           MOVE ARIBAPO-CURRENCY-CODE    TO PO-CURRENCY-CODE.
+WRF01      IF ARIBAPO-INVOICELESS-IND = "Y"
+WRF01          MOVE "X" TO PO-INVOICELESS-IND
+WRF01      ELSE
+WRF01          MOVE SPACES TO PO-INVOICELESS-IND
+WRF01      END-IF.
+WRF01 *****MOVE ARIBAPO-INVOICELESS-IND  TO PO-INVOICELESS-IND.
+           MOVE ARIBAPO-EEC-NATURE-TRANS TO PO-EEC-NATURE-TRANS.
+           MOVE ARIBAPO-EEC-PORT-AIRPORT TO PO-EEC-PORT-AIRPORT.
+           MOVE ARIBAPO-NON-RECV-IND TO PO-NON-RCV-INDIC.
+           MOVE ARIBAPO-INTERNAL-ORD TO PO-INTERNAL-ORDER-INDIC.
+DCR01 ***===========================
+DCR01      MOVE WS-SYSTEM-DATE2-YMD  TO  PO-PRFAX-DATE.
+DCR01 ***===========================
+           PERFORM 9011-WRITE-DPORECD  THRU 9011-WRITE-EXIT.
+           IF FS-ANY-FILE-ERROR
+               MOVE "DPORECD WRITE ERROR"  TO MSG-TXT
+               MOVE BUILD-PO-SEARCH TO MSG-FLD
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               GO TO 63-PAP-X
+           END-IF.
+
+      *****************************************************************
+      *
+      *    CREATE TC 360
+      *
+      *****************************************************************
+           MOVE "360" TO STC360-TC.
+           CALL "STC360" USING BASE,
+                               SAVE-COMPANY,
+                               STC360-TC,
+                               BUF-DPORECD,
+                               STATUS-AREA,
+                               BU-DISPLAY-MSG,
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               GO TO 63-PAP-X
+           END-IF.
+
+      *****************************************************************
+      *
+      *   NOW THAT WE HAVE PROCESSED THE PURCHASE
+      *   ORDER HEADER INFORMATION SUCCESSFULLY,
+      *   WE NOW PROCESS THE INDIVIDUAL ITEMS.
+      *
+      *****************************************************************
+
+           PERFORM 631-UPDATE-ITEM-DATA THRU 631-UID-X
+                   VARYING SUB FROM 1 BY 1
+                     UNTIL SUB > ITEM-CNT.
+
+       63-PAP-X.
+           EXIT.
+
+      *****************************************************************
+      *
+      *  UPDATE PROCEDURE FOR ITEMS
+      *
+      *****************************************************************
+
+       631-UPDATE-ITEM-DATA.
+           INITIALIZE BUF-ARIBAPO-DETAIL, BUF-MREQ,
+                      BUF-DPODATAITM, BUF-DPOITEM,
+                      BUF-DDAILYTC,
+                      REQLINK-PARMS, SPOMSTRM-PARMS,
+                      STC320-PARMS, SVENPRC-PARMS.
+           MOVE ARIBAPO-ITEM (SUB) TO BUF-ARIBAPO-DETAIL.
+           IF ARIBAITM-CORP-CODE = WS-NON-STOREROOM
+               GO TO 631-ADD-DPOITEM
+           END-IF.
+
+       631-UPDATE-MSTORERM.
+           MOVE SAVE-COMPANY TO SPOMSTRM-COMPANY-SAVE.
+           MOVE ARIBAITM-QTY-ORDERED TO SPOMSTRM-QTY.
+           MOVE ARIBAITM-UNIT-MEASURE TO SPOMSTRM-QTY-UM.
+           MOVE ARIBAITM-UNIT-PRICE TO SPOMSTRM-PRICE.
+           MOVE ARIBAITM-PRICE-UM TO SPOMSTRM-PRICE-UM.
+           MOVE PO-NO TO SPOMSTRM-PO-NUM.
+           MOVE PO-REL TO SPOMSTRM-PO-RLSE.
+           MOVE VEN-ARG TO SPOMSTRM-VEN-CODE.
+           MOVE ARIBAPO-CURRENCY-CODE TO SPOMSTRM-CUR-CODE.
+           CALL "SPOMSTRM" USING BASE,
+                                 ARIBAITM-CORP-CODE,
+                                 SPOMSTRM-PARMS,
+                                 ZBILL-PO-SW,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               MOVE 999 TO SUB
+               GO TO 631-UID-X
+           END-IF.
+
+       631-ADD-DPOITEM.
+
+           IF ARIBAITM-CORP-CODE = WS-NON-STOREROOM
+               MOVE WS-NON-STOREROOM  TO  ITM-CORP-CODE
+           ELSE
+               MOVE ARIBAITM-CORP-CODE TO ITM-CORP-CODE
+           END-IF.
+
+           MOVE SPACES               TO  ITM-CHAT-NO,
+                                         ITM-MASTER-STOCK.
+           MOVE ZEROS                TO  ITM-QTY-DLVR,
+                                         ITM-QTY-STORED,
+                                         ITM-QTY-PAID,
+                                         ITM-WT,
+                                         ITM-KELLY-PO-QTY,
+                                         ITM-ZBILL-VALUE.
+           MOVE ARIBAITM-ITEM-NUMBER TO ITM-NUMBER.
+           MOVE ARIBAITM-UNIT-MEASURE TO ITM-UM.
+           MOVE ARIBAITM-QTY-ORDERED TO ITM-QTY-ORD.
+           MOVE ARIBAITM-PRICE-UM TO ITM-PRICE-UM.
+           MOVE ARIBAITM-UNIT-PRICE TO ITM-UNIT-PRICE.
+           MOVE ARIBAITM-CLASS       TO  ITM-CLASS.
+           MOVE ARIBAITM-SUB-DETL    TO  ITM-SUB-DETL.
+           MOVE ARIBAITM-ADDTL-DATA  TO  ITM-ADDL-DATA.
+           MOVE ARIBAITM-TAX-CODE    TO  ITM-TAX-CODE.
+           MOVE ARIBAITM-STD-INST-TABLE TO ITM-STD-INST.
+           MOVE ARIBAITM-RCV-INST-TABLE TO ITM-RCV-STD-INST.
+           MOVE ARIBAITM-SECONDARY-LANG TO ITM-SECOND-DESC-INDIC.
+           MOVE BUILD-PO-SEARCH      TO  ITM-PO-RCV-NO.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE ARIBAITM-COMPANY TO  ITM-COMPANY
+               MOVE ARIBAITM-PRIME   TO  ITM-PRIME
+           END-IF.
+
+      **** IF EEC-MBR-SW = "Y"
+      ****     MOVE ARIBAITM-EEC-CNTRY-ORIGIN TO
+      ****          ITM-EEC-CNTRY-ORIGIN
+      ****     MOVE ARIBAITM-EEC-COMM-CODE TO
+      ****          ITM-EEC-COMM-CODE
+      **** END-IF.
+
+           PERFORM 9010-WRITE-DPOITEM  THRU 9010-WRITE-EXIT.
+           IF FS-ANY-FILE-ERROR
+               MOVE "DPOITEM WRITE ERROR" TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               MOVE 999 TO SUB
+               GO TO 631-UID-X
+           END-IF.
+
+      **********************
+      *                    *
+      *  CUT ITEM TC "320" *
+      *                    *
+      **********************
+       631-CALL-STC320.
+           MOVE SAVE-COMPANY            TO  STC320-COMPANY-SAVE.
+           MOVE "20"                    TO  STC320-ITEM-TC-ID.
+
+           IF ARIBAITM-CORP-CODE = WS-NON-STOREROOM
+               MOVE ARIBAITM-QTY-ORDERED TO STC320-QTY
+               MOVE ARIBAITM-UNIT-PRICE  TO STC320-PRICE
+           ELSE
+               MOVE SPOMSTRM-STR-QTY    TO  STC320-QTY
+               MOVE SPOMSTRM-STR-PRICE  TO  STC320-PRICE
+           END-IF.
+
+           IF ARIBAITM-CORP-CODE = WS-NON-STOREROOM
+               MOVE ARIBAITM-UNIT-MEASURE TO STC320-QTY-UM
+               MOVE ARIBAITM-PRICE-UM   TO  STC320-PRICE-UM
+           ELSE
+               MOVE SPOMSTRM-STR-UM     TO  STC320-QTY-UM,
+                                            STC320-PRICE-UM.
+           MOVE ARIBAITM-ITEM-NUMBER    TO  STC320-ITEM.
+           MOVE BUILD-PO-SEARCH         TO  STC320-PO-NUM.
+           MOVE ARIBAITM-CORP-CODE      TO  STC320-CODE.
+           MOVE ARIBAPO-BUDGET-NO       TO  STC320-BUDGET-NO.
+           MOVE ARIBAITM-REQ-NUMBER     TO  STC320-REQ-NO.
+           MOVE ITM-CLASS               TO  STC320-SUB.
+           MOVE ITM-SUB-DETL            TO  STC320-SUBD.
+           MOVE ITM-ADDL-DATA           TO  STC320-ADDTL-DATA.
+           MOVE ARIBAITM-TAX-CODE       TO  STC320-TAX-CODE.
+           MOVE ZEROS                   TO  STC320-OLD-BUDGET-AMT.
+           MOVE ARIBAPO-CURRENCY-CODE   TO  STC320-CUR-CODE.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE ARIBAITM-COMPANY    TO  STC320-COMPANY
+               MOVE ARIBAITM-PRIME      TO  STC320-PRIME.
+           CALL "STC320" USING BASE,
+                               STC320-PARMS,
+                               STATUS-AREA,
+                               BU-DISPLAY-MSG,
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               MOVE 999 TO SUB
+               GO TO 631-UID-X
+           END-IF.
+
+DCR05 *****************************************************************
+DCR05 **          EDIT THE REQ# AND LINK IT TO THE PO
+DCR05 *****************************************************************
+
+DCR05 *****************************************************************
+DCR05 **  ------ 01-07-2004 - REQ# ADDED TO ARIBAITM RECORD -------
+DCR05 **  IF THE REQ# PUSHED DOWN IS VALID
+DCR05 **     THEN LINK THE REQ TO PO USING REQ# FROM ARIBAITM RECORD
+DCR05 *****************************************************************
+DCR05      MOVE ARIBAITM-REQ-NUMBER TO REQ-ARG.
+DCR05      PERFORM 9006-READK-MREQ        THRU 9006-READK-EXIT.
+DCR05      IF  FS-GOOD-FILE-IO
+DCR05          MOVE BUILD-PO-SEARCH TO REQLINK-PO-NUM
+DCR05          MOVE VEN-ARG TO REQLINK-VEN-CODE
+DCR05          MOVE REQ-ARG TO REQLINK-REQ-NO
+DCR05          MOVE ARIBAITM-ITEM-NUMBER TO REQLINK-PO-ITEM-NO
+DCR05          MOVE "N"     TO REQLINK-BLOWUP-SW
+DCR05          MOVE SPACE   TO REQLINK-MESSAGE
+DCR05          CALL "SREQLINK" USING BASE,
+DCR05                                REQLINK-PARMS
+DCR05          IF REQLINK-MESSAGE NOT = SPACES
+DCR05             MOVE REQLINK-MESSAGE TO MESSAGE-BUFFER
+DCR05             PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR05          END-IF
+DCR05      END-IF.
+DCR05 *****************************************************************
+
+
+           MOVE "N"                 TO  TC370-CUT-SW.
+DCR08      PERFORM 631-CUT-TC370    THRU 631-CT370-X.
+
+           IF ARIBAITM-CORP-CODE = WS-NON-STOREROOM
+               GO TO 631-ADD-DPODATAITM-BEGIN
+           END-IF.
+
+      *****************************************************************
+      **  CALL 'SVENPRC' TO UPDATE LAST PO PRICE FOR THAT
+      **  VENDOR IN DVENDITM.
+      *****************************************************************
+
+       631-UPDATE-VENDOR-PRICE.
+
+           PERFORM 8000-GET-DATE-TIME    THRU 8000-GDT-EXIT.
+
+           MOVE "U"                     TO  SVENPRC-FLAG.
+           MOVE CODE-ARG                TO  SVENPRC-CODE.
+           MOVE VEN-ARG                 TO  SVENPRC-VEN-CODE.
+           MOVE ITM-UNIT-PRICE          TO  SVENPRC-PRICE.
+           MOVE ITM-PRICE-UM            TO  SVENPRC-PRICE-UM.
+           MOVE WS-SYSTEM-DATE2-YMD     TO  SVENPRC-PO-DATE.
+           CALL "SVENPRC" USING BASE,
+                                SVENPRC-PARMS,
+                                STATUS-AREA,
+                                BU-DISPLAY-MSG,
+                                BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               MOVE 999 TO SUB
+               GO TO 631-UID-X
+           END-IF.
+
+      **********************
+      *                    *
+      *   BUILD DPODATAITM *
+      *                    *
+      **********************
+
+       631-ADD-DPODATAITM-BEGIN.
+
+DCR08 *-------------------------------------------------------------
+DCR08 *    MOVED JUST ABOVE   631-UPDATE-VENDOR-PRICE
+DCR08 *    IF  ARIBAITM-CORP-CODE =  WS-NON-STOREROOM
+DCR08 *    AND TC370-NOT-CUT
+DCR08 *        PERFORM 631-CUT-TC370 THRU 631-CT370-X
+DCR08 *    END-IF.
+DCR08 *-------------------------------------------------------------
+
+           IF  SUCCESS-NO
+           OR  DSC-RECORDS-NO
+               GO TO 631-UID-X
+           END-IF.
+
+DCR08      SET SUCCESS-YES   TO TRUE.
+
+DCR08      MOVE ARIBAITM-ITEM-NUMBER TO DSUB1.
+DCR08      MOVE ZERO                 TO DSUB2.
+
+       631-ADD-DPODATAITM.
+
+           ADD  1                    TO DSUB2.
+DCR08 * PROCESS TILL THE SUB > ARRAY MAXX OR 99
+DCR08      IF  DSUB2 > DSUB2-MAXX
+DCR08          GO TO 631-UID-X
+DCR08      END-IF.
+
+DCR08 * PROCESS TILL THE 1ST ARRAY ELEMENT = SPACE
+DCR08      IF  TAB-ARIBADSC-RECRD(DSUB1 DSUB2) = SPACE
+DCR08          GO TO 631-UID-X
+DCR08      END-IF.
+
+DCR08 * PROCESS TILL THE ITEM NUMBER CHANGES
+DCR08      MOVE TAB-ARIBADSC-RECRD(DSUB1 DSUB2) TO BUF-ARIBAPO-DESC.
+DCR08      IF  ARIBAITM-ITEM-NUMBER NOT = ARIBADSC-ITEM-NUMBER
+DCR08          GO TO 631-ADD-DPODATAITM
+DCR08      END-IF.
+
+DCR08 * DON'T LOAD BLANK DESCRIPTION FIELD
+DCR08      IF  ARIBADSC-ITEM-DESC = SPACE
+DCR08          GO TO 631-ADD-DPODATAITM
+DCR08      END-IF.
+
+
+DCR08 * ==============================================================
+DCR08 * PARSE OUT MANUFACTURER DATA ON 1ST SEQ#
+DCR08 * DELIMITED BY = ' : :'  AND NO DESC = ': : ::'
+DCR08 * ==============================================================
+DCR08      IF  ARIBADSC-ITEM-SEQNO = 01
+DCR08          MOVE SPACE TO WS-MANUF-DATA
+DCR08          IF  ARIBADSC-ITEM-DESC(1:6) = WS-NO-DESC-DATA
+DCR08              MOVE WS-UNKNOWN-NAME-MSG  TO WS-MFG-NAME
+DCR08          ELSE
+DCR08              UNSTRING ARIBADSC-ITEM-DESC DELIMITED BY WS-DLIM1
+DCR08                       INTO WS-MFG-NAME  WS-MFG-PARTNO
+DCR08              IF  WS-MFG-NAME = SPACE
+DCR08                  MOVE WS-UNKNOWN-NAME-MSG  TO WS-MFG-NAME
+DCR08              END-IF
+DCR08          END-IF
+DCR08          MOVE WS-MANUF-DATA    TO ARIBADSC-ITEM-DESC
+DCR08      END-IF.
+
+
+           MOVE BUILD-PO-SEARCH      TO DATAITM-PO-RCV-NO.
+           MOVE ARIBAITM-ITEM-NUMBER TO DATAITM-ITEM-NO.
+DCR08      MOVE ARIBADSC-ITEM-SEQNO  TO DATAITM-LINE-NO.
+DCR08      MOVE ARIBADSC-ITEM-DESC   TO DATAITM-INFO.
+
+           PERFORM 9012-WRITE-DPODATA  THRU 9012-WRITE-EXIT.
+           IF FS-ANY-FILE-ERROR
+               MOVE "DPODATA WRITE ERROR" TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               MOVE 999 TO SUB
+               GO TO 631-UID-X
+           END-IF.
+
+      *************************************
+      *   EVERYTHING HAS BEEN SUCCESSFUL  *
+      *   SO SET SUCCESS-SW   TO 'S'      *
+      *************************************
+           SET SUCCESS-YES   TO TRUE.
+
+DCR08 *---------------------------------------------------------------
+DCR08 * CODED ITEMS   --  THE FULL ITEM DESC COMES FROM DDESC SO ONLY
+DCR08 *                   WRITE THE 1ST ARRAY ELEMENT TO DPODTAITM
+DCR08 *                   (1ST ELEMENT = MFG NAME AND MFG PARTNO)
+DCR08 *            E L S E
+DCR08 * NON CODED ITEMS - THERE IS NO STORED DESC FOR NON CODED ITEMS
+DCR08 *                   SO WRITE ALL DESC ARRAY ELEMNTS TO DPODTAITM
+DCR08 *                   FOR THIS ITEM
+DCR08 *---------------------------------------------------------------
+DCR08      IF  ARIBAITM-CORP-CODE  = WS-NON-STOREROOM
+DCR08          GO TO 631-ADD-DPODATAITM
+DCR08      END-IF.
+
+       631-UID-X.
+           EXIT.
+
+       631-CUT-TC370.
+
+      ** GET DATE/TIME STAMP
+           PERFORM 8000-GET-DATE-TIME    THRU 8000-GDT-EXIT.
+
+           MOVE "Y"                     TO  TC370-CUT-SW.
+           MOVE WS-SYSTEM-DATE2-YMD     TO  DDAILYTC-DATE.
+           MOVE WS-SYSTEM-TIME2         TO  DDAILYTC-TIME.
+           MOVE SAVE-COMPANY            TO  DDAILYTC-PLT.
+           MOVE "370"                   TO  DDAILYTC-TC.
+           MOVE BUILD-PO-SEARCH         TO  TC370-PO-RLS.
+           MOVE ARIBAITM-ITEM-NUMBER    TO  TC370-ITEM-NO.
+           MOVE "01"                    TO  TC370-LINE-NO.
+           MOVE "THIS PURCHASE ORDER WAS CREATED IN ARIBA BUYER"
+                TO TC370-NONCODED-DESC.
+
+           PERFORM 9013-WRITE-DDAILYTC THRU 9013-WRITE-EXIT.
+           IF FS-ANY-FILE-ERROR
+               MOVE "WRITE ERROR DDAILYTC" TO MESSAGE-BUFFER
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               MOVE 999 TO SUB
+               GO TO 631-CT370-X
+           END-IF.
+
+       631-CT370-X.
+           EXIT.
+
+      *****************************************************************
+      *
+      *    ROUTINE TO BACK OUT ALL INFORMATION
+      *    FOR THIS PURCHASE ORDER - REASON: FAILED
+      *
+      *****************************************************************
+
+       66-BACK-OUT-PO.
+           MOVE BUILD-PO-SEARCH TO PO2-ARG.
+           CALL "CARIBDEL" USING BASE,
+                                 PO2-ARG,
+                                 SAVE-COMPANY,
+                                 BU-DISPLAY-MSG.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE BU-DISPLAY-MSG TO MSG-TXT
+               MOVE BUILD-PO-SEARCH TO MSG-FLD
+               SET SUCCESS-NO    TO TRUE
+               PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+               GO TO 66-BOP-X
+           END-IF.
+
+       66-BOP-X.
+           EXIT.
+
+DCR02 *$##############################################################*
+DCR02 *
+DCR02 * PO CHANGE/CANCEL SUBROUTINES:
+DCR02 *
+DCR02 *      1)  PO CHANGE SUBROUTINES
+DCR02 *          A)  CC100-PO-CHANGE
+DCR02 *          B)  CC110-PO-CHANGE-HDR
+DCR02 *          C)  CC120-PO-CHANGE-DTL
+DCR02 *
+DCR02 *      2)  PO CANCEL SUBROUTINE
+DCR02 *          A)  CC200-PO-CANCEL
+DCR02 *
+DCR02 *      3)  COMMON SUBROUTINES
+DCR02 *          A)  CC901-CALL-SPOTRACK
+DCR02 *          B)  CC902-CALL-SCOMPPO
+DCR02 *
+DCR02 *$##############################################################*
+
+DCR02 *****************************************************************
+DCR02 * PO CHANGE PROCESSING
+DCR02 *****************************************************************
+DCR02  CC100-PO-CHANGE.
+
+DCR02      SET PO-NO-CHG-YES      TO TRUE.
+DCR02 *****************************************************************
+DCR02 **                 --- NOTE ---
+DCR02 **
+DCR02 **   WS-PO-CHANGE-SW SETTINGS ARE USED TO DETERMINE
+DCR02 **   WHAT MESSAGE GOES OUT TO RESULTS FILE:
+DCR02 **
+DCR02 **   ==>  PO-NO-CHG-YES   = INITIAL VALUE
+DCR02 **   ==>  PO-HDR-CHG-YES  = PO HEADER DATA CHG'D
+DCR02 **   ==>  PO-ITM-CHG-YES  = PO LINE DATA CHG'D
+DCR02 **   ==>  PO-BTH-CHG-YES  = BOTH HEADER & LINE DATA CHG'D
+DCR02 *****************************************************************
+
+DCR02 *==  @@ RECORD TYPE "3"  ==>  HEADER DATA CHANGE REQUEST
+DCR02      IF  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(1:1) = "3"
+DCR02          PERFORM CC110-PO-CHANGE-HDR  THRU CC110-EXIT
+DCR02      END-IF.
+
+
+DCR02      MOVE ZERO              TO SUB.
+DCR02      PERFORM CC120-PO-CHANGE-DTL    THRU CC120-EXIT
+DCR02              VARYING SUB FROM 1 BY 1
+DCR02              UNTIL SUB > ITEM-CNT.
+
+DCR02 *================================================================
+DCR02 *==  @@ CHECK PO CHANGE SW TO DETERMINE WHICH MSG TO DISPLAY
+DCR02 *================================================================
+DCR02      IF  PO-HDR-WAS-CHGD-YES
+DCR02          MOVE WS-CC-HDR-CHG-MSG  TO MESSAGE-BUFFER
+DCR02      ELSE
+DCR02          IF  PO-ITM-WAS-CHGD-YES
+DCR02              MOVE WS-CC-ITM-CHG-MSG  TO MESSAGE-BUFFER
+DCR02          ELSE
+DCR02              IF  PO-BOTH-CHGD-YES
+DCR02                  MOVE WS-CC-BTH-CHG-MSG  TO MESSAGE-BUFFER
+DCR02              END-IF
+DCR02          END-IF
+DCR02      END-IF.
+
+
+DCR02 *==  WRITE SUCCESS RECORD TO RESULTS FILE
+DCR02      SET SUCCESS-YES    TO TRUE.
+DCR02      PERFORM 998-ARIBA-LOG-RESULTS   THRU 998-ALR-X.
+
+DCR02 *==  LOG PO CHANGE TO PO UPD LOGGING FILES
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          IF  BUILD-PO-SEARCH  NOT = WS-Z000-LAST-PO-LOGGED
+DCR02              MOVE BUILD-PO-SEARCH   TO WS-Z000-LAST-PO-LOGGED
+DCR02              PERFORM Z998-UPDATE-PO-LOG THRU Z998-UPD-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02  CC100-EXIT.
+DCR02      EXIT.
+
+DCR02 *****************************************************************
+DCR02 * PROCESS A PO FOR CHANGED HEADER DATA
+DCR02 * CURRENT FIELDS THAT CAN BE MODIFIED ARE:
+DCR02 *   @@ ACCOUNTING DATA
+DCR02 *   @@ FREIGHT TERMS
+DCR02 *****************************************************************
+DCR02  CC110-PO-CHANGE-HDR.
+
+DCR02      SET  HDR-CHANGED-NO   TO TRUE.
+
+DCR02 *=  SKIP THIS RECORD IF IT HAS NOT BEEN CHANGED
+DCR02      IF  ARIBAPO-REC-IND OF BUF-ARIBAPO-HEADER(2:1) NOT = "C"
+DCR02          GO TO CC110-EXIT
+DCR02      END-IF.
+
+DCR02      SET  HDR-CHANGED-YES  TO TRUE.
+
+DCR02 *==  @@ RETRIEVE DPORECD
+DCR02      PERFORM 9011-READK-DPORECD  THRU 9011-READK-EXIT.
+
+DCR02 *  @@ THESE FIELDS CAN BE CHANGED
+DCR02      MOVE ARIBAPO-FREIGHT-TERMS TO PO-FREIGHT-TERMS.
+DCR02      MOVE ARIBAPO-FOB           TO PO-FOB.
+DCR02      MOVE ARIBAPO-EXPECT-DATE   TO PO-EXPECT-DATE-CN.
+
+DCR02      PERFORM 9011-REWRT-DPORECD  THRU 9011-REWRT-EXIT.
+
+DCR07      PERFORM CC111-CREATE-TC-TRANS-361 THRU CC111-EXIT.
+
+DCR02      SET  PO-HDR-WAS-CHGD-YES   TO TRUE.
+
+DCR02  CC110-EXIT.
+DCR02      EXIT.
+
+DCR07 *****************************************************************
+DCR07 * CALL STC360 TO CREATE A TC 361 TRANSACTION - HEADER CHANGE
+DCR07 *****************************************************************
+DCR07  CC111-CREATE-TC-TRANS-361.
+
+           MOVE SPACE            TO BU-DISPLAY-MSG.
+DCR07      MOVE "361" TO STC360-TC.
+DCR07      CALL "STC360" USING BASE
+DCR07                          SAVE-COMPANY
+DCR07                          STC360-TC
+DCR07                          BUF-DPORECD
+DCR07                          STATUS-AREA
+DCR07                          BU-DISPLAY-MSG
+DCR07                          BU-DISPLAY-FLDS.
+
+DCR07      IF BU-DISPLAY-MSG NOT = SPACES
+DCR07          MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+DCR07          SET SUCCESS-NO    TO TRUE
+DCR07          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR07          GO TO CC111-EXIT
+DCR07      END-IF.
+
+DCR07  CC111-EXIT.
+DCR07      EXIT.
+
+DCR07 *****************************************************************
+DCR02 * PROCESS PO LINE ITEM CHANGE
+DCR02 *  @@ THESE FIELDS CAN BE CHANGED:
+DCR02 *     PRICE/QTY/DESCRIPTION/UOMS/ACCTG DTA/TAXCODE
+DCR02 *****************************************************************
+DCR02  CC120-PO-CHANGE-DTL.
+
+DCR02      SET ITM-CHANGED-NO   TO TRUE.
+DCR02      SET QTY-PRICE-CHG-NO TO TRUE.
+DCR07      MOVE ZERO             TO  WS-OLD-BUDGET-AMT.
+
+DCR02 *================================================================
+DCR02 *=  SKIP THIS RECORD IF IT HAS NOT BEEN CHANGED
+DCR02 *================================================================
+DCR02      MOVE ARIBAPO-ITEM(SUB) TO BUF-ARIBAPO-DETAIL.
+DCR02      IF  ARIBAITM-REC-IND OF BUF-ARIBAPO-DETAIL(2:1) NOT = "C"
+DCR02          GO TO CC120-EXIT
+DCR02      END-IF.
+
+DCR02      SET ITM-CHANGED-YES    TO TRUE.
+DCR07 *==  @@ RE-RETRIEVE HEADER W/NO LOCK OPTION
+DCR07      PERFORM 9011-READK-DPORECD-NLOCK THRU 9011-READK-NL-EXIT.
+
+DCR02 *==  @@ RETRIEVE LINE ITEM RECORD
+DCR02      PERFORM 9010-READK-DPOITEM  THRU 9010-READK-EXIT.
+
+DCR07 *==  @@ RETRIEVE ITEM STOREROOM RECORD
+DCR07      PERFORM 9015-READK-MSTOREROOM THRU 9015-READK-EXIT.
+
+DCR02 *----------------------------------------------------------------
+DCR02 *  @@ ONLY THESE FIELDS CAN BE CHANGED:
+DCR02 *  @@   ITEM DESC, QTY, PRICE, QTY UOM, PRICE UOM, ACCTG DATA
+DCR02 *  @@   TAX CODE
+DCR02 *----------------------------------------------------------------
+
+DCR07 *=@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+DCR07 *==  AT THIS POINT NOTHING HAS BEEN CHANGED
+DCR07 *=@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+DCR08      MOVE SUB  TO DSUB1.
+DCR08      MOVE ZERO TO DSUB2.
+DCR08      PERFORM CC128-PROCESS-ITEM-DESC THRU CC128-EXIT
+DCR08              VARYING DSUB2 FROM 1 BY 1
+DCR08              UNTIL DSUB2 > DSUB2-MAXX.
+
+
+DCR07 *================================================================
+DCR07 *==  @@ IF THERE HAS BEEN A QTY OR PRICE CHANGE
+DCR07 *==     1) UPDATE STOREROOM LAST PRICE
+DCR07 *==     2) UPDATE VENDOR  LAST PRICE
+DCR07 *==     3) CALC OLD BUDGET AMOUNT(PER EACH LINE, NOT HDR VALUE)
+DCR07 *==        (LINE ITEM AMOUNT - USE "ITM-" FLDS NOT "ARIBAITM-")
+DCR07 *================================================================
+DCR07      IF  ARIBAITM-QTY-ORDERED NOT = ITM-QTY-ORD
+DCR07          PERFORM CC124-PROCESS-MSTORE-VENDR THRU CC124-EXIT
+DCR07      ELSE
+DCR07          IF  ARIBAITM-UNIT-PRICE  NOT = ITM-UNIT-PRICE
+DCR07              PERFORM CC124-PROCESS-MSTORE-VENDR THRU CC124-EXIT
+DCR07          END-IF
+DCR07      END-IF.
+
+DCR02 *==  @@ TAX CODE
+DCR02      MOVE ARIBAITM-TAX-CODE TO ITM-TAX-CODE.
+
+DCR02 *==  @@ ACCOUNTING DATA
+DCR02      MOVE ARIBAITM-COMPANY  TO ITM-COMPANY.
+DCR02      MOVE ARIBAITM-PRIME    TO ITM-PRIME.
+DCR02      MOVE ARIBAITM-SUB      TO ITM-CLASS(1:3).
+DCR02      MOVE ARIBAITM-ADDTL-DATA TO ITM-ADDL-DATA.
+DCR02      MOVE ARIBAITM-SUB-DETL TO ITM-SUB-DETL.
+
+DCR02 *==  @@ UOMS
+DCR02      MOVE ARIBAITM-PRICE-UM TO ITM-PRICE-UM.
+DCR02      MOVE ARIBAITM-UNIT-MEASURE TO ITM-UM.
+
+DCR02 *==  @@ CHECK FOR ORDER QTY CHANGE
+DCR02      MOVE ARIBAITM-QTY-ORDERED TO WS-NEW-QTY-ORDERD.
+DCR02      MOVE ITM-QTY-ORD          TO WS-OLD-QTY-ORDERD.
+DCR02      IF  ARIBAITM-QTY-ORDERED NOT = ITM-QTY-ORD
+DCR02          MOVE ARIBAITM-QTY-ORDERED TO ITM-QTY-ORD
+DCR02      END-IF.
+
+DCR02 *==  @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+DCR02 *==  @@ IF CANCELING THE LINE(NEW QTY-ORD = 0) AFTER RECEIPT
+DCR02 *==  @@    SET QTY-ORDERD = QTY-DELIVERD
+DCR02 *==  @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+DCR02      IF  ARIBAITM-QTY-ORDERED  = ZERO
+DCR02      AND ITM-QTY-DLVR          > ZERO
+DCR02          MOVE ITM-QTY-DLVR  TO ITM-QTY-ORD  WS-NEW-QTY-ORDERD
+DCR02      END-IF.
+
+
+DCR02 *==  @@ CHECK FOR UNIT PRICE CHANGE
+DCR02      MOVE ARIBAITM-UNIT-PRICE  TO WS-NEW-UNIT-PRICE.
+DCR02      MOVE ITM-UNIT-PRICE       TO WS-OLD-UNIT-PRICE.
+DCR02      IF  ARIBAITM-UNIT-PRICE  NOT = ITM-UNIT-PRICE
+DCR02          MOVE ARIBAITM-UNIT-PRICE TO ITM-UNIT-PRICE
+DCR02      END-IF.
+
+DCR02 *================================================================
+DCR02 *==  CALL SPOTRACK TO WRITE AUDIT TRAIL OF QTY & PRICE CHANGES
+DCR02 *================================================================
+DCR02      IF  QTY-PRICE-CHG-YES
+DCR02          PERFORM CC901-CALL-SPOTRACK   THRU CC901-EXIT
+DCR07          PERFORM CC122-CREATE-TC-TRANS-321 THRU CC122-EXIT
+DCR07          IF  STC320-BUDGET-AMT-NET-CHG NOT = ZERO
+DCR07              PERFORM CC126-UPDATE-BUDGET-AMT  THRU CC126-EXIT
+DCR07          END-IF
+DCR02      END-IF.
+
+DCR02 *================================================================
+DCR02 *==  @@ REWRITE LINE ITEM RECORD
+DCR02 *==  @@ SET PO CHANGE SW SO APPROPRIATE UPD MSG IS DISPLAYED
+DCR02 *==     WHEN RESULTS FILE RECORD IS WRITTEN
+DCR02 *================================================================
+DCR02      PERFORM 9010-REWRT-DPOITEM     THRU 9010-REWRT-EXIT.
+DCR02      IF  ITM-CHANGED-YES
+DCR02          IF  PO-NO-CHG-YES
+DCR02              SET   PO-ITM-WAS-CHGD-YES   TO TRUE
+DCR02          END-IF
+DCR02          IF  PO-HDR-WAS-CHGD-YES
+DCR02              SET   PO-BOTH-CHGD-YES      TO TRUE
+DCR02          END-IF
+DCR02      END-IF.
+DCR02
+DCR02  CC120-EXIT.
+DCR02      EXIT.
+
+DCR07 *****************************************************************
+DCR07 * CREATE A DDAILY TC 321 TRANSACTION
+DCR07 *****************************************************************
+DCR07  CC122-CREATE-TC-TRANS-321.
+
+DCR07      MOVE SPACE            TO  BU-DISPLAY-MSG.
+DCR07      MOVE SAVE-COMPANY     TO  STC320-COMPANY-SAVE.
+DCR07      MOVE "21"             TO  STC320-ITEM-TC-ID.
+
+DCR07      IF ARIBAITM-CORP-CODE = WS-NON-STOREROOM
+DCR07          MOVE ARIBAITM-QTY-ORDERED  TO STC320-QTY
+DCR07          MOVE ARIBAITM-UNIT-MEASURE TO STC320-QTY-UM
+DCR07          MOVE ARIBAITM-UNIT-PRICE   TO STC320-PRICE
+DCR07          MOVE ARIBAITM-PRICE-UM     TO STC320-PRICE-UM
+DCR07      ELSE
+DCR07          PERFORM CC122A-CALC-STC320-QTY-UM  THRU CC122A-EXIT
+DCR07          PERFORM CC122B-CALC-STC320-PRC-UM  THRU CC122B-EXIT
+DCR07      END-IF.
+
+
+DCR07      MOVE ZERO                    TO  STC320-BUDGET-AMT-NET-CHG.
+DCR07      MOVE ARIBAITM-ITEM-NUMBER    TO  STC320-ITEM.
+DCR07      MOVE BUILD-PO-SEARCH         TO  STC320-PO-NUM.
+DCR07      MOVE ARIBAITM-CORP-CODE      TO  STC320-CODE.
+DCR07      MOVE PO-BUDGET-NUMBER        TO  STC320-BUDGET-NO.
+DCR07      MOVE WS-OLD-BUDGET-AMT       TO  STC320-OLD-BUDGET-AMT.
+DCR07      MOVE ARIBAITM-REQ-NUMBER     TO  STC320-REQ-NO.
+DCR07      MOVE ITM-CLASS               TO  STC320-SUB.
+DCR07      MOVE ITM-SUB-DETL            TO  STC320-SUBD.
+DCR07      MOVE ITM-ADDL-DATA           TO  STC320-ADDTL-DATA.
+DCR07      MOVE ITM-TAX-CODE            TO  STC320-TAX-CODE.
+DCR07      MOVE PO-CURRENCY-CODE        TO  STC320-CUR-CODE.
+DCR07      IF SAVE-PCPO-SW = "Y"
+DCR07          MOVE ARIBAITM-COMPANY    TO  STC320-COMPANY
+DCR07          MOVE ARIBAITM-PRIME      TO  STC320-PRIME
+DCR07      END-IF.
+
+DCR07      CALL "STC320" USING BASE
+DCR07                          STC320-PARMS
+DCR07                          STATUS-AREA
+DCR07                          BU-DISPLAY-MSG
+DCR07                          BU-DISPLAY-FLDS.
+
+DCR07      IF BU-DISPLAY-MSG NOT = SPACES
+DCR07          MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+DCR07          SET SUCCESS-NO    TO TRUE
+DCR07          PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR07          GO TO CC122-EXIT
+DCR07      END-IF.
+
+DCR07  CC122-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * CALC THE STC320-QTY AND UNIT OF MEASURE
+DCR07 *****************************************************************
+DCR07  CC122A-CALC-STC320-QTY-UM.
+DCR07
+DCR07       MOVE ZERO              TO STC320-QTY.
+DCR07       MOVE STR-UM            TO STC320-QTY-UM.
+DCR07
+DCR07       IF ARIBAITM-UNIT-MEASURE = STR-UM
+DCR07          COMPUTE STC320-QTY ROUNDED = ARIBAITM-QTY-ORDERED
+DCR07          MOVE ARIBAITM-UNIT-MEASURE TO STC320-QTY-UM
+DCR07       END-IF.
+DCR07
+DCR07       IF ARIBAITM-UNIT-MEASURE = STR-UM1
+DCR07          COMPUTE STC320-QTY ROUNDED =
+DCR07                 (ARIBAITM-QTY-ORDERED * STR-UM1-CF)
+DCR07       END-IF.
+DCR07
+DCR07       IF ARIBAITM-UNIT-MEASURE = STR-UM2
+DCR07          COMPUTE STC320-QTY ROUNDED =
+DCR07                 (ARIBAITM-QTY-ORDERED * STR-UM2-CF)
+DCR07       END-IF.
+DCR07
+DCR07  CC122A-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * CALC THE STC320-PRICE AND UNIT OF MEASURE
+DCR07 *****************************************************************
+DCR07  CC122B-CALC-STC320-PRC-UM.
+DCR07
+DCR07       MOVE ZERO              TO STC320-PRICE.
+DCR07       MOVE STR-UM            TO STC320-PRICE-UM.
+DCR07
+DCR07       IF ARIBAITM-PRICE-UM     = STR-UM
+DCR07          COMPUTE STC320-PRICE ROUNDED = ARIBAITM-UNIT-PRICE
+DCR07          MOVE ARIBAITM-PRICE-UM     TO STC320-PRICE-UM
+DCR07       END-IF.
+DCR07
+DCR07       IF ARIBAITM-PRICE-UM     = STR-UM1
+DCR07          COMPUTE STC320-PRICE ROUNDED =
+DCR07                 (ARIBAITM-UNIT-PRICE / STR-UM1-CF)
+DCR07       END-IF.
+DCR07
+DCR07       IF ARIBAITM-PRICE-UM     = STR-UM2
+DCR07          COMPUTE STC320-PRICE ROUNDED =
+DCR07                 (ARIBAITM-UNIT-PRICE / STR-UM2-CF)
+DCR07       END-IF.
+DCR07
+DCR07  CC122B-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * UPDATE MSTOREROOM, VENDOR AND CALC OLD BUDGET AMT
+DCR07 *****************************************************************
+DCR07  CC124-PROCESS-MSTORE-VENDR.
+
+DCR07      SET QTY-PRICE-CHG-YES TO TRUE.
+DCR07      PERFORM CC124A-UPDATE-MSTORERM THRU CC124A-EXIT.
+DCR07      PERFORM CC124B-UPDATE-VENDPRCE THRU CC124B-EXIT.
+DCR07      PERFORM CC124C-CALC-OLD-BUDGET-AMT THRU CC124C-EXIT.
+
+DCR07  CC124-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * UPDATE MSTORERM
+DCR07 *****************************************************************
+DCR07  CC124A-UPDATE-MSTORERM.
+
+DCR07      MOVE SPACE            TO BU-DISPLAY-MSG.
+DCR07 *==============================================================
+DCR07 **   CALL 'SPOMSTRM' TO UPDATE MARKET COST
+DCR07 *==============================================================
+DCR07      MOVE ITM-CORP-CODE     TO  CODE-ARG.
+DCR07      MOVE ITM-COMPANY       TO  SPOMSTRM-COMPANY-SAVE.
+DCR07      MOVE ARIBAITM-QTY-ORDERED TO SPOMSTRM-QTY.
+DCR07      MOVE ARIBAITM-UNIT-MEASURE TO SPOMSTRM-QTY-UM.
+DCR07      MOVE ARIBAITM-UNIT-PRICE TO SPOMSTRM-PRICE.
+DCR07      MOVE ARIBAITM-PRICE-UM TO SPOMSTRM-PRICE-UM.
+DCR07      MOVE SPACES            TO  SPOMSTRM-PO-NUM
+DCR07                                 SPOMSTRM-PO-RLSE
+DCR07                                 SPOMSTRM-VEN-CODE.
+DCR07      MOVE PO-CURRENCY-CODE  TO  SPOMSTRM-CUR-CODE.
+
+DCR07      CALL "SPOMSTRM" USING BASE
+DCR07                            CODE-ARG
+DCR07                            SPOMSTRM-PARMS
+DCR07                            ZBILL-PO-SW
+DCR07                            STATUS-AREA
+DCR07                            BU-DISPLAY-MSG
+DCR07                            BU-DISPLAY-FLDS.
+DCR07***** IF BU-DISPLAY-MSG NOT = SPACES
+DCR07*****     MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+DCR07*****     SET SUCCESS-NO    TO TRUE
+DCR07*****     PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR07*****     GO TO CC124A-EXIT
+DCR07***** END-IF.
+DCR07
+DCR07  CC124A-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * CALC OLD BUDGET AMOUNT
+DCR07 *****************************************************************
+DCR07  CC124C-CALC-OLD-BUDGET-AMT.
+
+DCR07      MOVE ITM-QTY-ORD      TO  SCALCBGT-QTY.
+DCR07      MOVE ITM-UNIT-PRICE   TO  SCALCBGT-PRICE.
+DCR07      MOVE ITM-TAX-CODE     TO  SCALCBGT-TAX-CODE.
+DCR07      MOVE 0                TO  SCALCBGT-BUDGET.
+DCR07      CALL "SCALCBGT"  USING  SCALCBGT-PARMS.
+DCR07      MOVE SCALCBGT-BUDGET  TO  WS-OLD-BUDGET-AMT.
+
+DCR07  CC124C-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * UPDATE VENDOR PRICE
+DCR07 *****************************************************************
+DCR07  CC124B-UPDATE-VENDPRCE.
+DCR07
+DCR07      MOVE SPACE            TO BU-DISPLAY-MSG.
+DCR07 *=============================================================
+DCR07 *  CALL 'SVENPRC' TO UPDATE VENDOR LAST
+DCR07 *  PRICE IN THE DATA SET 'DVENDITM'
+DCR07 *=============================================================
+DCR07      MOVE SPACES                  TO  SVENPRC-PARMS.
+DCR07      MOVE "U"                     TO  SVENPRC-FLAG.
+DCR07      MOVE ITM-CORP-CODE           TO  SVENPRC-CODE.
+DCR07      MOVE PO-VEN-CODE             TO  SVENPRC-VEN-CODE.
+DCR07      MOVE ARIBAITM-UNIT-PRICE     TO  SVENPRC-PRICE.
+DCR07      MOVE ARIBAITM-PRICE-UM       TO  SVENPRC-PRICE-UM.
+DCR07      MOVE PO-DATE                 TO  SVENPRC-PO-DATE.
+DCR07      CALL "SVENPRC" USING BASE
+DCR07                           SVENPRC-PARMS
+DCR07                           STATUS-AREA
+DCR07                           BU-DISPLAY-MSG
+DCR07                           BU-DISPLAY-FLDS.
+
+DCR07***** IF BU-DISPLAY-MSG NOT = SPACES
+DCR07*****     MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+DCR07*****     SET SUCCESS-NO    TO TRUE
+DCR07*****     PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR07*****     GO TO CC124B-EXIT
+DCR07***** END-IF.
+
+DCR07  CC124B-EXIT.
+DCR07      EXIT.
+DCR07 *****************************************************************
+DCR07 * UPDATE THE BUDGET AMT
+DCR07 *****************************************************************
+DCR07  CC126-UPDATE-BUDGET-AMT.
+
+DCR07      MOVE BUILD-PO-SEARCH         TO  SMODBDGT-PO-NUMBER.
+DCR07      MOVE STC320-BUDGET-AMT-NET-CHG TO SMODBDGT-BUDGET-NET-CHG.
+DCR07      MOVE "Y"                     TO  SMODBDGT-GET-DPORECD-SW.
+
+DCR07      CALL "SMODBDGT" USING BASE
+DCR07                            SMODBDGT-PARMS
+DCR07                            BUF-DPORECD
+DCR07                            STATUS-AREA
+DCR07                            BU-DISPLAY-MSG
+DCR07                            BU-DISPLAY-FLDS.
+DCR07
+DCR07***** IF BU-DISPLAY-MSG NOT = SPACES
+DCR07*****     MOVE BU-DISPLAY-MSG TO MESSAGE-BUFFER
+DCR07*****     SET SUCCESS-NO    TO TRUE
+DCR07*****     PERFORM 998-ARIBA-LOG-RESULTS THRU 998-ALR-X
+DCR07*****     GO TO CC124B-EXIT
+DCR07***** END-IF.
+DCR07
+DCR07  CC126-EXIT.
+DCR07       EXIT.
+
+DCR08 *****************************************************************
+DCR08 * PROCESS AN ITEM DESC CHANGE
+DCR08 *****************************************************************
+DCR08  CC128-PROCESS-ITEM-DESC.
+
+DCR08 * QUIT WHEN THE 1ST BLANK ARRAY ELEMENT IS FOUND
+DCR08      IF  TAB-ARIBADSC-RECRD(DSUB1 DSUB2) = SPACE
+DCR08          MOVE DSUB2-QUIT     TO  DSUB2
+DCR08          GO TO CC128-EXIT
+DCR08      END-IF.
+
+DCR08      MOVE TAB-ARIBADSC-RECRD(DSUB1 DSUB2)  TO BUF-ARIBAPO-DESC.
+
+DCR08 * PROCESS ONLY THE CURRENT ITEM
+DCR08      IF  ARIBAITM-ITEM-NUMBER NOT = ARIBADSC-ITEM-NUMBER
+DCR08          GO TO CC128-EXIT
+DCR08      END-IF.
+
+DCR08 * DON'T PROCESS A BLANK DESCRIPTION FIELD
+DCR08      IF  ARIBADSC-ITEM-DESC = SPACE
+DCR08          GO TO CC128-EXIT
+DCR08      END-IF.
+
+DCR08 **************************************************************
+DCR08 *** FUTURE CODE FOR USE WHEN 2ND POSITION OF REC TYPE = "C"
+DCR08 **************************************************************
+DCR08 * ON 1ST EXECUTION
+DCR08 *                ------------------------
+DCR08 *    MAKE SURE DESCRIPTION HAS BEEN CHANGED(POS 2 = "C")
+DCR08 *    IF  NOT THEN KICK IT ON DOWN INTO "MAXIMUM BOOGIE MODE"
+DCR08 *    AND STAGGER ON BACK "FROM WHENCE YE CAME" !!
+DCR08 *
+DCR08 *    IF  DSUB2  = 1
+DCR08 *        IF  ARIBADSC-REC-IND(2:1) NOT = "C"
+DCR08 *            MOVE DSUB2-QUIT     TO  DSUB2
+DCR08 *            GO TO CC128-EXIT
+DCR08 *        END-IF
+DCR08 *    END-IF.
+DCR08 ******************************************************
+
+DCR08 * ON 1ST EXECUTION, DELETE THE PREV DESC FOR THIS ITEM
+DCR08      IF  DSUB2  = 1
+DCR08          PERFORM CC128A-DELETE-ITEM-DESC    THRU CC128A-EXIT
+DCR08      END-IF.
+
+
+DCR08 * ==============================================================
+DCR08 * PARSE OUT MANUFACTURER DATA ON 1ST SEQ#
+DCR08 * DELIMITED BY = ' : :'  AND NO DESC = ': : ::'
+DCR08 * ==============================================================
+DCR08      IF  ARIBADSC-ITEM-SEQNO = 01
+
+DCR08          MOVE SPACE TO WS-MANUF-DATA
+DCR08          IF  ARIBADSC-ITEM-DESC(1:6) = WS-NO-DESC-DATA
+DCR08              MOVE WS-UNKNOWN-NAME-MSG  TO WS-MFG-NAME
+DCR08          ELSE
+DCR08              UNSTRING ARIBADSC-ITEM-DESC DELIMITED BY WS-DLIM1
+DCR08                       INTO WS-MFG-NAME  WS-MFG-PARTNO
+DCR08              IF  WS-MFG-NAME = SPACE
+DCR08                  MOVE WS-UNKNOWN-NAME-MSG  TO WS-MFG-NAME
+DCR08              END-IF
+DCR08          END-IF
+
+DCR08          MOVE WS-MANUF-DATA    TO ARIBADSC-ITEM-DESC
+DCR08      END-IF.
+
+
+DCR08 * WRITE NEW DESCRIPTION FOR THIS ITEM FROM THE ARRAY
+DCR08      PERFORM CC128B-WRITE-ITEM-DESC     THRU CC128B-EXIT.
+
+DCR08 *---------------------------------------------------------------
+DCR08 * CODED ITEMS   --  THE FULL ITEM DESC COMES FROM DDESC SO ONLY
+DCR08 *                   WRITE THE 1ST ARRAY ELEMENT TO DPODTAITM
+DCR08 *                   (1ST ELEMENT = MFG NAME AND MFG PARTNO)
+DCR08 *            E L S E
+DCR08 * NON CODED ITEMS - THERE IS NO STORED DESC FOR NON CODED ITEMS
+DCR08 *                   SO WRITE ALL DESC ARRAY ELEMNTS TO DPODTAITM
+DCR08 *                   FOR THIS ITEM
+DCR08 *---------------------------------------------------------------
+DCR08      IF  DSUB2  = 1
+DCR08          IF ARIBAITM-CORP-CODE NOT = WS-NON-STOREROOM
+DCR08              MOVE DSUB2-QUIT     TO  DSUB2
+DCR08              GO TO CC128-EXIT
+DCR08          END-IF
+DCR08      END-IF.
+
+DCR08  CC128-EXIT.
+DCR08       EXIT.
+
+DCR08 *****************************************************************
+DCR08 * DELETE AN ITEM DESC
+DCR08 *****************************************************************
+DCR08  CC128A-DELETE-ITEM-DESC.
+
+DCR08      PERFORM 9012-START-DPODATA      THRU 9012-START-EXIT.
+
+DCR08      PERFORM UNTIL FS-END-OF-FILE
+
+DCR08      PERFORM 9012-READN-DPODATA      THRU 9012-READN-EXIT
+DCR08      IF  FS-GOOD-FILE-IO
+DCR08          PERFORM 9012-DELET-DPODATA  THRU 9012-DELET-EXIT
+DCR08      END-IF
+
+DCR08      END-PERFORM.
+
+DCR08  CC128A-EXIT.
+DCR08       EXIT.
+
+DCR08 *****************************************************************
+DCR08 * WRITE ITEM DESC
+DCR08 *****************************************************************
+DCR08  CC128B-WRITE-ITEM-DESC.
+
+DCR08      SET ITM-CHANGED-YES  TO TRUE.
+
+           MOVE BUILD-PO-SEARCH      TO DATAITM-PO-RCV-NO.
+           MOVE ARIBAITM-ITEM-NUMBER TO DATAITM-ITEM-NO.
+DCR08      MOVE ARIBADSC-ITEM-SEQNO  TO DATAITM-LINE-NO.
+           MOVE ARIBADSC-ITEM-DESC   TO DATAITM-INFO.
+
+           PERFORM 9012-WRITE-DPODATA  THRU 9012-WRITE-EXIT.
+
+DCR08  CC128B-EXIT.
+DCR08       EXIT.
+
+DCR02 *****************************************************************
+DCR02 * PROCESS A PO CANCEL
+DCR02 *****************************************************************
+DCR02  CC200-PO-CANCEL.
+
+DCR04      PERFORM 9011-READK-DPORECD-NLOCK THRU 9011-READK-NL-EXIT.
+DCR02      PERFORM CC902-CALL-SCOMPPO  THRU CC902-EXIT.
+
+DCR02 *==  WRITE SUCCESS RECORD TO RESULTS FILE
+DCR02      MOVE WS-CC-PO-CNL-YES-MSG  TO MESSAGE-BUFFER.
+DCR02      SET SUCCESS-YES    TO TRUE.
+DCR02      PERFORM 998-ARIBA-LOG-RESULTS   THRU 998-ALR-X.
+
+DCR02 *==  LOG PO CHANGE TO PO UPD LOGGING FILES
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          IF  BUILD-PO-SEARCH NOT = WS-Z000-LAST-PO-LOGGED
+DCR02              MOVE BUILD-PO-SEARCH  TO WS-Z000-LAST-PO-LOGGED
+DCR02              PERFORM Z998-UPDATE-PO-LOG THRU Z998-UPD-EXIT
+DCR02          END-IF
+DCR02      END-IF.
+
+DCR02  CC200-EXIT.
+DCR02      EXIT.
+
+DCR02 *****************************************************************
+DCR02 * CALL SPOTRACK WHEN QTY OR PRICE CHANGES
+DCR02 *****************************************************************
+DCR02  CC901-CALL-SPOTRACK.
+
+DCR02      MOVE WS-OLD-UNIT-PRICE     TO  OLD-ITEM-PRICE.
+DCR02      MOVE WS-NEW-UNIT-PRICE     TO  NEW-ITEM-PRICE.
+
+DCR02      MOVE WS-OLD-QTY-ORDERD     TO  OLD-ITEM-QTY.
+DCR02      MOVE WS-NEW-QTY-ORDERD     TO  NEW-ITEM-QTY.
+
+DCR02      MOVE ITM-PO-RCV-NO         TO  PO-NUM-TRACK.
+DCR02      MOVE ITM-NUMBER            TO  PO-ITEM-NUM.
+DCR02      CALL "SPOTRACK" USING PO-TRACK-DATA.
+
+DCR02  CC901-EXIT.
+DCR02      EXIT.
+
+DCR02 *****************************************************************
+DCR02 * CALL SCOMPPO TO CANCEL THE PO - ZERO OUT QTYS
+DCR02 *****************************************************************
+DCR02  CC902-CALL-SCOMPPO.
+
+DCR02      MOVE SPACE           TO  SCOMPPO-CMPNY-SAVE.
+DCR02      CALL "SCOMPPO" USING BASE
+DCR02                           BUILD-PO-SEARCH
+DCR02                           BUF-DPORECD
+DCR02                           SCOMPPO-SWITCH-PARMS
+DCR02                           LANGUAGE-PARMS.
+
+DCR02  CC902-EXIT.
+DCR02      EXIT.
+
+
+      *****************************************************************
+      *
+      * CHECK DATE ROUTINE
+      *
+      *****************************************************************
+       994-CHECK-DATE.
+
+           SET CHECK-DATE-ERROR-NO   TO TRUE.
+
+           IF  WS-CD-CC  NOT = WS-VALID-CC
+               GO TO 994-ERROR
+           END-IF.
+
+           IF  WS-CD-YY < 2
+               GO TO 994-ERROR
+           END-IF.
+
+           IF  WS-CD-MM  = ZERO
+           OR  WS-CD-MM  > 12
+               GO TO 994-ERROR
+           END-IF.
+
+           IF  WS-CD-DD  = ZERO
+           OR  WS-CD-DD  > 31
+               GO TO 994-ERROR
+           END-IF.
+
+           IF  WS-CD-MM  = 2
+           AND WS-CD-DD  > 29
+               GO TO 994-ERROR
+           END-IF.
+
+           GO TO 994-EXIT.
+
+       994-ERROR.
+
+           SET CHECK-DATE-ERROR-YES  TO TRUE.
+
+       994-EXIT.
+           EXIT.
+
+      *****************************************************************
+      *
+      *    DELETE LAST PO PROCESSED
+      *
+      *****************************************************************
+       997-DELETE-INPUT-PO.
+
+      ***SAVE THE NEXT ONE TO PROCESS
+           MOVE WS-CURR-ARIBA-PO-NUMBER TO WS-SAVE-ARIBA-PO-NUMBER.
+
+      ***DELETE PREVIOUS PO
+           MOVE WS-PREV-ARIBA-PO-NUMBER TO WS-CURR-ARIBA-PO-NUMBER.
+           PERFORM 9008-START-DARIBAPO   THRU 9008-START-EXIT.
+
+       997-READN-LOOP.
+
+           PERFORM 9008-READN-DARIBAPO-FOR-DELETE
+                                              THRU 9008-READN-FD-EXIT.
+           IF  FS-END-OF-GROUP
+               GO TO 997-DEL-X
+           END-IF.
+
+           PERFORM 9008-DELET-DARIBAPO   THRU 9008-DELET-EXIT.
+           GO TO 997-READN-LOOP.
+
+       997-DEL-X.
+
+      ***RESTORE NEXT ONE TO PROCESS
+           MOVE WS-SAVE-ARIBA-PO-NUMBER   TO WS-CURR-ARIBA-PO-NUMBER.
+
+       997-DEL-EXIT.
+           EXIT.
+
+
+      *****************************************************************
+      *    ROUTINE TO LOG ALL ARIBA RESULTS
+      *****************************************************************
+       998-ARIBA-LOG-RESULTS.
+
+           INITIALIZE BUF-DARIBARSLT.
+      *----------------------------------------------------------------
+      *  VITRIA COPY OF RESULTS RECORD
+      *  ONLY SEND PO# BACK TO ARIBA WHEN SUCCESSFUL
+      *----------------------------------------------------------------
+           IF  SUCCESS-YES
+               MOVE PO-NO-REL TO ARIBRSLT-CSIS-PO
+           END-IF.
+
+      **** MOVE ARIBAPO-NUMBER TO ARIBRSLT-PO-NUMBER.
+           MOVE WS-PREV-ARIBA-PO-NUMBER TO ARIBRSLT-PO-NUMBER.
+           MOVE MESSAGE-BUFFER TO ARIBRSLT-MESSAGE.
+           PERFORM 9009-WRITE-DARBRSLT   THRU 9009-WRITE-EXIT.
+
+           PERFORM 8000-GET-DATE-TIME    THRU 8000-GDT-EXIT.
+
+      *----------------------------------------------------------------
+      *  GOODYEAR COPY OF RESULTS RECORD
+      *  WHEN AVAILABLE - ALWAYS SEND PO# BACK TO ARIBA WHEN SUCCESSFUL
+      *----------------------------------------------------------------
+           INITIALIZE BUF-DARIBARSLT2.
+      *****MOVE ARIBAPO-NUMBER TO ARIBRSLT2-PO-NUMBER.
+           MOVE WS-PREV-ARIBA-PO-NUMBER  TO ARIBRSLT2-PO-NUMBER.
+           MOVE SUCCESS-FLAG            TO  ARIBRSLT2-SF-FLAG.
+           MOVE PO-NO-REL TO ARIBRSLT2-CSIS-PO.
+           MOVE MESSAGE-BUFFER TO ARIBRSLT2-MESSAGE.
+           MOVE WS-SYSTEM-DATE-TIME2    TO  ARIBRSLT2-DATE-TIME.
+           PERFORM 9014-WRITE-DARBRSLT2  THRU 9014-WRITE-EXIT.
+
+       998-ALR-X.
+           EXIT.
+
+      *****************************************************************
+      ***  GET DATE AND TIME STAMP
+      *****************************************************************
+       8000-GET-DATE-TIME.
+
+      **** CALL WS-DTS-PGM2  USING WS-SYSTEM-DATE-TIME2.
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+
+       8000-GDT-EXIT.
+           EXIT.
+
+DCR02  COPY ZMPLTSUBR  IN COPYLIB.
+DCR02  COPY POLOGSUBR2 IN COPYLIB.
+DCR02  COPY ZFOBCDM2   IN COPYLIB.
+DCR02  COPY ZVIACDM2   IN COPYLIB.
+
+DCR02 *****************************************************************
+DCR02 * HARDCODED PO LOGGING FOR A PO INSERT
+DCR02 *****************************************************************
+DCR02  Z998-INSERT-PO-LOG.
+
+DCR02      PERFORM L000-LOG-ADD    THRU L000-ADD-EXIT.
+DCR02      PERFORM Z999-CLR-PO-LOG THRU Z999-CLR-EXIT.
+
+DCR02  Z998-INS-EXIT.
+DCR02      EXIT.
+
+DCR02 *****************************************************************
+DCR02 * HARDCODED PO LOGGING FOR A PO UPDATE
+DCR02 *****************************************************************
+DCR02  Z998-UPDATE-PO-LOG.
+
+DCR02      PERFORM L000-LOG-UPD    THRU L000-UPD-EXIT.
+DCR02      PERFORM Z999-CLR-PO-LOG THRU Z999-CLR-EXIT.
+
+DCR02  Z998-UPD-EXIT.
+DCR02      EXIT.
+
+DCR02 *****************************************************************
+DCR02 * CLEAR PO LOG FILE OF ALL CURRENT USER "NON ACTIVE" RECS
+DCR02 * THIS PARAGRAPH IS NECESSARY SINCE SUBROUTINES ARE CALLED WHICH
+DCR02 * UPDATE FILES THAT ARE "TRIGGERED" FOR PO UPDATES. THIS CAUSES
+DCR02 * RECORD(S) TO BE WRITTEN TO PO UPDATE TRIGGER FILE(MCFPPOTRG)
+DCR02 * WHICH NEVER GET DELETED SINCE THIS PROGRAM HAS THE PO LOGGING
+DCR02 * LOGIC HARDCODED.
+DCR02 *****************************************************************
+DCR02  Z999-CLR-PO-LOG.
+
+DCR02      MOVE "2"               TO WS-Z000-MODE.
+DCR02      CALL "CPORMVUSR" USING WS-Z000-USER
+DCR02                             WS-Z000-JOBN
+DCR02                             WS-Z000-JNBR
+DCR02                             WS-Z000-MODE.
+DCR02
+DCR02  Z999-CLR-EXIT.
+DCR02      EXIT.
+
+      *----------------------------------------------------------------
+      *
+      *                ALL FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      ***  READ BY KEY MBUYER FILE
+      *****************************************************************
+       9001-READK-MBUYER.
+
+           INITIALIZE MBUYER-REC.
+           MOVE  BUYER-ARG        TO BUYER-CODE.
+
+           READ MBUYER-FILE
+           END-READ.
+
+       9001-READK-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** WRITE  MPORCV FILE
+      *****************************************************************
+       9002-WRITE-MPORCV.
+
+           WRITE MPORCV-REC
+           END-WRITE.
+
+       9002-WRITE-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY MVALIDUM FILE
+      *****************************************************************
+       9003-READK-MVALIDUM.
+
+           INITIALIZE MVALIDUM-REC.
+           MOVE  UM-ARG          TO VALID-UM.
+
+           READ MVALIDUM-FILE
+           END-READ.
+
+       9003-READK-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY MCOMMENT FILE
+      *****************************************************************
+       9004-READK-MCOMMENT.
+
+           INITIALIZE MCOMMENT-REC.
+           MOVE  COMMENT-ARG     TO MCOM-COMMENT-NO.
+
+           READ MCOMMENT-FILE
+           END-READ.
+
+       9004-READK-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY MREQ FILE
+      *****************************************************************
+       9006-READK-MREQ.
+
+           INITIALIZE MREQ-REC.
+           MOVE  REQ-ARG          TO MREQ-NUMBER.
+
+           READ MREQ-FILE
+           END-READ.
+
+       9006-READK-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY VENDOR FILE
+      *****************************************************************
+       9007-READK-MVENDOR.
+
+           INITIALIZE MVENDOR-REC.
+           MOVE  VEN-ARG         TO AVEN-VEN-CODE.
+           MOVE  ZERO            TO VENITMNO.
+
+           READ MVENDOR-FILE
+           END-READ.
+
+       9007-READK-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  START ARIBA PO FILE
+      *****************************************************************
+       9008-START-DARIBAPO.
+
+           MOVE WS-CURR-ARIBA-PO-NUMBER TO ARIBAPO-PO-NUMBER.
+           MOVE HIGH-VALUES             TO ARIBAPO-REC-TYPE.
+
+           START DARIBAPO-FILE
+                 KEY IS >= EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9008-START-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ SEQUENTIALLY BY ARIBA PO NUMBER
+      *****************************************************************
+       9008-READN-DARIBAPO.
+
+           READ DARIBAPO-FILE  NEXT RECORD
+           END-READ.
+
+
+           IF  FS-END-OF-FILE
+               SET END-OF-JOB-YES   TO TRUE
+           END-IF.
+
+
+           IF  FS-GOOD-FILE-IO
+      *** 1ST TIME
+               IF  WS-CURR-ARIBA-PO-NUMBER = LOW-VALUES
+                   MOVE ARIBAPO-PO-NUMBER  TO WS-CURR-ARIBA-PO-NUMBER
+               END-IF
+
+               IF  WS-CURR-ARIBA-PO-NUMBER NOT = ARIBAPO-PO-NUMBER
+                   MOVE ARIBAPO-PO-NUMBER  TO WS-CURR-ARIBA-PO-NUMBER
+                   SET FS-END-OF-GROUP  TO TRUE
+               END-IF
+
+           END-IF.
+
+       9008-READN-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ SEQUENTIALLY BY ARIBA PO NUMBER
+      *****************************************************************
+       9008-READN-DARIBAPO-FOR-DELETE.
+
+           READ DARIBAPO-FILE  NEXT RECORD
+           END-READ.
+
+
+           IF  FS-GOOD-FILE-IO
+
+               IF  ARIBAPO-PO-NUMBER NOT = WS-PREV-ARIBA-PO-NUMBER
+                   SET FS-END-OF-GROUP  TO TRUE
+               END-IF
+
+           END-IF.
+
+
+       9008-READN-FD-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  DELETE DARIBAPO
+      *****************************************************************
+       9008-DELET-DARIBAPO.
+
+           DELETE DARIBAPO-FILE
+           END-DELETE.
+
+       9008-DELET-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  WRITE ARIBA RESULTS RECORD
+      *****************************************************************
+       9009-WRITE-DARBRSLT.
+
+           WRITE DARBRSLT-REC
+           END-WRITE.
+
+       9009-WRITE-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY DPOITEM FILE
+      *****************************************************************
+       9010-READK-DPOITEM.
+
+           INITIALIZE DPOITEM-REC.
+           MOVE  PO2-ARG          TO ITM-PO-RCV-NO.
+           MOVE ARIBAITM-ITEM-NUMBER  TO ITM-NUMBER.
+
+           READ DPOITEM-FILE
+           END-READ.
+
+       9010-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  WRITE DPOITEM FILE
+      *****************************************************************
+       9010-WRITE-DPOITEM.
+
+           WRITE DPOITEM-REC
+           END-WRITE.
+
+       9010-WRITE-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  REWRITE DPOITEM FILE
+      *****************************************************************
+       9010-REWRT-DPOITEM.
+
+           REWRITE DPOITEM-REC
+           END-REWRITE.
+
+       9010-REWRT-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY DPORECD FILE
+      *****************************************************************
+       9011-READK-DPORECD.
+
+           INITIALIZE DPORECD-REC.
+           MOVE  PO2-ARG          TO PO-RCV-NO.
+
+           READ DPORECD-FILE
+           END-READ.
+
+       9011-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY DPORECD FILE (WITH NO LOCK OPTION)
+      *****************************************************************
+       9011-READK-DPORECD-NLOCK.
+
+           INITIALIZE DPORECD-REC.
+           MOVE  PO2-ARG          TO PO-RCV-NO.
+
+           READ DPORECD-FILE  NO LOCK
+           END-READ.
+
+       9011-READK-NL-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  REWRITE DPORECD FILE
+      *****************************************************************
+       9011-REWRT-DPORECD.
+
+           REWRITE DPORECD-REC
+           END-REWRITE.
+
+       9011-REWRT-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  WRITE DPORECD FILE
+      *****************************************************************
+       9011-WRITE-DPORECD.
+
+           WRITE DPORECD-REC
+           END-WRITE.
+
+       9011-WRITE-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  START ARIBA PO FILE
+      *****************************************************************
+       9012-START-DPODATA.
+
+           INITIALIZE DPODATA-REC.
+           MOVE BUILD-PO-SEARCH      TO DATAITM-PO-RCV-NO.
+           MOVE ARIBAITM-ITEM-NUMBER TO DATAITM-ITEM-NO.
+           MOVE ZERO                 TO DATAITM-LINE-NO.
+
+           START DPODATA-FILE
+                 KEY IS >= EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9012-START-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ DPODATA FILE SEQUENTIALLY
+      *****************************************************************
+       9012-READN-DPODATA.
+
+           READ DPODATA-FILE NEXT RECORD
+           END-READ.
+
+           IF  FS-END-OF-FILE
+               GO TO 9012-READN-EXIT
+           END-IF.
+
+      ***  RELEASE THE RECORD LOCK & SET EOF WHEN PO# CHANGES
+           IF  DATAITM-PO-RCV-NO NOT = BUILD-PO-SEARCH
+               PERFORM 9012-REWRT-DPODATA  THRU 9012-REWRT-EXIT
+               SET FS-END-OF-FILE TO TRUE
+               GO TO 9012-READN-EXIT
+           END-IF.
+
+      ***  RELEASE THE RECORD LOCK & SET EOF WHEN ITEM# CHANGES
+           IF  DATAITM-ITEM-NO NOT = ARIBAITM-ITEM-NUMBER
+               PERFORM 9012-REWRT-DPODATA  THRU 9012-REWRT-EXIT
+               SET FS-END-OF-FILE TO TRUE
+               GO TO 9012-READN-EXIT
+           END-IF.
+
+       9012-READN-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  WRITE DPODATA FILE
+      *****************************************************************
+       9012-DELET-DPODATA.
+
+           DELETE  DPODATA-FILE
+           END-DELETE.
+
+       9012-DELET-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  REWRITE DPODATA FILE
+      *****************************************************************
+       9012-REWRT-DPODATA.
+
+           REWRITE DPODATA-REC
+           END-REWRITE.
+
+       9012-REWRT-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  WRITE DPODATA FILE
+      *****************************************************************
+       9012-WRITE-DPODATA.
+
+           WRITE DPODATA-REC
+           END-WRITE.
+
+       9012-WRITE-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  WRITE DDAILYTC FILE
+      *****************************************************************
+       9013-WRITE-DDAILYTC.
+
+           WRITE DDAILYTC-REC
+           END-WRITE.
+
+       9013-WRITE-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READ BY KEY RESULTS FILE   - GOODYEAR COPY
+      *****************************************************************
+       9014-READK-DARBRSL2-NLOCK.
+
+           INITIALIZE DARBRSLT-REC2.
+           MOVE ARIBAPO-NUMBER    TO ARIBRSLT2-PO-NUMBER.
+           MOVE  "S"              TO ARIBRSLT2-SF-FLAG.
+
+           READ DARBRSLT-FILE2 NO LOCK
+           END-READ.
+
+       9014-READK-NL-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  WRITE ARIBA RESULTS RECORD 2 - GOODYEAR COPY
+      *****************************************************************
+       9014-WRITE-DARBRSLT2.
+
+           WRITE DARBRSLT-REC2
+           END-WRITE.
+
+       9014-WRITE-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY STOREROOM FILE
+      *****************************************************************
+       9015-READK-MSTOREROOM.
+
+           INITIALIZE BUF-MSTORERM.
+           MOVE  ARIBAITM-CORP-CODE TO CORP-CODE.
+
+           READ MSTOREROOM-FILE
+           END-READ.
+
+       9015-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***              END  OF  SOURCE  MEMBER
+      *****************************************************************

@@ -1,0 +1,511 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.  ISSPARTS.
+
+      *REMARKS.     THIS PROGRAM WILL PROVIDE THE INTERFACE BETWEEN
+      *             CSIS AND MMIS FOR ISSUING OF PARTS AGAINST A
+      *             GIVEN WORK ORDER.
+
+      *             CHANGED TO SUBPROGRAM SO BUDGET DATA BASE ONLY
+      *             HAS TO BE OPENED ONCE.
+      *****************************************************************
+
+      *****************************************************************
+      **          M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+      *   08/08/96  REMOVED ALL REFERENCES TO BUDGET DATA BASE - WDR
+      *----------------------------------------------------------------
+      *   06/12/96   JEFF BUNGO
+      *    EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.  INCLUDE THE
+      *    CENTURY FOR PART USED DATE.
+      *----------------------------------------------------------------
+      *   MARCH 1997 JIM COFFMAN  REQ 96045
+      *    ADDED CODE TO UPDATE THE PARTS FILE FROM THE E1 REQ CREATE
+      *    SCREEN IF THE USER WANTS TO LINK THE REQUISITION BACK TO A
+      *    WORK ORDER.
+      *----------------------------------------------------------------
+DCR01 *  AUG 10, 2005    DCR01  DAN RAUCH   REQ#: 2005-18722617-0001
+DCR01 *  ADDED CODE TO ALLOW WO UPDATE WHEN STATUS = "DW" OR "FF"
+DCR01 *  ---- ONLY WHEN CALLED FROM TR3WOISS
+      *----------------------------------------------------------------
+      *  MMM DD, CCYY    XXX01  XXXNAMEXXX  REQ#: 200?-99999999-0001
+      *      XXXXXXXXXXXXXXXXXXXXXXDESCXXXXXXXXXXXXXXXXXXXXXXX
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER. AS400.
+       OBJECT-COMPUTER. AS400.
+       SPECIAL-NAMES.  SYSTEM-CONSOLE IS CONSOLE.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-BASIC
+                  ASSIGN TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-PARTS
+                  ASSIGN TO DATABASE-MCFLMM1201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-PLANNED
+                  ASSIGN TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PER-PERSONNEL
+           LABEL RECORDS ARE STANDARD.
+       01  PER-PERSONNEL-REC.
+           COPY DDS-MCRPMM0300  OF MCFLMM0301.
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  WO-BASIC-REC.
+           COPY DDS-MCRPMM1000  OF MCFLMM1001.
+       FD  WO-PARTS
+           LABEL RECORDS ARE STANDARD.
+       01  WO-PARTS-REC.
+           COPY DDS-MCRPMM1200  OF MCFLMM1201.
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  WO-PLANNED-REC.
+           COPY DDS-MCRPMM1100  OF MCFLMM1101.
+
+       WORKING-STORAGE SECTION.
+       77  PARTS-ITEM-NO                   PIC 9999.
+       77  SAVE-APPROVAL-CODE              PIC X.
+
+       01  ARG-NO                          PIC 9(9).
+
+       01  CUR-DATE-WORK.
+           02  CUR-DATE-YY                 PIC XX.
+           02  CUR-DATE-MM                 PIC XX.
+           02  CUR-DATE-DD                 PIC XX.
+
+DCR01  01  WS-MISCELLANEOUS-FLDS.
+DCR01      03  WS-SAVE-TR3WOISS-BYTE       PIC X       VALUE SPACE.
+DCR01          88  TR3WOISS-UPDATE-FROM-SAP            VALUE "Y".
+DCR01          88  TR3WOISS-UPDATE-NOT-FROM-SAP        VALUE SPACE.
+
+
+       01  DBPARAMETERS.                   COPY DBPARMS  IN COPYLIB.
+
+       01  EMPLOYEE-BUFF.                  COPY MPERSONL IN COPYLIB.
+
+       01  ERROR-SW.
+           02  ERROR-SWITCH       PIC S9(4) COMP-4.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       COPY DBSTAT   IN COPYLIB.
+
+       01  UPDATE-SW               PIC X.
+
+       01  WO-KIND                 PIC X.
+
+       01  WORK-COST               PIC 9(8)V99.
+
+       01  WO-BASIC-DATA.          COPY DWOBASIC IN COPYLIB.
+
+       01  WO-MATERIALS-USED-DATA. COPY DWOPARTS IN COPYLIB.
+
+       01  WO-NUMBER-WORK          PIC X(10).
+
+       01  WO-PLANNED-DATA.        COPY DWOPLAN  IN COPYLIB.
+
+       LINKAGE SECTION.
+
+       COPY ISSPARTS IN COPYLIB.
+
+       01  DB-BASE                         PIC X(13).
+
+       COPY LANGSUB  IN COPYLIB.
+
+       01  BUDGET-MESSAGE                  PIC X(80).
+
+       PROCEDURE DIVISION USING PART-WORKAREA
+                                DB-BASE
+                                LANGUAGE-PARMS
+                                BUDGET-MESSAGE.
+
+       START-PGM.
+           OPEN INPUT WO-BASIC, WO-PLANNED, PER-PERSONNEL.
+           OPEN I-O WO-PARTS.
+
+      *---------- IF WORKORDER IS SPACES, RETURN "WO" - INVALID
+      *---------- WORKORDER STATUS, UNLESS CALLING PROGRAM IS JUST
+      *---------- CHECKING FOR VALID CLOCK CARD (CC STATUS).
+           IF WO-NUMBER = SPACES
+               IF RETURN-STATUS = "CC"
+                   NEXT SENTENCE
+               ELSE
+               MOVE "WO"             TO  RETURN-STATUS
+               GO TO 2-EOJ.
+
+           PERFORM 1-HSK.
+      *---------- IF CC STATUS, JUST VALIDATE CLOCK CARD NUMBER.
+           IF RETURN-STATUS = "CC"
+               PERFORM 6-MAIN-CC-ONLY THRU 6-MAIN-EXIT
+           ELSE
+           PERFORM 6-MAIN THRU 6-MAIN-EXIT.
+
+       2-EOJ.
+           CLOSE WO-BASIC, WO-PLANNED, PER-PERSONNEL, WO-PARTS.
+           GOBACK.
+
+       1-HSK.
+
+DCR01 *================================================================****
+DCR01 ** I "HIJACKED" A BYTE OF FILLER IN THE LANGUAGE COPYBOOK FOR    ****
+DCR01 ** THE TR3WOISS FLAG. THIS FLAG ALLOWS WORK ORDER TO BE UPDATED  ****
+DCR01 ** EVEN THOUGH THE STATUS MAY ALREADY BE = "DW" OR "FF"          ****
+DCR01 *================================================================****
+DCR01      MOVE LANG-ERCAT(18:1)  TO WS-SAVE-TR3WOISS-BYTE.
+
+           MOVE "N" TO UPDATE-SW.
+           MOVE " " TO WO-KIND, SAVE-APPROVAL-CODE.
+
+           IF RETURN-STATUS = "CX" MOVE 0 TO QTY-ISSUED.
+
+       6-MAIN.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER TO WONUM OF WO-BASIC-REC.
+           START WO-BASIC KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               GO TO 6-CHECK-PLANNED.
+           MOVE 0 TO COND-WORD.
+           READ WO-BASIC NEXT INTO WO-BASIC-DATA
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF WONUM OF WO-BASIC-REC NOT = WO-NUMBER
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               GO TO 6-CHECK-PLANNED.
+
+      *********************************************************************
+      *    LOGIC CHANGED 4/25/88 TO ALLOW THE STOREROOM TO HANDLE         *
+      *    WITHDRAWALS THAT MIGHT GET PROCESSED AFTER THE VERBAL W/O      *
+      *    HAD ALREADY BEEN CLOSED DUE TO THE 2 HOUR GRACE TIME ALLOWED   *
+      *    THE STOREROOM TO GET ALL WITHDRAWALS PROCESSED....             *
+      *********************************************************************
+
+DCR01 *=============================================================
+DCR01 ** W/O MAY BE COMPLETED PRIOR TO THE "ISSUE UPDATE" FROM SAP
+DCR01 ** SO WHEN CALLED FROM TR3WOISS AND THE STATUS = DW OR FF
+DCR01 ** CONTINUE TO UPDATE THE WORK ORDER
+DCR01 *=============================================================
+           IF WO-STATUS = "DW" OR "FF"
+DCR01         IF  TR3WOISS-UPDATE-FROM-SAP
+DCR01             NEXT SENTENCE
+DCR01         ELSE
+                  MOVE "WO" TO RETURN-STATUS
+                  GO TO 6-MAIN-EXIT
+DCR01         END-IF
+DCR01      END-IF.
+
+
+           MOVE DEPT TO DEPT-CHARGED.
+           MOVE EXP-CLASS TO EXP-CLASSIFICATION.
+           MOVE APPROVAL-CODE TO SAVE-APPROVAL-CODE.
+           GO TO 6-MAIN-CC-ONLY.
+
+       6-CHECK-PLANNED.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER TO WONUM OF WO-PLANNED-REC.
+           START WO-PLANNED KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "WO" TO RETURN-STATUS
+               GO TO 6-MAIN-EXIT.
+           MOVE 0 TO COND-WORD.
+           READ WO-PLANNED NEXT INTO WO-PLANNED-DATA
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF WONUM OF WO-PLANNED-REC NOT = WO-NUMBER
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "WO" TO RETURN-STATUS
+               GO TO 6-MAIN-EXIT.
+
+DCR01 *=============================================================
+DCR01 ** W/O MAY BE COMPLETED PRIOR TO THE "ISSUE UPDATE" FROM SAP
+DCR01 ** SO WHEN CALLED FROM TR3WOISS AND THE STATUS = DW OR FF
+DCR01 ** CONTINUE TO UPDATE THE WORK ORDER
+DCR01 *=============================================================
+           IF WO-STATUS-P = "DW" OR "FF"
+DCR01         IF  TR3WOISS-UPDATE-FROM-SAP
+DCR01             NEXT SENTENCE
+DCR01         ELSE
+                  MOVE "WO" TO RETURN-STATUS
+                  GO TO 6-MAIN-EXIT
+DCR01         END-IF
+DCR01      END-IF.
+
+           IF APPROVAL-CODE-P = "U"
+               IF CALLING-PGM = "SEARQADD"
+                   NEXT SENTENCE
+               ELSE
+               MOVE "WU" TO RETURN-STATUS
+               GO TO 6-MAIN-EXIT.
+
+           MOVE APPROVAL-CODE-P TO SAVE-APPROVAL-CODE.
+
+           IF WO-NUM-SUFF-P = "000"
+               MOVE "WO" TO RETURN-STATUS
+               GO TO 6-MAIN-EXIT.
+
+           MOVE "P" TO WO-KIND.
+
+           MOVE DEPT-P TO DEPT-CHARGED.
+           MOVE EXP-CLASS-P TO EXP-CLASSIFICATION.
+
+      **************************************************************
+      *    RETRIEVE EMPLOYEE'S DEPARTMENT NUMBER                   *
+      **************************************************************
+
+       6-MAIN-CC-ONLY.
+           MOVE 0 TO COND-WORD.
+           MOVE EMPLOYEE-ID TO PERCCNUM OF PER-PERSONNEL-REC.
+           READ PER-PERSONNEL INTO EMPLOYEE-BUFF
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "ID" TO RETURN-STATUS
+               GO TO 6-MAIN-EXIT.
+           MOVE PER-DEPT TO EMPLOYEE-ID.
+           IF RETURN-STATUS = "CC" GO TO 6-MAIN-EXIT.
+
+      **************************************************************
+      *    RETRIEVE WORK ORDER NUMBER PARTS RECORD THAT STORES     *
+      *    ISSUED PARTS FOR AND UPDATE IF RECORD EXISTS OTHERWISE  *
+      *    CREATE A NEW PARTS RECORD FOR THE WORK ORDER NUMBER     *
+      **************************************************************
+
+       6-MAIN-PARTS-CHECK.
+           MOVE 0 TO COND-WORD.
+           MOVE 0 TO PARTS-ITEM-NO.
+           MOVE WO-NUMBER TO WONUM OF WO-PARTS-REC.
+           START WO-PARTS KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 0 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "WO" TO RETURN-STATUS
+               GO TO 6-PARTS-UNLOCK.
+
+       6-GET-UPDATE-REC.
+           MOVE 0 TO COND-WORD.
+           READ WO-PARTS NEXT INTO WO-MATERIALS-USED-DATA
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+           IF WONUM OF WO-PARTS-REC NOT = WO-NUMBER
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               IF QTY-ISSUED NOT > 0
+                   MOVE "NP" TO RETURN-STATUS
+                   GO TO 6-PARTS-UNLOCK
+               ELSE
+               GO TO 6-ADD-A-REC.
+           IF COND-WORD NOT = 0
+               MOVE "WO" TO RETURN-STATUS
+               GO TO 6-PARTS-UNLOCK.
+           ADD 1 TO PARTS-ITEM-NO.
+           IF PRT-DELETE-FLAG = "D" GO TO 6-GET-UPDATE-REC.
+           IF STORES-CODE = PRT-NUM
+               IF CALLING-PGM = "SEARQADD"
+                   IF PRT-REQ-NO = ISSREQ-NUMBER
+                       NEXT SENTENCE
+                   ELSE
+                   GO TO 6-GET-UPDATE-REC
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           GO TO 6-GET-UPDATE-REC.
+      ****************************************************************
+      *    FOUND W/O PARTS RECORD WITH THE SAME CODE THAT STORES     *
+      *    ISSUED STOCK AGAINST - RECORD WILL BE UPDATED IN W/O      *
+      *    PARTS FILE                                                *
+      ****************************************************************
+           IF PRT-ACT-QTY = SPACES MOVE 0 TO PRT-ACT-QTY-9.
+
+           IF RETURN-STATUS = "CX"
+               ADD PRT-ACT-QTY-9 TO QTY-ISSUED
+               GO TO 6-GET-UPDATE-REC.
+
+           IF CALLING-PGM = "SEARQADD"
+               IF CALLING-MODE = "A"
+                   GO TO 6-ADD-A-REC
+               ELSE
+               MOVE QTY-ISSUED       TO  PRT-ACT-QTY-9
+               MOVE AVG-COST         TO  P-UNIT-COST
+               MULTIPLY PRT-ACT-QTY-9 BY AVG-COST
+                   GIVING WORK-COST ROUNDED
+               MOVE WORK-COST        TO  P-ACT-COST
+               MOVE UNIT-OF-MEAS     TO  PRT-UNIT-MEAS
+               REWRITE WO-PARTS-REC FROM WO-MATERIALS-USED-DATA
+               MOVE "Y"              TO  UPDATE-SW
+               GO TO 6-PARTS-UNLOCK.
+
+           ADD QTY-ISSUED TO PRT-ACT-QTY-9.
+           MOVE AVG-COST TO P-UNIT-COST.
+           MULTIPLY PRT-ACT-QTY-9 BY AVG-COST GIVING WORK-COST ROUNDED.
+           MOVE WORK-COST TO P-ACT-COST.
+      *    MOVE CURRENT-DATE TO CUR-DATE-WORK.
+           ACCEPT CUR-DATE-WORK FROM DATE.
+      *-----INCLUDE CENTURY FOR PART USED DATE
+           IF CUR-DATE-YY > "70"
+               MOVE "19" TO PRT-DATE-USED-CC
+           ELSE
+               MOVE "20" TO PRT-DATE-USED-CC.
+           MOVE CUR-DATE-YY TO PRT-DATE-USED-YY.
+           MOVE CUR-DATE-MM TO PRT-DATE-USED-MM.
+           MOVE CUR-DATE-DD TO PRT-DATE-USED-DD.
+           MOVE UNIT-OF-MEAS TO PRT-UNIT-MEAS.
+           IF PRT-ORIGINATOR = SPACES
+               MOVE PER-CC-NUM TO PRT-ORIGINATOR.
+           MOVE 0 TO COND-WORD.
+           REWRITE WO-PARTS-REC FROM WO-MATERIALS-USED-DATA
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               DISPLAY "COND-WORD ON UPDATE = " COND-WORD UPON CONSOLE
+           ELSE
+           MOVE "Y" TO UPDATE-SW.
+
+           GO TO 6-PARTS-UNLOCK.
+
+       6-ADD-A-REC.
+           IF RETURN-STATUS = "CX" GO TO 6-PARTS-UNLOCK.
+
+           MOVE SPACES TO WO-MATERIALS-USED-DATA.
+      ****************************************************************
+      *    NO MATCH WAS FOUND BETWEEN W/O PARTS RECORD CODE AND THE  *
+      *    CODE THAT STORES ISSUED STOCK AGAINST - NEW RECORD WILL   *
+      *    BE CREATED IN W/O PARTS FILE                              *
+      ****************************************************************
+           MOVE WO-NUMBER TO PRT-WO-NU.
+           MOVE ISSUED-QTY TO PRT-ACT-QTY.
+           MOVE STORES-CODE TO PRT-NUM.
+      ****************************************************************
+      *    DECIDED 5-19-87 THAT A PART STATUS CODE OF 'U' WAS NO     *
+      *    LONGER NECESSARY SINCE THE USER THROUGH REQUISITIONS      *
+      *    WAS NOW USED TO LOOKING AT ACTUAL QUANTITY TO DETERMINE   *
+      *    IF THE PART WAS USED OR NOT                               *
+      ****************************************************************
+           IF CALLING-PGM = "SEARQADD"
+               MOVE "M " TO PRT-STATUS
+           ELSE
+           IF WO-STATUS = "CW"
+               MOVE "U " TO PRT-STATUS
+           ELSE
+           MOVE "S "     TO PRT-STATUS.
+           MOVE SPACES TO PRT-STAGE.
+           MOVE AVG-COST TO P-UNIT-COST.
+           MULTIPLY PRT-ACT-QTY-9 BY P-UNIT-COST
+               GIVING P-ACT-COST ROUNDED.
+           IF CALLING-PGM = "SEARQADD"
+               MOVE PART-PRIME    TO PRT-PRIME
+               MOVE PART-SUB      TO PRT-SUB
+               MOVE PART-STAGE    TO PRT-STAGE
+               MOVE PART-DESC-1   TO PRT-DESC
+               MOVE PART-DESC-2   TO PRT-DESC-2
+               MOVE PART-DESC-3   TO PRT-DESC-3
+               MOVE PART-DESC-4   TO PRT-DESC-4
+               MOVE PART-DESC-5   TO PRT-DESC-5
+               MOVE PART-REMARK-1 TO PRT-REMARKS
+               MOVE PART-REMARK-2 TO PRT-REMARKS-2
+               MOVE ISSREQ-NUMBER TO PRT-REQ-NO
+               MOVE PRT-ACT-QTY-9 TO PRT-EST-QTY-9
+               MULTIPLY PRT-EST-QTY-9 BY P-UNIT-COST
+                   GIVING P-EST-COST
+               ADD 1              TO PARTS-ITEM-NO
+               MOVE PARTS-ITEM-NO TO PRT-ITEM-NO
+      *        IF SAVE-APPROVAL-CODE = "A"
+      *            MOVE "*"       TO PRT-EST-QTY-FLAG
+      *            MOVE SPACES    TO PRT-ACT-COST
+      *        ELSE
+      *        NEXT SENTENCE
+           ELSE
+           MOVE STORES-DESC TO PRT-DESC.
+      *    MOVE CURRENT-DATE TO CUR-DATE-WORK.
+           ACCEPT CUR-DATE-WORK FROM DATE.
+      *-----INCLUDE CENTURY FOR PART DATE USED
+           IF CUR-DATE-YY > "70"
+               MOVE "19" TO PRT-DATE-USED-CC
+           ELSE
+               MOVE "20" TO PRT-DATE-USED-CC.
+           MOVE CUR-DATE-YY TO PRT-DATE-USED-YY.
+           MOVE CUR-DATE-MM TO PRT-DATE-USED-MM.
+           MOVE CUR-DATE-DD TO PRT-DATE-USED-DD.
+           MOVE UNIT-OF-MEAS TO PRT-UNIT-MEAS.
+           MOVE PER-CC-NUM TO PRT-ORIGINATOR.
+           MOVE 0 TO COND-WORD.
+           WRITE WO-PARTS-REC FROM WO-MATERIALS-USED-DATA
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               DISPLAY "COND-WORD ON ADD = " COND-WORD UPON CONSOLE
+           ELSE
+           MOVE "Y" TO UPDATE-SW.
+
+       6-PARTS-UNLOCK.
+           IF RETURN-STATUS = "CX" MOVE "  " TO RETURN-STATUS.
+           MOVE HIGH-VALUES TO WONUM OF WO-PARTS-REC.
+           START WO-PARTS KEY > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 0 TO COND-WORD.
+
+       6-MAIN-EXIT.
+           EXIT.
+

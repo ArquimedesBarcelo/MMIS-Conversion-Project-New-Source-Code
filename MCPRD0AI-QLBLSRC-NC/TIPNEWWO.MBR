@@ -1,0 +1,551 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TIPNEWWO.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *C--------------------------------------------------------------
+      *C 08/23/93  JSB REQ #6306
+      *C      ADDED "PR" AS A NEW WO STATUS FOR PRE-RELEASE.
+      *C      CALL SPMCWSD TO UPDATE PM-SCHEDULE TO REMOVE THE
+      *C      SCHEDULE RECORD AND REMOVE THE "PR" ON THE QUEUE
+      *C      RECORD IN PM-QUEUE TO RELEASE IT TO THE QUEUE.
+      *C--------------------------------------------------------------
+      *C 09/23/94  WLM
+      *C      ADDED LOGIC TO CALL SUBROUTINE SASBWARN, WHICH
+      *C      WILL READ THE EQUIPMENT FILE FOR THE EQUIPMENT
+      *C      ON THE WORKORDER TO DETERMINE IF THERE IS A
+      *C      CHANCE OF EXPOSURE TO ASBESTOS.  IF SO, THEN A
+      *C      SCREEN WILL DISPLAY THE WARNING MESSAGE WRITTEN
+      *C      BY THE PLANT FOR THE EQUIPMENT.
+      *C--------------------------------------------------------------
+      *C 12/09/97  WDR REQ #97-010
+      *C      ADDED CALL FOR 24 HOUR EQUIPMENT HISTORY DISPLAY
+      *C      ON LOCAL SWITCH 'L' WHEN CRAFTSPERSON SIGNS 'IP'
+      *C      ON VERBAL WORKORDER.
+      *C--------------------------------------------------------------
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          REQUESTOR IS WORK-STATION
+                               SYSTEM-CONSOLE IS CONSOLE
+                               LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-OPEN-QUEUE
+                  ASSIGN       TO DATABASE-MCFLMM1902
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURRENT-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1602
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZCFTHELP-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  WO-OPEN-QUEUE
+           LABEL RECORDS ARE STANDARD.
+       01  WOQ-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1902.
+
+       FD  CURRENT-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  LC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1602.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-KEY             PIC 9999.
+       77  RESERVE-SW          PIC S9(4)  VALUE 0.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  WO-NUM-BUF          PIC X(10).
+       77  EQUIP-BUF           PIC X(06).
+       77  HOLD-FORM           PIC X(16).
+       77  FILE-STAT           PIC XX.
+       77  RETURN-COD          PIC 9999.
+       77  RETURN-ERROR        PIC X(78).
+       77  SAVE-WO-STATUS      PIC X(2).
+       77  UPDATE-CODE         PIC X(2)  VALUE SPACES.
+       77  PASS-EQPNUM         PIC X(6)  VALUE SPACES.
+
+       01  CUR-DATE-CN.
+           05  C-DATE-CC       PIC 99.
+           05  CUR-DATE-99.
+               10  C-DATE-YY   PIC 99.
+               10  C-DATE-MM   PIC 99.
+               10  C-DATE-DD   PIC 99.
+
+       01  TIME-BUFF.
+           02  TIME-HM.
+               03  TIME-HRS    PIC 99.
+               03  TIME-MINS   PIC 99.
+           02  FILLER          PIC XXXX.
+
+       01  DB-ERROR.
+           05  DB-FUNC   PIC X(10) VALUE SPACES.
+           05  DB-FILE   PIC X(18) VALUE SPACES.
+           05  FILLER    PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD  PIC XX.
+
+       01  INVALID-STATUS-MSG.
+           05  FILLER  PIC X(15) VALUE "CANNOT PERFORM ".
+           05  FILLER  PIC X(10) VALUE "LABOR ON '".
+           05  STAT-WO PIC X(02) VALUE "  ".
+           05  FILLER  PIC X(09) VALUE "' STATUS ".
+           05  B-P-WO  PIC X(07) VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE " WORK ORDER".
+
+       01  RESERVE-SCREEN.
+           05  RES-WO          PIC X(10).
+           05  RES-CC          PIC XXXX.
+           05  RESERVATION-SW  PIC X.
+           05  RM-1.
+               10  FILLER      PIC X(43).
+               10  CC-RES      PIC X(25).
+           05  CMDMSG          PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY JCWAREA        IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  LABOR-CURR-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+      *---FOR CALL TO SPMNEWWO TO RELEASE TO PM QUEUE
+       01  SAVE-PRIORITY.
+           05  PRIORITY-1      PIC X.
+           05  PRIORITY-2      PIC X.
+
+       01  TRAN-FILE-DATA.
+           COPY TRANSFIL       IN COPYLIB.
+
+       01  CRAFT-TABLE         PIC X(2000)  VALUE SPACES.
+
+       01  USER-CODE           PIC X(8)     VALUE SPACES.
+
+       01  PRINT-DATA          PIC X(800)   VALUE SPACES.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  QUEUE-WO-DATA.
+           05  QUEUE-WO-SAVE   PIC X(10).
+           05  QUEUE-RESET     PIC X.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF       PIC X(04).
+           05  CNAM-BUF       PIC X(16).
+
+       01  MESSAGE-BUFFER     PIC X(76).
+       01  FILE-SW            PIC X.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               QUEUE-WO-DATA
+                               WO-BASIC-DATA
+                               WO-PLANNED-DATA
+                               WO-TRACK-DATA
+                               CNUM-BUFFER
+                               MESSAGE-BUFFER
+                               FILE-SW.
+       BEGIN.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN I-O            CURRENT-LABOR.
+           OPEN INPUT          WO-OPEN-QUEUE.
+           OPEN I-O            WO-BASIC.
+           OPEN I-O            WO-PLANNED.
+           ACCEPT CUR-DATE-99  FROM DATE.
+           MOVE 20             TO C-DATE-CC.
+           IF C-DATE-YY > 70
+               MOVE 19         TO C-DATE-CC.
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+
+       1-GET-DATA.
+           MOVE 0              TO RESERVE-SW.
+           IF FILE-SW = "B"
+               PERFORM READ-QUEUE THRU RQ-EXIT
+               IF RESERVE-SW > 0
+                   PERFORM RESERVATION-SCREEN THRU RS-EXIT
+                   IF RESERVATION-SW NOT = SPACE
+                       MOVE SPACES TO MESSAGE-BUFFER
+                       MOVE WO-NUM TO WO-NUM-BUF
+                       GO TO 2-START-WORK
+                   ELSE
+                       MOVE RM-1 TO MESSAGE-BUFFER
+                       GO TO END-OF-JOB
+               ELSE
+               IF WO-STATUS = "OO" OR "HL" OR "HM"
+                                   OR "IP"
+                   MOVE WO-NUM TO WO-NUM-BUF
+                   GO TO 2-START-WORK
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               IF APPROVAL-CODE-P = "U "
+      **********************************************************************
+      **    MESSAGE 038/011:
+      ** LABOR CANNOT BE ADDED TO UNAPPROVED W/O
+      **********************************************************************
+                   MOVE  38    TO CATREAD-MSG-SET
+                   MOVE  11    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   GO TO END-OF-JOB
+               ELSE
+      **********************************************************************
+      *  edit removed 01/21/91 to make AS/400 same as HP3000 version    pdr*
+      **********************************************************************
+      *        IF WO-CURRENT-TYPE = "E"
+      **********************************************************************
+      **    MESSAGE 029/118:
+      ** CANNOT WRITE LABOR TO A WORKORDER IN THE ENGINEERING LOOP
+      **********************************************************************
+      *            MOVE  29    TO CATREAD-MSG-SET
+      *            MOVE 118    TO CATREAD-MSG-NUM
+      *            PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *            GO TO END-OF-JOB
+      *        ELSE
+      **********************************************************************
+               IF WO-NUM-SUFF-P = "000"
+      **********************************************************************
+      **    MESSAGE 029/116:
+      ** CANNOT WRITE LABOR TO A MASTER SUFFIXED WORKORDER
+      **********************************************************************
+                   MOVE  29    TO CATREAD-MSG-SET
+                   MOVE 116    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   GO TO END-OF-JOB
+               ELSE
+               IF WO-STATUS-P = "IP" OR "SD" OR "SW" OR
+                                         "HM" OR "HS" OR "PR"
+                   MOVE WO-NUM-PLANNED TO WO-NUM-BUF
+                   GO TO 2-START-WORK.
+
+      **********************************************************************
+      **    MESSAGE 029/075:
+      ** CANNOT PERFORM LABOR ON '  ' STATUS         WORK ORDER
+      **********************************************************************
+           MOVE  29            TO CATREAD-MSG-SET.
+           MOVE  75            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO INVALID-STATUS-MSG.
+
+           IF FILE-SW = "B"
+               MOVE WO-STATUS  TO STAT-WO
+               MOVE "VERBAL "  TO B-P-WO
+           ELSE
+               MOVE WO-STATUS-P TO STAT-WO
+               MOVE "PLANNED"  TO B-P-WO.
+
+           MOVE INVALID-STATUS-MSG TO MESSAGE-BUFFER.
+           GO TO END-OF-JOB.
+
+       2-START-WORK.
+           ACCEPT CUR-DATE-99  FROM DATE.
+           MOVE 20             TO C-DATE-CC.
+           IF C-DATE-YY > 70
+               MOVE 19         TO C-DATE-CC.
+           ACCEPT TIME-BUFF    FROM TIME.
+           MOVE SPACES         TO LABOR-CURR-STAT.
+           MOVE CNUM-BUF       TO LCS-EMPL-NUM.
+           MOVE WO-NUM-BUF     TO LCS-WO-NUM.
+           MOVE CUR-DATE-CN    TO LCS-START-DATE-CN.
+           MOVE TIME-HM        TO LCS-START-TIME.
+
+           WRITE LC-REC FROM LABOR-CURR-DATA
+               INVALID KEY GO TO END-OF-JOB.
+           IF FILE-STAT NOT = "00"
+               GO TO END-OF-JOB.
+
+           IF FILE-SW = "B"
+               PERFORM 3-UPDATE-BASIC-FILE
+           ELSE
+               PERFORM 3-UPDATE-PLANNED-FILE.
+
+      *********************************************************
+      **  IF JCW-MULTIWO-264 IS SET TO ANY NON-BLANK VALUE,  **
+      **  THE SYSTEM WILL ALLOW RESERVATION OF MULTIPLE WO's **
+      *********************************************************
+           IF JCW-MULTIWO-264 NOT = " "
+               CALL "TMULTQUE" USING EQUIP-BUF
+                               CNUM-BUFFER
+                               QUEUE-WO-DATA
+                               DBPARAMETERS.
+
+           MOVE SPACES         TO CNUM-BUFFER.
+           GO TO END-OF-JOB.
+
+       3-UPDATE-BASIC-FILE.
+           MOVE WO-NUM-BUF     TO WONUM OF WO-BASIC.
+           READ  WO-BASIC      INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               GO TO END-OF-JOB.
+
+           MOVE EQUIP-NUM      TO EQUIP-BUF.
+           IF WO-STATUS NOT = "SW" MOVE "IP" TO WO-STATUS.
+
+           IF CRAFTSMEN-1 = SPACES
+               MOVE CNUM-BUF   TO CRAFTSMEN-1
+           ELSE
+           IF CRAFTSMEN-2 = SPACES
+               MOVE CNUM-BUF   TO CRAFTSMEN-2
+           ELSE
+           IF CRAFTSMEN-3 = SPACES
+               MOVE CNUM-BUF   TO CRAFTSMEN-3.
+
+           IF DATE-STRT = SPACES
+               MOVE CUR-DATE-CN TO DATE-STRT-CN
+               MOVE TIME-HM    TO TIME-STRT.
+
+           REWRITE VWO-REC     FROM WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "REWRITE " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               GO TO END-OF-JOB.
+
+           IF RESERVE-SW = 0
+               MOVE SPACES     TO WO-QUEUE-DATA
+               MOVE WO-NUM     TO Q-WO-NUM
+               MOVE "D"        TO QUEUE-SW
+               CALL "TQUPDATE" USING DBPARAMETERS
+                                     WO-QUEUE-DATA
+                                     QUEUE-SW
+                                     QUEUE-ERROR
+               IF QUEUE-ERROR NOT = SPACES
+                   MOVE QUEUE-ERROR TO MESSAGE-BUFFER
+                   GO TO END-OF-JOB
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               MOVE WO-NUM     TO Q-WO-NUM
+               MOVE "IP"       TO Q-CW-LINK
+               MOVE "C"        TO QUEUE-SW
+               CALL "TQUPDATE" USING DBPARAMETERS
+                                     WO-QUEUE-DATA
+                                     QUEUE-SW
+                                     QUEUE-ERROR
+               IF QUEUE-ERROR NOT = SPACES
+                   MOVE QUEUE-ERROR TO MESSAGE-BUFFER
+                   GO TO END-OF-JOB.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TIPNEWWO"     TO PROGRAM-NAME.
+           MOVE WO-NUM         TO WO-NUM-TRACK.
+           MOVE CUR-DATE-CN    TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS.
+           MOVE CNUM-BUF       TO USER-ID CLOCK-CARD.
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+           MOVE "IP"           TO TRANS-STATUS.
+           CALL "TWOTRACK" USING WO-TRACK-DATA.
+
+       3-UPDATE-PLANNED-FILE.
+           MOVE WO-NUM-BUF     TO WONUM OF WO-PLANNED.
+           READ  WO-PLANNED    INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               GO TO END-OF-JOB.
+
+           MOVE WO-STATUS-P TO SAVE-WO-STATUS.
+
+           MOVE EQUIP-NUM-P    TO EQUIP-BUF.
+           IF WO-STATUS-P NOT = "SW" MOVE "IP" TO WO-STATUS-P.
+
+           IF DATE-STRT-P = SPACES
+               MOVE CUR-DATE-CN TO DATE-STRT-P-CN
+               MOVE TIME-HM    TO TIME-STRT-P.
+
+           REWRITE PWO-REC     FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "REWRITE " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               GO TO END-OF-JOB.
+
+      *----IF 'IP' A 'PR' STATUS,WRITE TO PM QUEUE,UPDATE SCHED DATE
+      *--------RELEASE TO QUEUE AND REMOVE FROM PM-SCHEDULE
+      *    IF SAVE-WO-STATUS = "PR" AND WO-STATUS-P = "IP"
+      *----CHANGED IF-STATEMENT TO INCLUDE >>ALL<< PM WORKORDERS
+           IF WO-START-STATUS = "AA"
+               MOVE 0          TO RETURN-COD
+               MOVE SPACES     TO RETURN-ERROR
+               MOVE "IP"       TO UPDATE-CODE
+               CALL "SPMCWSD"  USING WO-NUM-PLANNED
+                               UPDATE-CODE
+                               CUR-DATE-99
+                               DBPARAMETERS
+                               RETURN-COD
+                               RETURN-ERROR
+           END-IF.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TIPNEWWO"     TO PROGRAM-NAME.
+           MOVE WO-NUM-PLANNED TO WO-NUM-TRACK.
+           MOVE CUR-DATE-CN    TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+           MOVE WO-START-STATUS TO WO-TYPE-STATUS.
+           MOVE CNUM-BUF       TO USER-ID CLOCK-CARD.
+           MOVE WO-STATUS-P    TO WO-STATUS-TRACK.
+           MOVE "IP"           TO TRANS-STATUS.
+           CALL "TWOTRACK" USING WO-TRACK-DATA.
+
+       END-OF-JOB.
+      *********************************************************
+      **  IF JCW-24HIST-308 IS SET TO ANY NON-BLANK VALUE,   **
+      **  A 24 HOUR VERBAL EQUIPMENT HISTORY WILL DISPLAY    **
+      *********************************************************
+           IF FILE-SW = "B"
+               IF JCW-24HIST-308 NOT = " "
+                   CALL "SWO24HST" USING EQUIP-NUM
+                                   DBPARAMETERS.
+
+           CLOSE               CURRENT-LABOR.
+           CLOSE               WO-OPEN-QUEUE.
+           CLOSE               WO-BASIC.
+           CLOSE               WO-PLANNED.
+           CLOSE               DISPLAY-FILE.
+           IF MESSAGE-BUFFER = SPACES
+              IF FILE-SW = "B"
+                 MOVE EQUIP-NUM   TO PASS-EQPNUM
+              ELSE
+                 MOVE EQUIP-NUM-P TO PASS-EQPNUM
+              END-IF
+              CALL "SASBWARN" USING PASS-EQPNUM.
+           GOBACK.
+
+       READ-QUEUE.
+           MOVE WO-NUM         TO WONUM OF WO-OPEN-QUEUE.
+           READ WO-OPEN-QUEUE  INTO WO-QUEUE-DATA
+               INVALID KEY     GO TO RQ-EXIT.
+           IF FILE-STAT NOT = "00"
+               GO TO RQ-EXIT.
+
+           IF Q-RESERVE = "XX"
+               MOVE 1          TO RESERVE-SW.
+
+       RQ-EXIT.    EXIT.
+
+       RESERVATION-SCREEN.
+           MOVE SPACES         TO RESERVE-SCREEN.
+           MOVE SCREEN-NAME    TO HOLD-FORM.
+           MOVE "VRESERVE"     TO SCREEN-NAME.
+
+      **********************************************************************
+      **    MESSAGE 049/051:
+      **   WORKORDER IS RESERVED BY CLOCK CARD NUMBER
+      **********************************************************************
+           MOVE  49            TO CATREAD-MSG-SET.
+           MOVE  51            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO RM-1.
+
+           MOVE WO-NUM         TO RES-WO.
+           MOVE Q-CC-NUM       TO RES-CC CC-RES.
+
+       SHOWFORM.
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE RESERVE-SCREEN TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO RESERVE-SCREEN.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM.
+
+           MOVE HOLD-FORM      TO SCREEN-NAME.
+
+       RS-EXIT.    EXIT.
+
+       999-CATREAD.
+           MOVE SPACES           TO MESSAGE-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.    EXIT.
+

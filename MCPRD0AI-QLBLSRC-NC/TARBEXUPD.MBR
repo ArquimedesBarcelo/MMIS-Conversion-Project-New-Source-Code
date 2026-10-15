@@ -1,0 +1,512 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     TARBEXUPD.
+       AUTHOR.         EXLTECH, LLC - DAN RAUCH
+
+      ***************************************************************
+      **                     T A R B E X U P D
+      ***************************************************************
+      **            ARIBA CATALOG  EXCEPTION FILE UPDATE
+      **          ----------------------------------------
+      ** THIS PROGRAM TRIES TO "FILL IN" MISSING CATALOG EXCEPTION
+      ** DATA - DATA THAT MAY NOT HAVE BEEN AVAILABLE WHEN THE
+      ** EXCEPTION RECORD WAS WRITTEN. IF THE REQ NO LONGER EXISTS
+      ** THEN THE EXCEPTION RECORD IS DELETED. IF A PO HAS BEEN
+      ** CREATED THEN PO DATA WILL BE USED FOR SOME EXCEPTION FIELDS.
+      ** EXCEPTION RECORDS WITH REASON CODE 0003(REPAIR) ARE BYPASSED.
+      **
+      **   1)  PREFERRED FIELDS ARE POPULATED USING CATALOG DATA
+      **       (EITHER PREFERRED OR OVERRIDE ITEM)
+      **
+      **   2)  EXCEPTION FIELDS ARE POPULATED USING DMANPART,
+      **       REQUISITION AND/OR PO DATA
+      ***************************************************************
+      * Modification History:                                       *
+      ***************************************************************
+      *    Date     Name             Description                    *
+      * ----------  ---------------  ------------------------------ *
+      * mm/dd/yyyy                                                  *
+      ***************************************************************
+
+
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *===============================================================
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT CATALOG-EXCP-FILE  ASSIGN TO DATABASE-MCFLAB1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+           SELECT DMANPART-FILE ASSIGN TO DATABASE-MCFLCS3603
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+           SELECT DREQD-FILE    ASSIGN TO DATABASE-MCFLCS2101
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+           SELECT DREQITM-FILE  ASSIGN TO DATABASE-MCFLCS2201
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+           SELECT PO-ITEM-FILE  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+      *================================================================
+       DATA DIVISION.
+      *================================================================
+       FILE SECTION.
+
+       FD  CATALOG-EXCP-FILE.
+       01  CATALOG-EXCP-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB1601.
+       COPY DARIBAEXP IN COPYLIB.
+
+       FD  DMANPART-FILE.
+       01  DMANPART-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS3603.
+       COPY DMANPART  IN COPYLIB.
+
+       FD  DREQD-FILE.
+       01  DRECD-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS2101.
+       COPY DREQD     IN COPYLIB.
+
+       FD  DREQITM-FILE.
+       01  DREQITM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS2201.
+       COPY DREQITM   IN COPYLIB.
+
+       FD  PO-ITEM-FILE.
+       01  PO-ITEM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS1002.
+       COPY DPOITEM   IN COPYLIB.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+       COPY FILESTATUS IN COPYLIB.
+       COPY DTSPARMS2  IN COPYLIB.
+       COPY ZCATPWS    IN COPYLIB.
+       COPY DARIBACAT  IN COPYLIB.
+
+      *****************************************************************
+      *  MISCELLANEOUS WORK FIELDS
+      *****************************************************************
+       01  WS-MISCELLANEOUS-FIELDS.
+
+           03  WS-PROGRAM-NAME     PIC  X(10)      VALUE "TARBEXUPD".
+           03  WS-SAVE-PRICE       PIC S9(08)V9999  VALUE +0.
+           03  WS-REPAIR           PIC  X(04)      VALUE "0003".
+           03  WS-ITEM-NBR         PIC  9(04)      VALUE 0001.
+           03  WS-DMANPART-SEL     PIC  X(01)      VALUE SPACE.
+
+           03  WS-FOUND-SW         PIC  X(01)      VALUE "N".
+               88  FOUND-NO                        VALUE "N".
+               88  FOUND-YES                       VALUE "Y".
+
+           03  WS-PO-ITEM-SW       PIC  X(01)      VALUE "N".
+               88  PO-ITEM-FOUND-NO                VALUE "N".
+               88  PO-ITEM-FOUND-YES               VALUE "Y".
+
+           03  WS-CHANGE-SW        PIC  X(01)      VALUE "N".
+               88  CHANGE-WAS-MADE-NO              VALUE "N".
+               88  CHANGE-WAS-MADE-YES             VALUE "Y".
+
+      *================================================================
+      *=             P R O C E D U R E    D I V I S I O N
+      *================================================================
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           OPEN  INPUT  DREQD-FILE
+                        DREQITM-FILE
+                        PO-ITEM-FILE
+                        DMANPART-FILE
+                 I-O    CATALOG-EXCP-FILE.
+
+
+           PERFORM 0010-INITIALIZE       THRU 0010-EXIT.
+
+           PERFORM 1000-MAIN-LOGIC       THRU 1000-EXIT
+                   UNTIL FS-END-OF-FILE.
+
+
+           CLOSE        DREQD-FILE
+                        DREQITM-FILE
+                        PO-ITEM-FILE
+                        CATALOG-EXCP-FILE
+                        DMANPART-FILE.
+
+
+       0000-PROGRAM-END.
+           GOBACK.
+
+      *****************************************************************
+      ** 1ST TIME PROCESSING ROUTINE
+      *****************************************************************
+       0010-INITIALIZE.
+
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+
+           PERFORM 9000-START-CATALOG-EXCP THRU 9000-START-EXIT.
+           PERFORM 9000-READN-CATALOG-EXCP THRU 9000-READN-EXIT.
+
+       0010-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  MAIN PROCESSING LOOP ROUTINE
+      *****************************************************************
+       1000-MAIN-LOGIC.
+
+           PERFORM 1001-INIT           THRU 1001-EXIT.
+
+      **---------------------------------------------------------------
+      ***  RETRIEVE THE REQ  -  IF NOT FOUND THEN DELETE EXCEPTION REC
+      **---------------------------------------------------------------
+           PERFORM 9100-READK-DREQD    THRU 9100-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               PERFORM 9000-DELET-CATALOG-EXCP THRU 9000-DELET-EXIT
+               GO TO 1000-READ-NEXT
+           END-IF.
+
+      *----------------------------------------------------------------
+      * BYPASS REPAIRS
+      *----------------------------------------------------------------
+           IF  ARIBAEXP-REASON-CODE = WS-REPAIR
+               GO TO 1000-READ-NEXT
+           END-IF.
+
+      **---------------------------------------------------------------
+      ***  RETRIEVE THE REQITEM RECORD AND SAVE THE PRICE
+      **---------------------------------------------------------------
+           PERFORM 9600-READK-DREQITM  THRU 9600-READK-EXIT.
+           MOVE REQITM-UNIT-PRICE    TO WS-SAVE-PRICE.
+
+      **---------------------------------------------------------------
+      ***  PROCESS THIS EXCEPTION RECORD
+      **---------------------------------------------------------------
+           PERFORM 1100-PROCESS-EXCEPTION  THRU 1100-EXIT.
+
+       1000-READ-NEXT.
+
+      *----------------------------------------------------------------
+      ***  READ THE NEXT CATALOG EXCP RECORD
+      *----------------------------------------------------------------
+           PERFORM 9000-READN-CATALOG-EXCP     THRU 9000-READN-EXIT.
+
+       1000-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  INITIALIZE SOME FIELDS
+      *****************************************************************
+       1001-INIT.
+
+           INITIALIZE BUF-DPOITEM  BUF-DREQD.
+           MOVE ZERO             TO WS-SAVE-PRICE.
+
+       1001-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  PROCESS AN EXCEPTION RECORD
+      *****************************************************************
+       1100-PROCESS-EXCEPTION.
+
+           SET CHANGE-WAS-MADE-NO TO TRUE.
+
+           SET PO-ITEM-FOUND-NO   TO TRUE.
+           INITIALIZE  BUF-DARIBCAT  BUF-DMANPART.
+      **---------------------------------------------------------------
+      ** TRY TO RETRIEVE THE PO ITEM RECORD AND SAVE THE PRICE
+      **---------------------------------------------------------------
+           PERFORM 9200-READK-PO-ITEM    THRU 9200-READK-EXIT.
+           IF  FS-GOOD-FILE-IO
+               SET PO-ITEM-FOUND-YES  TO TRUE
+               MOVE ITM-UNIT-PRICE   TO WS-SAVE-PRICE
+           END-IF.
+
+
+      **---------------------------------------------------------------
+      **             POPULATE PREFERRED ITEM FIELDS
+      **   (These fields represent what SHOULD'VE Been Ordered)
+      **---------------------------------------------------------------
+           IF  ARIBAEXP-PRF-MANUFACT-NAME  = SPACE
+               PERFORM 1110-REBUILD-PRF-DATA THRU 1110-EXIT
+           END-IF.
+
+      **---------------------------------------------------------------
+      **             POPULATE EXCEPTION ITEM FIELDS
+      ** IF PO ITEM RECORD EXISTS, USE DMANPART TO POPULATE EXCP FIELDS
+      **   (These fields represent what ACTUALLY WAS Ordered)
+      **---------------------------------------------------------------
+           IF  ARIBAEXP-EXP-MANUFACT-NAME  = SPACE
+               IF  PO-ITEM-FOUND-YES
+                   PERFORM 1112-REBUILD-EXP-DATA THRU 1112-EXIT
+               END-IF
+           END-IF.
+
+
+           IF  CHANGE-WAS-MADE-YES
+               PERFORM 9000-REWRT-CATALOG-EXCP  THRU 9000-REWRT-EXIT
+           END-IF.
+
+       1100-EXIT.
+            EXIT.
+      *****************************************************************
+      ** BUILD PREFERRED ITEM FIELDS
+      *****************************************************************
+       1110-REBUILD-PRF-DATA.
+
+      ** GET THE OVERRIDE OR PREFERRED CATALOG ITEM
+           PERFORM 2000-GET-PREFERRED-ITEM-1  THRU 2000-GPI1-EXIT.
+
+           MOVE ARIBACAT-MANUFACT-NAME TO ARIBAEXP-PRF-MANUFACT-NAME.
+           MOVE ARIBACAT-MANUFACT-PARTNO
+                                       TO ARIBAEXP-PRF-MANUFACT-PARTNO.
+           MOVE ARIBACAT-VENDOR-CODE   TO ARIBAEXP-PRF-VENDOR-CODE.
+           MOVE ARIBACAT-VENDOR-PARTNO TO ARIBAEXP-PRF-VENDOR-PARTNO.
+           MOVE ARIBACAT-VENDOR-AUXID  TO ARIBAEXP-PRF-VENDOR-AUXID.
+           MOVE ARIBACAT-CONVER-PRICE  TO ARIBAEXP-PRF-VENDOR-PRICE.
+           MOVE ARIBACAT-CURR-CODE     TO ARIBAEXP-PRF-CURR-CODE.
+
+           SET CHANGE-WAS-MADE-YES     TO TRUE.
+
+       1110-EXIT.
+            EXIT.
+      *****************************************************************
+      ** BUILD EXCEPTION ITEM FIELDS (FROM PO)
+      *****************************************************************
+       1112-REBUILD-EXP-DATA.
+
+           PERFORM 1112A-GET-EXCP-DMANPART THRU 1112A-EXIT.
+
+           MOVE MAN-NAME            TO ARIBAEXP-EXP-MANUFACT-NAME.
+           MOVE MAN-PARTNO          TO ARIBAEXP-EXP-MANUFACT-PARTNO.
+           MOVE DREQD-VEN-CODE      TO ARIBAEXP-EXP-VENDOR-CODE.
+      ***  MOVE ARIBACAT-VENDOR-PARTNO TO ARIBAEXP-EXP-VENDOR-PARTNO.
+      ***  MOVE ARIBACAT-VENDOR-AUXID  TO ARIBAEXP-EXP-VENDOR-AUXID.
+           MOVE WS-SAVE-PRICE       TO ARIBAEXP-EXP-PURCH-PRICE.
+           MOVE REQITM-CURRENCY     TO ARIBAEXP-EXP-CURR-CODE.
+           MOVE ITM-QTY-ORD         TO ARIBAEXP-QTY-ORD.
+
+           SET CHANGE-WAS-MADE-YES     TO TRUE.
+
+       1112-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ** GET DMANPART
+      *****************************************************************
+       1112A-GET-EXCP-DMANPART.
+
+           SET FOUND-NO       TO TRUE.
+
+           MOVE "B"           TO WS-DMANPART-SEL.
+           PERFORM 9500-START-DMANPART  THRU 9500-START-EXIT.
+           PERFORM 9500-READN-DMANPART  THRU 9500-READN-EXIT.
+           IF  FOUND-YES
+               GO TO 1112A-EXIT
+           END-IF.
+
+           MOVE "P"           TO WS-DMANPART-SEL.
+           PERFORM 9500-START-DMANPART  THRU 9500-START-EXIT.
+           PERFORM 9500-READN-DMANPART  THRU 9500-READN-EXIT.
+           IF  FOUND-YES
+               GO TO 1112A-EXIT
+           END-IF.
+
+       1112A-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  GET THE PREFERRED CATALOG ITEM - LOWEST PRICE OR OVERRIDE
+      *****************************************************************
+       2000-GET-PREFERRED-ITEM-1.
+
+           SET ZCATP-MODE-1   TO TRUE.
+           MOVE ARIBAEXP-CORP-CODE TO WS-ZCATP-CORPCODE.
+
+           PERFORM ZCATP-GET-PREFERRED-ITEM THRU ZCATP-EXIT.
+           MOVE WS-ZCATP-CATREC TO BUF-DARIBCAT.
+           MOVE WS-ZCATP-FILE-STATUS  TO WS-FILE-STATUS.
+
+       2000-GPI1-EXIT.
+            EXIT.
+
+       COPY ZCATPSUBR  IN COPYLIB.
+
+      *----------------------------------------------------------------
+      *
+      *            ALL DATABASE FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      ***  START DMANPART FILE
+      *****************************************************************
+       9000-START-CATALOG-EXCP.
+
+           INITIALIZE CATALOG-EXCP-REC.
+
+           START CATALOG-EXCP-FILE
+                 KEY IS >= EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9000-START-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** READ CATALOG-EXCP FILE SEQUENTIALLY
+      *****************************************************************
+       9000-READN-CATALOG-EXCP.
+
+           READ CATALOG-EXCP-FILE NEXT RECORD
+           END-READ.
+
+           IF  FS-END-OF-FILE
+               GO TO 9000-READN-EXIT
+           END-IF.
+
+       9000-READN-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** DELETE CATALOG-EXCP RECORD
+      *****************************************************************
+       9000-DELET-CATALOG-EXCP.
+
+           DELETE CATALOG-EXCP-FILE
+           END-DELETE.
+
+       9000-DELET-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** UPDATE CATALOG-EXCP RECORD
+      *****************************************************************
+       9000-REWRT-CATALOG-EXCP.
+
+           MOVE  WS-SYSTEM-DATE-TIME2  TO ARIBAEXP-DATE-TIME.
+
+           REWRITE CATALOG-EXCP-REC
+           END-REWRITE.
+
+       9000-REWRT-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READK DREQD - LINK THE REQ WITH PO
+      *****************************************************************
+       9100-READK-DREQD.
+
+           INITIALIZE BUF-DREQD.
+           MOVE ARIBAEXP-REQ-NUMBER  TO DREQD-REQ-NUMBER.
+
+           READ DREQD-FILE
+           END-READ.
+
+       9100-READK-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READK PO ITEM FILE
+      *****************************************************************
+       9200-READK-PO-ITEM.
+
+           INITIALIZE BUF-DPOITEM.
+           MOVE  DREQD-PO-RCV-NO  TO ITM-PO-RCV-NO.
+           MOVE  DREQD-PO-ITM-NO  TO ITM-NUMBER.
+
+           READ PO-ITEM-FILE
+           END-READ.
+
+       9200-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  START DMANPART FILE
+      *****************************************************************
+       9500-START-DMANPART.
+
+           INITIALIZE BUF-DMANPART.
+           MOVE ARIBAEXP-CORP-CODE TO MAN-CORPCODE.
+
+           START DMANPART-FILE
+                 KEY IS = EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9500-START-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** READ DMANPART FILE SEQUENTIALLY - GET "PREFERRED"
+      *****************************************************************
+       9500-READN-DMANPART.
+
+           READ DMANPART-FILE NEXT RECORD
+           END-READ.
+
+           IF  FS-END-OF-FILE
+               INITIALIZE BUF-DMANPART
+               GO TO 9500-READN-EXIT
+           END-IF.
+
+           IF  MAN-CORPCODE NOT = ARIBAEXP-CORP-CODE
+               INITIALIZE BUF-DMANPART
+               SET  FS-END-OF-FILE  TO TRUE
+               GO TO 9500-READN-EXIT
+           END-IF.
+
+      ***  GET "PREFERRED"  - SELECT = "B"  OR  "P"
+           IF  MAN-PARTNO-SELECT = WS-DMANPART-SEL
+               SET FOUND-YES      TO TRUE
+               GO TO 9500-READN-EXIT
+           END-IF.
+
+           GO TO 9500-READN-DMANPART.
+
+       9500-READN-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READK DREQITM
+      *****************************************************************
+       9600-READK-DREQITM.
+
+           INITIALIZE BUF-DREQITM.
+           MOVE ARIBAEXP-REQ-NUMBER   TO REQITM-REQ-NUMBER.
+           MOVE WS-ITEM-NBR      TO REQITM-NUMBER.
+
+           READ DREQITM-FILE
+           END-READ.
+
+       9600-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      ***              END  OF  SOURCE  MEMBER
+      *****************************************************************

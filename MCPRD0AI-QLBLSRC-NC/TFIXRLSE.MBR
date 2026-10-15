@@ -1,0 +1,223 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TFIXRLSE.
+       AUTHOR.              C.I.HILLES.
+       DATE-WRITTEN.        4/11/91.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.
+      *    FIND ANY REQS LINKED TO A PO IN DREQD BUT THE RELEASE
+      *D   STATUS IS NOT 'XX' AND FIX.                                 R
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES.  C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE ASSIGN TO PRINTER-MCPRT.
+
+           SELECT MREQ-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQD-RQ-I
+               ASSIGN TO DATABASE-MCFLCS2101
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  PRINT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC                     PIC X(132).
+
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+       FD  MREQ-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-RQ-REC-O.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  DREQD-RQ-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-RQ-REC-I.
+           COPY DDS-MCRPCS2100  OF MCFLCS2101.
+
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+
+       01  HANDLE-BLOWUP-FLAG            PIC X(1)   VALUE "Y".
+       01  UPDATE-FLAG                   PIC X(1).
+       01  REQ-COUNT                     PIC 9(5).
+       01  BAD-COUNT                     PIC 9(5).
+
+      **************************************************************
+      **                                                          **
+      **       S U B P R O G R A M   A R E A S                    **
+      **                                                          **
+      **************************************************************
+       COPY TBLOWUP  IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   W O R K                      **
+      **                                                          **
+      **************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       COPY DATAB IN COPYLIB.
+       01  REQ-ARG                       PIC X(12)  VALUE SPACES.
+
+       01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16) VALUE SPACES.
+           05  DSET-MREQ                 PIC X(16) VALUE "MREQ;".
+
+       01  ALL-ITEMS                     PIC X(2)  VALUE "@;".
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   B U F F E R S                **
+      **                                                          **
+      **************************************************************
+
+       COPY MREQ       IN COPYLIB.
+       COPY DREQD      IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       START-UP SECTION.
+       HOUSEKEEPING.
+           DISPLAY "UPDATE THE DATABASE? (Y/N)".
+           ACCEPT UPDATE-FLAG.
+
+           PERFORM 9999-OPEN-STUFF.
+           OPEN OUTPUT PRINT-FILE.
+           MOVE ZERO TO REQ-COUNT, BAD-COUNT.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X.
+           PERFORM 9999-CLOSE-STUFF.
+           CLOSE PRINT-FILE.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "TFIXBATC"               TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-AREA.
+
+       6000-MAIN.
+           PERFORM 9999-BEGFIL-MREQ-RQ-O.
+
+       6010-SERIAL-LOOP.
+           PERFORM 9999-GETSER-MREQ-RQ-O.
+           PERFORM UNTIL NOT GOOD-CALL
+               ADD 1              TO  REQ-COUNT
+               MOVE MREQ-NUMBER   TO  REQ-ARG
+               PERFORM 9999-CHAINHD-DREQD-RQ-I
+               PERFORM 9999-GETNEXT-DREQD-RQ-I
+               IF GOOD-CALL AND DREQD-PO-RCV-NO > SPACES
+               AND (REQ-RELEASE-STAT NOT = "XX")
+                   MOVE SPACES TO PRINT-REC
+                   STRING "REQ ", MREQ-NUMBER, " DATE ", REQ-DATE,
+                     " SHOULD BE IN 'XX' STAT" DELIMITED BY SIZE
+                       INTO PRINT-REC
+                   WRITE PRINT-REC AFTER ADVANCING 1
+                   ADD 1 TO BAD-COUNT
+                   IF UPDATE-FLAG = "Y"
+                       MOVE "MREQ;" TO DSET-NAME
+                       PERFORM 9999-DSET-LOCK
+                       MOVE "XX" TO REQ-RELEASE-STAT
+                       PERFORM 9999-UPDATE-MREQ-RQ-O
+                       PERFORM 9999-UNLOCK
+                   END-IF
+               END-IF
+               PERFORM 9999-GETSER-MREQ-RQ-O
+           END-PERFORM.
+           MOVE SPACES TO PRINT-REC.
+           STRING REQ-COUNT, " REQS WERE IN DB, ",
+             BAD-COUNT, " WERE BAD" DELIMITED BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC AFTER ADVANCING 1.
+       6990-MAIN-X.
+           EXIT.
+
+       COPY DLOCKCAL IN COPYLIB.
+       COPY UNLOCK   IN COPYLIB.
+       9999-CLOSE-STUFF.
+           CLOSE MREQ-RQ-O.
+           CLOSE DREQD-RQ-I.
+
+       9999-GETSER-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ MREQ-RQ-O NEXT INTO BUF-MREQ
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETSER ERR 9999-GETSER-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-BEGFIL-MREQ-RQ-O.
+           MOVE SPACES TO REQNO OF MREQ-RQ-REC-O.
+           START MREQ-RQ-O KEY >= REQNO OF MREQ-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-UPDATE-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MREQ-RQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DREQD-RQ-I.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQD-RQ-REC-I.
+           START DREQD-RQ-I KEY = REQNO OF DREQD-RQ-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQD-RQ-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETNEXT-DREQD-RQ-I.
+           MOVE 0 TO COND-WORD.
+           READ DREQD-RQ-I NEXT INTO BUF-DREQD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQD-RQ-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQD-RQ-REC-I NOT = REQ-ARG
+               MOVE 15 TO COND-WORD.
+
+
+       9999-OPEN-STUFF.
+           OPEN I-O MREQ-RQ-O.
+           OPEN INPUT DREQD-RQ-I.

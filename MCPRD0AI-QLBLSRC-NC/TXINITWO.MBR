@@ -1,0 +1,958 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TXINITWO.
+
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+
+      *****************************************************************
+      *REMARKS.                THIS PROGRAM INITIATES A WORK ORDER FROM
+      *                        THE CRAFTSMAN SUB-EXECUTIVE PROGRAM (THELPSUB)
+      *                        SUBROUTINES CALLED:
+      *                          TADDWOVP
+      *                          TNEWWONU
+      *                          TPRINTWO
+      *                          TWOTRACK
+      *                          TQUPDATE
+      *                          TERRFILE
+      *  DCR01  ===============> SEQUIPSEL - DSP/SEL EQUIP DESC
+      *  DCR02  ===============> SMCRAFT   - DSP/SEL CRAFT DESC
+      *                          ****.
+      *****************************************************************
+
+
+      *****************************************************************
+      **                   MODIFICATION   HISTORY
+      *****************************************************************
+      *   5/27/92  BK DISMUKES  REQUEST 6193
+      *        1. ADDED LOGIC TO CHECK FOR SAFETY EQUIPMENT AND GIVE WO
+      *           "DW" STATUS IF AGAINST SAFETY EQUIPMENT.
+      *        2. ADDED LOGIC TO DENY REQUEST TO CREATE PLANNED OR
+      *           ENGINEERED WO AGAINST SAFETY EQUIPMENT. MSG TO
+      *           DISPLAY.
+      *----------------------------------------------------------------
+      *   11/24/93  W. ROXBURY   SLS REQUEST 6446; CPE REQUEST 93-022
+      *        ADDED ASBESTOS HAZARD FLAG FOR VERBAL WORKORDER CREATION
+      *----------------------------------------------------------------
+      *   4/22/96  W. ROXBURY
+      *   THE CAPABILITY TO CREATE PLANNED WORKORDERS FROM THIS SCREEN
+      *   HAS BEEN DISABLED FOR THE VALLEYFIELD PLANT (629) PER A REQUEST
+      *   BY BOB FULLER IN APRIL OF 1996.
+      *----------------------------------------------------------------
+      *    JAN 25 2005  D. RAUCH     DCR01      REQUEST# 2004-41709
+      *       1)  ADDED CALL TO EQUIPMENT SELECTION PROGRAM - F5
+      *----------------------------------------------------------------
+      *    APR 19 2005  D. RAUCH     DCR02      REQUEST# 2005-78291
+      *       1)  ADDED CALL TO CRAFT SELECTION PROGRAM - F6
+      *----------------------------------------------------------------
+      *    MMM DD 200?  XXXNAMEXXXXX XXX01      REQUEST# 200?-NNNNN
+      *    XXXXXXXXXXXXXXXXX DESCRIPTION XXXXXXXXXXXXXXXXXXXXXXXXXX
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          REQUESTOR IS WORK-STATION
+                               SYSTEM-CONSOLE IS CONSOLE
+                               LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT REQUIRED-CRAFTS
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN       TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS ARG-NO
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZTXINITWO-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  REQUIRED-CRAFTS
+           LABEL RECORDS       ARE STANDARD.
+       01  CR-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS       ARE STANDARD.
+       01  WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9999  VALUE 1.
+       77  DISP-DOTS           PIC X(40) VALUE ALL "*".
+       77  CFT-BUF             PIC XX.
+       77  ERROR-SW            PIC 9     VALUE 0.
+       77  CRAFT-SW            PIC 9     VALUE 0.
+       77  CONDIT-CODE         PIC X     VALUE SPACE.
+       77  PRINT-SW            PIC S9(4) VALUE 0  COMP-4.
+       77  QUEUE-PRTY          PIC 9.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  ARG-KEY             PIC X(04).
+       77  MSG-HOLD            PIC X(50).
+       77  ERROR-SWITCH        PIC S9(4)          COMP-4.
+       77  WORK-ORDER-NUMBER   PIC X(10).
+       77  WO-ADD-SAVE         PIC X(7).
+       77  FILE-STAT           PIC XX.
+       77  TRUE-VAL            PIC 1     VALUE B"1".
+       77  COM-TEXT            PIC X(22) VALUE " CRAFT REQUIRED ON WO.".
+
+
+DCR01  01  WS-MY-MISC-FLDS.
+DCR01      03  WS-EQUIP-SEL-PGM    PIC X(10) VALUE "SEQUIPSEL".
+DCR01      03  WS-EQUIP-NBR        PIC X(06) VALUE SPACE.
+
+DCR02      03  WS-CRAFT-SEL-PGM    PIC X(10) VALUE "SMCRAFT".
+DCR02      03  WS-CRAFT            PIC X(06) VALUE SPACE.
+DCR02      03  WS-CRAFT-FLAG       PIC X(06) VALUE SPACE.
+DCR02      03  WS-CRAFT-DESC       PIC X(36) VALUE SPACE.
+DCR02      03  WS-CRAFT-DISP       PIC X(01) VALUE "S".
+
+
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TXINITWO".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                   "WORKORDER INITIATION FROM THE ".
+               10  PROG-DESC-A2    PIC X(30) VALUE
+                   "CRAFTSMAN's EXECUTIVE PROGRAM.".
+               10  PROG-DESC-B1    PIC X(30) VALUE
+                   "INITIATES VERBAL OR PLANNED WO".
+               10  PROG-DESC-B2    PIC X(30) VALUE
+                   "RKORDERS FROM THE PLANT FLOOR.".
+               10  PROG-FUNCTION1  PIC X(30) VALUE
+                   "RUNS FROM THE f5 KEY OF THE EX".
+               10  PROG-FUNCTION2  PIC X(30) VALUE
+                   "ECUTIVE SECONDARY MENU.       ".
+           05  PASSWORD-FLAG   PIC X.
+
+       01  SCREEN-DATA.
+           05  REQR-BUF        PIC X(16).
+           05  EQP-NUM-BUF.
+               10  EQP-NUM-BUF-1-2  PIC X(02).
+               10  EQP-NUM-BUF-3-6  PIC X(04).
+           05  PRTY-BUF        PIC X.
+           05  EQP-D-BUF       PIC X.
+           05  WO-DESC-BUF     PIC X(30).
+           05  CRAFT-BUF.
+               10  CRAFT-1-BUF PIC XX.
+               10  CRAFT-2-BUF PIC XX.
+               10  CRAFT-3-BUF PIC XX.
+           05  DESC-2-BUF.
+               10  DESC-2A-BUF PIC X(66).
+               10  DESC-2B-BUF PIC X(66).
+           05  PLANNED-SW      PIC X.
+           05  ASB-MSG         PIC X(36).
+           05  ASBESTOS-SW     PIC X.
+           05  MSG-BUF         PIC X(50).
+           05  CMDMSG          PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+       01  COM-BUFF.
+           05  CFT-SW          PIC X(02)  VALUE SPACES.
+           05  COM-MSG         PIC X(22)  VALUE SPACES.
+           05  FILLER          PIC X(326) VALUE SPACES.
+
+       01  DB-ADD-MESSAGE.
+           05  FILLER          PIC X(08).
+           05  DB-ADD-MSG.
+               10  FILLER      PIC X(12).
+               10  WO-ADD      PIC X(07).
+               10  FILLER      PIC X(23).
+
+       01  TIME-BUFFER.
+           05  CUR-TIME.
+               10  CUR-HRS     PIC XX.
+               10  CUR-MINS    PIC XX.
+           05  CUR-SECS        PIC XXXX.
+
+       01  DATE-BUFFER-CN.
+           05  DATE-BUF-CC     PIC XX.
+           05  DATE-BUFFER.
+               10  DATE-BUF-YY PIC XX.
+               10  DATE-BUF-MM PIC XX.
+               10  DATE-BUF-DD PIC XX.
+
+       01  DB-ERROR.
+           05  DB-FUNC         PIC X(10) VALUE SPACES.
+           05  DB-FILE         PIC X(18) VALUE SPACES.
+           05  FILLER          PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+       01  WHO-PARMS.
+           05  USERNAME        PIC X(10).
+           05  TERMNUM         PIC X(10).
+           05  CURRLIB         PIC X(10).
+           05  JOBLIBX         PIC X.
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY JCWAREA        IN COPYLIB.
+
+       COPY DBSTAT         IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-EQP-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  CRAFT-DATA.
+           COPY MWOCRAFT       IN COPYLIB.
+
+       01  LAST-WO-BUF.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  MESSAGE-BUFFER-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       PROCEDURE DIVISION      USING WO-TRACK-DATA
+                               DBPARAMETERS.
+       CHECK-PASSWORD.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG NOT = "N"
+               GO TO BEGIN.
+           GOBACK.
+
+       BEGIN.
+           PERFORM 1-HSK.
+           GO TO 6-MAIN.
+
+       END-OF-JOB.
+           CLOSE               WO-LAST-NUM-USED.
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               REQUIRED-CRAFTS.
+           CLOSE               DISPLAY-FILE.
+           GOBACK.
+
+       1-HSK.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          WO-LAST-NUM-USED.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          REQUIRED-CRAFTS.
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+      ********************************************************
+      **  IF JCW 'PWOPRT' IS SET AT ANY NON BLANK VALUE, A  **
+      **  COPY OF ANY PLANNED WORKORDER THAT IS INITIATED   **
+      **  WILL PRINT AT THE DESIGNATED PLANNER'S PRINTER.   **
+      ********************************************************
+           IF JCW-PWOPRT-267 > " "
+               MOVE 1          TO PRINT-SW.
+
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUFFER  FROM DATE.
+           MOVE "20"           TO DATE-BUF-CC.
+           IF DATE-BUF-YY > 70
+               MOVE "19"       TO DATE-BUF-CC.
+           MOVE SPACES         TO LAST-WO-BUF.
+
+           CALL "CLWHO"        USING USERNAME
+                               TERMNUM
+                               CURRLIB
+                               JOBLIBX.
+
+           READ  WO-LAST-NUM-USED INTO LAST-WO-BUF
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-LAST-NUM-USED" TO DB-FILE
+               DISPLAY DB-ERROR
+               GO TO END-OF-JOB.
+
+       6-MAIN.
+           MOVE "VINITWO"      TO SCREEN-NAME.
+           MOVE MSG-BUF        TO MSG-HOLD.
+           MOVE SPACES         TO SCREEN-DATA MESSAGE-BUFFER.
+           MOVE MSG-HOLD       TO MSG-BUF.
+      ********************************************************
+      **  IF JCW 'ASBSTS' IS SET AT ANY NON BLANK VALUE, A  **
+      **  COPY OF ANY VERBAL WORKORDER THAT IS INITIATED    **
+      **  WILL PRINT AT THE DESIGNATED ASBESTOS PRINTER.    **
+      **  MUST BE A RECORD 'ABST' IN ZONPRT DATABASE.       **
+      ********************************************************
+           IF JCW-ASBSTS-306 > " "
+               MOVE "Enter X to identify ASBESTOS hazard:"
+                               TO ASB-MSG.
+
+           IF PLANT-IDENT = "153 "
+               MOVE "MT"       TO CRAFT-1-BUF.
+
+       61-SHOWFORM.
+           IF JCW-ASBSTS-306 > " "
+               MOVE B"1"       TO IND(80).
+
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+           IF KEY-HIT = 1 OR 3
+               GO TO END-OF-JOB.
+
+DCR01      IF KEY-HIT = 5
+DCR01         PERFORM 800-CALL-EQUIP-SELECTION THRU 800-EQP-EXIT
+DCR01         GO TO 61-SHOWFORM
+DCR01      END-IF.
+
+DCR02      IF KEY-HIT = 6
+DCR02         PERFORM 800-CALL-CRAFT-SELECTION THRU 800-CFT-EXIT
+DCR02         GO TO 61-SHOWFORM
+DCR02      END-IF.
+
+           PERFORM 61-EDIT-CHECKS THRU 61-EC-EXIT.
+
+           IF PLANNED-SW = "X"
+               PERFORM 62-PL-DB-WRITE
+           ELSE
+               PERFORM 62-BA-DB-WRITE
+               IF WO-STATUS = "OO"
+                   PERFORM 63-WRITE-QUEUE
+               ELSE
+                   NEXT SENTENCE.
+
+      **********************************************************************
+      **    MESSAGE 049/007:
+      **  WORKORDER #XXXXXXXXXX HAS BEEN ADDED
+      **********************************************************************
+           MOVE  49            TO CATREAD-MSG-SET.
+           MOVE   7            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE SPACES         TO DB-ADD-MESSAGE.
+           MOVE MESSAGE-BUFFER TO DB-ADD-MSG.
+           MOVE WO-ADD-SAVE    TO WO-ADD.
+           MOVE DB-ADD-MESSAGE TO MSG-BUF.
+           GO TO 6-MAIN.
+
+       61-EDIT-CHECKS.
+      **********************************************************************
+      **  THE CAPABILITY TO CREATE PLANNED WORKORDERS FROM THIS SCREEN
+      **  HAS BEEN DISABLED FOR THE VALLEYFIELD PLANT (629) PER A REQUEST
+      **  BY BOB FULLER IN APRIL OF 1996.    WDR 4/22/96
+      **********************************************************************
+           IF PLANT-IDENT = "629 "
+               MOVE SPACE      TO PLANNED-SW.
+
+           IF REQR-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 044/028:
+      **  REQUESTER REQUIRED
+      **********************************************************************
+               MOVE  44        TO CATREAD-MSG-SET
+               MOVE  28        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF EQP-NUM-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 031/016:
+      **  EQUIPMENT NUMBER IS REQUIRED
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  16        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE EQP-NUM-BUF    TO EQPNUM OF EQP-EQUIPMENT.
+           READ  EQP-EQUIPMENT INTO WO-EQP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+      **********************************************************************
+      **    MESSAGE 035/004:
+      **  INVALID EQUIPMENT NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE   4        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF EQP-NUM-BUF NOT = EQP-EQUIP-NUM
+               STRING
+               "DATABASE ERROR:  EQUIPMENT - " EQP-NUM-BUF
+               " NOT FOUND." DELIMITED BY SIZE INTO ERRMSG
+               MOVE TRUE-VAL   TO IND (99)
+               GO TO 61-SHOWFORM.
+
+           IF PLANNED-SW     = "X" AND
+              EQP-SAFETY-FLG = "X"
+      **********************************************************************
+      **    MESSAGE 029/125:
+      **  CANNOT CREATE PLANNED/ENGINEERED WO AGAINST SAFETY EQUIPMENT
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE  125       TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF PRTY-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 042/052:
+      **  PRIORITY REQUIRED
+      **********************************************************************
+               MOVE  42        TO CATREAD-MSG-SET
+               MOVE  52        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 15         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF PRTY-BUF < "1" OR > "6"
+      **********************************************************************
+      **    MESSAGE 035/080:
+      **  INVALID PRIORITY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  80        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 15         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF EQP-D-BUF = "Y" OR "N"
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 039/032:
+      **  MUST ENTER 'Y' OR 'N'
+      **********************************************************************
+               MOVE  39        TO CATREAD-MSG-SET
+               MOVE  32        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 4          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF EQP-D-BUF = "Y"
+               MOVE "1"        TO PRTY-BUF.
+
+           IF PRTY-BUF = "1" AND EQP-D-BUF = "N"
+               MOVE "2"        TO PRTY-BUF.
+
+           IF WO-DESC-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 030/042:
+      **  DESCRIPTION REQUIRED
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE  42        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 8          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF PLANNED-SW = "X"
+               MOVE SPACES     TO CRAFT-BUF
+               GO TO 61-EC-EXIT.
+
+           IF CRAFT-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 041/004:
+      **  ONE SKILL CODE REQUIRED
+      **********************************************************************
+               MOVE  41        TO CATREAD-MSG-SET
+               MOVE   4        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+      *##########################################################*
+      ************************************************************
+      ***   SPECIAL CODE ADDED FOR GADSDEN FOR TEMPORARY       ***
+      ***   TRANSITION TO A SINGLE `GM' CRAFT DESIGNATION      ***
+      ************************************************************
+           IF PLANT-IDENT = "131 "
+               IF CRAFT-1-BUF = "MW" OR "PF" OR "WL" OR "SM"
+                   MOVE "GM"   TO CRAFT-3-BUF.
+
+           IF PLANT-IDENT = "131 "
+               IF CRAFT-2-BUF = "MW" OR "PF" OR "WL" OR "SM"
+                   MOVE "GM"   TO CRAFT-3-BUF.
+
+           IF PLANT-IDENT = "131 "
+               IF CRAFT-3-BUF = "MW" OR "PF" OR "WL" OR "SM"
+                   MOVE "GM"   TO CRAFT-3-BUF.
+      ************************************************************
+      *##########################################################*
+
+           IF CRAFT-1-BUF = SPACES
+               MOVE CRAFT-2-BUF TO CRAFT-1-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-1-BUF = SPACES
+               MOVE CRAFT-2-BUF TO CRAFT-1-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-2-BUF = SPACES
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           MOVE 0              TO ERROR-SW CRAFT-SW.
+           MOVE CRAFT-1-BUF    TO CFT-BUF.
+           PERFORM 64-CRAFT-VALIDATION THRU 64-CV-EXIT.
+           IF CRAFT-FLAG = "1"
+               MOVE 1          TO CRAFT-SW.
+
+           IF ERROR-SW = 1
+      **********************************************************************
+      **    MESSAGE 035/035:
+      **  INVALID SKILL
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  35        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF CRAFT-2-BUF NOT = SPACES
+               MOVE CRAFT-2-BUF TO CFT-BUF
+               PERFORM 64-CRAFT-VALIDATION THRU 64-CV-EXIT
+               IF ERROR-SW = 1
+      **********************************************************************
+      **    MESSAGE 035/035:
+      **  INVALID SKILL
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  35    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 6      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           IF CRAFT-3-BUF NOT = SPACES
+               MOVE CRAFT-3-BUF TO CFT-BUF
+               PERFORM 64-CRAFT-VALIDATION THRU 64-CV-EXIT
+               IF ERROR-SW = 1
+      **********************************************************************
+      **    MESSAGE 035/035:
+      **  INVALID SKILL
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  35    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 7      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           IF CRAFT-1-BUF = CRAFT-2-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-1-BUF = CRAFT-2-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-2-BUF = CRAFT-3-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+       61-EC-EXIT.             EXIT.
+
+       62-BA-DB-WRITE.
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUFFER  FROM DATE.
+           MOVE "20"           TO DATE-BUF-CC.
+           IF DATE-BUF-YY > 70
+               MOVE "19"       TO DATE-BUF-CC.
+           CALL "TNEWWONU"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WORK-ORDER-NUMBER
+                               ERROR-SWITCH.
+           MOVE WORK-ORDER-NUMBER TO WO-ADD-SAVE.
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TNEWWONU" TO DB-FUNC
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               DISPLAY "         WORKORDER WAS NOT INITIATED!     "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  HP SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TXINITWO OF XEXECUTV"
+               DISPLAY "  SUBROUTINE:    TNEWWONU"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO WO-BASIC-DATA.
+           MOVE WORK-ORDER-NUMBER TO WO-NUM.
+           IF EQP-SAFETY-FLG = "X"
+               MOVE "DW"       TO WO-STATUS
+               MOVE DATE-BUFFER-CN TO DATE-COMP-CN DATE-STRT-CN
+               MOVE CUR-TIME   TO TIME-COMP, TIME-STRT
+               MOVE "N"        TO EQUIP-DOWN
+               MOVE "090000"   TO FAILURE-CODE
+           ELSE
+               MOVE EQP-D-BUF  TO EQUIP-DOWN
+               MOVE "OO"       TO WO-STATUS.
+
+           IF PLANT-IDENT = "126 "
+               IF PRTY-BUF = "4" OR "5"
+                   MOVE "HL"   TO WO-STATUS.
+           MOVE DATE-BUFFER-CN TO DATE-RECD-CN.
+           MOVE CUR-TIME       TO TIME-RECD.
+           MOVE "A"            TO APPROVAL-CODE.
+           MOVE REQR-BUF       TO REQUESTER-B.
+           MOVE EQP-NUM-BUF    TO EQUIP-NUM.
+           MOVE EQP-EQUIP-NAME TO EQUIP-NAME.
+           MOVE EQP-TYPE       TO TYPE-NUM.
+           MOVE EQP-DEPT       TO DEPT.
+           MOVE EQP-EXP-CLASS  TO EXP-CLASS.
+           MOVE EQP-MAINT-ZONE TO ZONE.
+           MOVE PRTY-BUF       TO PRIORITY.
+           MOVE EQP-LOCATION   TO LOCATION.
+           MOVE EQP-D-BUF      TO EQUIP-DOWN.
+           MOVE WO-DESC-BUF    TO DESCRIPTION-1.
+           MOVE DESC-2-BUF     TO DESCRIPTION-2.
+           MOVE CRAFT-1-BUF    TO CRAFTS-REQD-1.
+           MOVE CRAFT-2-BUF    TO CRAFTS-REQD-2.
+           MOVE CRAFT-3-BUF    TO CRAFTS-REQD-3.
+           MOVE "VV"           TO WO-STRT-STATUS.
+
+           CALL "TADDWO"       USING DBPARAMETERS
+                               WO-BASIC-DATA
+                               CONDIT-CODE
+                               ERROR-SWITCH.
+           IF ERROR-SWITCH NOT = 0
+               MOVE DBPARM-PAD TO DB-FUNC
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               DISPLAY "         WORKORDER WAS NOT INITIATED      "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  HP SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TXINITWO OF XEXECUTV"
+               DISPLAY "  SUBROUTINE:    TADDWO"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TXINITWO"     TO PROGRAM-NAME.
+           MOVE WO-NUM         TO WO-NUM-TRACK.
+           MOVE DATE-RECD-CN   TO DATE-STAMP-CN.
+           MOVE TIME-RECD      TO TIME-STAMP.
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS.
+           MOVE "EXEC"         TO USER-ID.
+           IF USERNAME = "CF        "
+               MOVE TERMNUM    TO USER-NAME.
+           MOVE SPACES         TO CLOCK-CARD.
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+           MOVE "OO"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+           IF CRAFT-SW = 1
+               MOVE "1"        TO RETURN-BYTE
+               MOVE COM-TEXT   TO COM-MSG
+               MOVE CRAFTS-REQD-1 TO ZONE CFT-SW
+               CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COM-BUFF
+               MOVE EQP-MAINT-ZONE TO ZONE.
+
+           IF ASBESTOS-SW > " "
+               MOVE "1"        TO RETURN-BYTE
+               MOVE SPACES     TO COM-BUFF
+               MOVE "ABST"     TO ZONE
+               CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COM-BUFF
+               MOVE EQP-MAINT-ZONE TO ZONE.
+
+       62-PL-DB-WRITE.
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUFFER  FROM DATE.
+           MOVE "20"           TO DATE-BUF-CC.
+           IF DATE-BUF-YY > 70
+               MOVE "19"       TO DATE-BUF-CC.
+           CALL "TNEWWONU"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WORK-ORDER-NUMBER
+                               ERROR-SWITCH.
+           MOVE WORK-ORDER-NUMBER TO WO-ADD-SAVE.
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TNEWWONU" TO DB-FUNC
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               DISPLAY "         WORKORDER WAS NOT INITIATED      "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  HP SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TXINITWO OF XEXECUTV"
+               DISPLAY "  SUBROUTINE:    TNEWWONU"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO WO-PLANNED-DATA.
+           MOVE WORK-ORDER-NUMBER TO WO-NUM-PLANNED.
+           MOVE "OO"           TO WO-STATUS-P.
+           MOVE DATE-BUFFER-CN TO DATE-RECD-P-CN.
+           MOVE CUR-TIME       TO TIME-RECD-P.
+           MOVE "U"            TO APPROVAL-CODE-P.
+           MOVE REQR-BUF       TO REQUESTER-P.
+           MOVE EQP-NUM-BUF    TO EQUIP-NUM-P.
+           MOVE EQP-EQUIP-NAME TO EQUIP-NAME-P.
+           MOVE EQP-TYPE       TO TYPE-NUM-P.
+           MOVE EQP-DEPT       TO DEPT-P.
+           MOVE EQP-EXP-CLASS  TO EXP-CLASS-P.
+           MOVE EQP-MAINT-ZONE TO ZONE-P.
+           MOVE PRTY-BUF       TO PRIORITY-P.
+           MOVE EQP-LOCATION   TO LOCATION-P.
+           MOVE EQP-D-BUF      TO EQUIP-DOWN-P.
+           MOVE WO-DESC-BUF    TO DESCRIPTION-1-P.
+           MOVE DESC-2-BUF     TO DESCRIPTION-2-P.
+           MOVE "PP"           TO WO-START-STATUS.
+           MOVE "INIT"         TO PLANNER-P.
+
+           CALL "TADDWOII"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WO-PLANNED-DATA
+                               CONDIT-CODE
+                               ERROR-SWITCH.
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TADDWOII" TO DB-FUNC
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               DISPLAY "         WORKORDER WAS NOT INITIATED      "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  HP SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TXINITWO OF XEXECUTV"
+               DISPLAY "  SUBROUTINE:    TADDWOII"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY DISP-DOTS
+               DISPLAY "    "
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TXINITWO"     TO PROGRAM-NAME.
+           MOVE WO-NUM-PLANNED TO WO-NUM-TRACK.
+           MOVE DATE-RECD-P-CN TO DATE-STAMP-CN.
+           MOVE TIME-RECD-P    TO TIME-STAMP.
+           MOVE WO-START-STATUS TO WO-TYPE-STATUS.
+           MOVE "EXEC"         TO USER-ID.
+           IF USERNAME = "CF        "
+               MOVE TERMNUM    TO USER-NAME.
+           MOVE SPACES         TO CLOCK-CARD.
+           MOVE WO-STATUS-P    TO WO-STATUS-TRACK TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+           IF PRINT-SW = 1
+               MOVE SPACES             TO WO-BASIC-DATA
+               MOVE WO-NUM-PLANNED     TO WO-NUM
+               MOVE WO-STATUS-P        TO WO-STATUS
+               MOVE WO-START-STATUS    TO WO-STRT-STATUS
+               MOVE DATE-RECD-P-CN     TO DATE-RECD-CN
+               MOVE TIME-RECD-P        TO TIME-RECD
+               MOVE APPROVAL-CODE-P    TO APPROVAL-CODE
+               MOVE REQUESTER-P        TO REQUESTER-B
+               MOVE EQUIP-NUM-P        TO EQUIP-NUM
+               MOVE EQUIP-NAME-P       TO EQUIP-NAME
+               MOVE TYPE-NUM-P         TO TYPE-NUM
+               MOVE DEPT-P             TO DEPT
+               MOVE ZONE-PRIORITY-P    TO ZONE-PRIORITY
+               MOVE LOCATION-P         TO LOCATION
+               MOVE EQUIP-DOWN-P       TO EQUIP-DOWN
+               MOVE EXP-CLASS-P        TO EXP-CLASS
+               MOVE DESCRIPTION-1-P    TO DESCRIPTION-1
+               MOVE DESCRIPTION-2-1-P  TO DESCRIPTION-2-1
+               MOVE DESCRIPTION-2-2-P  TO DESCRIPTION-2-2
+               MOVE DATE-STRT-P-CN     TO DATE-STRT-CN
+               MOVE TIME-STRT-P        TO TIME-STRT
+               MOVE DATE-COMP-P-CN     TO DATE-COMP-CN
+               MOVE TIME-COMP-P        TO TIME-COMP
+               MOVE ALL "*"            TO CRAFTS-REQD-1
+               MOVE ALL "*"            TO CRAFTS-REQD-2
+               MOVE ALL "*"            TO CRAFTS-REQD-3
+               MOVE ALL "*"            TO CRAFTSMEN-1
+               MOVE ALL "*"            TO CRAFTSMEN-2
+               MOVE ALL "*"            TO CRAFTSMEN-3
+               MOVE "2"                TO RETURN-BYTE
+               MOVE SPACES             TO COM-BUFF
+               CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COM-BUFF.
+
+       63-WRITE-QUEUE.
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE ZONE           TO Q-ZONE.
+           MOVE PRIORITY       TO Q-PRTY.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE EQUIP-DOWN     TO Q-EQP-DOWN.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE EQUIP-NUM      TO Q-EQUIP-NUM.
+           MOVE DESCRIPTION-1  TO Q-DESCRIPTION.
+           MOVE CRAFTS-REQD-1  TO Q-SKILL-1.
+           MOVE CRAFTS-REQD-2  TO Q-SKILL-2.
+           MOVE CRAFTS-REQD-3  TO Q-SKILL-3.
+           IF PRIORITY = "1 "  MOVE 9 TO QUEUE-PRTY.
+           IF PRIORITY = "2 "  MOVE 6 TO QUEUE-PRTY.
+           IF PRIORITY = "3 "  MOVE 4 TO QUEUE-PRTY.
+           IF PRIORITY = "4 "  MOVE 2 TO QUEUE-PRTY.
+           IF PRIORITY = "5 "  MOVE 1 TO QUEUE-PRTY.
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+           MOVE "A"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+           IF QUEUE-ERROR NOT = SPACES
+               MOVE QUEUE-ERROR TO MESSAGE-BUFFER
+               MOVE 1           TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       64-CRAFT-VALIDATION.
+           MOVE CFT-BUF        TO CRAFTREQD OF REQUIRED-CRAFTS.
+           READ  REQUIRED-CRAFTS INTO CRAFT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               MOVE 1          TO ERROR-SW
+               GO TO 64-CV-EXIT.
+
+           IF CFT-BUF NOT = CRAFT-MSTR
+               MOVE 1          TO ERROR-SW.
+
+       64-CV-EXIT.             EXIT.
+
+       65-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+
+
+DCR01  800-CALL-EQUIP-SELECTION.
+
+           MOVE SPACE         TO  WS-EQUIP-NBR.
+           CALL WS-EQUIP-SEL-PGM  USING WS-EQUIP-NBR.
+
+           IF WS-EQUIP-NBR NOT = SPACES
+              MOVE WS-EQUIP-NBR  TO EQP-NUM-BUF
+           END-IF.
+
+DCR01  800-EQP-EXIT.
+DCR01       EXIT.
+
+
+DCR02  800-CALL-CRAFT-SELECTION.
+
+           MOVE SPACE         TO  WS-CRAFT.
+           MOVE SPACE         TO  WS-CRAFT-FLAG.
+           MOVE SPACE         TO  WS-CRAFT-DESC.
+           MOVE "S"           TO  WS-CRAFT-DISP.
+           CALL WS-CRAFT-SEL-PGM  USING WS-CRAFT  WS-CRAFT-FLAG
+                                        WS-CRAFT-DESC   WS-CRAFT-DISP.
+
+           IF WS-CRAFT(1:2) NOT = SPACES
+              MOVE WS-CRAFT(1:2) TO CRAFT-1-BUF
+           END-IF.
+
+           IF WS-CRAFT(3:2) NOT = SPACES
+              MOVE WS-CRAFT(3:2) TO CRAFT-2-BUF
+           END-IF.
+
+           IF WS-CRAFT(5:2) NOT = SPACES
+              MOVE WS-CRAFT(5:2) TO CRAFT-3-BUF
+           END-IF.
+
+DCR02  800-CFT-EXIT.
+DCR02       EXIT.
+
+
+       999-CATREAD.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+

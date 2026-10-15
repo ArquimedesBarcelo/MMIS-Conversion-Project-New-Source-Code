@@ -1,0 +1,558 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TINVMOD.
+       AUTHOR.        LS BAKER/KURT MOVSESIAN.
+       INSTALLATION.  GOODYEAR TIRE AND RUBBER CO.
+       DATE-WRITTEN.  MAY 22, 1984.
+
+      *REMARKS.       INVOICE PROCESSING.
+      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+      *                                                           *
+      *   T I N V M O D                                    AP2    *
+      *    THIS PROGRAM IS THE INVOICE MODIFICATION SUBROUTINE.   *
+      *    IT BRINGS UP A SELECTION SCREEN TO CHOOSE THE          *
+      *    MODIFICATION OPTION.                                   *
+      *                                                           *
+      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+      *   N O T E    T H I S   S U B R O U T I N E                *
+      *         C A L L S :                                       *
+      *            1) TINVMHD.SOURCE - MODIFY HEADER INFORMATION  *
+      *            2) TINVHOLD.SOURCE - PUT AN INVOICE ON HOLD    *
+      *            3) TINVIDEL.SOURCE - DELETE AN ITEM OFF AN     *
+      *                                 INVOICE.                  *
+      *            4) TINVDELT.SOURCE - DELETE AN ENTIRE INVOICE  *
+      *                                                           *
+      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+      * C H A N G E S:                                            *
+      *                                                           *
+      *C*  07/12/96    CA YODER                                   *
+      *C*      MODIFIED FOR CENTURY DATABASE CHANGES.             *
+      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    HP-3000.
+       OBJECT-COMPUTER.    HP-3000.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZINVOICE-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DINVRCD-O
+                  ASSIGN TO DATABASE-MCFLCS2501
+                  ORGANIZATION IS INDEXED
+                    ACCESS IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC.
+           COPY DD-INVMOD1-O OF ZINVOICE.
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0501.
+       FD  DINVRCD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2501.
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0901.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1         PIC X VALUE "0".
+           05  FILE-STATUS-2         PIC X VALUE "0".
+       01  SCREEN-BUFFER             PIC X(2000).
+       77  BLOWUP-SW                 PIC X        VALUE "N".
+
+      *************************************************************
+      **                                                         **
+      **                  S W I T C H   A R E A                  **
+      **                                                         **
+      *************************************************************
+
+       01  SWITCHES.
+           05  SUB-ERROR-SW          PIC X        VALUE SPACE.
+       01  COUNT-X                   PIC 9        VALUE ZERO.
+
+      *************************************************************
+      **                                                         **
+      **                   S A V E   A R E A S                   **
+      **                                                         **
+      *************************************************************
+
+       01  ONE-TIME-SAVE-AREAS-X.
+           05  S-COMPANY             PIC X(3)     VALUE SPACE.
+
+       01  MISC-SAVE-AREAS-X.
+           05  S-MOD-DATE-CN.
+               10  S-MOD-CC          PIC X(2)     VALUE SPACE.
+               10  S-MOD-DATE.
+                   15  S-MOD-YY      PIC X(2)     VALUE SPACE.
+                   15  S-MOD-MM      PIC X(2)     VALUE SPACE.
+                   15  S-MOD-DD      PIC X(2)     VALUE SPACE.
+
+
+       01  MAIN-ITEM-NUMBER          PIC X(4)     VALUE SPACE.
+
+
+       01  FORM-NAMES.
+           05  REQUEST               PIC X(7)     VALUE "INVMOD1".
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(68)    VALUE SPACE.
+           05  MSG-FLD               PIC X(8)     VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC ZZZZZZZ9.
+
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76    COMP.
+
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE ZERO  COMP.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1     COMP.
+
+      *************************************************************
+      **                                                         **
+      **           D A T A   E N T R Y   B U F F E R S           **
+      **                                                         **
+      *************************************************************
+
+       01  DE-BUFFER1.
+           05  DE1-REG-NUM           PIC X(5).
+           05  DE1-INFO.
+               10  DE1-HEADER        PIC X.
+               10  DE1-HOLD-INVOICE  PIC X.
+               10  DE1-DEL-ITEM      PIC X.
+               10  DE1-DEL-ITEM-NO   PIC X(4).
+               10  DE1-DEL-INVOICE   PIC X.
+           05  DE1-COMMAND-LINE      PIC X(79).
+           05  DE1-MSG-LINE          PIC X(79).
+
+       COPY DBMODES IN COPYLIB.
+
+       COPY DBSTAT  IN COPYLIB.
+
+       COPY CATREAD IN COPYLIB.
+
+       01  ARGUMENT-VALUES.
+           05  PLT-ARG               PIC X(4)     VALUE SPACE.
+           05  PO-ARG                PIC X(14)    VALUE SPACE.
+           05  VEN-ARG.
+               10  VEN-ARG1-7        PIC X(7)     VALUE SPACE.
+               10  VEN-ARG8-10       PIC X(3)     VALUE SPACE.
+           05  CORPCODE-ARG          PIC X(8)     VALUE SPACE.
+           05  REGISTER-ARG          PIC X(6)     VALUE SPACE.
+
+       01  DATES-AND-TIMES.
+           05  HP-CURRENT-DATE.
+               10  HP-MM             PIC X(2).
+               10  FILLER            PIC X.
+               10  HP-DD             PIC X(2).
+               10  FILLER            PIC X.
+               10  HP-YY             PIC X(2).
+           05  YMD-DATE-CN.
+               10  YMD-CC            PIC X(2).
+               10  YMD-DATE.
+                   15  YMD-YY        PIC X(2).
+                   15  YMD-MM        PIC X(2).
+                   15  YMD-DD        PIC X(2).
+
+      *************************************************************
+      **                                                         **
+      **             D A T A B A S E   B U F F E R S             **
+      **                                                         **
+      *************************************************************
+
+       COPY MPLTINFO IN COPYLIB.
+
+       COPY DINVRCD  IN COPYLIB.
+
+       COPY DPORECD  IN COPYLIB.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY DISPDATA IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+      *************************************************************
+      **                                                         **
+      **                L I N K A G E   A R E A                  **
+      **                                                         **
+      *************************************************************
+
+       LINKAGE SECTION.
+
+       01  BASE                      PIC X(10).
+
+       COPY VCOMLINK IN COPYLIB.
+
+       01  KSAM-KEY-VALUE.
+           05  KS-EMPLOYEE-ID        PIC X(4).
+
+       COPY LANGSUB   IN COPYLIB.
+
+
+       PROCEDURE DIVISION USING BASE,
+                                VIEW-COMAREA,
+                                KSAM-KEY-VALUE,
+                                LANGUAGE-PARMS.
+
+       MODIFY-SEL SECTION 02.
+           PERFORM  1-HSK  THRU  1-HSK-X.
+           PERFORM 6-MAIN  THRU  6-MAIN-X.
+           PERFORM  2-EOJ  THRU  2-EOJ-X.
+           GOBACK.
+
+
+       1-HSK.
+           OPEN INPUT MPLTINFO-I, DPORECD-I.
+           OPEN I-O   DINVRCD-O, DISPLAY-FILE.
+
+           MOVE "P 01" TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-I-REC.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ MPLTINFO*1-HSK"  TO  BU-DISPLAY-MSG
+              GO TO  2-BLOWUP.
+
+           MOVE MPLTINFO-COMPANY  TO  S-COMPANY.
+
+       1-HSK-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE MPLTINFO-I, DINVRCD-O, DPORECD-I.
+
+       2-EOJ-X.
+           EXIT.
+
+       2-BLOWUP.
+           MOVE "TINVMOD"               TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+
+       MAIN-PROCESSING SECTION 02.
+       6-MAIN.
+           MOVE SPACE         TO  SWITCHES,
+                                  ARGUMENT-VALUES.
+
+           ACCEPT YMD-DATE    FROM DATE.
+      *---------- ACCOUNT FOR CENTURY.
+           IF YMD-YY > "70"
+               MOVE "19"      TO  YMD-CC
+           ELSE
+               MOVE "20"      TO  YMD-CC.
+           MOVE YMD-DATE-CN   TO  S-MOD-DATE-CN.
+
+       6-FILLBUFF1.
+           MOVE SPACE    TO  DE-BUFFER1.
+           MOVE REQUEST  TO  VIEW-NFNAME.
+
+       6-SHOWFORM1.
+           MOVE DE-BUFFER1 TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC TO DE-BUFFER1.
+
+           IF VIEW-LASTKEY = 3
+              GO TO  6-MAIN-X.
+           IF VIEW-LASTKEY = 1  OR
+              VIEW-LASTKEY = 2  OR
+              VIEW-LASTKEY = 4  OR
+              VIEW-LASTKEY = 5  OR
+              VIEW-LASTKEY = 6  OR
+              VIEW-LASTKEY = 7  OR
+              VIEW-LASTKEY = 8
+      *          ***  INVALID FUNCTION KEY ENTERED  ***
+                 MOVE   9 TO LANG-SETNUM
+                 MOVE  10 TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO   DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(3)
+                 GO TO  6-SHOWFORM1.
+
+           IF DE1-REG-NUM = SPACES
+      *       ***  REGISTER NUMBER IS REQUIRED  ***
+              MOVE 66097 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+              MOVE B"1" TO IND(99), IND(3)
+              GO TO 6-SHOWFORM1.
+
+           IF DE1-HEADER NOT = "X"
+              IF DE1-HOLD-INVOICE NOT = "X"
+                 IF DE1-DEL-ITEM NOT = "X"
+                    IF DE1-DEL-INVOICE NOT = "X"
+      *                ***  ENTER AN 'X' TO SELECT THE DESIRED FUNCTION  ***
+                       MOVE 66105 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                       MOVE B"1" TO IND(99), IND(4)
+                       GO TO 6-SHOWFORM1.
+
+           MOVE 0 TO COUNT-X.
+           IF DE1-HEADER       = "X"   ADD 1 TO COUNT-X.
+           IF DE1-HOLD-INVOICE = "X"   ADD 1 TO COUNT-X.
+           IF DE1-DEL-ITEM     = "X"   ADD 1 TO COUNT-X.
+           IF DE1-DEL-INVOICE  = "X"   ADD 1 TO COUNT-X.
+           IF COUNT-X > 1
+      *       ***  SELECT ONLY ONE FUNCTION  ***
+              MOVE 66102 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+              MOVE B"1" TO IND(99), IND(4)
+              GO TO 6-SHOWFORM1.
+
+           IF DE1-DEL-ITEM = "X"
+              IF DE1-DEL-ITEM-NO = SPACES
+      *          ***  ITEM NUMBER IS REQUIRED  ***
+                 MOVE 66103 TO CATREAD-MSG-NUMBER
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(12)
+                 GO TO 6-SHOWFORM1
+              ELSE
+              IF DE1-DEL-ITEM-NO NOT NUMERIC
+      *          ***  ITEM NUMBER MUST BE NUMERIC  ***
+                 MOVE 66104 TO CATREAD-MSG-NUMBER
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(12)
+                 GO TO 6-SHOWFORM1.
+
+       6-VERIFY-REG.
+           MOVE DE1-REG-NUM  TO  REGISTER-ARG,
+                                 BU-DISPLAY-FLD (1).
+
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVRCD-O-REC.
+           START DINVRCD-O KEY = REGISTERNO OF DINVRCD-O-REC
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 = "2"
+      *          *** REGISTER NUMBER DOES NOT EXIST - CORRECT AND REENTER ***
+                 MOVE  18 TO LANG-SETNUM
+                 MOVE  31 TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(3)
+                 GO TO  6-SHOWFORM1
+              ELSE
+                 MOVE "START DINVRCD*6-VR"  TO  BU-DISPLAY-MSG
+                 GO TO  2-BLOWUP.
+
+           READ DINVRCD-O NEXT INTO BUF-DINVRCD
+                AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS = "10" OR "14" OR "46"
+      *          *** REGISTER NUMBER DOES NOT EXIST - CORRECT AND REENTER ***
+                 MOVE  18 TO LANG-SETNUM
+                 MOVE  31 TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(3)
+                 GO TO  6-SHOWFORM1
+              ELSE
+                 MOVE "READN DINVRCD*6-VR"  TO  BU-DISPLAY-MSG
+                 GO TO  2-BLOWUP.
+           IF REGISTERNO OF DINVRCD-O-REC NOT = REGISTER-ARG
+      *       *** REGISTER NUMBER DOES NOT EXIST - CORRECT AND REENTER ***
+              MOVE  18 TO LANG-SETNUM
+              MOVE  31 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+              MOVE B"1" TO IND(99), IND(3)
+              GO TO  6-SHOWFORM1.
+
+           MOVE INV-REG-NO     TO  REGISTER-ARG.
+           MOVE INV-PO-RCV-NO  TO  PO-ARG.
+           MOVE INV-VEN-CODE   TO  VEN-ARG.
+
+           IF INV-STATUS = "P" OR "H" OR "I" OR "M" OR "1" OR "C" OR "2"
+              NEXT SENTENCE
+           ELSE
+              MOVE "INCORRECT STATUS*6-VR"  TO  BU-DISPLAY-MSG
+              MOVE REGISTER-ARG  TO  BU-DISPLAY-FLD (1)
+              MOVE INV-STATUS TO BU-DISPLAY-FLD (2)
+              GO TO  2-BLOWUP.
+           IF INV-STATUS = "2"
+      *       ***  INVOICE HAS BEEN MANIFESTED - CANNOT MODIFY  ***
+              MOVE   9 TO LANG-SETNUM
+              MOVE  48 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+              MOVE B"1" TO IND(99), IND(3)
+              GO TO  6-SHOWFORM1.
+
+           IF DE1-HOLD-INVOICE = "X"
+              IF INV-STATUS = "H" OR "I"
+      *          ***  INVOICE IS ALREADY ON HOLD  ***
+                 MOVE   9 TO LANG-SETNUM
+                 MOVE  49 TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(3)
+                 GO TO 6-SHOWFORM1.
+
+           IF DE1-DEL-ITEM = "X"
+              IF INV-STATUS = "H" OR "I"
+                 NEXT SENTENCE
+              ELSE
+      *          *** INVOICE IS NOT ON HOLD CANNOT DELETE AN ITEM ***
+                 MOVE   9 TO LANG-SETNUM
+                 MOVE  50 TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(3)
+                 MOVE 3  TO  FIELD-NUMBER
+                 GO TO 6-SHOWFORM1.
+
+           MOVE S-MOD-DATE-CN   TO  INV-MOD-CN.
+           MOVE KSAM-KEY-VALUE  TO  INV-MOD-CLERK.
+
+           MOVE PO-ARG TO PORCVNO OF DPORECD-I-REC.
+           READ DPORECD-I INTO BUF-DPORECD
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPORECD*6-VR"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG  TO  BU-DISPLAY-FLD (2)
+               GO TO  2-BLOWUP.
+
+           IF DE1-HEADER = "X"
+              CALL "TINVMHD" USING  BASE,
+                                    VIEW-COMAREA,
+      *                             SCREEN-PRINT-PARMS,
+      *                             PASS-SPOOL-PRT-NO,
+                                    ARGUMENT-VALUES,
+                                    BUF-DINVRCD,
+                                    BUF-DPORECD,
+                                    LANGUAGE-PARMS
+              IF VIEW-LASTKEY = 3
+                 MOVE HIGH-VALUES TO REGISTERNO OF DINVRCD-O-REC
+                 START DINVRCD-O KEY > REGISTERNO OF DINVRCD-O-REC
+                       INVALID KEY MOVE "00" TO FILE-STATUS
+              ELSE
+                 REWRITE DINVRCD-O-REC FROM BUF-DINVRCD
+           ELSE
+           IF DE1-HOLD-INVOICE = "X"
+              CALL "TINVHOLD" USING  BASE,
+                                     VIEW-COMAREA,
+      *                              SCREEN-PRINT-PARMS,
+      *                              PASS-SPOOL-PRT-NO,
+                                     ARGUMENT-VALUES,
+                                     BUF-DINVRCD,
+                                     LANGUAGE-PARMS
+              IF VIEW-LASTKEY = 3
+                 MOVE HIGH-VALUES TO REGISTERNO OF DINVRCD-O-REC
+                 START DINVRCD-O KEY > REGISTERNO OF DINVRCD-O-REC
+                       INVALID KEY MOVE "00" TO FILE-STATUS
+              ELSE
+                 REWRITE DINVRCD-O-REC FROM BUF-DINVRCD
+           ELSE
+           IF DE1-DEL-ITEM = "X"
+              MOVE DE1-DEL-ITEM-NO  TO  MAIN-ITEM-NUMBER
+              CALL "TINVIDEL" USING  BASE,
+                                     SUB-ERROR-SW,
+                                     VIEW-COMAREA,
+      *                              SCREEN-PRINT-PARMS,
+      *                              PASS-SPOOL-PRT-NO,
+                                     MAIN-ITEM-NUMBER,
+                                     ARGUMENT-VALUES,
+                                     BUF-DINVRCD,
+                                     LANGUAGE-PARMS,
+                                     MESSAGE-BUFFER,
+                                     FIELD-NUMBER
+              MOVE HIGH-VALUES TO REGISTERNO OF DINVRCD-O-REC
+              START DINVRCD-O KEY > REGISTERNO OF DINVRCD-O-REC
+                    INVALID KEY MOVE "00" TO FILE-STATUS
+              END-START
+              IF SUB-ERROR-SW = "Y"
+                 MOVE SPACE  TO  SUB-ERROR-SW
+                 MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+                 MOVE B"1" TO IND(99), IND(FIELD-NUMBER)
+                 GO TO  6-SHOWFORM1
+              ELSE
+                 GO TO 6-MAIN
+           ELSE
+           IF DE1-DEL-INVOICE = "X"
+              CALL "TINVDELT" USING  BASE,
+                                     VIEW-COMAREA,
+      *                              SCREEN-PRINT-PARMS,
+      *                              PASS-SPOOL-PRT-NO,
+                                     ARGUMENT-VALUES,
+                                     BUF-DINVRCD,
+                                     LANGUAGE-PARMS
+              IF VIEW-LASTKEY = 3
+                 MOVE HIGH-VALUES TO REGISTERNO OF DINVRCD-O-REC
+                 START DINVRCD-O KEY > REGISTERNO OF DINVRCD-O-REC
+                       INVALID KEY MOVE "00" TO FILE-STATUS
+              ELSE
+                 DELETE DINVRCD-O INVALID KEY MOVE "2" TO FILE-STATUS-1
+           ELSE
+      *       ***  SELECT A FUNCTION  ***
+              MOVE  19 TO LANG-SETNUM
+              MOVE  15 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO  DE1-MSG-LINE
+              MOVE B"1" TO IND(99), IND(4)
+              GO TO  6-SHOWFORM1.
+           IF FILE-STATUS NOT = ZERO
+              IF DE1-DEL-INVOICE = "X"
+                 IF FILE-STATUS = "95"
+                    NEXT SENTENCE
+                 ELSE
+                    MOVE "TINVDELT" TO BU-DISPLAY-FLD (1)
+                    MOVE INV-REG-NO TO BU-DISPLAY-FLD (2)
+                    GO TO 2-BLOWUP
+              ELSE
+              IF DE1-HEADER = "X"
+                 MOVE "TINVMHD"  TO BU-DISPLAY-FLD (1)
+                 MOVE INV-REG-NO TO BU-DISPLAY-FLD (2)
+                 GO TO 2-BLOWUP
+              ELSE
+              IF DE1-HOLD-INVOICE = "X"
+                 MOVE "TINVHOLD" TO BU-DISPLAY-FLD (1)
+                 MOVE INV-REG-NO TO BU-DISPLAY-FLD (2)
+                 GO TO 2-BLOWUP.
+              GO TO 6-FILLBUFF1.
+
+       6-MAIN-X.
+           EXIT.
+       COPY DISPCALL IN COPYLIB.
+
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

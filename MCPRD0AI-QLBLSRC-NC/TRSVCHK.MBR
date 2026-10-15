@@ -1,0 +1,383 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TRSVCHK.
+       AUTHOR.         C HILLES.
+       DATE-WRITTEN.   5/4/88.
+       DATE-COMPILED.
+      *INSTALLATION.   GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.
+      *D   RESERVATION CHECK PROGRAM: MAKES SURE THAT THE 'DRESERVE'
+      *D   QTY MATCHES THE RESERVED QTY IN MSTORERM.  IF NOT, ADJUSTS
+      *D   THE MSTORERM QTY.  ALSO CHECKS TO MAKE SURE IF THE ITEM IS
+      *D   RESERVED ON A WORKSHEET THAT THE WS ITEM EXISTS.
+      *C
+      *C  03/14/94       JS BUNGO
+      *C     ADDED CALL TO ESTABLISH THE COBOL ERROR HANDLER FOR
+      *C     THIS PROGRAM.
+      *C
+      *C  06/10/96       JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     RECOMPILE PROGRAM TO PICK UP NEW FILE FORMATS.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DRESERVE-CD-O
+               ASSIGN TO DATABASE-MCFLCS1301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DWLITEM-CD-I
+               ASSIGN TO DATABASE-MCFLCS1502
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  DRESERVE-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRESERVE-CD-REC-O.
+           COPY DDS-MCRPCS1300  OF MCFLCS1301.
+
+       FD  MSTORERM-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-O.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DWLITEM-CD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DWLITEM-CD-REC-I.
+           COPY DDS-MCRPCS1500  OF MCFLCS1502.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       WORKING-STORAGE SECTION.
+       01  UPDATE-FLAG                   PIC X(1).
+       01  RESERVE-COUNT                 PIC S9(11) BINARY VALUE 0.
+       01  DISPLAY-1                     PIC 9(11) VALUE 0.
+       01  DISPLAY-2                     PIC 9(11) VALUE 0.
+       01  FOUND-WS-ITEM-FLAG            PIC X(1).
+       01  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+
+      ******************************************************************
+      **                                                              **
+      **          S U B P R O G R A M   A R E A S                     **
+      **                                                              **
+      ******************************************************************
+
+       COPY TBLOWUP    IN COPYLIB.
+
+       01  MCXCBLERR-SCOPE               PIC X     VALUE "C".
+
+      *************************************************************
+      **                                                         **
+      **           D A T A B A S E   W O R K                     **
+      **                                                         **
+      *************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       01  BASE                          PIC X(10) VALUE "  STORES;".
+       01  PASSWORD                      PIC X(5)  VALUE "JADE;".
+       01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16) VALUE "MSTORERM;".
+           05  DSET-MSTORERM             PIC X(16) VALUE "MSTORERM;".
+           05  DSET-DRESERVE             PIC X(16) VALUE "DRESERVE;".
+           05  DSET-MWRKLIST             PIC X(16) VALUE "MWRKLIST;".
+           05  DSET-DWLITEM              PIC X(16) VALUE "DWLITEM;".
+
+       COPY DBSTAT     IN COPYLIB.
+
+       01  CODE-SEARCH                   PIC X(16) VALUE "CORP-CODE;".
+       01  CODE-ARG                      PIC X(8)  VALUE SPACES.
+
+       01  MODE-AREA.
+           05  DB-MODE                   PIC S9(4)   COMP       VALUE 0.
+           05  MODE1                     PIC S9(4)   COMP       VALUE 1.
+           05  MODE2                     PIC S9(4)   COMP       VALUE 2.
+           05  MODE3                     PIC S9(4)   COMP       VALUE 3.
+           05  MODE4                     PIC S9(4)   COMP       VALUE 4.
+           05  MODE5                     PIC S9(4)   COMP       VALUE 5.
+           05  MODE7                     PIC S9(4)   COMP       VALUE 7.
+
+       01  ALL-ITEMS                     PIC X(2)  VALUE "@;".
+
+       COPY MSTORERM   IN COPYLIB.
+       COPY DRESERVE   IN COPYLIB.
+       COPY MWRKLIST   IN COPYLIB.
+       COPY DWLITEM    IN COPYLIB.
+
+       PROCEDURE DIVISION.
+
+       0000-START.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "TRSVCHK"                TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+             DUMMY-VIEW-AREA, FILE-STATUS BU-DISPLAY-MSG
+             BU-DISPLAY-FLDS.
+
+       6000-MAIN.
+           DISPLAY "CORRECT/UPDATE THE DATABASE (Y/N)?".
+           ACCEPT UPDATE-FLAG.
+           IF UPDATE-FLAG = "y"
+               MOVE "Y"                  TO  UPDATE-FLAG.
+
+           PERFORM 9999-OPEN-STUFF.
+
+           DISPLAY "STARTING SERIAL LOOP 1".
+       6010-SERIAL-LOOP-1.
+           PERFORM 9999-GETSER-DRESERVE-CD-O.
+           IF END-OF-FILE
+               DISPLAY "END OF SERIAL LOOP 1"
+               DISPLAY "STARTING SERIAL LOOP 2"
+               GO TO 6100-SERIAL-LOOP-2.
+
+           IF RSRV-WONO = SPACES
+              MOVE "DRESERVE;"           TO  DSET-NAME
+              PERFORM 9999-DSET-LOCK
+              PERFORM 9999-DELETE-DRESERVE-CD-O
+              PERFORM 9999-UNLOCK
+           ELSE
+           IF RSRV-WONO-1-2 = "SW"
+               PERFORM 7100-FIND-GET-DWLITEM THRU 7190-FGD-X
+               IF FOUND-WS-ITEM-FLAG = "N"
+                   DISPLAY "ON RESERVATION FOR CODE ", RSRV-CORP-CODE,
+                     " WORKSHEET ", RSRV-WONO,
+                     " WORKSHEET DID NOT EXIST"
+                   IF UPDATE-FLAG = "Y"
+                       MOVE "DRESERVE;"  TO  DSET-NAME
+                       PERFORM 9999-DSET-LOCK
+                       PERFORM 9999-DELETE-DRESERVE-CD-O.
+                       PERFORM 9999-UNLOCK.
+
+           GO TO 6010-SERIAL-LOOP-1.
+
+
+       6100-SERIAL-LOOP-2.
+           PERFORM 9999-GETSER-MSTORERM-CD-O.
+           IF END-OF-FILE
+               DISPLAY "END OF SERIAL LOOP 2"
+               GO TO 6990-MAIN-X.
+
+           PERFORM 7000-ADD-UP-RESERVE THRU 7090-AUR-X.
+
+           IF RESERVE-COUNT NOT = STR-RESERVED
+               MOVE STR-RESERVED         TO  DISPLAY-1
+               MOVE RESERVE-COUNT        TO  DISPLAY-2
+               DISPLAY "FOR CODE ", CORP-CODE, " STR-RESERVED = ",
+                 DISPLAY-1, " DRESERVE-COUNT = ", DISPLAY-2
+               IF UPDATE-FLAG = "Y"
+                   MOVE RESERVE-COUNT    TO  STR-RESERVED
+                   MOVE "MSTORERM;"      TO  DSET-NAME
+                   PERFORM 9999-DSET-LOCK
+                   PERFORM 9999-UPDATE-MSTORERM-CD-O
+                   PERFORM 9999-UNLOCK.
+
+           GO TO 6100-SERIAL-LOOP-2.
+
+       6990-MAIN-X.
+           EXIT.
+
+       7000-ADD-UP-RESERVE.
+           MOVE 0                        TO  RESERVE-COUNT.
+           MOVE CORP-CODE                TO  CODE-ARG.
+           PERFORM 9999-CHAINHD-DRESERVE-CD-O.
+
+       7010-ADD-UP-RESERVE-LOOP.
+           PERFORM 9999-GETNEXT-DRESERVE-CD-O.
+           IF END-OF-CHAIN
+               GO TO 7090-AUR-X.
+
+           ADD RSRV-QTY                  TO  RESERVE-COUNT.
+           GO TO 7010-ADD-UP-RESERVE-LOOP.
+
+       7090-AUR-X.
+           EXIT.
+
+
+       7100-FIND-GET-DWLITEM.
+           MOVE "N"                      TO  FOUND-WS-ITEM-FLAG.
+           PERFORM 9999-CHAINHD-DWLITEM-CD-I.
+           IF NO-ENTRY
+               GO TO 7190-FGD-X.
+
+       7110-GET-ITEM-LOOP.
+           PERFORM 9999-GETNEXT-DWLITEM-CD-I.
+           IF END-OF-CHAIN
+               GO TO 7190-FGD-X.
+
+           IF WL-KEY = RSRV-WONO
+               MOVE "Y"                  TO  FOUND-WS-ITEM-FLAG
+               GO TO 7190-FGD-X
+           ELSE
+               GO TO 7110-GET-ITEM-LOOP.
+
+       7190-FGD-X.
+           EXIT.
+
+
+       COPY UNLOCK   IN COPYLIB.
+       COPY DLOCKCAL IN COPYLIB.
+       9999-UPDATE-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-CD-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DRESERVE-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF DRESERVE-CD-REC-O.
+           START DRESERVE-CD-O KEY = CORPCDE OF DRESERVE-CD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DRESERVE-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DWLITEM-CD-I.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF DWLITEM-CD-REC-I.
+           START DWLITEM-CD-I KEY = CORPCDE OF DWLITEM-CD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DWLITEM-CD-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CLOSE-STUFF.
+           CLOSE DRESERVE-CD-O.
+           CLOSE DWLITEM-CD-I.
+           CLOSE MSTORERM-CD-O.
+       9999-DELETE-DRESERVE-CD-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DRESERVE-CD-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-DRESERVE-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETNEXT-DRESERVE-CD-O.
+           MOVE 0 TO COND-WORD.
+           READ DRESERVE-CD-O NEXT INTO BUF-DRESERVE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DRESERVE-CD-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DRESERVE-CD-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF CORPCDE OF DRESERVE-CD-REC-O NOT = CODE-ARG
+               PERFORM 9999-RESET-DRESERVE-CD-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DRESERVE-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF DRESERVE-CD-REC-O.
+           START DRESERVE-CD-O KEY > CORPCDE OF DRESERVE-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DWLITEM-CD-I.
+           MOVE 0 TO COND-WORD.
+           READ DWLITEM-CD-I NEXT INTO BUF-DWLITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DWLITEM-CD-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF CORPCDE OF DWLITEM-CD-REC-I NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+
+       9999-GETSER-DRESERVE-CD-O.
+           MOVE 0 TO COND-WORD.
+           READ DRESERVE-CD-O NEXT INTO BUF-DRESERVE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETSER ERR 9999-GETSER-DRESERVE-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-BEGFIL-DRESERVE-CD-O.
+           MOVE SPACES TO CORPCDE OF DRESERVE-CD-REC-O.
+           START DRESERVE-CD-O KEY >= CORPCDE OF DRESERVE-CD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-GETSER-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           READ MSTORERM-CD-O NEXT INTO BUF-MSTORERM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETSER ERR 9999-GETSER-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-BEGFIL-MSTORERM-CD-O.
+           MOVE SPACES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY >= CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-OPEN-STUFF.
+           OPEN I-O DRESERVE-CD-O.
+           OPEN INPUT DWLITEM-CD-I.
+           OPEN I-O MSTORERM-CD-O.

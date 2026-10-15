@@ -1,0 +1,1096 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     SR3REQEX.
+      *REMARKS.
+      *D    THIS SUBPROGRAM PROCESSES THE REQUISITIONS THAT HAD THE
+      *D    FINAL APPROVER SIGNOFF ON A CSIS REQUISITION. THE
+      *D    REQUISITION NUMBER WAS STORED IN MCORPREQ WITH AN 'R3'
+      *D    STATUS. A FILE IS CONSTRUCTED FROM THIS SAVED DATA AND
+      *D    PASSED TO THE MAINFRAME FOR SAP/R3 TO UPLOAD INTO ITS
+      *D    FILES. THIS LOGIC IS FOR MEDICINE HAT ONLY FOR NOW AS
+      *D    THEY WILL BE THE ONLY SAP/R3 PLANT THROUGH THE YEAR 2000.
+      *D
+      *D    18FEB2002 - DAVE PLUM
+      *D    REVISED TO:
+      *D     1) ZERO FILL THE 4TH BYTE OF REQ-SUBD (DEPT) IF IT IS
+      *D        BLANK.  (FREEPORT ONLY USES 3 DIGIT DEPARTMENT NUMBERS.)
+      *D     2) ZERO FILL THE FINAL 5 BYTES OF THE SAP-ACCT-NO-I1 FIELD.
+      *D        BYTES 2 THROUGH 6 OF THE REQ-A-D-6 FIELD (ADDITIONAL
+      *D        DATA) HAD BEEN PLACED IN THESE FINAL 5 BYTES OF THE
+      *D        SAP ACCOUNT NUMBER FIELD.  (WE HAD BEEN TRYING TO FIT
+      *D        19 BYTES OF DATA INTO A 18 BYTE FIELD BY DROPPING THE
+      *D        FIRST BYTE OF THE EXPENSE CLASS/NEW WORK/ADDITIONAL DATA
+      *D        FIELD.
+      *D     3) ADDED A NEW FIELD (SAP-INTERNAL-ORDER) TO THE
+      *D        R3-RECORD-T1 RECORD WHICH WILL BE POPULATED WHEN THE
+      *D        REQ-A-D-6 (ADDITONAL DATA) FIELD CONTAINS A 6 DIGIT
+      *D        NUMBER.  THIS SIX DIGIT NUMBER WILL BE AN SAP
+      *D        INTERNAL ORDER NUMBER IN AN R/3 PLANT.
+      *D     4) IF AN SAP INTERNAL ORDER NUMBER IS FOUND, THE
+      *D        SAP-ACCT-CAT-I1 FIELD WILL BE SET TO "F" INSTEAD OF "K".
+      *D
+      *C    02/20/2002   CA YODER
+      *C        CHANGED THE NOTIFY FIELD ON THE HEADER FROM THE DOCK
+      *C        NOTIFY USER-ID TO THE CLOCK CARD NUMBER.  ALSO ADDED
+      *C        THE DOCK NOTIFY USER-ID TO THE I1 RECORD.
+      *C
+      *C    03/01/2002   DAVE PLUM
+      *C        REARRANGED THE FIELDS FOLLOWING THE 18 BYTE ACCOUNTING
+      *C        DATA SECTION OF THE I1 RECORD ACCORDING TO R/3
+      *C        REQUIREMENTS.  ALSO STOPPED PASSING THE MMIS WORK ORDER
+      *C        NUMBER.
+      *C
+      *C    04/25/2002   CA YODER
+      *C        FOR SAP INTERNAL ORDER NUMBER, MOVE REQ-ADDL-INFO FIELD
+      *C        INSTEAD OF ADDITIONAL DATA FIELD.  ALSO, MOVE LAST 3
+      *C        BYTES OF REQ ADDITIONAL DATA FIELD (EXPENSE CLASS)
+      *C        TO CLASS FIELD (SAP-ACCT-SUB-I1).
+      *C
+      *C    07/09/2002   CA YODER      J. THOMAS REQUEST
+      *C        INSTEAD OF PASSING THE DOCK NOTIFY USER-ID ON THE I1
+      *C        RECORD, SEND THE REQ ORIGINATOR NAME.  IF NO CLOCK
+      *C        CARD NUMBER EXISTS FOR THE REQ, SEND THE LITERAL
+      *C        "STOREROOM".
+      *C
+      *C    07/30/2002   CA YODER
+      *C        IF THE REQ HAS A TAX CODE SPECIFIED, SEND THE TAX
+      *C        CODE AND DESCRIPTION IN AN "I4" REMARKS RECORD.
+      *C
+      *C    11/21/2002   CA YODER
+      *C        FIXED PROBLEM WITH REQS HAVING > 12 LINES OF DESCRIPTION.
+      *C        THE DESCRIPTION WAS NEVER WRITTEN TO THE FILE IF THIS
+      *C        CONDITION EXISTED.
+      *C
+      *C    04/21/2003   BRUCE GEISER
+      *C        DETERMINE REQ TYPE BY CHECKING NEW REQ-SERVICE-FLAG.
+      *C
+      *C    08/13/2003   BRUCE GEISER
+      *C        FIXED PROBLEM WITH REQS HAVING > 12 LINES OF DESCRIPTION.
+      *C        THE LOGIC THAT WAS DETERMINING WHERE TO SPLIT THE LINE
+      *C        WAS GOING OVER THE TABLE LIMIT. ALSO ADDED LOGIC FOR
+      *C        REPAIR AND RETURN REQS TO CREATE "RR" TYPE SAP DOCUMENTS.
+      *C
+      *C    10/06/2004   DAN RAUCH    DCR01  REQUEST# 2004-50231
+      *C        FIXED PROBLEM WHERE PROGRAM ABENDS WHEN THERE ARE NO   N.
+      *C        BLANKS IN THE 40 CHARACTER DESCRIPTION. MOVE ALL 40
+      *C        CHARACTERS INSTEAD OF TRYING TO SPLIT THE DESC FIELD.
+      *C***************************************************************
+
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.          IBM-AS400.
+       OBJECT-COMPUTER.          IBM-AS400.
+
+       COPY SPECIALN IN COPYLIB.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DREQD
+               ASSIGN TO DATABASE-MCFLCS2101
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQDESC
+               ASSIGN TO DATABASE-MCFLCS2301
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQITM
+               ASSIGN TO DATABASE-MCFLCS2201
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DCOMMENT
+               ASSIGN TO DATABASE-MCFLCS1901
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT REQUISITION-FILE
+               ASSIGN TO DATABASE-R3REQDATA
+               ORGANIZATION IS SEQUENTIAL
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT PERS-FILE
+               ASSIGN       TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE  IS DYNAMIC
+               RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS  IS FILE-STATUS.
+
+           SELECT R3FILE     ASSIGN TO DISK-R3REQFI2.
+
+
+           SELECT R3-REQ-RPT ASSIGN TO DISK-R3REQRPT.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DREQD
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DREQD-REC.
+       01  DREQD-REC.
+           COPY DDS-MCRPCS2100  OF MCFLCS2101.
+
+       FD  DREQDESC
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DREQDESC-REC.
+       01  DREQDESC-REC.
+           COPY DDS-MCRPCS2300  OF MCFLCS2301.
+
+       FD  DREQITM
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DREQITM-REC.
+       01  DREQITM-REC.
+           COPY DDS-MCRPCS2200  OF MCFLCS2201.
+
+       FD  DCOMMENT
+           LABEL RECORDS ARE STANDARD.
+       01  DCOMMENT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS1901.
+
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MPLTINFO-REC.
+       01  MPLTINFO-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MREQ
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MREQ-REC.
+       01  MREQ-REC.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  PERS-FILE
+           LABEL RECORDS       ARE STANDARD.
+       01  PERS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  REQUISITION-FILE
+           DATA RECORD IS REQ-REC.
+       01  REQ-REC                PIC X(200).
+
+       FD  R3FILE
+           LABEL RECORDS ARE STANDARD.
+       01  R3FILE-REC.
+           05  R3FILE-REQNO       PIC X(12).
+           05  FILLER             PIC X(8).
+
+       FD  R3-REQ-RPT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS R3-PRINT-RCD.
+       01  R3-PRINT-RCD.
+           05  R3-PRINT-CTL       PIC 9.
+           05  R3-PRINT-LINE      PIC X(132).
+
+       WORKING-STORAGE SECTION.
+       77  HOLD-PLT-ID            PIC X.
+       77  HOLD-LEGACY-ID         PIC X(2).
+       77  HOLD-TEXT              PIC X(72).
+       77  HOLD-UNIT-PRICE        PIC 9(11)V9(4).
+       77  HOLD-PLANT-CODE        PIC X(4).
+       77  HOLD-HOME-CUR          PIC X(2).
+       77  HOLD-DEPT-STR          PIC X(4).
+       77  HOLD-SHORT-TEXT        PIC X(80).
+       77  LINE-CTR               PIC 99.
+       77  RECS-CTR               PIC 9(6).
+       77  SAVE-SUB               PIC S9(4) COMP-3.
+       77  SUB                    PIC S9(4) COMP-3.
+       77  SUB1                   PIC S9(4) COMP-3.
+       77  SUB2                   PIC S9(4) COMP-3.
+
+       COPY CDESC    IN COPYLIB.
+
+       01  CLMMSREQ-FILENAME      PIC X(10).
+
+       01  CODE-ARG               PIC X(8).
+
+       01  BUILD-TAX-CODE-KEY.
+           05  FILLER             PIC X(2)  VALUE "T ".
+           05  BUILD-TAX-CODE     PIC X(2)  VALUE SPACES.
+
+       01  COMMENT-ARG            PIC X(4)  VALUE SPACES.
+
+       01  CUR-DATE-CCYYMMDD.
+           05  C-DATE-CC          PIC XX.
+           05  CUR-DATE.
+               10  C-DATE-YY      PIC XX.
+               10  C-DATE-MM      PIC XX.
+               10  C-DATE-DD      PIC XX.
+
+       01  DESC-TABLE.
+           05  DESC-T.
+               10  DESC-ENTRY OCCURS 12 TIMES  PIC X(80).
+           05  D-TAB REDEFINES DESC-T.
+               10  D-T OCCURS 960 TIMES        PIC X.
+
+       01  DETAIL-LINE.
+           05  D-REQNO            PIC X(12) VALUE SPACES.
+           05  FILLER             PIC X(35)
+               VALUE "WAS GENERATED TO FILE (R3REQSDATA) ".
+           05  FILLER             PIC X(39)
+               VALUE "FOR TRANSMISSION TO SYNERGY VIA SAPCOMM".
+           05  FILLER             PIC X(46) VALUE SPACES.
+
+       01  OVRDBF-RQ-CMD.
+           05  PIC X(23) VALUE "OVRDBF FILE(R3REQDATA) ".
+           05  PIC X(24) VALUE "TOFILE(*LIBL/R3REQDATA) ".
+           05  PIC X(09) VALUE "MBR(R3REQ".
+           05  OVRDBF-SEQ         PIC 9(5).
+           05  PIC X(1)  VALUE ")".
+
+       01  OVRDBF-RQ-LEN          PIC S9(10)V9(5) COMP-3
+                                         VALUE 62.
+
+       01  PAGE-CTR               PIC 99.
+
+       01  PLANT-ENTRIES.
+           05  FILLER             PIC X(10) VALUE "111N515 AK".
+           05  FILLER             PIC X(10) VALUE "284N514CAK".
+           05  FILLER             PIC X(10) VALUE "126N501DAK".
+           05  FILLER             PIC X(10) VALUE "631N510ECA".
+           05  FILLER             PIC X(10) VALUE "281N506FAK".
+           05  FILLER             PIC X(10) VALUE "131N502GAK".
+           05  FILLER             PIC X(10) VALUE "637N509HAK".
+           05  FILLER             PIC X(10) VALUE "211N505KAK".
+           05  FILLER             PIC X(10) VALUE "153N508LAK".
+           05  FILLER             PIC X(10) VALUE "133N503PAK".
+           05  FILLER             PIC X(10) VALUE "285N507TAK".
+           05  FILLER             PIC X(10) VALUE "129N504UAK".
+           05  FILLER             PIC X(10) VALUE "629N511VCA".
+
+       01  PLANT-TABLE REDEFINES PLANT-ENTRIES.
+           05  PLANT-DATA-LINE  OCCURS 13 TIMES  INDEXED BY I.
+               10  CSIS-PLT-NO    PIC X(3).
+               10  SAP-PLT-NO     PIC X(4).
+               10  SAP-PO-PREFIX  PIC X.
+               10  SAP-LEGACY-ID  PIC X(2).
+
+       01  PRINT-HDR1.
+           05  FILLER       PIC X(6)  VALUE " PAGE ".
+           05  PAGE-NO-OUT  PIC ZZZ9  VALUE ZEROS.
+           05  FILLER       PIC X(5)  VALUE SPACES.
+           05  FILLER       PIC X(21) VALUE "R E Q U I S I T I O N".
+           05  FILLER       PIC X(20) VALUE "     R E P O R T    ".
+           05  FILLER       PIC X(4)  VALUE SPACES.
+           05  PRT-CO       PIC X(3)  VALUE SPACES.
+           05  FILLER       PIC X(10) VALUE "     DATE ".
+           05  PRT-DATE     PIC X(8)  VALUE SPACES.
+           05  FILLER       PIC X(2)  VALUE SPACES.
+           05  PRT-TIME     PIC X(8)  VALUE SPACES.
+           05  FILLER       PIC X(15) VALUE SPACES.
+           05  FILLER       PIC X(8)  VALUE "SR3REQEX".
+
+       01  PRINT-HDR2.
+           05  FILLER       PIC X(12) VALUE "   REQ NO   ".
+           05  FILLER       PIC X(120) VALUE SPACES.
+
+       01  REQ-ARG                PIC X(12).
+
+       01  RTN-CODE               PIC X.
+
+       01  SAVE-DATE              PIC X(6).
+
+       01  SAVE-SEQ               PIC 9(5).
+
+       01  SAVE-TIME              PIC X(6).
+
+       01  SEND-SEQ               PIC 9(5).
+
+       01  TIME-BUF.
+           05  T-HHMMSS           PIC X(6).
+           05  FILLER             PIC XX.
+
+      *****************************************************************
+      **  S U B P R O G R A M   A R E A                              **
+      *****************************************************************
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+
+      *****************************************************************
+      **  D A T A B A S E   W O R K                                  **
+      *****************************************************************
+
+       COPY FILESTAT   OF COPYLIB.
+
+       COPY OVRPFDATA  OF COPYLIB.
+
+       COPY DATAB      OF COPYLIB.
+
+       COPY VCOMAREA   OF COPYLIB.
+
+       01  REG-ARG                PIC X(12) VALUE SPACES.
+
+      *****************************************************************
+      **  D A T A B A S E   B U F F E R S                            **
+      *****************************************************************
+
+       COPY MREQ     IN COPYLIB.
+
+       COPY DREQD    IN COPYLIB.
+
+       COPY DREQITM  IN COPYLIB.
+
+       COPY DREQDESC IN COPYLIB.
+
+       01  PERSONNEL-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       COPY DCOMMENT IN COPYLIB.
+
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTP01  IN COPYLIB.
+       COPY MPLTR3SQ IN COPYLIB.
+
+      *****************************************************************
+      **  R / 3   R E C O R D   L A Y O U T S                        **
+      *****************************************************************
+       01  R3-HEADER.
+           05  FILLER             PIC X(7)   VALUE "HEADER ".
+           05  FILLER             PIC X(7)   VALUE "MMSREQ ".
+           05  HEADER-PLANT       PIC X(4)   VALUE SPACES.
+           05  HEADER-CRDATE      PIC X(8)   VALUE SPACES.
+           05  HEADER-CRTIME      PIC X(6)   VALUE SPACES.
+           05  HEADER-FILE-SEQ    PIC 9(5)   VALUE ZEROES.
+           05  HEADER-PLANT-2     PIC X(4)   VALUE SPACES.
+           05  FILLER             PIC X(159) VALUE SPACES.
+
+       01  R3-RECORD-A1.
+           05  REC-ID-A1          PIC XX     VALUE "A1".
+           05  SAP-PLANT-A1       PIC X(4)   VALUE SPACES.
+           05  FILLER             PIC X(10)  VALUE SPACES.
+           05  SAP-SEQ-A1         PIC 9(5)   VALUE ZEROES.
+           05  SAP-TRANDATE-A1    PIC X(8)   VALUE SPACES.
+           05  SAP-TRANTIME-A1    PIC X(6)   VALUE SPACES.
+           05  FILLER             PIC X(165) VALUE SPACES.
+
+       01  R3-RECORD-H1.
+           05  REC-ID-H1          PIC XX     VALUE "H1".
+           05  SAP-PLANT-H1       PIC X(4)   VALUE SPACES.
+           05  SAP-REQNO-H1       PIC X(10)  VALUE SPACES.
+           05  FILLER             PIC X(5)   VALUE SPACES.
+           05  SAP-LEGACY-H1      PIC XX     VALUE SPACES.
+           05  SAP-DOCUMENT-H1    PIC X(4)   VALUE SPACES.
+           05  SAP-NOTIFY-H1      PIC X(12)  VALUE SPACES.
+           05  SAP-REQ-DATE-H1    PIC X(8)   VALUE SPACES.
+           05  FILLER             PIC X(153) VALUE SPACES.
+
+       01  R3-RECORD-I1.
+           05  REC-ID-I1          PIC XX     VALUE "I1".
+           05  SAP-PLANT-I1       PIC X(4)   VALUE SPACES.
+           05  SAP-REQNO-I1       PIC X(10)  VALUE SPACES.
+           05  SAP-ITEM-I1        PIC 9(5)   VALUE ZEROES.
+           05  SAP-ITEMCAT-I1     PIC X      VALUE SPACE.
+           05  SAP-ACCTCAT-I1     PIC X      VALUE SPACE.
+           05  SAP-MATERIAL-I1    PIC X(18)  VALUE SPACES.
+           05  SAP-MATL-GRP-I1    PIC X(9)   VALUE SPACES.
+           05  SAP-DESC-SHORT-I1.
+               10  S-D-S-I1 OCCURS 40   PIC X.
+           05  SAP-REQ-QTY-I1     PIC 9(10)V999 VALUE ZEROES.
+           05  SAP-UM-I1          PIC X(6)   VALUE SPACES.
+           05  SAP-DOLLAR-VAL-I1  PIC 9(9)V99   VALUE ZEROES.
+           05  SAP-PRICE-UNIT-I1  PIC 9(5)      VALUE ZEROES.
+           05  SAP-LIMIT-I1       PIC 9(11)V99  VALUE ZEROES.
+           05  SAP-PURCH-GROUP-I1 PIC X(4)   VALUE SPACES.
+           05  SAP-DATE-WANTED-I1 PIC X(8)   VALUE SPACES.
+      *****05  SAP-ACCT-NO-I1     PIC X(18)  VALUE SPACES.
+           05  SAP-ACCT-NO-I1.
+               10 SAP-ACCT-CO-I1          PIC X(3)   VALUE SPACES.
+               10 SAP-ACCT-PRIME-I1       PIC X(3)   VALUE SPACES.
+               10 SAP-ACCT-SUB-I1         PIC X(3)   VALUE SPACES.
+               10 SAP-ACCT-SUBD-I1.
+                  15 FILLER               PIC X(3)   VALUE SPACES.
+                  15 SAP-ACCT-SUBD-4-I1   PIC X(1)   VALUE SPACES.
+               10 SAP-ACCT-LAST5-I1       PIC X(5)   VALUE SPACES.
+
+      *###### 03/01/2002 REARRANGED THE REMAINDER OF THIS RECORD
+      *######    TO MEET R/3 REQUIREMENTS (LAST 32 BYTES).
+      *######    THEY NO LONGER WANT THE MMIS WORK ORDER NUMBER.
+      *####05  SAP-GOODS-WO-I1    PIC X(12)  VALUE SPACES.
+      *####05  SAP-INTERNAL-I1    PIC 9(6)   VALUE ZEROES.
+      *####05  SAP-INTERNAL-X-I1    REDEFINES
+      *####    SAP-INTERNAL-I1    PIC X(6).
+      *####05  SAP-DOCK-NOTIFY-I1 PIC X(7).
+      *####05  FILLER             PIC X(7)   VALUE SPACES.
+
+           05  SAP-DOCK-NOTIFY-I1 PIC X(12)  VALUE SPACES.
+           05  SAP-INTERNAL-I1    PIC 9(6)   VALUE ZEROES.
+           05  SAP-INTERNAL-X-I1    REDEFINES
+               SAP-INTERNAL-I1    PIC X(6).
+           05  FILLER             PIC X(14)  VALUE SPACES.
+
+       01  R3-RECORD-I3.
+           05  SAP-ID-I3          PIC XX     VALUE "I3".
+           05  SAP-PLANT-I3       PIC X(4)   VALUE SPACES.
+           05  SAP-REQNO-I3       PIC X(10)  VALUE SPACES.
+           05  SAP-ITEM-I3        PIC 9(5)   VALUE ZEROES.
+           05  SAP-DESC-LONG-I3.
+               10  S-D-L-I3 OCCURS 72   PIC X.
+           05  FILLER             PIC X(107) VALUE SPACES.
+
+       01  R3-RECORD-I4.
+           05  SAP-ID-I4          PIC XX     VALUE "I4".
+           05  SAP-PLANT-I4       PIC X(4)   VALUE SPACES.
+           05  SAP-REQNO-I4       PIC X(10)  VALUE SPACES.
+           05  SAP-ITEM-I4        PIC 9(5)   VALUE ZEROES.
+           05  SAP-DESC-LONG-I4.
+               10  S-D-L-I4 OCCURS 72   PIC X.
+           05  FILLER             PIC X(107) VALUE SPACES.
+
+       01  R3-RECORD-Z1.
+           05  SAP-ID-Z1          PIC XX     VALUE "Z1".
+           05  SAP-PLANT-Z1       PIC X(4)   VALUE SPACES.
+           05  FILLER             PIC X(10)  VALUE SPACES.
+           05  SAP-SEQ-Z1         PIC 9(5)   VALUE ZEROES.
+           05  SAP-TRANDATE-Z1    PIC X(8)   VALUE SPACES.
+           05  SAP-TRANTIME-Z1    PIC X(6)   VALUE SPACES.
+           05  FILLER             PIC X(165) VALUE SPACES.
+
+       01  R3-TRAILER.
+           05  FILLER             PIC X(7)   VALUE "TRAILER".
+           05  FILLER             PIC X(7)   VALUE "MMSREQ ".
+           05  TRAILER-PLANT      PIC X(4)   VALUE SPACES.
+           05  TRAILER-CRDATE     PIC X(8)   VALUE SPACES.
+           05  TRAILER-CRTIME     PIC X(6)   VALUE SPACES.
+           05  TRAILER-FILE-SEQ   PIC 9(5)   VALUE ZEROES.
+           05  TRAILER-PLANT-2    PIC X(4)   VALUE SPACES.
+           05  TRAILER-REC-CTR    PIC 9(6)   VALUE ZEROES.
+           05  FILLER             PIC X(153) VALUE SPACES.
+
+       01  ADDITIONAL-INFO-REC.
+           05  FILLER             PIC X(17)
+               VALUE "ADDITIONAL INFO: ".
+           05  A-I-DATA           PIC X(16)  VALUE SPACES.
+           05  FILLER             PIC X(39)  VALUE SPACES.
+
+       01  BUDGET-NUMBER-REC.
+           05  FILLER             PIC X(15)
+               VALUE "BUDGET NUMBER: ".
+           05  B-N-DATA           PIC X(12)  VALUE SPACES.
+           05  FILLER             PIC X(45)  VALUE SPACES.
+
+       01  SUGGESTED-VENDOR-REC.
+           05  FILLER             PIC X(18)
+               VALUE "SUGGESTED VENDOR: ".
+           05  S-V-DATA           PIC X(30)  VALUE SPACES.
+           05  FILLER             PIC X(24)  VALUE SPACES.
+
+       01  TAX-CODE-REC.
+           05  FILLER             PIC X(10)
+               VALUE "TAX CODE: ".
+           05  T-C-DATA           PIC X(2)   VALUE SPACES.
+           05  FILLER             PIC X      VALUE "-".
+           05  T-C-DATA-2         PIC X(40)  VALUE SPACES.
+           05  FILLER             PIC X(19)  VALUE SPACES.
+
+      *****************************************************************
+      **  P R O C E D U R E   D I V I S I O N                        **
+      *****************************************************************
+
+       PROCEDURE DIVISION.
+
+       START-PGM.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           CLOSE MREQ
+                 DREQD
+                 DREQITM
+                 DREQDESC
+                 DCOMMENT
+                 MPLTINFO
+                 R3-REQ-RPT
+                 R3FILE
+                 PERS-FILE.
+           GOBACK.
+
+       1-HSK.
+           OPEN INPUT  MREQ
+                       DREQD
+                       DREQITM
+                       DREQDESC
+                       DCOMMENT
+                       R3FILE
+                       PERS-FILE.
+           OPEN I-O    MPLTINFO.
+           OPEN OUTPUT R3-REQ-RPT.
+           MOVE 0      TO RECS-CTR.
+           MOVE 51     TO LINE-CTR.
+
+      *--------- GET PLANT NUMBER.
+           MOVE "P 01" TO PLTINFOKEY  OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *--------- REPLACE CSIS PLANT CODE WITH SAP PLANT CODE.
+           SET I TO 1.
+           SEARCH PLANT-DATA-LINE
+               AT END
+                   MOVE SPACES             TO  HOLD-PLANT-CODE
+                                               HOLD-PLT-ID
+                                               HOLD-LEGACY-ID
+               WHEN CSIS-PLT-NO (I) = MPLTINFO-COMPANY
+                   MOVE SAP-PLT-NO (I)     TO  HOLD-PLANT-CODE
+                   MOVE SAP-PO-PREFIX (I)  TO  HOLD-PLT-ID
+                   MOVE SAP-LEGACY-ID (I)  TO  HOLD-LEGACY-ID.
+
+           MOVE "R3SQ" TO PLTINFOKEY  OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "R3SQ RECORD NOT FOUND IN MPLTINFO"
+                   TO BU-DISPLAY-MSG
+               GO TO 200-BLOWUP.
+           MOVE 0                             TO  RTN-CODE.
+           MOVE 1                             TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT                TO  PRT-DATE.
+           MOVE DATE-OUT                      TO  SAVE-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT       TO  PRT-TIME.
+           MOVE DATE-UNFORMATTED-TIME-OUT     TO  SAVE-TIME.
+           ADD 1 TO MPLTINFO-MMSREQ-SEQ GIVING SEND-SEQ.
+           IF SEND-SEQ = 0 ADD 1 TO SEND-SEQ.
+           MOVE SEND-SEQ TO SAP-SEQ-A1,
+                            SAP-SEQ-Z1,
+                            SAVE-SEQ,
+                            OVRDBF-SEQ,
+                            HEADER-FILE-SEQ,
+                            TRAILER-FILE-SEQ.
+           ACCEPT CUR-DATE FROM DATE.
+           IF C-DATE-YY > "70"
+               MOVE "19" TO C-DATE-CC
+           ELSE
+           MOVE "20" TO C-DATE-CC.
+           MOVE CUR-DATE-CCYYMMDD TO SAP-TRANDATE-A1,
+                                     SAP-TRANDATE-Z1,
+                                     HEADER-CRDATE,
+                                     TRAILER-CRDATE.
+           ACCEPT TIME-BUF FROM TIME.
+           MOVE T-HHMMSS TO SAP-TRANTIME-A1,
+                            SAP-TRANTIME-Z1,
+                            HEADER-CRTIME,
+                            TRAILER-CRTIME.
+           MOVE HOLD-PLANT-CODE TO SAP-PLANT-A1,
+                                   SAP-PLANT-H1,
+                                   SAP-PLANT-I1,
+                                   SAP-PLANT-I3,
+                                   SAP-PLANT-I4,
+                                   SAP-PLANT-Z1,
+                                   HEADER-PLANT,
+                                   HEADER-PLANT-2,
+                                   TRAILER-PLANT,
+                                   TRAILER-PLANT-2.
+           MOVE HOLD-LEGACY-ID  TO SAP-LEGACY-H1.
+
+       200-BLOWUP.
+           MOVE "SR3REQEX" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+
+       6-MAIN.
+           READ R3FILE
+               AT END    GO TO 6-MAIN-CLOSE.
+           IF RECS-CTR = 0
+               CALL "ADDREQDATA" USING  SAVE-DATE,  SAVE-SEQ,
+                                        SAVE-TIME,  RTN-CODE
+               IF RTN-CODE NOT = ZERO
+                   MOVE "PROBLEM CREATING R3REQDATA MEMBER"
+                       TO BU-DISPLAY-MSG
+                   MOVE RTN-CODE TO BU-DISPLAY-FLD (1)
+                   STRING "TRYING TO CREATE RQ", SAVE-DATE, SAVE-SEQ
+                       DELIMITED BY SIZE INTO BU-DISPLAY-FLD (2)
+                   MOVE SAVE-TIME TO BU-DISPLAY-FLD (3)
+                   PERFORM 200-BLOWUP
+               END-IF
+               MOVE SAVE-SEQ TO OVRDBF-SEQ
+               STRING "R3REQ", SAVE-SEQ
+                   DELIMITED BY SIZE INTO CLMMSREQ-FILENAME
+               CALL "QCMDEXC" USING  OVRDBF-RQ-CMD  OVRDBF-RQ-LEN
+               OPEN OUTPUT REQUISITION-FILE
+               MOVE R3-HEADER TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR
+               MOVE R3-RECORD-A1 TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR
+               MOVE 0 TO PAGE-CTR.
+           MOVE R3FILE-REQNO TO REQ-ARG.
+           MOVE REQ-ARG TO REQNO OF MREQ-REC,
+                                    DREQD-REC,
+                                    DREQITM-REC,
+                                    DREQDESC-REC,
+                                    SAP-REQNO-H1,
+                                    SAP-REQNO-I1,
+                                    SAP-REQNO-I3,
+                                    SAP-REQNO-I4.
+           PERFORM 60-GET-MREQ-DATA THRU 60-GMD-X.
+           IF FILE-STATUS = "23"
+               IF RECS-CTR = 0
+                   MOVE "1ST REQ ON R3REQFI2 ALREADY DELETED "
+                       TO BU-DISPLAY-MSG
+                   MOVE REQ-ARG TO BU-DISPLAY-FLD (2)
+                   GO TO 200-BLOWUP
+               ELSE
+               GO TO 6-MAIN.
+           MOVE SPACES           TO SAP-ITEMCAT-I1.
+           IF REQ-SERVICE-FLAG = "S"
+               MOVE "FO"         TO SAP-DOCUMENT-H1
+               MOVE "B"          TO SAP-ITEMCAT-I1
+           ELSE
+               IF REQ-SERVICE-FLAG = "R"
+                   MOVE "RR"     TO SAP-DOCUMENT-H1
+               ELSE
+                   MOVE "NB"     TO SAP-DOCUMENT-H1.
+           MOVE R3-RECORD-H1 TO REQ-REC.
+           WRITE REQ-REC.
+           ADD 1 TO RECS-CTR.
+           PERFORM 61-GET-DREQITM-DATA THRU 61-GDD-X.
+           PERFORM 62-GET-WO THRU 62-GW-X.
+           MOVE 0 TO SUB.
+           MOVE SPACES TO DESC-TABLE.
+           IF REQITM-CORP-CODE = "NON-STR "
+               PERFORM 63-GET-NC-DESCRIPTION THRU 63-GND-X
+           ELSE
+      *        MOVE REQITM-CORP-CODE TO CODE-ARG
+      *        PERFORM 63-GET-DESCRIPTION THRU 63-GD-X.
+               MOVE SPACES TO SAP-DESC-SHORT-I1
+               MOVE R3-RECORD-I1 TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR.
+           PERFORM 64-LOAD-I4-RECORDS THRU 64-L-I4-RECS-X.
+           MOVE 0 TO SUB1.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 50 PERFORM 69-WRITE-HEADERS.
+           MOVE REQ-ARG TO D-REQNO.
+           MOVE SPACES TO R3-PRINT-RCD.
+           MOVE 1 TO R3-PRINT-CTL.
+           MOVE DETAIL-LINE TO R3-PRINT-LINE.
+           WRITE R3-PRINT-RCD.
+           GO TO 6-MAIN.
+
+       6-MAIN-CLOSE.
+           IF RECS-CTR = 0 GO TO 6-MAIN-X.
+           MOVE R3-RECORD-Z1 TO REQ-REC.
+           WRITE REQ-REC.
+           ADD 2 TO RECS-CTR.
+      *----ADDED 2 TO RECORD COUNTER HERE TO INCLUDE THE WRITE
+      *----OF THE 'Z1' RECORD AND THE WRITE OF THE TRAILER
+      *----RECORD.
+           MOVE RECS-CTR TO TRAILER-REC-CTR.
+           MOVE R3-TRAILER TO REQ-REC.
+           WRITE REQ-REC.
+           IF RECS-CTR > 2
+               MOVE SEND-SEQ TO MPLTINFO-MMSREQ-SEQ
+               REWRITE MPLTINFO-REC FROM BUF-MPLTINFO
+               CLOSE REQUISITION-FILE
+               CALL "CLMMSREQ" USING CLMMSREQ-FILENAME.
+       6-MAIN-X.
+           EXIT.
+
+       60-GET-MREQ-DATA.
+           READ MREQ INTO BUF-MREQ
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "23"
+                   GO TO 60-GMD-X
+               ELSE
+               MOVE "REQ NUMBER DOES NOT EXIST IN MREQ"
+                   TO BU-DISPLAY-MSG
+               GO TO 200-BLOWUP.
+      *****MOVE REQ-DOCK-NOTIFY    TO SAP-NOTIFY-H1.
+      *****MOVE REQ-DOCK-NOTIFY    TO SAP-DOCK-NOTIFY-I1.
+           IF REQ-ORIGINATOR > SPACES
+               MOVE REQ-ORIGINATOR TO PERCCNUM OF PERS-FILE
+               READ PERS-FILE      INTO PERSONNEL-DATA
+                   INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS = "00"
+                   MOVE PER-EMP-NAME TO SAP-DOCK-NOTIFY-I1
+               ELSE
+                   MOVE "STOREROOM"  TO SAP-DOCK-NOTIFY-I1
+               END-IF
+           ELSE
+               MOVE "STOREROOM"  TO SAP-DOCK-NOTIFY-I1.
+           MOVE REQ-ORIGINATOR     TO SAP-NOTIFY-H1.
+           MOVE REQ-DATE-CN        TO SAP-REQ-DATE-H1.
+           MOVE REQ-DATE-WANTED-CN TO SAP-DATE-WANTED-I1.
+
+      ******* 18FEB2002 - REPLACED THE FOLLOWING STRING STATEMENT WITH
+      *******   MOVE STATEMENTS FOR THE INDIVIDUAL PARTS OF THE ACCOUNT
+      *******   CODE.  IF THE REQ-A-D-6 FIELD CONTAINS A SIX DIGIT
+      *******   NUMBER, IT IS AN SAP INTERNAL ORDER NUMBER.
+      *****STRING REQ-CO REQ-PRIME REQ-SUB REQ-SUBD
+      *****       REQ-A-D-6 (2:5)
+      *****    DELIMITED BY SPACES
+      *****    INTO  SAP-ACCT-NO-I1.
+           MOVE REQ-CO             TO SAP-ACCT-CO-I1.
+           MOVE REQ-PRIME          TO SAP-ACCT-PRIME-I1.
+
+      ********* PUT LAST 3 DIGITS OF EXPENSE CLASS INTO CLASS FIELD.
+      *****MOVE REQ-SUB            TO SAP-ACCT-SUB-I1.
+           MOVE REQ-A-D-6 (4:3)    TO SAP-ACCT-SUB-I1.
+
+           MOVE REQ-SUBD           TO SAP-ACCT-SUBD-I1.
+
+      ******* IF THE 4TH BTYE OF REQ-SUBD (DEPT) WAS BLANK (AS IS
+      ******* THE CASE WITH FREEPORT'S 3 BYTE DEPT NUMBERS), THEN
+      ******* WE ZERO FILL THE 4TH BYTE OF SAP-ACCT-SUBD-I1.
+           IF SAP-ACCT-SUBD-4-I1 EQUAL SPACE
+               MOVE "0"           TO SAP-ACCT-SUBD-4-I1.
+
+      ******* WE WILL ZERO FILL THE LAST 5 BYTES OF THE SAP-ACCT-NO-I1
+      ******* FIELD IN ALL CASES.  (THESE 5 BYTES PREVIOUSLY CONTAINED
+      ******* BYTES 2 THROUGH 6 OF THE REQ-A-D-6 FIELD FROM MREQ.)
+           MOVE "00000"           TO SAP-ACCT-LAST5-I1.
+
+      ******* IF REQ-A-D-6 CONTAINS A 6 DIGIT NUMBER, IT IS ASSUMED TO
+      ******* BE AN SAP INTERNAL ORDER NUMBER.  FOR INTERNAL ORDERS,
+      ******* SAP-ACCTCAT-I1 IS SET TO "F", OTHERWISE IT IS SET TO "K".
+      *****IF REQ-A-D-6 IS GREATER THAN 99999
+      *****    MOVE REQ-A-D-6     TO SAP-INTERNAL-I1
+      *****    MOVE "F"           TO SAP-ACCTCAT-I1
+      *****ELSE
+      *********MOVE SPACES        TO SAP-INTERNAL-X-I1
+      *********MOVE "K"           TO SAP-ACCTCAT-I1.
+
+      ******* THE ADDITIONAL INFO FIELD IS NOW THE SAP INTERNAL
+      ******* ORDER NUMBER.
+           MOVE REQ-ADDL-INFO     TO SAP-INTERNAL-X-I1.
+           IF REQ-ADDL-INFO > SPACES
+               MOVE "F"           TO SAP-ACCTCAT-I1
+           ELSE
+               MOVE "K"           TO SAP-ACCTCAT-I1.
+
+       60-GMD-X.    EXIT.
+
+       61-GET-DREQITM-DATA.
+           START DREQITM KEY = REQNO OF DREQITM-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "REQUISITION ITEM SEGMENT DOES NOT EXIST"
+                   TO BU-DISPLAY-MSG
+               GO TO 200-BLOWUP.
+       61-GDD-LOOP.
+           READ DREQITM NEXT INTO BUF-DREQITM
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CANNOT GET REQ ITEM SEGMENT "
+                    TO BU-DISPLAY-MSG
+               GO TO 200-BLOWUP.
+           IF REQITM-REQ-NUMBER NOT = REQ-ARG GO TO 61-GDD-X.
+           IF REQITM-NUMBER = "    "
+               NEXT SENTENCE
+           ELSE
+           MOVE REQITM-NUMBER-9    TO SAP-ITEM-I1,
+                                      SAP-ITEM-I3,
+                                      SAP-ITEM-I4.
+           MOVE REQITM-QTY-TO-ORD  TO SAP-REQ-QTY-I1.
+           MOVE REQITM-UM          TO SAP-UM-I1.
+      *    IF REQITM-BUDGET-AMT-X = SPACES
+      *        MULTIPLY REQITM-UNIT-PRICE BY REQITM-QTY-TO-ORD
+      *            GIVING SAP-DOLLAR-VAL-I1
+      *    ELSE
+      *    MOVE REQITM-BUDGET-AMT  TO SAP-DOLLAR-VAL-I1.
+           IF REQITM-UNIT-PRICE = ZEROES
+               MOVE 1.0000         TO REQITM-UNIT-PRICE.
+           MOVE REQITM-UNIT-PRICE  TO SAP-DOLLAR-VAL-I1.
+           MOVE 1                  TO SAP-PRICE-UNIT-I1.
+
+      *SET OVERALL LIMIT EQUAL TO UNIT-PRICE FOR SERVICE REQS
+           IF REQ-SERVICE-FLAG = "S"
+               MOVE REQITM-UNIT-PRICE  TO SAP-LIMIT-I1.
+
+      ******* 18FEB2002 - MOVED LOGIC FOR FIELD SAP-ACCTCAT-I1 TO
+      *******   PARAGRAPH 60-GET-MREQ-DATA.
+      *****MOVE "K"                TO SAP-ACCTCAT-I1.
+
+           IF REQITM-CORP-CODE = "NON-STR"
+               MOVE SPACES         TO SAP-MATERIAL-I1
+           ELSE
+           MOVE REQITM-CORP-CODE   TO SAP-MATERIAL-I1.
+
+           MOVE "ZMMIS"            TO SAP-MATL-GRP-I1.
+       61-GDD-X.    EXIT.
+
+       62-GET-WO.
+           START DREQD KEY = REQNO OF DREQD-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 62-GW-X.
+       62-GW-LOOP.
+           READ DREQD NEXT INTO BUF-DREQD
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 62-GW-X.
+           IF REQ-ARG NOT = DREQD-REQ-NUMBER GO TO 62-GW-X.
+           MOVE DREQD-BUYER-CODE TO SAP-PURCH-GROUP-I1.
+      ******* 03/01/2002 COMMENTED OUT THE FOLLOWING MOVE STATEMENT.
+      *******   R/3 DOES NOT WANT THE MMIS WORK ORDER NUMBER.
+      *****MOVE DREQD-WO-NUMBER  TO SAP-GOODS-WO-I1.
+           GO TO 62-GW-LOOP.
+       62-GW-X.    EXIT.
+
+       63-GET-DESCRIPTION.
+           MOVE 5                        TO  CDESC-LINES-TO-GET.
+           MOVE "N"                      TO  CDESC-LOCAL-DESC-OPTION.
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+             BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 200-BLOWUP.
+
+           MOVE CDESC (1)                TO  DESC-ENTRY (1).
+           MOVE CDESC (2)                TO  DESC-ENTRY (2).
+           MOVE CDESC (3)                TO  DESC-ENTRY (3).
+           MOVE CDESC (4)                TO  DESC-ENTRY (4).
+           MOVE CDESC (5)                TO  DESC-ENTRY (5).
+           MOVE 40                       TO  SUB.
+           PERFORM 630-LOAD-DESC-LINES.
+
+       63-GD-X.    EXIT.
+
+       63-GET-NC-DESCRIPTION.
+           START DREQDESC KEY = REQNO OF DREQDESC-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "NO DESCRIPTION AVAILABLE"
+                                   TO SAP-DESC-SHORT-I1
+               MOVE R3-RECORD-I1   TO REQ-REC
+               WRITE REQ-REC
+               ADD 1               TO RECS-CTR
+               GO TO 63-GND-X.
+       63-GND-LOOP.
+           READ DREQDESC NEXT INTO BUF-DREQDESC
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DESCRIPTION NOT AVAILABLE"
+                                   TO SAP-DESC-SHORT-I1
+               MOVE R3-RECORD-I1   TO REQ-REC
+               WRITE REQ-REC
+               ADD 1               TO RECS-CTR
+               GO TO 63-GND-X.
+       63-GND-WRITE-RECS.
+           IF (REQDESC-REQ-NUMBER NOT = REQ-ARG)
+               OR (REQDESC-LINE-NO = "95" OR "96")
+               OR SUB > 12
+                   MOVE 960 TO SAVE-SUB
+                   MOVE 0 TO SUB
+                   MOVE 1 TO SUB1
+                   PERFORM 630A-ELIMINATE-EXTRA-BLANKS
+                       THRU 630A-EES-X
+                   MOVE 40 TO SUB
+                   PERFORM 630-LOAD-DESC-LINES
+           ELSE
+           ADD 1 TO SUB
+           IF SUB > 12
+               GO TO 63-GND-WRITE-RECS
+      *********GO TO 63-GND-X
+           END-IF
+           MOVE REQDESC-DATA TO DESC-ENTRY (SUB)
+           GO TO 63-GND-LOOP.
+       63-GND-X.    EXIT.
+
+       630A-ELIMINATE-EXTRA-BLANKS.
+           ADD 1 TO SUB.
+           IF SUB > SAVE-SUB GO TO 630A-EES-X.
+           ADD 1 TO SUB1.
+           IF SUB1 > SAVE-SUB GO TO 630A-EES-X.
+           IF D-T (SUB) = " "
+               IF D-T (SUB1) = " "
+                   PERFORM 630AA-TAKE-BLANKS-OUT
+                       VARYING SUB2 FROM SUB1 BY 1
+                           UNTIL SUB2 = SAVE-SUB
+                   MOVE " " TO D-T (SAVE-SUB)
+                   SUBTRACT 1 FROM SAVE-SUB
+                   MOVE 0 TO SUB
+                   MOVE 1 TO SUB1
+                   GO TO 630A-ELIMINATE-EXTRA-BLANKS
+               ELSE
+               GO TO 630A-ELIMINATE-EXTRA-BLANKS
+           ELSE
+           GO TO 630A-ELIMINATE-EXTRA-BLANKS.
+       630A-EES-X.    EXIT.
+
+       630AA-TAKE-BLANKS-OUT.
+           MOVE D-T (SUB2) TO D-T (SUB).
+           ADD 1 TO SUB.
+
+       630-LOAD-DESC-LINES.
+           IF D-T (SUB) = " "
+               MOVE SPACES TO SAP-DESC-SHORT-I1
+               PERFORM 6301-LOAD-SHORT-DESC
+                   VARYING SUB FROM 1 BY 1 UNTIL SUB = 40
+               MOVE R3-RECORD-I1 TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR
+               MOVE 0 TO SUB1
+               MOVE 0 TO SUB2
+               PERFORM 6302-LOAD-LONG-DESC THRU 6302-LLD-X
+           ELSE
+           PERFORM 6300-DETERMINE-SPLIT THRU 6300-DS-X
+           MOVE SPACES TO SAP-DESC-SHORT-I1
+           PERFORM 6301-LOAD-SHORT-DESC
+               VARYING SUB FROM 1 BY 1 UNTIL SUB = SAVE-SUB
+           MOVE R3-RECORD-I1 TO REQ-REC
+           WRITE REQ-REC
+           ADD 1 TO RECS-CTR
+           MOVE 0 TO SUB1
+           MOVE SAVE-SUB TO SUB
+           MOVE 0 TO SUB2
+           PERFORM 6302-LOAD-LONG-DESC THRU 6302-LLD-X.
+
+       6300-DETERMINE-SPLIT.
+           SUBTRACT 1 FROM SUB.
+
+DCR01******IF SUB = 0  GO TO 6300-DS-X.
+DCR01      IF SUB = 0
+DCR01         MOVE 40  TO SAVE-SUB
+DCR01         GO TO 6300-DS-X.
+
+           IF D-T (SUB) = " "
+               MOVE SUB TO SAVE-SUB
+               GO TO 6300-DS-X.
+
+           GO TO 6300-DETERMINE-SPLIT.
+       6300-DS-X.    EXIT.
+
+       6301-LOAD-SHORT-DESC.
+           MOVE D-T (SUB) TO S-D-S-I1 (SUB).
+
+       6302-LOAD-LONG-DESC.
+           ADD 1 TO SUB.
+           IF SUB > 960 GO TO 6302-LLD-X.
+
+           IF SUB2 = 0
+               IF SUB < 100
+                   ADD 71 TO SUB GIVING SUB2
+                   PERFORM 63020-DETERMINE-SPLIT THRU 63020-DS-X
+               ELSE
+               ADD 70 TO SUB GIVING SUB2
+               PERFORM 63020-DETERMINE-SPLIT THRU 63020-DS-X.
+
+           ADD 1 TO SUB1.
+           IF SUB NOT LESS THAN SUB2
+               IF SAP-DESC-LONG-I3 = SPACES
+                   MOVE 1 TO SUB1
+               ELSE
+               MOVE R3-RECORD-I3 TO REQ-REC
+               WRITE REQ-REC
+               MOVE SPACES TO SAP-DESC-LONG-I3
+               ADD 1 TO RECS-CTR
+               MOVE 1 TO SUB1
+               MOVE 0 TO SUB2.
+
+           MOVE D-T (SUB) TO S-D-L-I3 (SUB1).
+           GO TO 6302-LOAD-LONG-DESC.
+
+       6302-LLD-X.    EXIT.
+
+       63020-DETERMINE-SPLIT.
+
+            IF SUB2 > 960
+                MOVE 960 TO SUB2.
+
+            IF D-T (SUB2) = " "
+                GO TO 63020-DS-X
+            ELSE
+            SUBTRACT 1 FROM SUB2
+            GO TO 63020-DETERMINE-SPLIT.
+
+       63020-DS-X.    EXIT.
+
+       64-LOAD-I4-RECORDS.
+           IF REQITM-NOTE NOT = SPACES
+               MOVE REQITM-NOTE TO S-V-DATA
+               MOVE SUGGESTED-VENDOR-REC TO SAP-DESC-LONG-I4
+               MOVE R3-RECORD-I4 TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR.
+
+           IF REQ-BUDGET-NO NOT = SPACES
+               MOVE REQ-BUDGET-NO TO B-N-DATA
+               MOVE BUDGET-NUMBER-REC TO SAP-DESC-LONG-I4
+               MOVE R3-RECORD-I4 TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR.
+
+      ******** ADDITIONAL INFO FIELD IS NOW SAP INTERNAL ORDER NUMBER.
+      *****IF REQ-ADDL-INFO NOT = SPACES
+      *********MOVE REQ-ADDL-INFO TO A-I-DATA
+      *********MOVE ADDITIONAL-INFO-REC TO SAP-DESC-LONG-I4
+      *********MOVE R3-RECORD-I4 TO REQ-REC
+      *********WRITE REQ-REC
+      *********ADD 1 TO RECS-CTR.
+
+           START DREQDESC KEY = REQNO OF DREQDESC-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 64-TAX-REC.
+       64-L-I4-RECS-LOOP.
+           READ DREQDESC NEXT INTO BUF-DREQDESC
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 64-TAX-REC.
+           IF REQDESC-REQ-NUMBER NOT = REQ-ARG
+               GO TO 64-TAX-REC.
+           IF REQDESC-LINE-NO = "95" OR "96"
+               MOVE REQDESC-DATA TO SAP-DESC-LONG-I4
+               MOVE R3-RECORD-I4 TO REQ-REC
+               WRITE REQ-REC
+               ADD 1 TO RECS-CTR.
+           GO TO 64-L-I4-RECS-LOOP.
+
+       64-TAX-REC.
+           IF REQITM-TAX-CODE NOT = SPACES
+               MOVE REQITM-TAX-CODE       TO  T-C-DATA
+               MOVE REQITM-TAX-CODE       TO  BUILD-TAX-CODE
+               MOVE BUILD-TAX-CODE-KEY    TO  COMMENT-ARG
+               MOVE COMMENT-ARG TO MCOMCOMMNT OF DCOMMENT-REC
+               MOVE "0001"      TO DCOMLINENO OF DCOMMENT-REC
+               READ DCOMMENT INTO BUF-DCOMMENT
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS = "00"
+                   MOVE EXP-DATA-COMMENT  TO  T-C-DATA-2
+                   MOVE TAX-CODE-REC TO SAP-DESC-LONG-I4
+                   MOVE R3-RECORD-I4 TO REQ-REC
+                   WRITE REQ-REC
+                   ADD 1 TO RECS-CTR.
+
+       64-L-I4-RECS-X.    EXIT.
+
+       69-WRITE-HEADERS.
+           MOVE SPACES TO R3-PRINT-RCD.
+           ADD 1 TO PAGE-CTR.
+           MOVE PAGE-CTR TO PAGE-NO-OUT.
+           MOVE 0 TO R3-PRINT-CTL.
+           MOVE PRINT-HDR1 TO R3-PRINT-LINE.
+           WRITE R3-PRINT-RCD.
+           MOVE 1 TO R3-PRINT-CTL.
+           MOVE PRINT-HDR2 TO R3-PRINT-LINE.
+           WRITE R3-PRINT-RCD.
+           MOVE ALL "-" TO R3-PRINT-LINE.
+           WRITE R3-PRINT-RCD.
+           MOVE 3 TO LINE-CTR.

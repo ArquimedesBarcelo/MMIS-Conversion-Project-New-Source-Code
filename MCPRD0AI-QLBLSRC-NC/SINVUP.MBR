@@ -1,0 +1,647 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.       SINVUP.
+       AUTHOR.           JEFF BUNGO.
+      *INSTALLATION.     GOODYEAR TIRE & RUBBER CO.
+      *DATE-WRITTEN.     JANUARY 1997.
+      *DATE-COMPILED.    CURRENT-DATE.
+      *REMARKS.      UPDATE STOREROOM INVENTORY FOR PASSED CORP CODE.
+      *   THIS PROGRAM WAS COPIED FROM TINVUP AND USED THE PART OF THE
+      *   PROGRAM THAT UPDATED INVENTORY AND UNLOCKED A SINGLE CODE.
+      *   ADDED LOGIC TO FREEZE THE CODE IF REQUESTED ON PARM.
+      *   THIS PROGRAM WAS BROKEN OUT TO ALLOW TINVUP TO READ THROUGH
+      *   AN INV WORK SHEET AND PASS EACH INDIVIDUAL CODE OR TO ALLOW
+      *   A SINGLE CODE TO BE PASSED TO BE FROZEN, INVENTORIED, AND
+      *   UNFROZEN WITHOUT A WORKSHEET.
+      *
+      *C  06/12/97  JEFF BUNGO
+      *C     ADD EDIT TO NOT ALLOW AN POSITIVE ADJUSTMENT TO A
+      *C     FRANCHISE BIN (BIN OWNER NOT = SPACES).  ALSO
+      *C     CREATE A TC532 FOR EACH FRANCHISE BIN OWNER IF
+      *C     FRAN KEY EXISTS AND CODE OWNER IS A FRANCHISE.
+      *C
+      *C  06/12/97  JEFF BUNGO
+      *C     ADDED RETRIEVAL OF PLANT CODE TO PUT ON TRANSACTIONS.
+      *C
+      *C 01/19/98 JEFF BUNGO
+      *C  ADDED LOGIC TO HANDLE UPDATES TO INVENTORY FOR FRANCHISE
+      *C  OWNED INVENTORY FOR THE FRANCHISER'S PURPOSE (IE. OBSOLETE
+      *C  ITEMS).  THESE ADJUSTMENTS SHOULD NOT INCURR ANY COSTS
+      *C  TO GOODYEAR SINCE IT IS FOR THE FRANCHISER'S PURPOSE.
+      *C  THIS WILL BE HANDLED BY NOT CREATING A TC332 OR TC532
+      *C  WHICH THE ACCOUNTING SYSTEMS WOULD ACCOUNT FOR.  A NEW
+      *C  TC632 WILL BE CREATED AS AN AUDIT TRAIL THAT THE ITEM
+      *C  INVENTORY WAS UPDATED.
+      *C
+      *
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.   AS400.
+       OBJECT-COMPUTER.   AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MSTORERM-O
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZINVUP-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT DDAILYTC-O
+                  ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                   PIC X(1500).
+
+       FD  MSTORERM-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-O.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DDAILYTC-O
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC-O.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       WORKING-STORAGE SECTION.
+
+       01  SUB                           PIC S9(4) COMP-4.
+       01  NEW-STR-ONHAND                PIC S9(8).
+       01  CHECK-ADJUSTMENT              PIC S9(8).
+       01  OWNER-COUNT                   PIC 9.
+
+       01  LOCS-ONHAND.
+           05  LOC-ONHAND OCCURS 6 TIMES PIC S9(8).
+
+
+      **************************************************************
+      **                                                          **
+      **          S U B P R O G R A M   A R E A S                 **
+      **                                                          **
+      **************************************************************
+       COPY TSHWRDFM   IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY ESCNAM2    IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY CDESC      IN COPYLIB.
+       COPY CCRTFILE   IN COPYLIB.
+       COPY CCHKOBJ    IN COPYLIB.
+       COPY TRSHIFT    IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+
+      *------ TREQFILU
+       01  RET-CODE                      PIC X(2).
+       01  PREVIOUS-STR-ONHAND           PIC S9(8).
+       01  PREVIOUS-STR-RESERVED         PIC S9(8).
+       01  REQFILE-NUM                   PIC S9(4)  COMP-4 VALUE 0.
+
+
+      *****************************************************************
+      **                                                             **
+      **    D A T A B A S E   B U F F E R S                          **
+      **                                                             **
+      *****************************************************************
+       COPY MSTORERM IN COPYLIB.
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTFRAN IN COPYLIB.
+       COPY MPLTP01  IN COPYLIB.
+       COPY DDAILYTC IN COPYLIB.
+       COPY TC332 IN COPYLIB.
+       COPY TC532 IN COPYLIB.
+
+      *****************************************************************
+      **                                                             **
+      **     D A T A B A S E   W O R K                               **
+      **                                                             **
+      *****************************************************************
+       01  BASE                          PIC X(10) VALUE SPACES.
+       COPY DBSTAT IN COPYLIB.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       01  CODE-ARG                      PIC X(8).
+
+      *---6/12/97, JSB HOLDING AREA FOR FRANCHISERS
+       01  FRAN-TABLE.
+           05  FRAN-ENTRY OCCURS 4 TIMES INDEXED BY FRAN-IDX.
+               10  FRAN-ID             PIC X(1).
+               10  FRAN-NAME           PIC X(4).
+               10  FRAN-VEN0CODE       PIC X(10).
+
+      *----6/12/97, HOLDING AREA FOR ISSUE FROM EACH BIN OWNER.
+       01  OWNER-TABLE.
+          05  OWNER-ENTRY OCCURS 6 TIMES INDEXED BY OWNR-IDX.
+              10  OWNR                PIC X(1).
+              10  OWNR-QTY            PIC S9(8).
+      **************************************************************
+      *                      VIEW                                  *
+      **************************************************************
+
+       01  MESSAGE-BUFFER.
+           05  MESSAGE-BUFFER-1          PIC X(1).
+           05  FILLER                    PIC X(75).
+       01  FIELD-NUMBER                PIC S9(4)   VALUE 1      COMP-4.
+       COPY FUNCTDEF IN COPYLIB.
+
+       01  DE-ONHAND-9                   PIC 9(8).
+
+      ************************************************************
+      *             SCREEN BUFFERS                               *
+      ************************************************************
+       01 DE-FIELDS-2.
+           05  V-CORP-CODE               PIC X(7).
+           05  V-UM                      PIC X(2).
+           05  V-DESCRIP-1               PIC X(78).
+           05  V-DESCRIP-2               PIC X(78).
+           05  DE-INVENTORY OCCURS 6 TIMES.
+               10  V-FRAN                PIC X(4).
+               10  V-LOC                 PIC X(12).
+               10  DE-ONHAND             PIC X(8).
+               10  V-LOC-ONHAND          PIC -(8).
+           05  DE-COMMAND-LINE-2         PIC X(79).
+           05  DE-MESSAGE-LINE-2         PIC X(79).
+
+       COPY LANGUAGE   IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  INV-CORP-CODE                 PIC X(7).
+       01  FREEZE-CODE                   PIC X(1).
+       COPY VCOMLINK OF COPYLIB.
+
+       PROCEDURE DIVISION USING INV-CORP-CODE FREEZE-CODE
+                                VIEW-COMAREA.
+       0000-START.
+           MOVE 2                        TO  SRF-KEYSET.
+           OPEN I-O MSTORERM-O, DDAILYTC-O, DISPLAY-FILE.
+           OPEN INPUT MPLTINFO-I.
+
+      *------6/12/97 LOAD FRANCHISE TABLE
+           MOVE "FRAN" TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES               TO   FRAN-TABLE
+           ELSE
+               MOVE MPLTINFO-FRANCHISES  TO   FRAN-TABLE.
+           MOVE "P 01" TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES               TO   MPLTINFO-COMPANY.
+
+           PERFORM 7000-UPDATE-INVENTORY THRU 7990-UI-X
+           CLOSE MSTORERM-O, DISPLAY-FILE MPLTINFO-I.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "SINVUP"                 TO  BU-PGM-NAME.
+           MOVE INV-CORP-CODE            TO  BU-DISPLAY-FLD (1).
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+             VIEW-COMAREA FILE-STATUS BU-DISPLAY-MSG
+             BU-DISPLAY-FLDS.
+
+       4030-SETERROR.
+           MOVE B"1"                     TO  IND (99).
+           MOVE B"1"                     TO  IND (FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER           TO DE-MESSAGE-LINE-2.
+
+       7000-UPDATE-INVENTORY.
+           MOVE INV-CORP-CODE            TO  CODE-ARG.
+      *-----FREEZE CODE IF NOT COMING FROM WORKSHEET (FREEZE = SPACES)
+           IF FREEZE-CODE NOT = SPACES
+               PERFORM 9009-FREEZE-UPDATE
+               PERFORM 9006-DBUNLOCK-MSTORE.
+
+           PERFORM 9005-DBGET7-MSTORE-O.
+           MOVE CODE-ARG                 TO  V-CORP-CODE.
+           MOVE STR-UM                   TO  V-UM.
+           MOVE 2                        TO  CDESC-LINES-TO-GET.
+           MOVE "D"                      TO  CDESC-DESC-OPTION.
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+             BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+           MOVE CDESC (1)                TO  V-DESCRIP-1.
+           MOVE CDESC (2)                TO  V-DESCRIP-2.
+           INITIALIZE LOCS-ONHAND.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+               MOVE STR-LOC (SUB)        TO  V-LOC (SUB)
+               MOVE STR-LOC-ONHAND (SUB) TO  V-LOC-ONHAND (SUB)
+                                             LOC-ONHAND (SUB)
+               MOVE SPACES               TO  DE-ONHAND (SUB)
+           END-PERFORM.
+      *-------LOAD FRAN NAMES TO SCREEN
+           PERFORM 8000-LOAD-FRAN-NAME THRU 8000-LOAD-FRAN-NAME-X
+               VARYING SUB FROM 1 BY 1 UNTIL SUB > 6.
+
+       7010-SHOWFORM.
+           IF STR-CODE-OWNER NOT = SPACES
+               MOVE B"1" TO IND(90)
+           ELSE
+               MOVE B"0" TO IND(90)
+           END-IF.
+           MOVE "SHOWITEM"               TO  VIEW-NFNAME.
+           MOVE DE-FIELDS-2              TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 9989-WS-X.
+           MOVE DISPLAY-REC              TO  DE-FIELDS-2.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               PERFORM 4030-SETERROR
+               GO TO 7010-SHOWFORM.
+      *------ F2 ALLOWS USER TO NOT UPDATE THE INVENTORY.
+      *------ OTHERWISE, HE HAS TO ENTER A VALUE IN EVERY
+      *------ LOCATION.
+           IF VIEW-LASTKEY = 7 OR EXIT-PROGRAM
+               IF FREEZE-CODE NOT = SPACES
+                   PERFORM 9010-UNFREEZE-UPDATE
+               END-IF
+               GO TO 7990-UI-X.
+           IF VIEW-LASTKEY = 1
+               PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+                 IF LOC-ONHAND (SUB) NOT = ZEROS
+                   MOVE LOC-ONHAND (SUB) TO DE-ONHAND (SUB)
+                 END-IF
+               END-PERFORM.
+           IF VIEW-LASTKEY = 2
+               PERFORM 9010-UNFREEZE-UPDATE
+               GO TO 7990-UI-X.
+           IF STR-STATE NOT = "F"
+      *        "C60: CODE IS NOT FROZEN, ITEM CANT BE UPDATED"
+               MOVE 3                    TO  LANG-SETNUM
+               MOVE 60                   TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5                    TO  FIELD-NUMBER
+               PERFORM 4030-SETERROR
+               GO TO 7010-SHOWFORM.
+
+           IF STR-DFLT-DEPT = SPACES
+      *        "N50: NO DEFAULT DEPT CHARGE ON FILE"
+               MOVE 14                   TO  LANG-SETNUM
+               MOVE 50                   TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5                    TO  FIELD-NUMBER
+               PERFORM 4030-SETERROR
+               GO TO 7010-SHOWFORM.
+
+           IF STR-LOC (1) = SPACES
+      *        "N53: NO PRIMARY BIN LOCATION FOR THIS CODE"
+               MOVE 14                   TO  LANG-SETNUM
+               MOVE 53                   TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5                    TO  FIELD-NUMBER
+               PERFORM 4030-SETERROR
+               GO TO 7010-SHOWFORM.
+
+           MOVE SPACES                   TO  MESSAGE-BUFFER-1.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+           OR MESSAGE-BUFFER-1 > SPACES
+               IF STR-LOC (SUB) = SPACES AND DE-ONHAND (SUB) > SPACES
+      *            "C111: CANNOT TRANSACT AGAINST NON-EXISTANT LOC"
+                   MOVE 3                TO  LANG-SETNUM
+                   MOVE 111              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   COMPUTE FIELD-NUMBER = SUB + 4
+                   PERFORM 4030-SETERROR
+               END-IF
+               IF STR-LOC (SUB) > SPACES AND DE-ONHAND (SUB) = SPACES
+                  AND STR-LOC-ONHAND (SUB) NOT = ZEROS
+      *            "Q19: QUANTITY IS A REQUIRED FIELD"
+                    MOVE 17              TO  LANG-SETNUM
+                    MOVE 19              TO  LANG-MSGNUM
+                    PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                    COMPUTE FIELD-NUMBER = SUB + 4
+                    PERFORM 4030-SETERROR
+                END-IF
+      *------------EDIT FOR POSITIVE ADJUSTMENT
+      *------------  DO NOT EDIT FOR FRANCHISE ADJUSTMENT
+                IF FREEZE-CODE = SPACES OR FREEZE-CODE = "Y"
+                  IF STR-BIN-OWNER(SUB) NOT = SPACES
+                    MOVE DE-ONHAND (SUB)      TO  RS-SHIFT-FLD
+                    CALL "TRSHIFT" USING RS-RET-CODE, RS-SHIFT-FLD
+                    IF RS-SHIFT-FLD NUMERIC
+                        MOVE RS-SHIFT-FLD     TO  DE-ONHAND-9
+                        COMPUTE CHECK-ADJUSTMENT = DE-ONHAND-9 -
+                                                   STR-LOC-ONHAND(SUB)
+                        IF CHECK-ADJUSTMENT > 0
+      *            CANNOT MAKE A POSITIVE ADJUSTMENT TO A FRANCHISE BIN
+                            MOVE 03              TO  LANG-SETNUM
+                            MOVE 630             TO  LANG-MSGNUM
+                            PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                            COMPUTE FIELD-NUMBER = SUB + 4
+                            PERFORM 4030-SETERROR
+                        END-IF
+                    END-IF
+                  END-IF
+                END-IF
+      *-----------EDIT FRANCHISE ADJUSTMENT FOR FRANCHISE PURPOSE
+      *-----------  ADJUST ONLY FRANCHISE OWNED BINS, OWNER INDICATED
+      *-----------  BY VALUE IN FREEZE-CODE
+                IF FREEZE-CODE NOT = SPACES AND FREEZE-CODE NOT = "Y"
+                  MOVE DE-ONHAND (SUB)      TO  RS-SHIFT-FLD
+                  CALL "TRSHIFT" USING RS-RET-CODE, RS-SHIFT-FLD
+                  IF RS-SHIFT-FLD NUMERIC
+                     MOVE RS-SHIFT-FLD TO DE-ONHAND-9
+                     IF STR-BIN-OWNER(SUB) NOT = FREEZE-CODE AND
+                        STR-LOC-ONHAND(SUB) NOT = DE-ONHAND-9
+      *            CANNOT UPDATE A NON-FRANCHISE OWNED BIN
+                        MOVE 03              TO  LANG-SETNUM
+                        MOVE 632             TO  LANG-MSGNUM
+                        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                        COMPUTE FIELD-NUMBER = SUB + 4
+                        PERFORM 4030-SETERROR
+                     END-IF
+                  END-IF
+                END-IF
+            END-PERFORM.
+            IF MESSAGE-BUFFER-1 > SPACES
+                GO TO 7010-SHOWFORM.
+
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+               MOVE DE-ONHAND (SUB)      TO  RS-SHIFT-FLD
+               CALL "TRSHIFT" USING RS-RET-CODE, RS-SHIFT-FLD
+               IF RS-SHIFT-FLD NUMERIC
+                   MOVE RS-SHIFT-FLD     TO  DE-ONHAND (SUB)
+               ELSE
+                   MOVE 17               TO  LANG-SETNUM
+                   MOVE 1                TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   COMPUTE FIELD-NUMBER = SUB + 4
+                   PERFORM 4030-SETERROR
+                   GO TO 7010-SHOWFORM
+               END-IF
+           END-PERFORM.
+
+      *-------6/12/97 CREATE TABLE OF OWNERS AND ADJUSTMENTS
+      *-------  IF FRANCHISERS EXIST, DO FOR ALL CODES
+           MOVE 0 TO OWNER-COUNT.
+           IF FRAN-TABLE NOT = SPACES
+             MOVE HIGH-VALUES TO OWNER-TABLE
+             PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+               MOVE DE-ONHAND (SUB)      TO  RS-SHIFT-FLD
+               CALL "TRSHIFT" USING RS-RET-CODE, RS-SHIFT-FLD
+               IF RS-SHIFT-FLD NUMERIC
+                   MOVE RS-SHIFT-FLD     TO  DE-ONHAND-9
+               END-IF
+               IF STR-LOC-ONHAND(SUB) NOT = DE-ONHAND-9
+                   SET OWNR-IDX TO 1
+                   SEARCH OWNER-ENTRY
+                      AT END
+                          ADD 1 TO OWNER-COUNT
+                          MOVE STR-BIN-OWNER(SUB) TO OWNR(OWNER-COUNT)
+                          COMPUTE OWNR-QTY(OWNER-COUNT) =
+                                  DE-ONHAND-9 - STR-LOC-ONHAND(SUB)
+                      WHEN STR-BIN-OWNER(SUB) = OWNR(OWNR-IDX)
+                         COMPUTE OWNR-QTY(OWNR-IDX) = OWNR-QTY(OWNR-IDX)
+                              + (DE-ONHAND-9 - STR-LOC-ONHAND(SUB))
+                   END-SEARCH
+               END-IF
+             END-PERFORM
+           END-IF.
+
+      *------ WHAT THE HECK, LET'S UPDATE THE DATABASE WHILE WE'RE HERE
+           MOVE 0                        TO  NEW-STR-ONHAND.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+               MOVE DE-ONHAND (SUB)      TO  STR-LOC-ONHAND (SUB)
+               ADD STR-LOC-ONHAND (SUB)  TO  NEW-STR-ONHAND
+           END-PERFORM.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT             TO  STR-INV-DATE,
+                                STR-ACT-DATE.
+      *------INCLUDE CENTURY ON ACTIVITY AND INVENTORY DATES
+           IF STR-ACT-DATE-YY > "70"
+               MOVE "19" TO STR-ACT-DATE-CC  STR-INV-DATE-CC
+           ELSE
+               MOVE "20" TO STR-ACT-DATE-CC  STR-INV-DATE-CC.
+           MOVE STR-ONHAND               TO  PREVIOUS-STR-ONHAND.
+           MOVE NEW-STR-ONHAND           TO  STR-ONHAND.
+           PERFORM 9010-UNFREEZE-UPDATE.
+
+      *------ CALCULATE THE ADJUSTMENT QUANTITY
+           SUBTRACT PREVIOUS-STR-ONHAND FROM NEW-STR-ONHAND
+              GIVING TC332-ADJ-QTY.
+
+      ******* IF THE ADJUSTMENT QUANTITY IS ZERO (PHYSICAL INVENTORY
+      ******* COUNT = ONHAND QUANTITY IN MSTORERM), WE WILL SKIP OVER
+      ******* THE UPDATE OF REQFILE.  HOWEVER, WE WILL GO AHEAD AND
+      ******* WRITE THE TC332 TRANSACTION (PER REQUEST #6018).
+           IF TC332-ADJ-QTY  = ZERO
+               GO TO 7500-PUT-TC332-CONTINUE.
+      *********GO TO 7990-UI-X.    *REPLACED 22SEP92 - REQUEST #6018*
+
+      *------ IF FRANCHISE ADJUSTMENT FOR FRANCHISER'S PURCHASE
+      *------   SKIP THE UPDATE OF THE REQFILE.
+           IF FREEZE-CODE NOT = SPACES AND FREEZE-CODE NOT = "Y"
+               GO TO 7500-PUT-TC332-CONTINUE.
+
+      *------ CALL TREQFILU TO UPDATE THE REQFILE.
+           MOVE STR-RESERVED             TO  PREVIOUS-STR-RESERVED.
+           MOVE "01"                     TO  RET-CODE.
+           CALL "TREQFILU" USING RET-CODE, BASE, REQFILE-NUM,
+             CORP-CODE, PREVIOUS-STR-ONHAND, PREVIOUS-STR-RESERVED,
+             STR-ONHAND, STR-RESERVED, STR-REORDER, STR-EXPEDITE.
+           IF RET-CODE NOT = "00"
+               MOVE "TREQFILU ERROR"     TO  BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+       7500-PUT-TC332-CONTINUE.
+      *------ NOW WE HAVE TO GO THRU THE HASSLE OF PUTTING OUT THE
+      *------ 332 TRANSACTION FOR STOREROOM ADJUSTMENTS
+      *------
+      *------ HAD TO ADD THE FOLLOWING CALL TO TDATECHK TO INSURE
+      *------ THAT THE CURRENT DATE AND TIME ARE AVAILABLE TO BE
+      *------ MOVED TO THE DDAILYTC BUFFER.  29OCT1992
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO DDAILYTC-TIME.
+           MOVE "332"                    TO  DDAILYTC-TC.
+           MOVE MPLTINFO-COMPANY         TO  DDAILYTC-PLT.
+           MOVE CORP-CODE                TO  TC332-CORP-CODE.
+           MOVE STR-DFLT-DEPT            TO  TC332-DEPT-CHG.
+      *------- 2 FIELDS EXIST FOR AVERAGE COST - IF COST IS GREATER THAN
+      *------- 9,999,999.99 THEN THE SMALLER FIELD WILL BE TRUNCATED.
+           MOVE STR-AVG-COST             TO  TC332-AVG-COST-SMALL.
+           MOVE STR-AVG-COST             TO  TC332-AVG-COST-BIG.
+           MOVE STR-UM                   TO  TC332-UM.
+           MOVE STR-ONHAND               TO  TC332-NEW-ONHAND.
+           MOVE STR-EXPENSE-CLASS        TO  TC332-DFLT-EXP-CLASS.
+           MOVE STR-CLASS                TO  TC332-CLASS.
+
+      *------- IF FRANCHISE ADJUSTMENT FOR FRANCHISER'S PURPOSE
+      *-------   DO NOT WRITE TC332.  NO COST TO GOODYEAR!
+           IF FREEZE-CODE = SPACES OR FREEZE-CODE = "Y"
+             WRITE DDAILYTC-REC-O FROM BUF-DDAILYTC
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+             END-WRITE
+             IF FILE-STATUS NOT = "00"
+               MOVE "WRITE DDAILYTC 332 ERROR" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP
+             END-IF
+           END-IF.
+
+      *------- 6/12/97 WRITE TC532 FOR EACH BIN OWNER
+      *-------  SKIP IF FRANCHISE ADJUSTMENT FOR FRANCHISER'S PURPOSE
+           IF FREEZE-CODE = SPACES OR FREEZE-CODE = "Y"
+             IF OWNER-COUNT > 0
+               PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > OWNER-COUNT
+                     MOVE SPACES TO DDAILYTC-DATA
+                     MOVE "532"                TO  DDAILYTC-TC
+                     MOVE MPLTINFO-COMPANY     TO  DDAILYTC-PLT
+                     MOVE CORP-CODE            TO  TC532-CORP-CODE
+                     MOVE STR-DFLT-DEPT        TO  TC532-DEPT-CHG
+                     MOVE OWNR-QTY(SUB)        TO  TC532-ADJ-QTY
+      *------- 2 FIELDS EXIST FOR  COST - IF COST IS GREATER THAN
+      *------- 9,999,999.99 THEN THE SMALLER FIELD WILL BE TRUNCATED
+      *------- GOODYEAR USES AVG COST, NON GOODYEAR USES MKT COST
+                     IF OWNR(SUB) = SPACES
+                      MOVE STR-AVG-COST         TO  TC532-AVG-COST-SMALL
+                      MOVE STR-AVG-COST         TO  TC532-AVG-COST-BIG
+                     ELSE
+                      MOVE STR-MKT-COST         TO  TC532-AVG-COST-SMALL
+                      MOVE STR-MKT-COST         TO  TC532-AVG-COST-BIG
+                     END-IF
+                     MOVE STR-UM               TO  TC532-UM
+                     MOVE OWNR(SUB)            TO  TC532-FRAN-ID
+                     MOVE STR-EXPENSE-CLASS    TO  TC532-DFLT-EXP-CLASS
+                     MOVE STR-CLASS            TO  TC532-CLASS
+                     WRITE DDAILYTC-REC-O FROM BUF-DDAILYTC
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                     END-WRITE
+                     IF FILE-STATUS NOT = "00"
+                       MOVE "WRITE 532 DDAILYTC ERROR" TO BU-DISPLAY-MSG
+                       PERFORM 2100-BLOWUP
+                     END-IF
+               END-PERFORM
+             END-IF
+           END-IF.
+
+      *------CREATE TC632 FOR FRANCHISE ADJUSTMENT FOR FRANCHISER'S
+      *------  PURPOSE.  THIS SHOULD INCURR NO COST TO GOODYEAR!
+      *------  ONE 632 PER CODE SINCE ONLY THE FRANCHISER'S BINS
+      *------  MAY BE ADJUSTED
+           IF FREEZE-CODE NOT = SPACES AND FREEZE-CODE NOT = "Y"
+             MOVE "632"                    TO  DDAILYTC-TC
+             MOVE CORP-CODE                TO  TC532-CORP-CODE
+             MOVE STR-DFLT-DEPT            TO  TC532-DEPT-CHG
+             MOVE STR-AVG-COST             TO  TC532-AVG-COST-SMALL
+             MOVE STR-AVG-COST             TO  TC532-AVG-COST-BIG
+             MOVE STR-UM                   TO  TC532-UM
+             MOVE STR-EXPENSE-CLASS        TO  TC532-DFLT-EXP-CLASS
+             MOVE STR-CLASS                TO  TC532-CLASS
+             MOVE TC332-ADJ-QTY            TO  TC532-ADJ-QTY
+             MOVE FREEZE-CODE              TO  TC532-FRAN-ID
+             WRITE DDAILYTC-REC-O FROM BUF-DDAILYTC
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+             END-WRITE
+             IF FILE-STATUS NOT = "00"
+               MOVE "WRITE DDAILYTC 632 ERROR" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP
+             END-IF
+           END-IF.
+       7990-UI-X.
+           EXIT.
+
+       8000-LOAD-FRAN-NAME.
+           IF FRAN-TABLE = SPACES
+               MOVE SPACES TO V-FRAN(SUB)
+           ELSE
+               SET FRAN-IDX TO 1
+               SEARCH FRAN-ENTRY
+                 AT END  MOVE SPACES TO V-FRAN (SUB)
+                 WHEN FRAN-ID(FRAN-IDX) = STR-BIN-OWNER (SUB)
+                  MOVE FRAN-NAME(FRAN-IDX) TO V-FRAN(SUB)
+               END-SEARCH.
+       8000-LOAD-FRAN-NAME-X.
+           EXIT.
+
+       9005-DBGET7-MSTORE-O.
+           MOVE 0                        TO  COND-WORD.
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC-O.
+           READ MSTORERM-O INTO BUF-MSTORERM
+               INVALID KEY MOVE 17       TO  COND-WORD.
+           IF FILE-STATUS = "23"
+               MOVE 17                   TO  COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET ERR MSTORE 9000-DM" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+       9006-DBUNLOCK-MSTORE.
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES              TO  CORPCDE OF MSTORERM-REC-O.
+           START MSTORERM-O KEY > CORPCDE OF MSTORERM-REC-O
+               INVALID KEY MOVE "00"     TO  FILE-STATUS.
+
+       9009-FREEZE-UPDATE.
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC-O.
+           READ MSTORERM-O INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ FOR FREEZE ERR MSTORE" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+           MOVE "F"                      TO  STR-STATE.
+
+           REWRITE MSTORERM-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UPDATE ERR ON FREEZE MSTORERM" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+       9010-UNFREEZE-UPDATE.
+           MOVE "U"                      TO  STR-STATE.
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC-O.
+           READ MSTORERM-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ FOR UPDATE ERR MSTORE" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+           REWRITE MSTORERM-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UPDATE ERR ON MSTORERM" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+       COPY DISPCALL IN COPYLIB.
+       COPY DISPCAL2 IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM          TO  CATREAD-MSG-SET
+               MOVE LANG-MSGNUM          TO  CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT         TO  MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

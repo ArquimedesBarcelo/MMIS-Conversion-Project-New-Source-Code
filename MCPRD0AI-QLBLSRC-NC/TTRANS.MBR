@@ -1,0 +1,1014 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TTRANS.
+       AUTHOR.              C HILLES.
+       DATE-WRITTEN.        JUNE, 1983.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.  DISPERSE OR RECEIPT TO/FROM OUTSIDE PLANT.
+      *
+      *    ON OCT 12, 1983, CHANGED TO GO TO SUBPROGRAM "TREQFILU"
+      *    FOR UPDATING REQS, RATHER THAN DO UPDATE IN PROGRAM.  NOW
+      *    MUST BE RUN WITH ";LIB=P" PARAMETER. CIH.
+      *
+      *    ON OCT 31, 1983, CHANGED TO RUN ON 2626A, AND TO DETERMINE
+      *    TERMINAL TYPE.  CIH.
+      *
+      *    ON FEB 14, 1984, CHANGED PARAMETERS FOR CALL TO
+      *    "TREQFILU".  THE ADDED FIELDS ARE "SAVE-RSRVD-BEFORE"
+      *    AND "STR-RESERVED" (RESERVED QTY AFTER THE TRANSACTION).
+      *    THIS IS BECAUSE THE REQFILE UPDATE SUBPROGRAM WILL NOW CREATE
+      *    AUTO REQS ON THE BASIS OF AVAILABLE RATHER THAN ONHAND.
+      *    HOWEVER IN THIS PGM, "STR-RESERVED" IS USED FOR BOTH
+      *    RESERVED BEFORE AND RESERVED AFTER PARAMETERS, SINCE THIS
+      *    QTY CANNOT CHANGE DURING THE TRANSACTION. (THIS PGM DOES
+      *    NOT CHANGE RESERVED, AND THE CODE IS LOCKED DURING THE
+      *    TRANSACTION).  CIH.
+      *
+      *    ON SEPT 11, 1984, MADE THE FOLLOWING CHANGES:
+      *      1.  CHANGED THE PARAMETERS FOR THE CALL TO "TREQFILU".
+      *          ADDED THE "BASE" PARAMETER.  THIS IS BECAUSE "TEQFILU"
+      *          WILL SOON BE MODIFIED TO UPDATE THE DATABASE RATHER
+      *          THAN THE KSAM FILE "REQFILE".  CIH.
+      *
+      *      2.  TOOK OUT THE OLD BLOWUP LOGIC AND REPLACED IT WITH A
+      *          CALL TO "TBLOWUP".
+      *
+      *      3.  TOOK OUT CALL TO GET SPOOLER NUMBER FOR PRINTOUT
+      *          AND REPLACED WITH A CALL TO "TSPLPRT".  GOT RID
+      *          OF ALL KSAM WORK AREAS.
+      *
+      *      4.  ADDED A CALL TO "TTERMTYP" TO DETERMINE TERMINAL
+      *          TYPE, HANDLE 2626A FLIP-FLOP PROBLEMS, AND IMPLEMENT
+      *          FORMS CACHE.
+      *
+      *    ON JANUARY 23, 1985, CHANGED THE "K-TERMINAL" PARAMETER
+      *    FOR THE CALL TO "TSPLPRT" TO 9(4) FROM 9(2).  CIH.
+      *
+      *    ON MAY 29, 1985, CHANGED THIS PROGRAM TO CALL "TDATECHK"
+      *    FOR EUROPEAN DATE CONVERSION.  CIH.
+      *
+      *C   28FEB1994    DAVE PLUM
+      *C     ADDED CALL TO THE COBOL ERROR HANDLER - MCXCBLERR.
+      *C
+      *C   08APR1994    DAVE PLUM     REQUEST #6490
+      *C     REMOVED ALL REFERENCES TO "C O P Y D B" TYPE COPYLIBS.
+      *C
+      *C
+      *C   10OCT1994    WILL MCINTYRE   REQUEST 94-027
+      *C     ADDED CODE TO PASS NEW PARMS TO TQTYEDIT, TO CHECK FOR LIMITS
+      *C     ON STOREROOM RETURNS.
+      *C
+      *C   MAY 31, 1995  JEFF BUNGO     REQUEST #94-058
+      *C     ADDED PARAMETERS TO CALL OF TQTYEDIT TO WRITE TO MSTRWITH
+      *C     IN CASE WITHDRAWAL HAS INSUFFICIENT ON HAND.
+      *C
+      *C   SEPT 16, 1996  CA YODER
+      *C     MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.
+      *C     ALSO, PLANT CODE WAS NOT BEING MOVED TO DDAILYTC BUFFER.
+      *C     THIS PROBLEM WAS CORRECTED.
+      *C
+      *C   MAY 12, 1997  JEFF BUNGO
+      *C     ADDED LOGIC FOR TQYEDIT TO ONLY DISPERSE FROM GOODYEAR
+      *C     BINS.
+      *C
+      *C   SEPT 9, 1997   JEFF BUNGO
+      *C     RESET MSTORERM AFTER READ TO DISPLAY VALUES TO THE
+      *C     SCREEN TO PREVENT RECORD LOCK OF THE CODE WHILE
+      *C     CODE IS BEING DISPLAYED.
+      *C
+      *C   MAY 4, 1999    CA YODER
+      *C     QUANTITY TABLE NOT CLEARED WHEN MORE THAN ONE CODE
+      *C     IS ENTERED.  ADDED LOGIC TO CLEAR OWNER-TABLE BEFORE
+      *C     68-UPDATE-DDAILYTC PARAGRAPH IS EXECUTED.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       COPY SPECIALN IN COPYLIB.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE ASSIGN TO PRINTER-MCPRT.
+
+           SELECT MSTORERM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-DT-O
+               ASSIGN TO DATABASE-MCFLCS1601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZTRANS-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DISPLAY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+       FD  MSTORERM-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-O.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DDAILYTC-DT-O
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-DT-REC-O.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                   PIC X(1500).
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+
+       FD  PRINT-FILE
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC                PIC X(132).
+
+       WORKING-STORAGE SECTION.
+
+       77  SUB                           PIC S9(1)  BINARY  VALUE 0.
+       77  LOC-COUNT                     PIC 9(1)  VALUE 0.
+       77  SAVE-EMPL                     PIC X(4)  VALUE SPACES.
+       77  FIRST-TIME-FLAG               PIC X(1)  VALUE "Y".
+       77  PGM-TYPE                      PIC X(8)  VALUE SPACES.
+       77  PRT-CODE-FLAG                 PIC X(1)  VALUE "N".
+       77  PASS-REQFILNO                 PIC S9(4) BINARY VALUE 0.
+       77  SAVE-ONHAND-BEFORE            PIC S9(8).
+       77  SAVE-RESERVED-BEFORE          PIC S9(8).
+       77  RET-CODE                      PIC X(2)  VALUE SPACES.
+       77  AVAIL                         PIC S9(8) VALUE 0.
+       77  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+       77  COMPANY-SAVE                  PIC X(3).
+       77  MCXCBLERR-SCOPE               PIC X(1)  VALUE "C".
+
+       COPY ESCNAM2    IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **          S U B P R O G R A M   W O R K                   **
+      **                                                          **
+      **************************************************************
+
+      *------ PARMS FOR CALL TO "TIREDIT"
+       COPY TIREDIT IN COPYLIB.
+
+       COPY ISSPARTS IN COPYLIB.
+
+      *01  MMIS-WORK                    PIC X(97).
+       01  STORES-COMAREA               PIC X(24) VALUE SPACES.
+
+      *------ PARMS FOR CALL TO "TQTYEDIT"
+       COPY MULTSTR IN COPYLIB.
+       01  TQTYEDIT-TOTAL-QTY           PIC 9(8).
+       01  TQTYEDIT-MMIS-QTY            PIC 9(8).
+       01  TQTYEDIT-SUB                 PIC 9(1).
+       01  TQTYEDIT-RET-CODE            PIC X(2).
+       01  DUMMY-WO                     PIC X(10).
+       01  WARNING-FLAG                 PIC X(01)   VALUE "N".
+       01  WARNING-TYPE                 PIC X(01)   VALUE " ".
+       01  WARNING-VALUE                PIC 9(08)   VALUE 0.
+      *---5/12/97, JSB HOLDING AREA FOR FRANCHISERS
+       01  FRAN-TABLE.
+           05  FRAN-ENTRY OCCURS 4 TIMES INDEXED BY FRAN-IDX.
+               10  FRAN-ID             PIC X(1).
+               10  FRAN-NAME           PIC X(4).
+               10  FRAN-VEN0CODE       PIC X(10).
+
+      *----5/12/97, HOLDING AREA FOR ISSUE FROM EACH BIN OWNER.
+       01  OWNER-TABLE.
+          05  OWNER-ENTRY OCCURS 6 TIMES INDEXED BY OWNR-IDX.
+              10  OWNR                PIC X(4).
+              10  OWNR-QTY            PIC 9(9).
+       01  CURR-OWNR                  PIC 9(1).
+       01  MAX-OWNRS                  PIC 9(1).
+       01  HOLD-FRAN-ID               PIC X(1).
+
+      *------ PARMS FOR CALL TO SLEMMER SPOOLER
+
+       01  SPOOLER-AREA.
+           05  SPOOL-STAT                PIC S9     BINARY VALUE ZERO.
+           05  SPOOL-PRT                 PIC S9(2)  BINARY VALUE 8.
+           05  SPOOL-COPIES              PIC S9(2)  BINARY VALUE 1.
+           05  SPOOL-PRIOR               PIC S9     BINARY VALUE 0.
+           05  SPOOL-MSG                 PIC X(75)  VALUE SPACES.
+
+      ***  PARMS FOR CALL TO "TREQFILU"
+
+       01  REQFILE-NUM                   PIC S9(4) BINARY VALUE 0.
+
+       COPY TSPLPRT    IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY TSHWRDFM   IN COPYLIB.
+       COPY CDESC      IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY OVRPFDAT   IN COPYLIB.
+       COPY CCHKOBJ    IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **                  V I E W   W O R K                       **
+      **                                                          **
+      **************************************************************
+       COPY FUNCTDEF   IN COPYLIB.
+       COPY VCOMAREA   IN COPYLIB.
+       COPY HMSGBUF    IN COPYLIB.
+
+       01  FORMFILE.
+           05  FORM-FNAME                PIC X(6)  VALUE "FTRANS".
+           05  FILLER                    PIC X     VALUE ".".
+           05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+
+       01  FIELD-NUMBER                  PIC S9(4) COMP VALUE 1.
+
+       01  SAVE-VIEW-STATUS          PIC S9(4) BINARY VALUE ZERO.
+
+      **************************************************************
+      **                                                          **
+      **            D A T A B A S E   W O R K                     **
+      **                                                          **
+      **************************************************************
+       COPY FILESTAT IN COPYLIB.
+       01  BASE                          PIC X(10)  VALUE "  STORES;".
+       01  MMIS-BASE                     PIC X(13)  VALUE "  MMISA;".
+       01  PASSWORD                      PIC X(5)  VALUE "JADE;".
+       01  CODE-ARG                      PIC X(8)  VALUE SPACES.
+       01  PLT-ARG                       PIC X(4).
+
+       COPY DBSTAT     IN COPYLIB.
+       01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16).
+           05  DSET-DDAILYTC             PIC X(16)  VALUE "DDAILYTC;".
+           05  DSET-MSTORERM             PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-DDESC                PIC X(16)  VALUE "DDESC;".
+           05  DSET-MPLTINFO             PIC X(16)  VALUE "MPLTINFO;".
+           05  DSET-DUMMY                PIC X(1)  VALUE SPACES.
+
+       01  MODE-AREA.
+           05  MODE1                     PIC S9(4) COMP VALUE 1.
+           05  MODE3                     PIC S9(4) COMP VALUE 3.
+           05  MODE5                     PIC S9(4) COMP VALUE 5.
+           05  MODE7                     PIC S9(4) COMP VALUE 7.
+
+       01  ITEM-LISTINGS.
+           05  ALL-ITEMS                 PIC X(2)   VALUE "@;".
+           05  CODE-SEARCH               PIC X(10)  VALUE "CORP-CODE;".
+
+       01  MULTI-LOCK.
+           05  NUMBER-OF-LOCK-DESCRIPTORS PIC S9(4) COMP VALUE 1.
+           05  LOCK-MSTORERM.
+               10  LOCK-LENGTH           PIC S9(4) COMP VALUE 24.
+               10  LOCK-DSET             PIC X(16)  VALUE "MSTORERM;".
+               10  LOCK-ITEM-LIST        PIC X(16)  VALUE "CORP-CODE;".
+               10  LOCK-REL-OP           PIC XX     VALUE "= ".
+               10  LOCK-VALUE            PIC X(12)  VALUE SPACES.
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   B U F F E R S                **
+      **                                                          **
+      **************************************************************
+       COPY MSTORERM   IN COPYLIB.
+       COPY MPLT0      IN COPYLIB.
+       COPY MPLTP01    IN COPYLIB.
+       COPY MPLTST     IN COPYLIB.
+       COPY MPLTFRAN   IN COPYLIB.
+       COPY DDAILYTC   IN COPYLIB.
+       COPY TC335      IN COPYLIB.
+       COPY TC435      IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **     H E A D E R   &   D E T A I L   L I N E S            **
+      **                                                          **
+      **************************************************************
+
+       01  HDR-1.
+           05  FILLER                    PIC X(22)  VALUE SPACES.
+           05  UNDLN-ON                  PIC X(8)   VALUE SPACES.
+           05  PRT-HEAD                  PIC X(14).
+           05  FILLER    PIC X(16)  VALUE "OUTSIDE OF PLANT".
+           05  UNDLN-OFF                 PIC X(8)  VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE SPACES.
+           05  EXPANDED                  PIC X(8)   VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "DATE ".
+           05  PRT-DATE                  PIC X(8).
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "TIME ".
+           05  PRT-TIME                  PIC X(8).
+           05  NORMAL                    PIC X(8)   VALUE SPACES.
+
+       01  HDR-2.
+           05  FILLER                    PIC X(7)  VALUE SPACES.
+           05  FILLER                    PIC X(6)  VALUE "EMPL: ".
+           05  PRT-EMPL                  PIC X(4).
+           05  FILLER                    PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(10) VALUE "DOCUMENT: ".
+           05  PRT-DOCUMENT              PIC X(12).
+           05  FILLER                    PIC X(3)  VALUE SPACES.
+           05  PRT-POINT-HEAD            PIC X(11).
+           05  FILLER                    PIC X(8)  VALUE " POINT: ".
+           05  PRT-POINT                 PIC X(12).
+
+       01  HDR-3.
+           05  FILLER                    PIC X(16)  VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE "CORP CODE".
+           05  FILLER                    PIC X(9)   VALUE SPACES.
+           05  FILLER                    PIC X(8)   VALUE "QUANTITY".
+           05  FILLER                    PIC X(4)   VALUE "  UM".
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  FILLER                    PIC X(8)   VALUE "LOCATION".
+           05  FILLER                    PIC X(21)  VALUE SPACES.
+
+       01  PRT-TRANSFER-DETAIL.
+           05  FILLER                    PIC X(17)  VALUE SPACES.
+           05  PRT-CORP-CODE             PIC X(7)   VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE SPACES.
+           05  PRT-QTY                   PIC --------9.
+           05  FILLER                    PIC XX     VALUE SPACES.
+           05  PRT-UM                    PIC XX     VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  PRT-LOC                   PIC X(12)  VALUE SPACES.
+           05  FILLER                    PIC X(17)  VALUE SPACES.
+
+       01  TOTAL-LINE.
+           05  FILLER                    PIC X(28)  VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "TOTAL".
+           05  PRT-TOTAL-QTY             PIC --------9.
+
+       01  COMMENT-LINE.
+           05  FILLER                    PIC X(10)  VALUE " COMMENT: ".
+           05  PRT-COMMENT               PIC X(60).
+
+      **************************************************************
+      **                                                          **
+      **                 S C R E E N   D A T A                    **
+      **                                                          **
+      **************************************************************
+
+       01  DE-FIELDS-1.
+           05  DE-COMMAND-LINE-1         PIC X(79).
+           05  DE-MESSAGE-LINE-1         PIC X(79).
+
+       01  DE-FIELDS-2.
+           05  DE-CODE                   PIC X(7).
+           05  V-CODE-PROMPT             PIC X(44).
+           05  V-CODE                    PIC X(7).
+           05  V-KWRD-ADJ                PIC X(48).
+           05  V-UM                      PIC X(2).
+           05  V-DESC                    PIC X(70).
+           05  DE-EMPL                   PIC X(4).
+           05  DE-DOCUMENT               PIC X(8).
+           05  DE-POINT                  PIC X(6).
+           05  DE-CHARGE-DEPT            PIC X(4).
+           05  DE-EXP-CLASS              PIC X(6).
+           05  DE-QTY-AREA.
+               10  QUANTITY-LINE OCCURS 6 TIMES.
+                   15  DE-FRAN           PIC X(4).
+                   15  V-LOC             PIC X(12).
+                   15  DE-LOC-ONHAND     PIC ZZZZZZZ9.
+                   15  DE-LOC-ONHX REDEFINES DE-LOC-ONHAND  PIC X(8).
+                   15  DE-QTY            PIC S9(8).
+                   15  DE-QTY-X REDEFINES DE-QTY PIC X(8).
+           05  DE-COMMENT                PIC X(56).
+           05  V-DISB-INSTR              PIC X(30).
+           05  DE-COMMAND-LINE-2         PIC X(79).
+           05  DE-MESSAGE-LINE-2         PIC X(79).
+
+      *******************************************
+      *                                         *
+      *       NATIVE LANGUAGE SUPPORT AREA      *
+      *                                         *
+      ********************************************
+
+       COPY LANGUAGE   IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       1-HOUSEKEEPING.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+           MOVE "DISPERSE"               TO  PGM-TYPE.
+           PERFORM 9999-OPENS.
+
+           CALL "SOPENTRM" USING VIEW-COMAREA, BU-DISPLAY-MSG.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+           CALL "TSPLPRT" USING SP-RET-CODE, SP-AREA.
+           IF SP-RET-CODE = "NF"
+               MOVE "SPOOLER KEY NOT FOUND" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP
+           ELSE
+           IF SP-RET-CODE NOT = "00"
+               MOVE "TSPLPRT ERROR"      TO  BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+           MOVE SP-SPOOL-NO (1)          TO  SPOOL-PRT.
+
+           MOVE "P 01"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           MOVE MPLTINFO-COMPANY         TO  COMPANY-SAVE.
+           MOVE "STST"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           MOVE MPLTINFO-ST              TO  MULTIPLE-STR-DATA.
+      *------5/12/97 GET FRAN TABLE
+           MOVE "FRAN"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF COND-WORD NOT = 0
+               MOVE SPACES               TO  FRAN-TABLE
+           ELSE
+               MOVE MPLTINFO-FRANCHISES  TO  FRAN-TABLE.
+
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE UNDERLINE-ON             TO  UNDLN-ON.
+           MOVE UNDERLINE-OFF            TO  UNDLN-OFF.
+           MOVE CHAR-1636PI              TO  EXPANDED.
+           MOVE CHAR-10PI                TO  NORMAL.
+
+       1-HEAD-LOOP.
+           MOVE "TRANSHEAD"              TO  VIEW-NFNAME.
+           PERFORM 9999-GETNEXTFORM.
+
+       1-SHOWFORM.
+      *----- f2,f3,f7,f8 APPLICATION, f1,f6 INVALID, f4 REFRESH f5 PRT
+      *----- 'ENTER' KEY INVALID
+           MOVE 1                        TO  SRF-KEYSET.
+           MOVE "I"                      TO  SRF-FKEY (1),
+                                              SRF-FKEY (6),
+                                              SRF-FKEY (7).
+           MOVE "I"                      TO  SRF-ENTER-FLAG.
+           PERFORM 9999-DO-SCREEN-1.
+           IF VIEW-LASTKEY = EXIT-PROGRAM
+               GO TO 2-SHUTDOWN-DB
+           ELSE
+           IF VIEW-LASTKEY = 2
+               MOVE "DISPERSE"           TO  PGM-TYPE
+           ELSE
+           IF VIEW-LASTKEY = HP-F3-KEY
+               MOVE "RECEIPT"            TO  PGM-TYPE.
+
+           PERFORM 4-CLEAR-FORM.
+           IF PGM-TYPE = "DISPERSE"
+               MOVE "DISPERSE"           TO  VIEW-NFNAME
+               MOVE "DISPERSALS"         TO  PRT-HEAD
+               MOVE "DESTINATION"        TO  PRT-POINT-HEAD
+           ELSE
+           IF PGM-TYPE = "RECEIPT "
+               MOVE "RECEIPT"            TO  VIEW-NFNAME
+               MOVE "RECEIPTS FROM "     TO  PRT-HEAD
+               MOVE "ORIGINATION"        TO  PRT-POINT-HEAD.
+
+           PERFORM 9999-GETNEXTFORM.
+
+           MOVE SPACES                   TO  DE-FIELDS-1.
+           PERFORM 9999-INITFORM.
+
+           PERFORM 4-CLEAR-FORM.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           PERFORM 4-CLEAR-FORM.
+
+           GO TO 1-HEAD-LOOP.
+
+       2100-BLOWUP.
+           MOVE CODE-ARG                 TO  BU-DISPLAY-FLD (1).
+           MOVE "TTRANS" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+             VIEW-COMAREA FILE-STATUS BU-DISPLAY-MSG
+             BU-DISPLAY-FLDS.
+
+       2-SHUTDOWN-DB.
+           PERFORM 9999-CLOSES.
+
+       2-STOP-RUN.
+           GOBACK.
+
+       4-CLEAR-FORM.
+           MOVE SPACES                   TO  MESSAGE-BUFFER.
+           PERFORM 9999-PUTWINDOW.
+
+           IF DE-EMPL > SPACES
+               MOVE DE-EMPL              TO  SAVE-EMPL.
+           MOVE SPACES                   TO  DE-FIELDS-2.
+           MOVE SAVE-EMPL                TO  DE-EMPL.
+           MOVE 20008                    TO  CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER           TO  V-CODE-PROMPT.
+
+       6-MAIN.
+       61-SHOWFORM-1.
+      *-----  INITIALIZE WARNING-FLAG FOR TQTYEDIT FOR RETURN LIMITS
+           MOVE "N" TO WARNING-FLAG.
+      *----- f1 f2 f3 f6 INVALID, f4 REFRESH, f5 PRT, f7 APPL, f8 EXIT
+      *----- MODE 1 - NO LEFTSHIFTHING OR RIGHTSHIFTING
+           MOVE 8                        TO  SRF-KEYSET.
+           MOVE 1                        TO  SRF-MODE.
+           MOVE 1                        TO  SRF-ERROR-FLD.
+           PERFORM 9999-DO-SCREEN-2.
+           IF VIEW-LASTKEY = EXIT-PROGRAM
+               GO TO 6-MAIN-X
+           ELSE
+           IF VIEW-LASTKEY = EXIT-AREA
+               PERFORM 4-CLEAR-FORM
+               GO TO 61-SHOWFORM-1.
+
+       62-EDITS.
+           IF DE-CODE = SPACES
+      *        "C103: CODE IS A REQUIRED FIELD"
+               MOVE "03103"              TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2                    TO  SRF-ERROR-FLD
+               GO TO 61-SHOWFORM-1.
+
+           MOVE DE-CODE                  TO  CODE-ARG.
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+           IF NO-ENTRY
+      *         "S9: STORES CODE DOES NOT EXIST"
+                MOVE 2                   TO  SRF-ERROR-FLD
+                MOVE "19009"             TO  CATREAD-MSG-NUMBER
+                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                MOVE DE-CODE             TO  MSG-FLD
+                GO TO 61-SHOWFORM-1.
+
+      *------UNLOCK RECORD READ
+           PERFORM 9999-RESET-MSTORERM-CD-O.
+
+           IF STR-STATE = "F"
+               MOVE 2                    TO  SRF-ERROR-FLD
+      *        "C8: CODE FROZEN FOR INVENTORY: NO PROCESSING ALLOWED"
+               MOVE "03008"              TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE DE-CODE              TO  MSG-FLD
+               GO TO 61-SHOWFORM-1.
+
+      *------ GET 2 LINES OF DESCRIPTION FOR THE SCREEN
+           MOVE 2                        TO  CDESC-LINES-TO-GET.
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+             BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+           MOVE CDESC (1)                TO  V-KWRD-ADJ.
+           MOVE CDESC (2)                TO  V-DESC.
+
+      *********************************************************
+      *
+      * WRITE THE SCREEN WITH THE DESCRIPTION, UM AND LOCATIONS.
+      *
+      *********************************************************
+
+           MOVE 11010                    TO  CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER           TO  V-CODE-PROMPT.
+           MOVE CODE-ARG                 TO  V-CODE.
+           MOVE SPACES                   TO  DE-CODE.
+           MOVE STR-UM                   TO  V-UM.
+
+056200     PERFORM VARYING SUB FROM 1 BY 1
+056300             UNTIL SUB GREATER THAN 6
+056400
+056500       MOVE STR-LOC (SUB)          TO  V-LOC (SUB)
+056600       IF V-LOC (SUB) = SPACES
+                 MOVE SPACES             TO  DE-LOC-ONHX (SUB)
+             ELSE
+                 MOVE STR-LOC-ONHAND (SUB)  TO  DE-LOC-ONHAND (SUB)
+056600       END-IF
+             IF FRAN-TABLE = SPACES
+                 MOVE SPACES TO DE-FRAN(SUB)
+             ELSE
+                 SET FRAN-IDX TO 1
+                 SEARCH FRAN-ENTRY
+                   AT END  MOVE SPACES TO DE-FRAN (SUB)
+                   WHEN FRAN-ID(FRAN-IDX) = STR-BIN-OWNER (SUB)
+                    MOVE FRAN-NAME(FRAN-IDX) TO DE-FRAN(SUB)
+                 END-SEARCH
+             END-IF
+056700     END-PERFORM.
+           MOVE STR-DISB-INSTR           TO  V-DISB-INSTR.
+           MOVE SPACES                   TO  MESSAGE-BUFFER.
+
+       62-POSITION-THEN-SHOW.
+      ********************************************************
+      **   USE VSETERROR TO POSITION CURSOR TO THE CORRECT  **
+      **   FIELD (EMPL    FOR FIRST TIME, OR DOCUMENT FOR   **
+      **   ALL FOLLOWING TIMES.)                            **
+      ********************************************************
+
+           IF FIRST-TIME-FLAG = "Y"
+               MOVE 7                    TO  SRF-ERROR-FLD
+               MOVE "N"                  TO  FIRST-TIME-FLAG
+           ELSE
+               MOVE 8                    TO  SRF-ERROR-FLD.
+
+       62-SHOWFORM-2.
+      *********************************************************
+      *
+      *  READ THE SCREEN A SECOND TIME, RETREIVING QUANTITIES.
+      *
+      *********************************************************
+      *----- f1 f2 f3 f6 INVALID, f4 REFRESH, f5 PRT, f7 APPL, f8 EXIT
+      *----- MODE 2 - LEFTSHIFT ON FIELDEDITS, RIGHTSHIFT ON FINISHFORM
+           MOVE 8                        TO  SRF-KEYSET.
+           MOVE 2                        TO  SRF-MODE.
+           IF STR-CODE-OWNER NOT = SPACES
+               MOVE B"1" TO IND(95)
+           ELSE
+               MOVE B"0" TO IND(95).
+           PERFORM 9999-DO-SCREEN-2.
+           IF VIEW-LASTKEY = EXIT-PROGRAM
+               GO TO 6-MAIN-X.
+
+           IF VIEW-LASTKEY = EXIT-AREA
+               PERFORM 4-CLEAR-FORM
+               GO TO 61-SHOWFORM-1.
+
+       61-BEGIN-VALIDATION.
+
+           IF DE-CODE NOT = SPACES
+             IF DE-CODE NOT = CODE-ARG
+               MOVE 2                    TO  SRF-ERROR-FLD
+      *        "K13: KEY FOLLOWING CODE AND PRESS ENTER"
+               MOVE "11013"              TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE CODE-ARG             TO  MSG-FLD
+               GO TO 62-SHOWFORM-2.
+
+       63-LOCK-MSTORERM.
+           MOVE CODE-ARG                 TO  LOCK-VALUE.
+           PERFORM 9999-MULTI-LOCK.
+
+       64-GET-CODE.
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+
+           MOVE STR-ONHAND               TO  SAVE-ONHAND-BEFORE.
+           MOVE STR-RESERVED             TO  SAVE-RESERVED-BEFORE.
+
+           MOVE CODE-ARG                 TO  EDIT-CODE.
+           MOVE DE-EMPL                  TO  EDIT-EMPL.
+           MOVE SPACES                   TO  EDIT-WO.
+           MOVE DE-CHARGE-DEPT           TO  EDIT-REQ-DEPT.
+           MOVE DE-CHARGE-DEPT           TO  EDIT-CHARGE-DEPT.
+           MOVE DE-EXP-CLASS             TO  EDIT-EXP-CLASS.
+           MOVE STR-RESTRICTED-FLG       TO  EDIT-RESTRICTED-FLG.
+           MOVE STR-REQ-CHG-OVERRD       TO  EDIT-REQ-CHG-OVERRD.
+           MOVE STR-DIR-CHRG-DEPT        TO  EDIT-DIR-CHRG-DEPT.
+           CALL "TIREDIT" USING RET-CODE, BASE, MMIS-BASE,
+             PART-WORKAREA, STATUS-AREA, EDIT-DATA, MESSAGE-BUFFER,
+             MULTIPLE-STR-DATA, STORES-COMAREA,
+             STR-EXPENSE-CLASS, LANGUAGE-PARMS.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               IF EDIT-SUB = 1
+                   MOVE 7                TO  SRF-ERROR-FLD
+               ELSE
+               IF EDIT-SUB = 3 OR 4
+                   MOVE 10               TO  SRF-ERROR-FLD
+               ELSE
+                   MOVE 11               TO  SRF-ERROR-FLD
+               END-IF
+               END-IF
+               PERFORM 67-UNLOCK-MSTORERM
+               PERFORM 9999-RESET-MSTORERM-CD-O
+               GO TO 62-SHOWFORM-2.
+           MOVE EDIT-CHARGE-DEPT         TO  DE-CHARGE-DEPT.
+           MOVE EDIT-EXP-CLASS           TO  DE-EXP-CLASS.
+
+           IF PGM-TYPE = "DISPERSE"
+               MOVE "I1"                 TO  TQTYEDIT-RET-CODE
+           ELSE
+               MOVE "R1"                 TO  TQTYEDIT-RET-CODE.
+           CALL "TQTYEDIT" USING TQTYEDIT-RET-CODE, BASE, STATUS-AREA,
+             CODE-ARG, DUMMY-WO, STR-ONHAND, STR-RESERVED,
+             STR-LOC-AREA, DE-QTY-AREA, TQTYEDIT-TOTAL-QTY,
+             TQTYEDIT-MMIS-QTY, TQTYEDIT-SUB, MESSAGE-BUFFER,
+             MULTIPLE-STR-DATA, LANGUAGE-PARMS, WARNING-FLAG,
+             WARNING-TYPE, WARNING-VALUE, STR-AVG-COST,
+             DE-CHARGE-DEPT, DE-EXP-CLASS, DE-EMPL,
+             STR-UM, STR-MAX, STR-REORDER
+             STR-CODE-OWNER FRAN-TABLE.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               COMPUTE SRF-ERROR-FLD = 12 + (2 * TQTYEDIT-SUB - 1)
+               PERFORM 67-UNLOCK-MSTORERM
+               PERFORM 9999-RESET-MSTORERM-CD-O
+               GO TO 62-SHOWFORM-2.
+
+      *    "NOW PROCESSING".
+           MOVE 14002                    TO  CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE "Y"                      TO  SRF-MSG-AND-GO.
+           PERFORM 9999-SETERROR-2.
+
+      *------ DATE AND TIME AT THIS INSTANT WILL BE USED FOR
+      *------ TRANSACTION, PRINTOUT, AND ACT DATE
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  STR-ACT-DATE.
+      *------  ACCOUNT FOR CENTURY.
+           IF STR-ACT-DATE-YY > "70"
+               MOVE "19"                 TO  STR-ACT-DATE-CC
+           ELSE
+               MOVE "20"                 TO  STR-ACT-DATE-CC.
+
+      *------ THE LAST ISSUE DATA ONLY GETS UPDATED WHEN 'ISSUEING':
+      *------ TRANSFERRING TO OUTSIDE PLANT.
+           IF PGM-TYPE = "DISPERSE"
+               MOVE DATE-YMD-OUT         TO  STR-LAST-IDATE
+               MOVE DE-POINT             TO  STR-LAST-CHARGE
+               MOVE DE-EMPL              TO  STR-LAST-EMPL
+      *-------------- ACCOUNT FOR CENTURY
+               IF STR-ISS-DATE-YY > "70"
+                   MOVE "19"             TO  STR-LAST-IDATE-CC
+               ELSE
+                   MOVE "20"             TO  STR-LAST-IDATE-CC.
+
+           PERFORM 9999-UPDATE-MSTORERM-CD-O.
+
+       67-UNLOCK-MSTORERM.
+           PERFORM 9999-UNLOCK.
+
+       67-CHECK-REQ.
+      **************************************************************
+      **   CALL TREQFILU TO UPDATE THE REQFILE IF NEEDED.  A RET- **
+      **************************************************************
+
+      *------- THE RESERVED QUANITY CANNOT CHANGE DURING THIS
+      *------- TRANSACTION.
+           MOVE STR-RESERVED             TO  SAVE-RESERVED-BEFORE.
+           CALL "TREQFILU" USING RET-CODE, BASE, REQFILE-NUM,
+             CODE-ARG, SAVE-ONHAND-BEFORE, SAVE-RESERVED-BEFORE,
+             STR-ONHAND, STR-RESERVED, STR-REORDER, STR-EXPEDITE.
+           IF RET-CODE NOT = "00"
+               MOVE "TREQFILU ERROR"     TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+       68-UPDATE-DDAILYTC.
+           MOVE "DDAILYTC;"              TO  DSET-NAME.
+           PERFORM 9999-DSET-LOCK.
+           INITIALIZE OWNER-TABLE.
+
+      *------5/12/97 BUILD OWNER/QTY TABLE FOR WITHDRAWLS
+           IF PGM-TYPE = "DISPERSE"
+            MOVE 0 TO MAX-OWNRS
+            PERFORM VARYING SUB FROM 1 BY 1
+             UNTIL SUB > 6
+               IF DE-QTY(SUB) > 0
+                   SET OWNR-IDX TO 1
+                   SEARCH OWNER-ENTRY
+                     AT END
+                        ADD 1 TO MAX-OWNRS
+                        MOVE DE-FRAN(SUB) TO OWNR(MAX-OWNRS)
+                        IF DE-QTY-X(SUB) NUMERIC
+                            MOVE DE-QTY(SUB)  TO OWNR-QTY(MAX-OWNRS)
+                        ELSE
+                            MOVE ZEROS        TO OWNR-QTY(MAX-OWNRS)
+                        END-IF
+                     WHEN OWNR(OWNR-IDX) = DE-FRAN(SUB)
+                        IF MAX-OWNRS = 0
+                            MOVE 1 TO MAX-OWNRS
+                        END-IF
+                        MOVE OWNR-IDX TO CURR-OWNR
+                        IF DE-QTY-X(SUB) NUMERIC
+                            IF OWNR-QTY(CURR-OWNR) NUMERIC
+                                ADD DE-QTY(SUB) TO OWNR-QTY(CURR-OWNR)
+                            ELSE
+                                MOVE DE-QTY(SUB) TO OWNR-QTY(CURR-OWNR)
+                            END-IF
+                        END-IF
+                   END-SEARCH
+              END-IF
+            END-PERFORM
+           END-IF.
+
+      *------ NOTE: THE 335 AND 336 TRANSACTIONS ARE IDENTICAL,
+      *------ EXCEPT FOR THE TC.  SINCE THEY REDEFINE THE SAME BUFFER,
+      *------ WE JUST USE THE "TC335" COPYLIB MEMBER.  FOR CODES WITH
+      *------ LARGE AVERAGE COST (INTERNATIONAL PLANTS), THE TC435/TC436
+      *------ ARE IDENTICAL UP TO THE POINT OF COST.
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO  DDAILYTC-TIME.
+           MOVE COMPANY-SAVE             TO  DDAILYTC-PLT.
+           IF PGM-TYPE = "DISPERSE"
+               IF STR-AVG-COST > 99999.9999
+                   MOVE "435"            TO  DDAILYTC-TC
+               ELSE
+                   MOVE "335"            TO  DDAILYTC-TC
+           ELSE
+           IF PGM-TYPE = "RECEIPT"
+               IF STR-AVG-COST > 99999.9999
+                   MOVE "436"            TO  DDAILYTC-TC
+               ELSE
+                   MOVE "336"            TO  DDAILYTC-TC.
+           MOVE CODE-ARG                 TO  TC335-CORP-CODE
+           MOVE DE-DOCUMENT              TO  TC335-DOCUMENT
+           MOVE DE-POINT                 TO  TC335-LOCATION
+           MOVE DE-CHARGE-DEPT           TO  TC335-CHARGE-DEPT.
+           MOVE DE-EXP-CLASS             TO  TC335-EXP-CLASS.
+           MOVE DE-EMPL                  TO  TC335-EMPL.
+           IF STR-AVG-COST > 99999.9999
+               MOVE STR-AVG-COST         TO  TC435-AVG-COST
+               MOVE STR-UM               TO  TC435-UM
+           ELSE
+               MOVE STR-AVG-COST         TO  TC335-AVG-COST
+               MOVE STR-UM               TO  TC335-UM
+           END-IF
+           MOVE STR-CLASS                TO  TC335-CLASS.
+           IF PGM-TYPE = "RECEIPT"
+             MOVE TQTYEDIT-TOTAL-QTY       TO  TC335-QTY
+             PERFORM 9999-PUT-DDAILYTC-DT-O
+             GO TO LOOP-END.
+
+           MOVE 0 TO SUB.
+       LOOP.
+           ADD 1 TO SUB.
+           IF SUB > MAX-OWNRS
+              GO TO LOOP-END
+           ELSE
+             MOVE OWNR-QTY(SUB)            TO  TC335-QTY
+             MOVE OWNR(SUB)                TO  TC335-FRAN-ID
+
+             PERFORM 9999-PUT-DDAILYTC-DT-O
+             GO TO LOOP.
+       LOOP-END.
+           PERFORM 9999-UNLOCK.
+
+       69-PRINT.
+           OPEN OUTPUT PRINT-FILE.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  PRT-TIME.
+           MOVE DATE-SLASH-OUT           TO  PRT-DATE.
+           WRITE PRINT-REC FROM HDR-1 AFTER ADVANCING 2.
+           MOVE DE-DOCUMENT              TO  PRT-DOCUMENT.
+           MOVE DE-EMPL                  TO  PRT-EMPL.
+           MOVE DE-POINT                 TO  PRT-POINT.
+           WRITE PRINT-REC FROM HDR-2  AFTER ADVANCING 2.
+           WRITE PRINT-REC FROM HDR-3 AFTER ADVANCING 2.
+
+           MOVE STR-UM                   TO  PRT-UM.
+           MOVE 0                        TO  SUB.
+           MOVE 0                        TO  LOC-COUNT.
+           MOVE "N"                      TO  PRT-CODE-FLAG.
+       691-PRINT-LOOP.
+           ADD 1                         TO  SUB.
+           IF SUB > 6
+               GO TO 692-FINISH-PRINT.
+           IF DE-QTY (SUB) NOT = 0
+               IF PRT-CODE-FLAG = "N"
+                   MOVE CODE-ARG         TO  PRT-CORP-CODE
+                   MOVE "Y"              TO  PRT-CODE-FLAG
+               ELSE
+                   MOVE SPACES           TO  PRT-CORP-CODE.
+           IF DE-QTY (SUB) NOT = 0
+               MOVE DE-QTY (SUB)         TO  PRT-QTY
+               MOVE STR-LOC (SUB)        TO  PRT-LOC
+               ADD 1                     TO  LOC-COUNT
+               WRITE PRINT-REC FROM PRT-TRANSFER-DETAIL AFTER
+                 ADVANCING 1.
+
+           GO TO 691-PRINT-LOOP.
+
+       692-FINISH-PRINT.
+           IF LOC-COUNT > 1
+               MOVE TQTYEDIT-TOTAL-QTY   TO  PRT-TOTAL-QTY
+               WRITE PRINT-REC FROM TOTAL-LINE AFTER ADVANCING 2.
+
+           IF DE-COMMENT NOT = SPACES
+               MOVE DE-COMMENT           TO  PRT-COMMENT
+               WRITE PRINT-REC FROM COMMENT-LINE AFTER ADVANCING 2.
+
+           MOVE SPACES                   TO  PRINT-REC.
+           CLOSE PRINT-FILE.
+
+       70-CLEAR-SCREEN.
+           PERFORM 4-CLEAR-FORM.
+       70-GO-TO-TOP.
+
+           GO TO 61-SHOWFORM-1.
+
+       6-MAIN-X.
+           EXIT.
+
+      *------ THIS VERSION OF CATREAD ASSUMES THE SET/MSG NUMBER
+      *------ WILL BE IN CATREAD-MSG-NUMBER.
+       999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+           IF MESSAGE-BUFFER-1  = SPACES
+               MOVE "* ERROR ON THIS FIELD *" TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       COPY MLOCKCAL IN COPYLIB.
+       COPY DLOCKCAL IN COPYLIB.
+       COPY UNLOCK   IN COPYLIB.
+       COPY SCRNCALL IN COPYLIB.
+       COPY SCRNCL1  IN COPYLIB.
+       COPY SCRNCL2  IN COPYLIB.
+
+       9999-PUT-DDAILYTC-DT-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DDAILYTC-DT-REC-O FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DDAILYTC-DT-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-O.
+           READ MSTORERM-CD-O INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MSTORERM-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY > CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-UPDATE-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-CD-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-OPENS.
+      *------ DUMMY ENTRY FOR STORES DATABASE OPEN
+
+           OPEN I-O MSTORERM-CD-O.
+
+           OPEN INPUT MPLTINFO-PK-I.
+
+           OPEN I-O DDAILYTC-DT-O.
+
+      *------ DUMMY ENTRY FOR LANGUAGE OPENS: USED ON HP
+
+           OPEN I-O  DISPLAY-FILE.
+
+       9999-CLOSES.
+      *------ DUMMY ENTRY FOR STORES DATABASE CLOSE
+
+           CLOSE MSTORERM-CD-O.
+
+           CLOSE MPLTINFO-PK-I.
+
+           CLOSE DDAILYTC-DT-O.
+
+      *------ DUMMY ENTRY FOR LANGUAGE CLOSES: USED ON HP
+
+           CLOSE DISPLAY-FILE.

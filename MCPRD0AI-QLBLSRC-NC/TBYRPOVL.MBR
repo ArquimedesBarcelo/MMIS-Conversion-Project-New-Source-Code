@@ -1,0 +1,771 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TBYRPOVL.
+       AUTHOR.               AM TREUDLER.
+       DATE-WRITTEN.         NOV 23, 1987.
+
+      *REMARKS.
+      ***************************************************************
+      **                                                           **
+      *D          T B Y R P O V L                                  **
+      **                                                           **
+      *D   THIS PROGRAM READS THROUGH ABSTFIL2 AND FINDS ALL PO    **
+      *D   ADDS, MODIFIES AND DELETES.                             **
+      *D   A REPORT IS THEN PRODUCED SHOWING ALL PO ACTIVITY PER   **
+      *D   BUYER.                                                  **
+      **                                                           **
+      ***************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      IBM-AS400.
+       OBJECT-COMPUTER.      IBM-AS400.
+       SPECIAL-NAMES.        C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE   ASSIGN TO  PRINTER-MCPRT.
+           SELECT SORT-FILE    ASSIGN TO  DISK-SORT.
+           SELECT WORK-FILE    ASSIGN TO  DISK-WORKFILE.
+           SELECT SORT-WORK    ASSIGN TO  DISK-SORTWORK.
+           SELECT ABST-FILE    ASSIGN TO  DISK-ABSTFIL2.
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MBUYER-I
+                  ASSIGN TO DATABASE-MCFLCS0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  ABST-FILE
+           DATA RECORD IS ABST-REC
+           RECORD CONTAINS 80 CHARACTERS.
+       01  ABST-REC.
+           05  FILLER                   PIC X(12).
+           05  ABST-TC                  PIC X(3).
+           05  FILLER                   PIC X(3).
+           05  ABST-DATA                PIC X(62).
+           05  ABST-32X REDEFINES ABST-DATA.
+               10  FILLER               PIC X(7).
+               10  ABST-32X-PO          PIC X(11).
+               10  FILER                PIC X(44).
+           05  ABST-36X REDEFINES ABST-DATA.
+               10  ABST-36X-PO          PIC X(11).
+               10  FILLER               PIC X(51).
+           05  ABST-42X REDEFINES ABST-DATA.
+               10  FILLER               PIC X(7).
+               10  ABST-42X-PO          PIC X(10).
+               10  FILLER               PIC X(45).
+
+       FD  PRINT-FILE
+           DATA RECORD IS PRT-REC
+           RECORD CONTAINS 133 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  PRT-REC                      PIC X(133).
+
+       FD  WORK-FILE
+           DATA RECORD IS WORK-REC
+           RECORD CONTAINS 12 CHARACTERS.
+       01  WORK-REC.
+           05  WORK-PO-NUMBER           PIC X(11).
+           05  WORK-SW                  PIC X(1).
+
+       SD  SORT-WORK
+           DATA RECORD IS SORT-WORK-REC
+           RECORD CONTAINS 12 CHARACTERS.
+       01  SORT-WORK-REC.
+           05  SORT-WORK-PO-NUMBER      PIC X(11).
+           05  SORT-WORK-SW             PIC X(1).
+
+       SD  SORT-FILE
+           DATA RECORD IS SORT-REC
+           RECORD CONTAINS 34 CHARACTERS.
+       01  SORT-REC.
+           05  SORT-BUYER-CODE          PIC X(4).
+           05  SORT-SW                  PIC X(1).
+           05  SORT-PO-NUMBER           PIC X(11).
+           05  SORT-PO-VALUE            PIC S9(16)V9(2).
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500   OF MCFLCS0501.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200   OF MCFLCS0201.
+
+       FD  MBUYER-I
+           LABEL RECORDS ARE STANDARD.
+       01  MBUYER-REC-I.
+           COPY DDS-MCRPCS0600   OF MCFLCS0601.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-MCRPCS0900   OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-MCRPCS1000   OF MCFLCS1002.
+
+
+       WORKING-STORAGE SECTION.
+      ***************************************************************
+      **            P R O G R A M   V A R I A B L E S              **
+      ***************************************************************
+       77  LINE-CTR                      PIC 99      VALUE 0.
+       77  PAGE-CTR                      PIC 9(4)    VALUE 0.
+       01  SORT-EOF                      PIC X(1)    VALUE "N".
+           88  NO-MORE-RECORDS                       VALUE "Y".
+       01  WORK-EOF                      PIC X(1)    VALUE "N".
+           88  END-OF-WORK-FILE                      VALUE "Y".
+       01  ABST-EOF                      PIC X(1)    VALUE "N".
+           88  END-OF-ABST-FILE                      VALUE "Y".
+       01  NO-RECORDS                    PIC X(133)  VALUE
+           " NO ITEMS QUALIFIED FOR THE REPORT".
+       01  SAVE-PO-NUMBER                PIC X(11)   VALUE SPACES.
+       01  SAVE-BUYER-CODE               PIC X(4)    VALUE "XXXX".
+       01  SAVE-SW                       PIC X(1)    VALUE SPACES.
+       01  STRIP-PO-IN.
+           05  FILLER                    PIC X(1).
+           05  STRIP-PO-OUT              PIC X(10).
+       01  DB-PO-NUMBER.
+           05  FILLER                    PIC X(1)    VALUE "P".
+           05  DB-PO-IN                  PIC X(10).
+       01  ITM-STR-QTY                   PIC S9(8)   VALUE ZEROS.
+       01  ITM-STR-PRICE                 PIC S9(11)V9(4) VALUE ZEROS.
+       01  ITM-VALUE                     PIC S9(14)V9(2) VALUE ZEROS.
+       01  PO-VALUE                      PIC S9(16)V9(2) VALUE ZEROS.
+       01  TOTAL-PO-VALUE                PIC S9(16)V9(2) VALUE ZEROS.
+
+      ************************************************************
+      **           R E P O R T   P R I N T   L I N E S          **
+      ************************************************************
+       01  HEADER-1.
+           05  FILLER                     PIC X      VALUE SPACES.
+           05  FILLER                     PIC X(49)
+               VALUE "TBYRPOVL".
+           05  FILLER                     PIC X(69)
+               VALUE "CORPORATE STORES SYSTEM".
+           05  FILLER                     PIC X(6)   VALUE "PLANT ".
+           05  PLANT-H1                   PIC X(3)   VALUE SPACES.
+           05  FILLER                     PIC X(5)   VALUE SPACES.
+
+       01  HEADER-2.
+           05  FILLER                     PIC X      VALUE SPACES.
+           05  H2-DATE                    PIC X(8)   VALUE SPACES.
+           05  FILLER                     PIC X(5)   VALUE SPACES.
+           05  H2-TIME                    PIC X(8)   VALUE SPACES.
+           05  FILLER                     PIC X(23)  VALUE SPACES.
+           05  FILLER                     PIC X(33)
+               VALUE "STORES SUMMARY OF BUYER ACTIVITY".
+           05  FILLER                     PIC X(39)  VALUE SPACES.
+           05  H2-PAGE                    PIC X(6)   VALUE "PAGE :".
+           05  H2-PAGE-NO                 PIC Z,ZZ9  VALUE ZEROS.
+           05  FILLER                     PIC X(5)   VALUE SPACES.
+
+       01  HEADER-3.
+           05  FILLER                     PIC X(2)   VALUE SPACES.
+           05  FILLER                     PIC X(10)  VALUE
+               "BUYER CODE".
+           05  FILLER                     PIC X(7)   VALUE SPACES.
+           05  FILLER                     PIC X(10)  VALUE
+               "BUYER NAME".
+           05  FILLER                     PIC X(104) VALUE SPACES.
+
+       01  HEADER-4.
+           05  PO-MESSAGE                 PIC X(30)  VALUE SPACES.
+           05  FILLER                     PIC X(15)  VALUE
+               "PURCHASE ORDER".
+           05  FILLER                     PIC X(10)  VALUE SPACES.
+           05  FILLER                     PIC X(12)  VALUE
+               "DOLLAR VALUE".
+           05  FILLER                     PIC X(66)  VALUE SPACES.
+
+       01  BLANK-LINE                     PIC X(133)   VALUE SPACES.
+
+       01  TOTAL-1.
+           05  FILLER                     PIC X(42)  VALUE SPACES.
+           05  FILLER                     PIC X(7)   VALUE "TOTAL *".
+           05  T1-PO-VALUE        PIC  Z,ZZZ,ZZZ,ZZZ,ZZZ,ZZZ.99.
+           05  FILLER                     PIC X(67)  VALUE SPACES.
+
+       01  DASH-1.
+           05  FILLER                     PIC X(49)  VALUE SPACES.
+           05  D1-DASH                    PIC X(24)  VALUE ALL "-".
+           05  FILLER                     PIC X(67)  VALUE SPACES.
+
+       01  DETAIL-1.
+           05  FILLER                     PIC X(5)   VALUE SPACES.
+           05  D1-BUYER-CODE              PIC X(4).
+           05  FILLER                     PIC X(7)   VALUE SPACES.
+           05  D1-BUYER-NAME              PIC X(16).
+           05  FILLER                     PIC X(101) VALUE SPACES.
+
+       01  DETAIL-2.
+           05  FILLER                     PIC X(32)  VALUE SPACES.
+           05  D2-PO-NO                   PIC X(10).
+           05  FILLER                     PIC X(7)   VALUE SPACES.
+           05  D2-PO-VALUE        PIC  Z,ZZZ,ZZZ,ZZZ,ZZZ,ZZZ.99.
+           05  FILLER                     PIC X(67)  VALUE SPACES.
+
+      ***************************************************************
+      **         S U B P R O G R A M    A R E A S                  **
+      ***************************************************************
+       COPY THDPRTA  IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+      *******************************************************
+      *   PARAMETERS USED IN 'TBLOWUP' ROUTINE (PRINTS      *
+      *   ERRORS AND ABORTS PROGRAM.  RUN XBLPRT.OBJECT TO  *
+      *   READ ERRORS).                                     *
+      *******************************************************
+       COPY TBLOWUP IN COPYLIB.
+
+       COPY CCRTFILE IN COPYLIB.
+
+       COPY CCHKOBJ  IN COPYLIB.
+
+       COPY OVRPFDATA IN COPYLIB.
+
+      ************************************************************
+      **                                                        **
+      **           D A T A B A S E   B U F F E R S              **
+      **                                                        **
+      ************************************************************
+       COPY MPLTINFO   IN COPYLIB.
+
+       COPY MBUYER     IN COPYLIB.
+
+       COPY DPORECD    IN COPYLIB.
+
+       COPY DPOITEM    IN COPYLIB.
+
+       COPY MSTORERM   IN COPYLIB.
+
+      **********************************************************
+      *              D A T A    B A S E                        *
+      **********************************************************
+
+       COPY DATAB IN COPYLIB.
+
+       01  DATASET-NAMES.
+           05  DSET-MPLTINFO    PIC X(16)  VALUE "MPLTINFO;".
+           05  DSET-MSTORERM    PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-MBUYER      PIC X(16)  VALUE "MBUYER;".
+           05  DSET-DPORECD     PIC X(16)  VALUE "DPORECD;".
+           05  DSET-DPOITEM     PIC X(16)  VALUE "DPOITEM;".
+           05  DSET-NAME        PIC X(16)  VALUE SPACES.
+
+       01  ITEMS-LISTING.
+           05  ALL-ITEMS        PIC X(2)   VALUE "@;".
+           05  PO-SEARCH        PIC X(10)  VALUE "PO-RCV-NO;".
+
+       01  ARG-VALUES.
+           05  MPLTINFO-ARG     PIC X(4)   VALUE "P 01".
+           05  PO-ARG.
+               10  PO-ARG-IN    PIC X(11)  VALUE SPACES.
+               10  FILLER       PIC X(3)   VALUE "000".
+           05  BUYER-ARG        PIC X(4)   VALUE SPACES.
+           05  DUMMY-ARG        PIC X(4)   VALUE SPACES.
+           05  CODE-ARG         PIC X(8)   VALUE SPACES.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1    PIC X      VALUE SPACES.
+           05  FILE-STATUS-2    PIC X      VALUE SPACES.
+
+      *******************************************************
+      **               ESCAPE SEQUENCE INFO                **
+      *******************************************************
+       COPY ESCNAM2 IN COPYLIB.
+
+       01  ESC-INFO.
+           05  COMPRESS-PRINT           PIC X(8).
+           05  NORMAL-PRINT             PIC X(8).
+           05  EXPAND-PRINT             PIC X(8).
+
+       LINKAGE SECTION.
+      *******************************************************
+      **           TERMINAL I/O DATA AREA                  **
+      *******************************************************
+       COPY THDPRTB IN COPYLIB.
+       01  DATA-LINE                    PIC X(112).
+
+      ***************************************************************
+      **###########################################################**
+      ***************************************************************
+      **                                                           **
+      **            P R O C E D U R E   D I V I S I O N            **
+      **                                                           **
+      ***************************************************************
+      **###########################################################**
+      ***************************************************************
+       PROCEDURE DIVISION USING HD-ROUTE-DATA, DATA-LINE.
+
+       MAIN-PGM SECTION.
+
+       001-BEGIN-HERE.
+           PERFORM 100-HSK              THRU 100-HSK-X.
+           PERFORM 300-GET-PARMS        THRU 300-GP-X.
+           PERFORM 600-MAIN             THRU 600-MAIN-X.
+           PERFORM 200-EOJ              THRU 200-EOJ-X.
+           GOBACK.
+
+       100-HSK.
+           MOVE "TBYRPOVL" TO BU-PGM-NAME.
+      *---------- OPEN THE PRINT FILE, GET THE FILE NUMBER OF THE PRINT
+      *---------- FILE, AND PRINT THE HEADER PAGE.
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"            TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES   TO OVRPRTF-COPIES.
+           MOVE "MCPRT"           TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+
+      *----- CALL CCRTFILE TO CREATE A TEMPORARY FILE FOR SORTING
+      *----- LIBRARY 'QTEMP' IS USED FOR TEMPORARY FILES
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "WORKFILE"    TO CCRTFILE-FILE.
+           MOVE "0012"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "90000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "02000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE "10"          TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'WORKFILE' FAILED"
+                  TO BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP.
+           OPEN OUTPUT PRINT-FILE,
+                       WORK-FILE.
+           OPEN INPUT  ABST-FILE.
+
+           OPEN INPUT MPLTINFO-I, MSTORERM-I, MBUYER-I,
+                      DPORECD-I, DPOITEM-I.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBOPEN STORES * 100-HSK" TO BU-DISPLAY-MSG
+               MOVE COND-WORD TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+       100-HSK-X.
+           EXIT.
+
+       200-EOJ.
+           IF PAPER-IS-132-COLS
+           WRITE PRT-REC FROM NORMAL-PRINT AFTER ADVANCING 0 LINES.
+           CLOSE WORK-FILE.
+           CLOSE PRINT-FILE.
+
+           CLOSE MPLTINFO-I, MSTORERM-I, MBUYER-I,
+                 DPORECD-I, DPOITEM-I.
+
+       200-EOJ-X.
+           EXIT.
+
+       300-GET-PARMS.
+      *------------- GET PARMS FOR REPORT
+           MOVE "DHDRPR2.PUB"  TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM,
+               HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+               MOVE "THDPRT2 ERROR * BYRPOVL" TO BU-DISPLAY-MSG
+               MOVE "HD-RET-CODE = "         TO BU-DISPLAY-FLD (1)
+               MOVE HD-RET-CODE              TO BU-DISPLAY-FLD9 (1)
+               PERFORM 990-BLOWUP.
+
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI             TO COMPRESS-PRINT.
+           MOVE CHAR-10PI               TO NORMAL-PRINT.
+           MOVE CHAR-5PI                TO EXPAND-PRINT.
+
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-FORMATTED-TIME-OUT TO H2-TIME.
+           MOVE DATE-SLASH-OUT          TO H2-DATE.
+
+
+      *------------- GET RECORD FOR PLANT NUMBER
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ ERROR IN 300-GET-PARMS"
+                   TO BU-DISPLAY-MSG
+               MOVE "P 01" TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+           MOVE MPLTINFO-COMPANY TO PLANT-H1.
+
+       300-GP-X.
+           EXIT.
+
+      ***************************************************************
+      **                                                           **
+      **                  6 0 0 - M A I N                          **
+      **                                                           **
+      ***************************************************************
+       600-MAIN.
+           PERFORM 620-READ-ABSTFILE.
+           PERFORM 610-PROCESS-ABSTFILE THRU 620-READ-ABSTFILE
+               UNTIL END-OF-ABST-FILE.
+           CLOSE WORK-FILE, ABST-FILE.
+           SORT SORT-WORK ON ASCENDING  KEY SORT-WORK-PO-NUMBER
+                             DESCENDING KEY SORT-WORK-SW
+                                        USING  WORK-FILE
+                                        GIVING WORK-FILE.
+
+           SORT SORT-FILE ON ASCENDING  KEY SORT-BUYER-CODE
+                                            SORT-SW
+                             DESCENDING KEY SORT-PO-VALUE
+               INPUT PROCEDURE  IS 700-INPUT-PROCEDURE
+               OUTPUT PROCEDURE IS 800-CREATE-REPORT.
+
+       600-MAIN-X.
+           EXIT.
+
+       610-PROCESS-ABSTFILE.
+      * READ THRU ABSTFIL2 - ANY NEW PO WILL ALWAYS HAVE A TC 360 CUT
+      * FOR IT.  THE FILE THAT IS CREATED IN THIS PROCEDURE WILL BE SORTED ON
+      * ASCENDING SEQUENCE BY PO NUMBER AND THEN WORK-SW.  THE SETTING OF WORK-S
+      * TO '9' FOR ALL 360 TRANSACTION WILL ASSURE THAT ALL NEW POS ARE HANDLED
+      * AS SUCH EVEN IF THEY HAVE BEEN MODIFIED ON THE SAME DAY AS THEY WERE
+      * CREATED.
+
+           IF ABST-TC = "360"
+               MOVE ABST-36X-PO         TO WORK-PO-NUMBER
+               MOVE "9"                 TO WORK-SW
+           ELSE
+           IF ABST-TC = "361"
+               MOVE ABST-36X-PO         TO WORK-PO-NUMBER
+               MOVE "1"                 TO WORK-SW
+           ELSE
+           IF ABST-TC = "320"
+               MOVE ABST-32X-PO         TO WORK-PO-NUMBER
+               MOVE "1"                 TO WORK-SW
+           ELSE
+           IF ABST-TC = "420"
+               MOVE ABST-42X-PO         TO DB-PO-IN
+               MOVE DB-PO-NUMBER        TO WORK-PO-NUMBER
+               MOVE "1"                 TO WORK-SW
+           ELSE
+           IF ABST-TC = "321"
+               MOVE ABST-32X-PO         TO WORK-PO-NUMBER
+               MOVE "1"                 TO WORK-SW
+           ELSE
+           IF ABST-TC = "421"
+               MOVE ABST-42X-PO         TO DB-PO-IN
+               MOVE DB-PO-NUMBER        TO WORK-PO-NUMBER
+               MOVE "1"                 TO WORK-SW
+           ELSE
+           IF ABST-TC = "32D"
+               MOVE ABST-32X-PO         TO WORK-PO-NUMBER
+               MOVE "1"                 TO WORK-SW
+           ELSE
+               GO TO 620-READ-ABSTFILE.
+
+           WRITE WORK-REC.
+
+       620-READ-ABSTFILE.
+           READ ABST-FILE AT END MOVE "Y" TO ABST-EOF.
+
+      ***************************************************************
+      **              I N P U T   P R O C E D U R E                **
+      ***************************************************************
+
+       700-INPUT-PROCEDURE SECTION.
+           OPEN INPUT WORK-FILE.
+           PERFORM 720-READ-WORK-FILE.
+           PERFORM 710-PROCESS-WORK-FILE THRU 720-READ-WORK-FILE
+               UNTIL END-OF-WORK-FILE.
+           GO TO 799-EXIT.
+
+       710-PROCESS-WORK-FILE.
+      *------ A PO CAN BE IN THE WORK FILE NUMEROUS TIMES SO WE WILL DISREGARD A
+      *------ ALL DUPLICATE ENTRIES.  THE WORK-SW WAS SET TO NINE IF A T/C 360 W
+      *------ CUT.  THIS ENSURES THAT ALL NEW POS WILL BE HANDLED AS SUCH EVEN I
+      *------ THEY WERE SUBSEQUENTLY MODIFIED ON THE SAME DAY AS THEY WERE CREAT
+
+           IF WORK-PO-NUMBER = SAVE-PO-NUMBER
+             GO TO 720-READ-WORK-FILE.
+
+           IF WORK-SW = "9"
+               MOVE "0"                 TO SORT-SW
+           ELSE
+               MOVE "1"                 TO SORT-SW.
+
+           MOVE WORK-PO-NUMBER          TO PO-ARG-IN,
+                                           SORT-PO-NUMBER.
+
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               GO TO 720-READ-WORK-FILE
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ ERROR * DPORECD * 710-PWF"
+                   TO BU-DISPLAY-MSG
+               MOVE PO-ARG              TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           MOVE PO-BUYER-CODE           TO SORT-BUYER-CODE.
+
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 720-READ-WORK-FILE
+               ELSE
+               MOVE "START ERROR * DPOITEM * 710-PWF"
+                   TO BU-DISPLAY-MSG
+               MOVE PO-ARG              TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           PERFORM 711-GET-DPOITEM THRU 711-GD-X.
+
+           MOVE PO-VALUE                TO SORT-PO-VALUE.
+           MOVE ZEROS                   TO PO-VALUE.
+           RELEASE SORT-REC.
+
+           MOVE WORK-PO-NUMBER          TO SAVE-PO-NUMBER.
+
+       720-READ-WORK-FILE.
+           READ WORK-FILE AT END
+               MOVE "Y"  TO WORK-EOF.
+
+       711-GET-DPOITEM.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 711-GD-X
+               ELSE
+                   MOVE "DBGET ERROR * DPORECD * 711-GD"
+                       TO BU-DISPLAY-MSG
+                   MOVE PO-ARG          TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               GO TO 711-GD-X.
+
+           IF ITM-CORP-CODE = "NON-STR"
+               PERFORM 712-NONSTR-VALUE
+           ELSE
+               PERFORM 713-STR-VALUE.
+
+           GO TO 711-GET-DPOITEM.
+
+       711-GD-X.
+           EXIT.
+
+       712-NONSTR-VALUE.
+           MULTIPLY ITM-QTY-ORD BY ITM-UNIT-PRICE
+               GIVING ITM-VALUE ROUNDED.
+           ADD ITM-VALUE                TO PO-VALUE.
+
+       713-STR-VALUE.
+           MOVE ITM-CORP-CODE           TO CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET ERROR * MSTORERM" TO BU-DISPLAY-MSG
+               MOVE CODE-ARG            TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           IF ITM-UM = STR-UM
+               MOVE ITM-QTY-ORD         TO ITM-STR-QTY
+           ELSE
+               IF ITM-UM = STR-UM1
+                   MULTIPLY  ITM-QTY-ORD BY STR-UM1-CF
+                               GIVING ITM-STR-QTY ROUNDED
+               ELSE
+               IF ITM-UM = STR-UM2
+                    MULTIPLY ITM-QTY-ORD BY STR-UM2-CF
+                               GIVING ITM-STR-QTY ROUNDED.
+
+
+           IF ITM-UNIT-PRICE = ZEROS
+               MOVE ZEROS               TO  ITM-STR-PRICE
+           ELSE
+           IF ITM-PRICE-UM = STR-UM
+               MOVE ITM-UNIT-PRICE      TO  ITM-STR-PRICE
+           ELSE
+           IF ITM-PRICE-UM = STR-UM1
+               DIVIDE ITM-UNIT-PRICE BY STR-UM1-CF
+                   GIVING ITM-STR-PRICE ROUNDED
+           ELSE
+           IF ITM-PRICE-UM = STR-UM2
+               DIVIDE ITM-UNIT-PRICE BY STR-UM2-CF
+                   GIVING ITM-STR-PRICE ROUNDED.
+
+
+           MULTIPLY ITM-STR-QTY BY ITM-STR-PRICE
+                   GIVING ITM-VALUE ROUNDED.
+
+           ADD ITM-VALUE                TO PO-VALUE.
+
+
+       799-EXIT.
+           EXIT.
+
+      ***************************************************************
+      **              O U T P U T   P R O C E D U R E              **
+      ***************************************************************
+       800-CREATE-REPORT SECTION.
+           PERFORM 820-READ-SORT-FILE.
+           IF PAPER-IS-132-COLS
+               NEXT SENTENCE
+           ELSE
+            WRITE PRT-REC FROM COMPRESS-PRINT AFTER ADVANCING 0 LINES.
+
+           IF NO-MORE-RECORDS
+               PERFORM 890-NEW-PAGE
+               WRITE PRT-REC FROM NO-RECORDS AFTER ADVANCING 2 LINES
+               GO TO 899-EXIT.
+
+           PERFORM 810-WRITE-RPT THRU 820-READ-SORT-FILE UNTIL
+               NO-MORE-RECORDS.
+
+           GO TO 899-EXIT.
+
+       810-WRITE-RPT.
+           IF SORT-BUYER-CODE NOT = SAVE-BUYER-CODE
+               IF SAVE-SW = "0"
+                   MOVE TOTAL-PO-VALUE             TO T1-PO-VALUE
+                   WRITE PRT-REC FROM DASH-1  AFTER ADVANCING 1 LINES
+                   WRITE PRT-REC FROM TOTAL-1 AFTER ADVANCING 1 LINES
+                   MOVE ZEROS                      TO TOTAL-PO-VALUE.
+           IF SORT-BUYER-CODE NOT = SAVE-BUYER-CODE
+               PERFORM 890-NEW-PAGE
+               PERFORM 890-GET-BUYER-NAME
+               WRITE PRT-REC FROM HEADER-3 AFTER ADVANCING 2 LINES
+               MOVE SORT-BUYER-CODE                TO D1-BUYER-CODE
+                                                      SAVE-BUYER-CODE
+               MOVE BUYER-NAME                     TO D1-BUYER-NAME
+               WRITE PRT-REC FROM DETAIL-1 AFTER ADVANCING 2 LINES
+               ADD  4                              TO LINE-CTR
+               MOVE SPACES                         TO SAVE-SW.
+
+           IF SORT-SW NOT = SAVE-SW
+               MOVE SORT-SW                        TO SAVE-SW
+               IF SORT-SW = "0"
+                   MOVE "NEW PURCHASE ORDERS"      TO PO-MESSAGE
+                   WRITE PRT-REC FROM HEADER-4 AFTER
+                       ADVANCING 2 LINES
+                   WRITE PRT-REC FROM BLANK-LINE AFTER
+                       ADVANCING 1 LINES
+                   ADD  3                          TO LINE-CTR
+               ELSE
+                   MOVE TOTAL-PO-VALUE             TO T1-PO-VALUE
+                   WRITE PRT-REC FROM DASH-1  AFTER ADVANCING 1 LINES
+                   WRITE PRT-REC FROM TOTAL-1 AFTER ADVANCING 1 LINES
+                   MOVE ZEROS                      TO  TOTAL-PO-VALUE
+                   MOVE "MODIFIED PURCHASE ORDERS" TO PO-MESSAGE
+                   WRITE PRT-REC FROM HEADER-4 AFTER
+                       ADVANCING 2 LINES
+                   WRITE PRT-REC FROM BLANK-LINE AFTER
+                       ADVANCING 1 LINES
+                   ADD  3                          TO LINE-CTR.
+
+           MOVE SORT-PO-NUMBER                     TO STRIP-PO-IN.
+           MOVE STRIP-PO-OUT                       TO D2-PO-NO.
+           MOVE SORT-PO-VALUE                      TO D2-PO-VALUE.
+           IF SORT-SW = "0"
+               ADD SORT-PO-VALUE                   TO TOTAL-PO-VALUE.
+           WRITE PRT-REC FROM DETAIL-2 AFTER ADVANCING 1 LINES.
+           ADD  1                                  TO LINE-CTR.
+
+       820-READ-SORT-FILE.
+           RETURN SORT-FILE AT END
+               MOVE "Y" TO SORT-EOF.
+
+           IF LINE-CTR > 56 AND NOT NO-MORE-RECORDS
+               PERFORM 890-NEW-PAGE
+               WRITE PRT-REC FROM HEADER-3 AFTER ADVANCING 1 LINES
+               WRITE PRT-REC FROM DETAIL-1 AFTER ADVANCING 1 LINES
+               WRITE PRT-REC FROM HEADER-4 AFTER ADVANCING 2 LINES
+               WRITE PRT-REC FROM BLANK-LINE AFTER ADVANCING 1 LINES
+               ADD  5                   TO LINE-CTR.
+           IF SORT-EOF = "Y"
+               IF SAVE-SW = "0"
+                   MOVE TOTAL-PO-VALUE             TO T1-PO-VALUE
+                   WRITE PRT-REC FROM DASH-1  AFTER ADVANCING 1 LINES
+                   WRITE PRT-REC FROM TOTAL-1 AFTER ADVANCING 1 LINES.
+
+
+
+      ***************************************************************
+      **            P E R F O R M E D    R O U T I N E S           **
+      ***************************************************************
+       890-NEW-PAGE.
+           WRITE PRT-REC FROM HEADER-1 AFTER ADVANCING NEW-PAGE.
+           ADD  1                       TO PAGE-CTR.
+           MOVE PAGE-CTR                TO H2-PAGE-NO.
+           WRITE PRT-REC FROM HEADER-2 AFTER ADVANCING 1 LINES.
+           MOVE 3                       TO LINE-CTR.
+
+       890-GET-BUYER-NAME.
+           MOVE SORT-BUYER-CODE         TO BUYER-ARG.
+           MOVE BUYER-ARG TO BUYERCDE OF MBUYER-REC-I.
+           READ MBUYER-I INTO BUF-MBUYER
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE "NAME NOT AVAIL" TO BUYER-NAME
+               ELSE
+               MOVE "DBGET ERROR * MBUYER" TO BU-DISPLAY-MSG
+               DISPLAY "LOOKING FOR BUYER CODE - " SORT-BUYER-CODE
+               MOVE BUYER-ARG           TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+       899-EXIT.
+           EXIT.
+
+       900-ERROR SECTION.
+
+      ***************************************************************
+      **                     BLOWUP ROUTINE                        **
+      ***************************************************************
+       990-BLOWUP.
+           WRITE PRT-REC FROM NORMAL-PRINT AFTER ADVANCING 0 LINES.
+
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-AREA.
+       COPY OVRPFCALL IN COPYLIB.

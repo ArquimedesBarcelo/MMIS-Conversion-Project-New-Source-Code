@@ -1,0 +1,192 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.        TMNFCMPL.
+       AUTHOR.            CA YODER.
+       DATE-WRITTEN.      OCTOBER 2000.
+       DATE-COMPILED.
+      *INSTALLATION.      THE GOODYEAR TIRE & RUBBER COMPANY.
+      *
+      ******************************************************************
+      *D   T M N F C M P L                                             *
+      *D                                                               *
+      *D     THIS PROGRAM UPDATES THE "COMPLETE DATE" FIELD IN FILE    *
+      *D     MCFPCSMANF.                                               *
+      *D                                                               *
+      ******************************************************************
+      *  C H A N G E S :                                               *
+      *                                                                *
+      *C                                                               *
+      *C  11/01/2000     CA YODER                                      *
+      *C    ADDED LOGIC TO DELETE ENTRIES FROM MCFPCSMANF IF THE       *
+      *C    CODE NO LONGER EXISTS IN MSTORERM.                         *
+      *C                                                               *
+      ******************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.     IBM-AS400.
+       OBJECT-COMPUTER.     IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MANUF-IO
+               ASSIGN        TO DATABASE-MCFLCSMNF1
+               ORGANIZATION  IS INDEXED
+               ACCESS MODE   IS DYNAMIC
+               RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+                                WITH DUPLICATES
+               FILE STATUS   IS FILE-STATUS.
+
+           SELECT DMANPART-I
+               ASSIGN        TO DATABASE-MCFLCS3603
+               ORGANIZATION  IS INDEXED
+               ACCESS MODE   IS DYNAMIC
+               RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+                                WITH DUPLICATES
+               FILE STATUS   IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+               ASSIGN        TO DATABASE-MCFLCS0201
+               ORGANIZATION  IS INDEXED
+               ACCESS MODE   IS DYNAMIC
+               RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS   IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MANUF-IO
+           LABEL RECORDS ARE STANDARD.
+       01  MANUF-REC-IO.
+           COPY DDS-ALL-FORMATS OF MCFLCSMNF1.
+
+       FD  DMANPART-I
+           LABEL RECORDS ARE STANDARD.
+       01  DMANPART-REC-I.
+           COPY DDS-MCRPCS3600  OF MCFLCS3603.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       WORKING-STORAGE SECTION.
+
+       77  NUM-UPDATES            PIC 9(4)  VALUE 0.
+       77  CODE-ARG               PIC X(8).
+
+      *----------------------------------------------------------------*
+      *             D A T A B A S E   B U F F E R S                    *
+      *----------------------------------------------------------------*
+
+       COPY MANFFILE IN COPYLIB.
+
+       COPY DMANPART IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+
+      *----------------------------------------------------------------*
+      *                    H O L D   A R E A S                         *
+      *----------------------------------------------------------------*
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X    VALUE "0".
+           05  FILE-STATUS-2             PIC X    VALUE "0".
+
+       01  MANUF-EOF-SW                  PIC X    VALUE "N".
+
+       01  HOLD-COMPLDATE.
+           05  HOLD-CC                   PIC X(2)   VALUE "20".
+           05  HOLD-DATE                 PIC X(6).
+
+      *----------------------------------------------------------------*
+      *               U T I L I T Y   A R E A                          *
+      *----------------------------------------------------------------*
+
+       COPY TBLOWUP    IN COPYLIB.
+
+       COPY VCOMAREA   IN COPYLIB.
+
+       COPY DATAB      IN COPYLIB.
+
+
+      *--------- P R O C E D U R E   D I V I S I O N ------------------*
+
+       PROCEDURE DIVISION.
+
+       MAINLINE SECTION.
+       0-MAINLINE-BEGIN.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+           OPEN  INPUT DMANPART-I
+                       MSTORERM-I
+                   I-O MANUF-IO.
+
+           ACCEPT HOLD-DATE FROM DATE.
+
+       2-EOJ.
+           DISPLAY "NUMBER OF RECORDS UPDATED:  " NUM-UPDATES.
+
+           CLOSE       MANUF-IO
+                       MSTORERM-I
+                       DMANPART-I.
+
+      *----------------------------------------------------------------*
+      *               M A I N   P A R A G R A P H                      *
+      *----------------------------------------------------------------*
+
+       6-MAIN.
+
+           PERFORM 9999-START-MNFFILE.
+           PERFORM 9999-READ-NEXT-MNFFILE.
+           PERFORM 60-UPDATE-RECS UNTIL MANUF-EOF-SW = "Y".
+
+       60-UPDATE-RECS.
+      *--------- IF CODE NO LONGER EXISTS IN MSTORERM, REMOVE ENTRY
+      *--------- FROM MCFPCSMANF.
+           MOVE MNF-CORP-CODE TO CODE-ARG.
+           PERFORM 9999-READ-MSTORERM.
+           IF FILE-STATUS = "23"
+               DELETE MANUF-IO
+           ELSE
+           IF MNF-COMPL-DATE = SPACES AND MNF-TYPE = SPACE
+               PERFORM 9999-READ-DMANPART
+               IF FILE-STATUS = "00"
+                   IF MNF-CHG-DATE = SPACES
+                       MOVE HOLD-COMPLDATE TO MNF-CHG-DATE
+                       MOVE "TMNFCMPL"     TO MNF-CHG-USER
+                       ACCEPT MNF-CHG-TIME FROM TIME
+                   END-IF
+                   MOVE HOLD-COMPLDATE TO MNF-COMPL-DATE
+                   REWRITE MANUF-REC-IO FROM BUF-MNFFILE
+                   ADD 1 TO NUM-UPDATES
+               END-IF.
+           PERFORM 9999-READ-NEXT-MNFFILE.
+
+      *----------------------------------------------------------------*
+      *               U T I L I T Y   S E C T I O N                    *
+      *----------------------------------------------------------------*
+
+       9999-UTILITY SECTION.
+
+       9999-START-MNFFILE.
+           MOVE LOW-VALUES TO CORPCDE OF MANUF-REC-IO.
+           START MANUF-IO KEY > CORPCDE OF MANUF-REC-IO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-NEXT-MNFFILE.
+           READ MANUF-IO NEXT INTO BUF-MNFFILE
+               AT END MOVE "Y" TO MANUF-EOF-SW.
+
+       9999-READ-DMANPART.
+           MOVE MNF-CORP-CODE TO CORPCDE OF DMANPART-REC-I.
+           READ DMANPART-I INTO BUF-DMANPART
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-MSTORERM.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+

@@ -1,0 +1,709 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TPPINVRP.
+       AUTHOR.         ANNETTE M. TREUDLER.
+       DATE-WRITTEN.   OCTOBER 1987.
+      *REMARKS.
+      **************************************************************
+      *                                                            *
+      *D    TPPINVRP                                               *
+      *                                                            *
+      *D    THIS REPORT SHOWS ALL PREPAID INVOICES  -  INVOICES    *
+      *D    WHERE UNITS HAVE BEEN PAID BUT NOT RECEIVED.           *
+      *                                                            *
+      **************************************************************
+      *C  JUNE 23, 1994   CR KALMAN
+      *C   ADDED CALL TO COBOL ERROR HANDLER -MCXCBLERR.
+      *C
+      *C  JULY 11, 1996   CA YODER
+      *C   RE-COMPILED TO PICK UP CENTURY DATABASE CHANGES.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       SPECIAL-NAMES.
+           C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE           ASSIGN TO PRINTER-MCPRT.
+           SELECT SORT-FILE            ASSIGN TO DISK-SORT.
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2502
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVITM-I
+                  ASSIGN TO DATABASE-MCFLCS2601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PRINT-FILE
+           RECORD CONTAINS 132 CHARACTERS.
+       01  PRINT-REC                    PIC X(132).
+
+
+       SD  SORT-FILE
+           RECORD CONTAINS 112 CHARACTERS.
+       01  SORT-REC.
+           05  SORT-PO-RCV-NO           PIC X(14).
+           05  SORT-CORP-CODE           PIC X(8).
+           05  SORT-ITEM-NO             PIC X(4).
+           05  SORT-QTY-DLVR            PIC 9(8)V9(4).
+           05  SORT-QTY-PAID            PIC 9(8)V9(4).
+           05  SORT-UM                  PIC X(2).
+           05  SORT-VEN-CODE            PIC X(10).
+           05  SORT-REG-NO              PIC X(6).
+           05  SORT-INV-NO              PIC X(14).
+           05  SORT-DATE                PIC X(6).
+           05  SORT-ADD-CLERK           PIC X(4).
+           05  SORT-INV-QTY-PAID        PIC S9(8)V9(4).
+           05  SORT-INV-UPRICE          PIC S9(11)V9(4)  COMP-3.
+
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500   OF MCFLCS0501.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-MCRPCS0900   OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-MCRPCS1000   OF MCFLCS1002.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-MCRPCS2500   OF MCFLCS2502.
+
+       FD  DINVITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-REC-I.
+           COPY DDS-MCRPCS2600   OF MCFLCS2601.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-MCRPCS0700   OF MCFLCS0701.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X     VALUE SPACES.
+           05  FILE-STATUS-2            PIC X     VALUE SPACES.
+       01  PLANT-NUMBER                 PIC X(3).
+       01  LINE-CTR                     PIC 9(2)  VALUE 0.
+       01  PAGE-CTR                     PIC 9(4)  VALUE 0.
+       01  SAVE-PO-RCV-NO               PIC X(14) VALUE SPACES.
+       01  SAVE-ITEM-NO                 PIC X(4)  VALUE SPACES.
+       01  SORT-EOF                     PIC X(1)  VALUE "N".
+           88  NO-MORE-RECORDS                    VALUE "Y".
+       01  NO-RECORDS                   PIC X(132) VALUE
+           "***   THERE ARE NO PREPAID INVOICES ****".
+9406CK 01  SCOPE   PIC X.
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **              D A T A    B A S E    A R E A              **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       01  BASE                         PIC X(10)  VALUE "  STORES;".
+       01  PASSWORD                     PIC X(5)   VALUE "JADE;".
+       01  DSET-NAME                    PIC X(16)  VALUE SPACES.
+
+       COPY DBMODES    IN COPYLIB.
+
+       COPY DBSTAT     IN COPYLIB.
+
+       COPY VCOMAREA   IN COPYLIB.
+
+      ***************************************************************
+      ***************************************************************
+      **                                                           **
+      **         C A L L E D   S U B R O U T I N E S               **
+      **                                                           **
+      ***************************************************************
+      ***************************************************************
+       COPY TDATECHK IN COPYLIB.
+
+       COPY THDPRTA  IN COPYLIB.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY CCHKOBJ  IN COPYLIB.
+
+       COPY CCRTFILE IN COPYLIB.
+
+       COPY OVRPFDATA IN COPYLIB.
+
+      ***************************************************************
+      ***************************************************************
+      **                                                           **
+      **             P R I N T    A R E A S                        **
+      **                                                           **
+      ***************************************************************
+      ***************************************************************
+       01  H1.
+           05  FILLER                   PIC X(29)  VALUE SPACES.
+           05  FILLER                   PIC X(39)  VALUE
+               "G O O D Y E A R   C O R P O R A T E   ".
+           05  FILLER                   PIC X(37)  VALUE
+               " I N F O R M A T I O N   S Y S T E M".
+           05  FILLER                   PIC X(15)  VALUE SPACES.
+           05  FILLER                   PIC X(7)   VALUE "PLANT:".
+           05  H1-PLANT-OUT             PIC X(3).
+           05  FILLER                   PIC X(2)   VALUE SPACES.
+
+       01  H2.
+           05  FILLER                   PIC X(1)   VALUE SPACES.
+           05  H2-DATE                  PIC X(8).
+           05  FILLER                   PIC X(5)   VALUE SPACES.
+           05  H2-TIME                  PIC X(8).
+           05  FILLER                   PIC X(10)  VALUE SPACES.
+           05  FILLER                   PIC X(30)  VALUE
+               "             P R E P A I D ".
+           05  FILLER                   PIC X(42)  VALUE
+               "    I N V O I C E S ".
+           05  FILLER                   PIC X(15)  VALUE SPACES.
+           05  FILLER                   PIC X(6)   VALUE "PAGE: ".
+           05  H2-PAGE-NO               PIC Z,ZZ9.
+           05  FILLER                   PIC X(2)   VALUE SPACES.
+
+       01  H3.
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  FILLER                   PIC X(10) VALUE "PO NUMBER".
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  FILLER                   PIC X(6)  VALUE "ITEM #".
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  FILLER                   PIC X(9)  VALUE "CORP CODE".
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  FILLER                   PIC X(13) VALUE "QUANTITY PAID".
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  FILLER                   PIC X(13) VALUE "QUANTITY DLVR".
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  FILLER                   PIC X(11) VALUE "VENDOR CODE".
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  FILLER                   PIC X(44) VALUE "VENDOR NAME".
+
+       01  H4.
+           05  FILLER                   PIC X(40) VALUE SPACES.
+           05  FILLER                   PIC X(14) VALUE
+               "INVOICE NUMBER".
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  FILLER                   PIC X(6)  VALUE " REG #".
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  FILLER                   PIC X(12) VALUE "INVOICE DATE".
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  FILLER                   PIC X(5)  VALUE "CLERK".
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  FILLER                   PIC X(13) VALUE "QUANTITY PAID".
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  FILLER                   PIC X(3)  VALUE "U/M".
+           05  FILLER                   PIC X(8)  VALUE SPACES.
+           05  FILLER                   PIC X(11) VALUE "UNIT PRICE".
+
+       01  DL1.
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  DL1-PO-RCV-NO            PIC X(10).
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  DL1-ITEM-NO              PIC X(4).
+           05  FILLER                   PIC X(7)  VALUE SPACES.
+           05  DL1-CORP-CODE            PIC X(8).
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  DL1-QTY-PAID             PIC Z(8).9(4).
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  DL1-QTY-DLVR             PIC Z(8).9(4).
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  DL1-VEN-CODE             PIC X(10).
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  DL1-VEN-NAME             PIC X(44).
+
+       01  DL2.
+           05  FILLER                   PIC X(40) VALUE SPACES.
+           05  DL2-INV-NO               PIC X(14).
+           05  FILLER                   PIC X(6)  VALUE SPACES.
+           05  DL2-REG-NO               PIC X(6).
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  DL2-INV-DATE             PIC X(8).
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  DL2-ADD-CLERK            PIC X(4).
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  DL2-INV-QTY-PAID         PIC Z(8).9(4)-.
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  DL2-UM                   PIC X(2).
+           05  FILLER                   PIC X(2)  VALUE SPACES.
+           05  DL2-INV-UPRICE           PIC Z(11).9(4)-.
+
+       01  DOT-LINE.
+           05  FILLER                   PIC X(132)  VALUE ALL "-".
+
+       01  SCREEN-EDITS.
+           05  PO-STRIP.
+               10  FILLER               PIC X(1).
+               10  PO-OUT               PIC X(10).
+
+      ***************************************************************
+      ***************************************************************
+      **                                                           **
+      **       D A T A    B A S E    B U F F E R    A R E A S      **
+      **                                                           **
+      ***************************************************************
+      ***************************************************************
+       COPY MPLTINFO IN COPYLIB.
+
+       COPY DPORECD  IN COPYLIB.
+
+       COPY DPOITEM  IN COPYLIB.
+
+       COPY DINVRCD  IN COPYLIB.
+
+       COPY DINVITM  IN COPYLIB.
+
+       COPY DVENDOR  IN COPYLIB.
+
+       01  DSET-NAMES.
+           05  DSET-MPLTINFO            PIC X(16)  VALUE "MPLTINFO;".
+           05  DSET-DPORECD             PIC X(16)  VALUE "DPORECD;".
+           05  DSET-DPOITEM             PIC X(16)  VALUE "DPOITEM;".
+           05  DSET-DINVRCD             PIC X(16)  VALUE "DINVRCD;".
+           05  DSET-DINVITM             PIC X(16)  VALUE "DINVITM;".
+           05  DSET-DVENDOR             PIC X(16)  VALUE "DVENDOR;".
+
+       01  ARG-VALUES.
+           05  MPLTINFO-ARG             PIC X(4) VALUE "P 01".
+           05  PO-ARG                   PIC X(14).
+           05  REG-ARG.
+               10  REG-ARG-1-5          PIC X(5).
+               10  REG-ARG-6            PIC X(1) VALUE SPACE.
+           05  DUMMY-ARG                PIC X(4).
+           05  VENDOR-ARG               PIC X(10).
+
+       01  SEARCH-ITEMS.
+           05  ALL-ITEMS                PIC X(2)  VALUE "@;".
+           05  REG-SEARCH               PIC X(16) VALUE
+                       "REGISTER-NUMBER;".
+           05  PO-SEARCH                PIC X(10) VALUE "PO-RCV-NO;".
+           05  VEN-SEARCH               PIC X(10) VALUE "VEN-CODE;".
+
+      ***************************************************************
+      ***************************************************************
+      **                                                           **
+      **             E S C A P E   S E Q U E N C E S               **
+      **                                                           **
+      ***************************************************************
+      ***************************************************************
+       COPY ESCNAM2  IN COPYLIB.
+
+       01  ESC-INFO.
+           05  COMPRESS-PRINT           PIC X(8).
+           05  NORMAL-PRINT             PIC X(8).
+           05  EXPAND-PRINT             PIC X(8).
+
+      ***************************************************************
+      ***************************************************************
+      **                                                           **
+      **             L I N K A G E    S E C T I O N                **
+      **                                                           **
+      ***************************************************************
+      ***************************************************************
+       LINKAGE SECTION.
+
+       COPY THDPRTB  IN COPYLIB.
+
+       01  DATA-LINE             PIC X(112).
+
+      *************************************************************
+      **#########################################################**
+      *************************************************************
+      **                                                         **
+      **          P R O C E D U R E    D I V I S I O N           **
+      **                                                         **
+      *************************************************************
+      **#########################################################**
+      *************************************************************
+
+       PROCEDURE DIVISION USING HD-ROUTE-DATA, DATA-LINE.
+
+       MAIN-PGM SECTION 01.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK            THRU 1-HSK-X.
+           PERFORM 6-MAIN           THRU 6-MAIN-X.
+           PERFORM 2-EOJ            THRU 2-EOJ-X.
+           GOBACK.
+
+       1-HSK.
+9406CK     MOVE "C" TO SCOPE.
+9406CK     CALL "MCXCBLERR" USING SCOPE.
+
+           MOVE "TPPINVRP" TO BU-PGM-NAME.
+
+           OPEN INPUT MPLTINFO-I, DPORECD-I, DPOITEM-I,
+                      DINVRCD-I, DINVITM-I, DVENDOR-I.
+      *---------- OPEN THE PRINT FILE, GET THE FILE NUMBER OF THE PRINT
+      *---------- FILE, AND PRINT THE HEADER PAGE.
+
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"            TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES   TO OVRPRTF-COPIES.
+           MOVE "MCPRT"           TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT PRINT-FILE.
+
+           MOVE "DHDR98.PUB"   TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM,
+               HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+               MOVE "THDPRT2 ERROR * PPINVRP" TO BU-DISPLAY-MSG
+               MOVE "HD-RET-CODE = "         TO BU-DISPLAY-FLD (1)
+               MOVE HD-RET-CODE              TO BU-DISPLAY-FLD9 (1)
+               GO TO 2-BLOWUP.
+
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI     TO COMPRESS-PRINT.
+           MOVE CHAR-10PI       TO NORMAL-PRINT.
+           MOVE CHAR-5PI        TO EXPAND-PRINT.
+
+      *------------- GET RECORD FOR PLANT NUMBER
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET ERROR IN 1-HSK"
+                   TO BU-DISPLAY-MSG
+               MOVE "P 01" TO BU-DISPLAY-FLD (1)
+               PERFORM 2-BLOWUP.
+           MOVE MPLTINFO-COMPANY TO PLANT-NUMBER.
+
+
+       1-HSK-X.
+           EXIT.
+
+      ******************************************************
+      **                 BLOWUP ROUTINE                   **
+      ******************************************************
+
+       2-BLOWUP.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-AREA.
+
+       2-EOJ.
+           WRITE PRINT-REC FROM NORMAL-PRINT AFTER ADVANCING 0.
+           CLOSE PRINT-FILE.
+
+           CLOSE MPLTINFO-I, DPORECD-I, DPOITEM-I,
+                 DINVRCD-I, DINVITM-I, DVENDOR-I.
+
+       2-EOJ-X.
+           EXIT.
+
+      ***************************************************************
+      **                                                           **
+      **                       6 - M A I N                         **
+      **                                                           **
+      ***************************************************************
+
+       6-MAIN.
+
+           SORT SORT-FILE
+               ON ASCENDING KEY         SORT-PO-RCV-NO
+                                        SORT-ITEM-NO
+               INPUT  PROCEDURE IS 7-INPUT-PROCEDURE
+               OUTPUT PROCEDURE IS 8-OUTPUT-PROCEDURE.
+
+       6-MAIN-X.
+           EXIT.
+
+       COPY OVRPFCALL IN COPYLIB.
+      ***************************************************************
+      **             I N P U T   P R O C E D U R E                 **
+      ***************************************************************
+
+       7-INPUT-PROCEDURE SECTION.
+       7-PRIMING-READ.
+           READ DPOITEM-I FIRST INTO BUF-DPOITEM.
+           IF FILE-STATUS NOT = "00"
+               GO TO 7-READ-DPOITEM-X.
+
+       7-READ-DPOITEM.
+      *---------  UM OF 'LT' OR 'AS' ARE EXCLUDED FROM THE REPORT
+           IF ITM-UM = "LT" OR "AS"
+               NEXT SENTENCE
+           ELSE
+      *---------  ITEMS WHERE QTY PAID > QTY DLVR ARE CONSIDERED PREPAID
+               IF ITM-QTY-PAID > ITM-QTY-DLVR
+                    PERFORM 71-FIND-DPORECD THRU 71-FIND-DPORECD-X.
+
+      *---------------  SERIALLY READ THRU DPOITEM
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 7-READ-DPOITEM-X
+               ELSE
+                   MOVE "DBGET DPOITEM ERROR * 7-MAIN" TO BU-DISPLAY-MSG
+                   PERFORM 2-BLOWUP.
+
+           GO TO 7-READ-DPOITEM.
+
+
+       71-FIND-DPORECD.
+      *--------- FIND THE PO THAT THIS PREPAID ITEM IS ON
+           MOVE ITM-PO-RCV-NO           TO PO-ARG, BU-DISPLAY-FLD (1).
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPORECD ERROR * 71-FD" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+      *---------  NON RECEIVABLE POs ARE EXCLUDED
+           IF PO-NON-RCV-INDIC = "X"
+               GO TO 71-FIND-DPORECD-X.
+
+           PERFORM 711-FIND-DINVRCD THRU 711-FIND-DINVRCD-X.
+
+        71-FIND-DPORECD-X.
+           EXIT.
+
+        711-FIND-DINVRCD.
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 711-FIND-DINVRCD-X
+               ELSE
+               MOVE "START DINVRCD ERROR * 711-FD" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+
+        712-GET-DINVRCD.
+      *--------- GET ALL INVOICES AGAINST THIS PO
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 711-FIND-DINVRCD-X
+               ELSE
+                   MOVE "DBGET DINVRCD ERROR * 712-GD "
+                       TO BU-DISPLAY-MSG
+                   PERFORM 2-BLOWUP.
+           IF PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               GO TO 711-FIND-DINVRCD-X.
+
+           PERFORM 7121-FIND-DINVITM THRU 7121-FIND-DINVITM-X.
+
+           GO TO 712-GET-DINVRCD.
+
+       711-FIND-DINVRCD-X.
+           EXIT.
+
+       7121-FIND-DINVITM.
+           MOVE INV-REG-NO              TO REG-ARG-1-5.
+           MOVE REG-ARG TO REGISTERNO OF DINVITM-REC-I.
+           MOVE ITM-NUMBER  TO ITEMNO OF DINVITM-REC-I.
+           READ DINVITM-I INTO BUF-DINVITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 7121-FIND-DINVITM-X
+               ELSE
+               MOVE "READ DINVITM ERROR * 7121-FD" TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+      *---------  MEMO INVOICE ITEMS ARE EXCLUDED FROM THE REPORT
+           IF INVITM-MEMO-INDIC = "X"
+               NEXT SENTENCE
+           ELSE
+               PERFORM 79-RELEASE-TO-SORT.
+
+       7121-FIND-DINVITM-X.
+           EXIT.
+
+      *---------  READY TO RELEASE TO SORT
+       79-RELEASE-TO-SORT.
+           MOVE ITM-CORP-CODE           TO  SORT-CORP-CODE.
+           MOVE ITM-NUMBER              TO  SORT-ITEM-NO.
+           MOVE ITM-QTY-DLVR            TO  SORT-QTY-DLVR.
+           MOVE ITM-QTY-PAID            TO  SORT-QTY-PAID.
+           MOVE ITM-PO-RCV-NO           TO  SORT-PO-RCV-NO.
+           MOVE ITM-UM                  TO  SORT-UM.
+           MOVE PO-VEN-CODE             TO  SORT-VEN-CODE.
+           MOVE INV-REG-NO              TO  SORT-REG-NO.
+           MOVE INV-NO                  TO  SORT-INV-NO.
+           MOVE INV-DATE                TO  SORT-DATE.
+           MOVE INV-ADD-CLERK           TO  SORT-ADD-CLERK.
+           IF INV-PAYMENT-IND = "I"
+               MOVE INVITM-INV-QTY-PD   TO  SORT-INV-QTY-PAID
+               MOVE INVITM-INV-UPRICE   TO  SORT-INV-UPRICE
+           ELSE
+               MOVE INVITM-PO-QTY-PD    TO  SORT-INV-QTY-PAID
+               MOVE INVITM-PO-UPRICE    TO  SORT-INV-UPRICE.
+           RELEASE SORT-REC.
+
+
+       7-READ-DPOITEM-X.
+           EXIT.
+
+      ***************************************************************
+      **               O U T P U T   P R O C E D U R E             **
+      ***************************************************************
+
+       8-OUTPUT-PROCEDURE SECTION.
+           PERFORM 89-READ-SORT-FILE.
+           IF PAPER-IS-132-COLS
+               NEXT SENTENCE
+           ELSE
+               WRITE PRINT-REC FROM COMPRESS-PRINT
+                   AFTER ADVANCING 0 LINES.
+           PERFORM 89-NEW-PAGE.
+           IF NO-MORE-RECORDS
+               WRITE PRINT-REC FROM NO-RECORDS
+                   AFTER ADVANCING 2 LINES
+               GO TO 89-EXIT.
+           PERFORM 81-WRITE-DETAILS UNTIL NO-MORE-RECORDS.
+           GO TO 89-EXIT.
+
+       81-WRITE-DETAILS.
+           IF SORT-PO-RCV-NO NOT = SAVE-PO-RCV-NO
+               MOVE SORT-PO-RCV-NO      TO  PO-STRIP,
+                                            SAVE-PO-RCV-NO
+               MOVE PO-OUT              TO  DL1-PO-RCV-NO
+               MOVE SORT-ITEM-NO        TO  DL1-ITEM-NO
+                                            SAVE-ITEM-NO
+               MOVE SORT-CORP-CODE      TO  DL1-CORP-CODE
+               MOVE SORT-QTY-PAID       TO  DL1-QTY-PAID
+               MOVE SORT-QTY-DLVR       TO  DL1-QTY-DLVR
+               MOVE SORT-VEN-CODE       TO  DL1-VEN-CODE
+               PERFORM 89-FIND-VENDOR-NAME THRU 89-FVN-X
+               MOVE VEN-NAME            TO  DL1-VEN-NAME
+               WRITE PRINT-REC FROM DL1 AFTER ADVANCING 2 LINES
+               ADD 2                    TO  LINE-CTR.
+
+           IF SORT-ITEM-NO NOT = SAVE-ITEM-NO
+               MOVE SPACES              TO  DL1-PO-RCV-NO,
+                                            DL1-VEN-CODE,
+                                            DL1-VEN-NAME
+               MOVE SORT-ITEM-NO        TO  DL1-ITEM-NO,
+                                            SAVE-ITEM-NO
+               MOVE SORT-CORP-CODE      TO  DL1-CORP-CODE
+               MOVE SORT-QTY-PAID       TO  DL1-QTY-PAID
+               MOVE SORT-QTY-DLVR       TO  DL1-QTY-DLVR
+               WRITE PRINT-REC FROM DL1 AFTER ADVANCING 1 LINES
+               ADD 1                    TO  LINE-CTR.
+
+           MOVE SORT-INV-NO             TO  DL2-INV-NO.
+           MOVE SORT-REG-NO             TO  DL2-REG-NO.
+           MOVE 4                       TO  DATE-MODE.
+           MOVE SORT-DATE               TO  DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT          TO  DL2-INV-DATE.
+           MOVE SORT-ADD-CLERK          TO  DL2-ADD-CLERK.
+           IF SORT-INV-UPRICE < 0
+               MULTIPLY -1 BY SORT-INV-QTY-PAID.
+           MOVE SORT-INV-QTY-PAID       TO  DL2-INV-QTY-PAID.
+           MOVE SORT-UM                 TO  DL2-UM.
+           MOVE SORT-INV-UPRICE         TO  DL2-INV-UPRICE.
+           WRITE PRINT-REC FROM DL2     AFTER ADVANCING 1 LINES.
+
+           ADD  1                       TO  LINE-CTR.
+
+           PERFORM 89-READ-SORT-FILE.
+
+           IF LINE-CTR > 56 AND NOT NO-MORE-RECORDS
+               PERFORM 89-NEW-PAGE.
+
+
+       81-WRITE-DETAIL-X.
+           EXIT.
+
+      ***************************************************************
+      **          P E R F O R M E D   R O U T I N E S              **
+      ***************************************************************
+
+       89-READ-SORT-FILE.
+           RETURN SORT-FILE AT END
+               MOVE "Y"                 TO SORT-EOF.
+
+       89-NEW-PAGE.
+           ADD  1                       TO PAGE-CTR.
+           MOVE PAGE-CTR                TO H2-PAGE-NO.
+           MOVE PLANT-NUMBER            TO H1-PLANT-OUT.
+           WRITE PRINT-REC FROM H1       AFTER ADVANCING NEW-PAGE.
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-FORMATTED-TIME-OUT TO H2-TIME.
+           MOVE DATE-SLASH-OUT          TO H2-DATE.
+           WRITE PRINT-REC FROM H2       AFTER ADVANCING 2 LINES.
+           WRITE PRINT-REC FROM DOT-LINE AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC FROM H3       AFTER ADVANCING 2 LINES.
+           WRITE PRINT-REC FROM H4       AFTER ADVANCING 2 LINES.
+           MOVE 8                       TO LINE-CTR.
+
+      *--------- ROUTINE TO FIND THE VENDOR NAME
+       89-FIND-VENDOR-NAME.
+           MOVE SORT-VEN-CODE           TO VENDOR-ARG.
+           MOVE VENDOR-ARG TO VENCDE   OF DVENDOR-REC-I.
+           MOVE "00"       TO VENITMNO OF DVENDOR-REC-I.
+           READ DVENDOR-I INTO BUF-DVENDOR
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE "* NOT AVAILABLE *"   TO VEN-NAME
+               ELSE
+               MOVE "READ ERROR IN 89-FIND-VENDOR-NAME"
+                   TO BU-DISPLAY-MSG
+               MOVE VENDOR-ARG          TO BU-DISPLAY-FLD (1)
+               PERFORM 2-BLOWUP.
+
+       89-FVN-X.
+           EXIT.
+
+       89-EXIT.
+           EXIT.

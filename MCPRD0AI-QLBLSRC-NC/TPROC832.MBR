@@ -1,0 +1,591 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.      TPROC832.
+       AUTHOR.          CA YODER.
+       DATE-WRITTEN.    MAY 1997.
+
+      ************************************************************
+      *                                                          *
+      *   T P R O C 8 3 2      THIS PROGRAM WILL PROCESS EDI     *
+      *     832 TRANSACTIONS.  THE MARKET COST OF MSTORERM AND   *
+      *     THE PO PRICE OF DPOITEM WILL BE UPDATED WITH THE     *
+      *     PRICE LISTED IN MCFPCSPCAT ON THE EFFECTIVE DATE.    *
+      *                                                          *
+      ************************************************************
+      *C
+      *C 07/30/1998    CA YODER
+      *C   MADE CHANGE TO ALLOW UPDATES TO CODES THAT DO NOT HAVE
+      *C   THE FRANCHISER FLAG FILLED IN.  IN DANVILLE, THERE IS A
+      *C   DIFFERENCE BETWEEN FRANCHISED AND CONSIGNED ITEMS.  THE
+      *C   CODES WITH THE FRANCHISER FLAG ON MP1 SET ARE CONSIGNED.
+      *C   HOWEVER, THE FRANCHISED PARTS NEED TO BE UPDATED AS WELL.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MSTORERM-CD
+               ASSIGN           TO DATABASE-MCFLCS0201
+               ORGANIZATION     IS INDEXED
+               ACCESS MODE      IS DYNAMIC
+               RECORD KEY       IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS      IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+               ASSIGN           TO DATABASE-MCFLCS0501
+               ORGANIZATION     IS INDEXED
+               ACCESS MODE      IS DYNAMIC
+               RECORD KEY       IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS      IS FILE-STATUS.
+
+           SELECT DPORECD-PO-O
+               ASSIGN           TO DATABASE-MCFLCS0901
+               ORGANIZATION     IS INDEXED
+               ACCESS MODE      IS DYNAMIC
+               RECORD KEY       IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS      IS FILE-STATUS.
+
+           SELECT DPOITEM-CD
+               ASSIGN           TO DATABASE-MCFLCS1001
+               ORGANIZATION     IS INDEXED
+               ACCESS MODE      IS DYNAMIC
+               RECORD KEY       IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS      IS FILE-STATUS.
+
+           SELECT PCAT-DT
+               ASSIGN           TO DATABASE-MCFLCSPCA1
+               ORGANIZATION     IS INDEXED
+               ACCESS MODE      IS DYNAMIC
+               RECORD KEY       IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS      IS FILE-STATUS.
+
+           SELECT PCAT-RPT-O
+               ASSIGN           TO DISK-PCATRPTF
+               FILE STATUS      IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  MSTORERM-CD
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DPORECD-PO-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-PO-REC-O.
+           COPY DDS-MCRPCS0900  OF MCFLCS0901.
+
+       FD  DPOITEM-CD
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-CD-REC.
+           COPY DDS-MCRPCS1000  OF MCFLCS1001.
+
+       FD  PCAT-DT
+           LABEL RECORDS ARE STANDARD.
+       01  PCAT-DT-REC.
+           COPY DDS-MCRPCSPCAT  OF MCFLCSPCA1.
+
+       FD  PCAT-RPT-O
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS PCAT-RPT-REC.
+       01  PCAT-RPT-REC.
+           05  RPT-CTL                   PIC X(1).
+           05  RPT-LINE.
+               10  CONTROL-DATE          PIC X(6).
+               10  FILLER                PIC X(126).
+
+       WORKING-STORAGE SECTION.
+       77  SAVE-VENDOR-ID               PIC X  VALUE SPACE.
+       77  PAGE-COUNT                   PIC 999.
+       77  LINE-COUNT                   PIC 99.
+       77  REC-PROCESSED                PIC X  VALUE "N".
+       77  CODE-ERR-SW                  PIC X  VALUE "N".
+       77  NUM-ERRORS                   PIC 9(5).
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  CURRENT-DATE-CN.
+           05  CURR-CC            PIC X(2).
+           05  CURR-YMD.
+               10  CURR-YY        PIC X(2).
+               10  CURR-MM        PIC X(2).
+               10  CURR-DD        PIC X(2).
+
+       01  CURRENT-TIME                        VALUE SPACES.
+           05  CURR-HR            PIC X(2).
+           05  CURR-MIN           PIC X(2).
+           05  CURR-SEC           PIC X(2).
+
+       01  PLT-ARG                PIC X(4).
+
+      *-------------------------------------------------------------*
+      *           S W I T C H E S   &   T A B L E S                 *
+      *-------------------------------------------------------------*
+
+       01  INPUT-PO-EOF-SW             PIC X       VALUE "N".
+
+      *------- HOLDING AREA FOR FRANCHISERS
+       01  FRAN-TABLE.
+           05  FRAN-ENTRY OCCURS 4 TIMES INDEXED BY FRAN-IDX.
+               10  FRAN-ID             PIC X(1).
+               10  FRAN-NAME           PIC X(4).
+               10  FRAN-VEN-CODE       PIC X(10).
+       01  FRAN-SUB                    PIC 9.
+       01  SAVE-FRANCHISE-SW           PIC X   VALUE SPACES.
+
+      *-------------------------------------------------------------*
+      *               D A T A B A S E   B U F F E R S               *
+      *-------------------------------------------------------------*
+
+       COPY CSISPCAT IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY DPORECD  IN COPYLIB.
+
+       COPY DPOITEM  IN COPYLIB.
+
+       COPY MPLT0    IN COPYLIB.
+
+       COPY MPLTFRAN IN COPYLIB.
+
+      *-------------------------------------------------------------*
+      *              U T I L I T Y   B U F F E R S                  *
+      *-------------------------------------------------------------*
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY DATAB    IN COPYLIB.
+
+       COPY VCOMAREA IN COPYLIB.
+
+       COPY TUMCF    IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+
+       01  PO-TRACK-DATA.
+           COPY DPOTRACK      OF COPYLIB.
+
+       COPY CATREAD  IN COPYLIB.
+
+      *-------------------------------------------------------------*
+      *                  R E P O R T   L I N E S                    *
+      *-------------------------------------------------------------*
+
+       01  PRT-RPT-HDG-1.
+           05                    PIC X(3).
+           05  PRT-ERR-HDG-1-MM  PIC X(2).
+           05                    PIC X(1) VALUE "/".
+           05  PRT-ERR-HDG-1-DD  PIC X(2).
+           05                    PIC X(1) VALUE "/".
+           05  PRT-ERR-HDG-1-YY  PIC X(2).
+           05                    PIC X(38).
+           05                    PIC X(35)
+               VALUE "AUTOMATIC PRICE UPDATE ERROR REPORT".
+           05                    PIC X(38).
+           05                    PIC X(8) VALUE "TPROC832".
+           05                    PIC X(3).
+
+       01  PRT-RPT-HDG-2.
+           05                    PIC X(3).
+           05  PRT-ERR-HDG-2-HR  PIC X(2).
+           05                    PIC X(1) VALUE ":".
+           05  PRT-ERR-HDG-2-MIN PIC X(2).
+           05                    PIC X(1) VALUE ":".
+           05  PRT-ERR-HDG-2-SEC PIC X(2).
+           05                    PIC X(111).
+           05                    PIC X(5) VALUE "PAGE ".
+           05  PRT-ERR-HDG-2-PG  PIC Z99.
+           05                    PIC X(2).
+
+       01  PRT-RPT-HDG-3.
+           05                    PIC X(3).
+           05                    PIC X(8)  VALUE "EFF DATE".
+           05                    PIC X(3).
+           05                    PIC X(15) VALUE "   CATALOG #   ".
+           05                    PIC X(3).
+           05                    PIC X(9)  VALUE "CORP CODE".
+           05                    PIC X(3).
+           05                    PIC X(10) VALUE "  VENDOR  ".
+           05                    PIC X(3).
+           05                    PIC X(15) VALUE "   NEW PRICE   ".
+           05                    PIC X(3).
+           05                    PIC X(2)  VALUE "UM".
+           05                    PIC X(3).
+           05                    PIC X(13) VALUE "ERROR MESSAGE".
+           05                    PIC X(39).
+
+       01  PRT-RPT-HDG-4.
+           05                    PIC X(3).
+           05                    PIC X(8)  VALUE "--------".
+           05                    PIC X(3).
+           05                    PIC X(15) VALUE "---------------".
+           05                    PIC X(3).
+           05                    PIC X(9)  VALUE "---------".
+           05                    PIC X(3).
+           05                    PIC X(10) VALUE "----------".
+           05                    PIC X(3).
+           05                    PIC X(15) VALUE "---------------".
+           05                    PIC X(3).
+           05                    PIC X(2)  VALUE "--".
+           05                    PIC X(3).
+           05                    PIC X(49) VALUE ALL "-".
+           05                    PIC X(3).
+
+       01  PRT-RPT-DETAIL.
+           05                    PIC X(3).
+           05  PRT-DET-EFF-DATE  PIC X(8).
+           05                    PIC X(3).
+           05  PRT-DET-CAT-NUM   PIC X(10).
+           05                    PIC X(9).
+           05  PRT-DET-CODE      PIC X(7).
+           05                    PIC X(4).
+           05  PRT-DET-VENDOR    PIC X(10).
+           05                    PIC X(3).
+           05  PRT-DET-PRICE     PIC Z(9)9.9999.
+           05                    PIC X(3).
+           05  PRT-DET-UM        PIC X(2).
+           05                    PIC X(3).
+           05  PRT-DET-MSG       PIC X(49).
+           05                    PIC X(3).
+
+      *-------------------------------------------------------------*
+      *            P R O C E D U R E   D I V I S I O N              *
+      *-------------------------------------------------------------*
+
+       PROCEDURE DIVISION.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK.
+
+           PERFORM 6-MAIN  UNTIL
+               PCAT-EFFECT-DATE-CN > CURRENT-DATE-CN  OR
+               FILE-STATUS NOT = "00".
+
+           PERFORM 2-EOJ.
+
+           GOBACK.
+
+       1-HSK.
+           OPEN I-O     DPOITEM-CD     MSTORERM-CD     PCAT-DT
+                INPUT   MPLTINFO-I     DPORECD-PO-O
+                EXTEND  PCAT-RPT-O.
+
+           ACCEPT CURR-YMD FROM DATE.
+           IF CURR-YY > "70"
+               MOVE "19"                TO  CURR-CC
+           ELSE
+               MOVE "20"                TO  CURR-CC.
+           ACCEPT CURRENT-TIME FROM TIME.
+           PERFORM 10-MOVE-RPT-HDG-DATA.
+
+           MOVE 0                       TO  PRT-ERR-HDG-2-PG
+                                            PAGE-COUNT
+                                            LINE-COUNT
+                                            OLD-ITEM-PRICE
+                                            OLD-ITEM-QTY
+                                            NEW-ITEM-QTY
+                                            NEW-ITEM-PRICE
+                                            NUM-ERRORS.
+           MOVE "N"                     TO  REC-PROCESSED
+                                            CODE-ERR-SW.
+
+           PERFORM 11-GET-FRAN-INFO.
+
+           PERFORM 999-WRITE-RPT-HDGS.
+
+      *------- START PRICE CATALOG FILE.
+           MOVE LOW-VALUES              TO  EFFECTDATE OF PCAT-DT-REC.
+           START PCAT-DT KEY > EFFECTDATE OF PCAT-DT-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS > "00"
+               MOVE "   **** NO RECORDS PROCESSED ****"
+                                   TO  RPT-LINE
+               MOVE "2"            TO  RPT-CTL
+               WRITE PCAT-RPT-REC
+           ELSE
+               PERFORM 999-READ-NEXT-PCAT.
+
+      *------- MOVE HEADING DATA TO REPORT.
+       10-MOVE-RPT-HDG-DATA.
+           MOVE CURR-MM            TO  PRT-ERR-HDG-1-MM.
+           MOVE CURR-DD            TO  PRT-ERR-HDG-1-DD.
+           MOVE CURR-YY            TO  PRT-ERR-HDG-1-YY.
+           MOVE CURR-HR            TO  PRT-ERR-HDG-2-HR.
+           MOVE CURR-MIN           TO  PRT-ERR-HDG-2-MIN.
+           MOVE CURR-SEC           TO  PRT-ERR-HDG-2-SEC.
+           MOVE "*"                TO  RPT-CTL.
+           MOVE CURR-YMD           TO  CONTROL-DATE.
+           WRITE PCAT-RPT-REC.
+           MOVE SPACES             TO  PCAT-RPT-REC.
+
+       11-GET-FRAN-INFO.
+      *------- GET FRANCHISE INFORMATION.
+           MOVE "FRAN"                  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "FRAN TABLE NOT FOUND"   TO  BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP
+           ELSE
+               MOVE MPLTINFO-FRANCHISES TO  FRAN-TABLE.
+
+       2-EOJ.
+           IF REC-PROCESSED = "N"
+               MOVE "   **** NO RECORDS PROCESSED ****"
+                                   TO  RPT-LINE
+               MOVE "2"            TO  RPT-CTL
+               WRITE PCAT-RPT-REC
+           ELSE
+           IF NUM-ERRORS = 0
+               MOVE "   **** ALL RECORDS PROCESSED; NO ERRORS ****"
+                                   TO  RPT-LINE
+               MOVE "2"            TO  RPT-CTL
+               WRITE PCAT-RPT-REC.
+           CLOSE        DPOITEM-CD     MSTORERM-CD     PCAT-DT
+                        MPLTINFO-I     DPORECD-PO-O    PCAT-RPT-O.
+
+      *-------------------------------------------------------------*
+      *               B L O W U P   R O U T I N E                   *
+      *-------------------------------------------------------------*
+
+       2-BLOWUP.
+           MOVE "TPROC832"                 TO  BU-PGM-NAME.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS            TO  COND-WORD.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+
+      *-------------------------------------------------------------*
+      *                        6 - M A I N                          *
+      *-------------------------------------------------------------*
+
+       6-MAIN.
+      *----------- IF THE APPLY DATE IS EQUAL TO SPACES, THE RECORD
+      *----------- HASN'T BEEN PROCESSED YET.
+           IF PCAT-APPLY-DATE-CN = SPACES
+               MOVE "Y"                     TO  REC-PROCESSED
+               MOVE "N"                     TO  CODE-ERR-SW
+               PERFORM 60-UPDATE-STOREROOM
+               IF CODE-ERR-SW = "N"
+                   PERFORM 61-UPDATE-PO
+               ELSE
+      *---------------- REMOVE RECORD IF COULDN'T APPLY PRICE.
+                   DELETE PCAT-DT
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           PERFORM 999-READ-NEXT-PCAT.
+
+       60-UPDATE-STOREROOM.
+           MOVE PCAT-CORP-CODE     TO  CORPCDE OF MSTORERM-CD-REC.
+           READ MSTORERM-CD INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+      *       ***  CODE NOT IN DATABASE ***
+               MOVE 03631 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD
+               MOVE CATREAD-MSG-TEXT        TO  PRT-DET-MSG
+               MOVE "Y"                     TO  CODE-ERR-SW
+               PERFORM 999-WRITE-DETAIL-LINE
+           ELSE
+               PERFORM 999-SEARCH-FRAN-TABLE
+               IF SAVE-VENDOR-ID > " "
+      ************ IF SAVE-VENDOR-ID = STR-CODE-OWNER
+      *---------------- AS LONG AS THE CODE ISN'T OWNED BY A DIFFERENT
+      *---------------- VENDOR, GO AHEAD AND UPDATE.
+                   IF STR-CODE-OWNER = " " OR
+                      STR-CODE-OWNER = SAVE-VENDOR-ID
+                       PERFORM 600-UPDATE-PRICE
+                   ELSE
+      *            ***  VENDOR NOT OWNER OF CODE  ***
+                       MOVE 22025 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD
+                       MOVE CATREAD-MSG-TEXT    TO  PRT-DET-MSG
+                       MOVE "Y"                 TO  CODE-ERR-SW
+                       PERFORM 999-WRITE-DETAIL-LINE
+                   END-IF
+               ELSE
+      *        ***  VENDOR NOT A FRANCHISE VENDOR ***
+                   MOVE 22026 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD
+                   MOVE CATREAD-MSG-TEXT        TO  PRT-DET-MSG
+                   MOVE "Y"                     TO  CODE-ERR-SW
+                   PERFORM 999-WRITE-DETAIL-LINE.
+
+       600-UPDATE-PRICE.
+           IF STR-UM = PCAT-PRICE-UM
+               MOVE PCAT-UNIT-PRICE  TO  STR-MKT-COST
+               REWRITE MSTORERM-CD-REC FROM BUF-MSTORERM
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+               ACCEPT PCAT-APPLY-TIME FROM TIME
+               MOVE CURRENT-DATE-CN  TO  PCAT-APPLY-DATE-CN
+               REWRITE PCAT-DT-REC FROM BUF-CSISPCAT
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+           ELSE
+               MOVE PCAT-UNIT-PRICE  TO  UMCF-SOURCE-QTY
+               MOVE PCAT-PRICE-UM    TO  UMCF-SOURCE-UM
+               MOVE "PR"             TO  UMCF-RET-CODE
+               CALL "TUMCF" USING UMCF-RET-CODE
+                                  STR-UM-AREA
+                                  UMCF-QUANTITY-AREA
+               IF UMCF-RET-CODE NOT = "00"
+      *        ***  INVALID UNIT OF MEASURE  ***
+                   MOVE 35011 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD
+                   MOVE CATREAD-MSG-TEXT    TO  PRT-DET-MSG
+                   MOVE "Y"                 TO  CODE-ERR-SW
+                   PERFORM 999-WRITE-DETAIL-LINE
+               ELSE
+                   MOVE UMCF-QTY-STR-UM-DEC
+                                     TO  STR-MKT-COST
+                   REWRITE MSTORERM-CD-REC FROM BUF-MSTORERM
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                   END-REWRITE
+                   ACCEPT PCAT-APPLY-TIME FROM TIME
+                   MOVE CURRENT-DATE-CN  TO  PCAT-APPLY-DATE-CN
+                   REWRITE PCAT-DT-REC FROM BUF-CSISPCAT
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       61-UPDATE-PO.
+           MOVE PCAT-CORP-CODE  TO  CORPCDE  OF DPOITEM-CD-REC.
+           START DPOITEM-CD KEY = CORPCDE OF DPOITEM-CD-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               PERFORM 999-READ-NEXT-DPOITEM
+               IF FILE-STATUS = "00"
+                   PERFORM 610-UPDATE-DPOITEM UNTIL
+                       ITM-CORP-CODE NOT = PCAT-CORP-CODE OR
+                       FILE-STATUS NOT = "00".
+
+       610-UPDATE-DPOITEM.
+           MOVE ITM-PO-RCV-NO  TO  PORCVNO  OF DPORECD-PO-REC-O.
+           READ DPORECD-PO-O INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               IF PO-RLS-NO = "999"
+                   IF PO-VEN-CODE = PCAT-VENDOR-CODE
+                       IF PO-EXPECT-DATE-CN > CURRENT-DATE-CN
+                           PERFORM 620-CHANGE-PO-PRICE.
+
+           PERFORM 999-READ-NEXT-DPOITEM.
+
+       620-CHANGE-PO-PRICE.
+           IF PCAT-PRICE-UM = ITM-PRICE-UM
+               MOVE ITM-UNIT-PRICE   TO  OLD-ITEM-PRICE
+               MOVE PCAT-UNIT-PRICE  TO  NEW-ITEM-PRICE
+               MOVE PCAT-UNIT-PRICE  TO  ITM-UNIT-PRICE
+               REWRITE DPOITEM-CD-REC FROM BUF-DPOITEM
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+               PERFORM 999-CALL-SPOTRACK
+           ELSE
+               MOVE PCAT-UNIT-PRICE  TO  UMCF-SOURCE-QTY
+               MOVE PCAT-PRICE-UM    TO  UMCF-SOURCE-UM
+               MOVE "PR"             TO  UMCF-RET-CODE
+               CALL "TUMCF" USING UMCF-RET-CODE
+                                  STR-UM-AREA
+                                  UMCF-QUANTITY-AREA
+               IF UMCF-RET-CODE NOT = "00"
+                   DISPLAY ITM-PO-RCV-NO, "UNIT OF MEASURE NOT VALID"
+               ELSE
+                   MOVE ITM-UNIT-PRICE      TO  OLD-ITEM-PRICE
+                   MOVE UMCF-QTY-STR-UM-DEC TO  NEW-ITEM-PRICE
+                   MOVE UMCF-QTY-STR-UM-DEC TO  ITM-UNIT-PRICE
+                   REWRITE DPOITEM-CD-REC FROM BUF-DPOITEM
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                   END-REWRITE
+                   PERFORM 999-CALL-SPOTRACK.
+
+      *-------------------------------------------------------------*
+      *           U T I L I T Y   P A R A G R A P H S               *
+      *-------------------------------------------------------------*
+
+       999-READ-NEXT-PCAT.
+           READ PCAT-DT NEXT INTO BUF-CSISPCAT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+       999-READ-NEXT-DPOITEM.
+           READ DPOITEM-CD NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+       999-SEARCH-FRAN-TABLE.
+           SET FRAN-IDX                     TO  1.
+           SEARCH FRAN-ENTRY
+               AT END
+                   MOVE " "                 TO  SAVE-VENDOR-ID
+               WHEN FRAN-VEN-CODE(FRAN-IDX) = PCAT-VENDOR-CODE
+                   MOVE FRAN-ID(FRAN-IDX)   TO  SAVE-VENDOR-ID.
+
+       999-CALL-SPOTRACK.
+           MOVE ITM-PO-RCV-NO               TO PO-NUM-TRACK.
+           MOVE ITM-NUMBER                  TO PO-ITEM-NUM.
+           CALL "SPOTRACK" USING PO-TRACK-DATA.
+           MOVE 0   TO OLD-ITEM-PRICE    OLD-ITEM-QTY
+                       NEW-ITEM-PRICE    NEW-ITEM-QTY.
+
+
+       999-WRITE-DETAIL-LINE.
+           MOVE PCAT-CATALOG-NUM    TO  PRT-DET-CAT-NUM.
+           MOVE PCAT-VENDOR-CODE    TO  PRT-DET-VENDOR.
+           MOVE PCAT-CORP-CODE      TO  PRT-DET-CODE.
+           MOVE PCAT-UNIT-PRICE     TO  PRT-DET-PRICE.
+           MOVE PCAT-PRICE-UM       TO  PRT-DET-UM.
+           MOVE PCAT-EFFECT-YMD     TO  DATE-VALIDATE-IN.
+           MOVE 4                   TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT      TO  PRT-DET-EFF-DATE.
+           MOVE PRT-RPT-DETAIL      TO  RPT-LINE.
+           MOVE "2"                 TO  RPT-CTL.
+           WRITE PCAT-RPT-REC.
+           ADD 2                    TO  LINE-COUNT.
+           ADD 1                    TO  NUM-ERRORS.
+           IF LINE-COUNT > 55
+               PERFORM 999-WRITE-RPT-HDGS.
+
+       999-WRITE-RPT-HDGS.
+           ADD 1                TO  PAGE-COUNT.
+           MOVE PAGE-COUNT      TO  PRT-ERR-HDG-2-PG.
+
+           MOVE "0"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-1   TO  RPT-LINE.
+           WRITE PCAT-RPT-REC.
+
+           MOVE "1"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-2   TO  RPT-LINE.
+           WRITE PCAT-RPT-REC.
+
+           MOVE "3"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-3   TO  RPT-LINE.
+           WRITE PCAT-RPT-REC.
+
+           MOVE "1"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-4   TO  RPT-LINE.
+           WRITE PCAT-RPT-REC.
+
+           MOVE 6               TO  LINE-COUNT.
+
+       999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+

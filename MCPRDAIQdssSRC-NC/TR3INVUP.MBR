@@ -1,0 +1,535 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TR3INVUP.
+       AUTHOR.               CA YODER.
+       DATE-WRITTEN.         MAY 1999.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D*    THIS PROGRAM WILL UPDATE MSTORERM WITH DATA SENT FROM
+      *D*    SAP R/3 (SYNERGY).  ERRORS WILL BE WRITTEN TO FILE
+      *D*    R3INVRPF.
+      *D*
+      *C* CHANGES.
+      *C*
+      *C*   07/09/2002    CA YODER
+      *C*   CHANGED LOGIC TO PROCESS UNTIL END-OF-FILE INSTEAD OF
+      *C*   "TRAILER" RECORD SINCE MULTIPLE TRAILER RECORDS COULD BE
+      *C*   IN THE SAME FILE IF MULTIPLE FILES ARE RE-SENT IN SAPCOMM.
+      *C*
+      *C*   CHANGED LAST ACTIVITY DATE TO BE THE DATE THAT THE RECORD
+      *C*   FROM SAP IS PROCESSED IN CSIS/MMIS.
+      *C*
+      *C*   01/17/2006    CA YODER    REQ #2005-16814824-0066
+      *C*   REMOVED THE PLANT CONVERSION TABLE, AND ADDED READ OF
+      *C*   "SAP" KEY IN MPLTINFO FOR THE SAP PLANT NUMBER.
+      *C*
+      *C*   04/27/2012    CA YODER    RFC# 1772   CPPI# 2012-07653244
+      *C*   PROCESS THE MARKET COST FROM THE SAP INVENTORY UPDATE
+      *C*   INTERFACE FILE.  INCREASE LENGTH OF INPUT RECORD TO 200.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.    I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+      ******************************************************************
+       INPUT-OUTPUT SECTION.
+      ******************************************************************
+       FILE-CONTROL.
+
+           SELECT MPLTINFO-I
+               ASSIGN         TO DATABASE-MCFLCS0501
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT MSTORERM-IO
+               ASSIGN         TO DATABASE-MCFLCS0201
+               ORGANIZATION   IS INDEXED
+                 ACCESS MODE  IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT R3INVUP-I
+               ASSIGN         TO DATABASE-R3INVUP
+               ORGANIZATION   IS SEQUENTIAL
+                 ACCESS MODE  IS SEQUENTIAL
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT R3INV-RPT-O
+               ASSIGN         TO DISK-R3INVRPF
+               FILE STATUS    IS FILE-STATUS.
+
+      ******************************************************************
+       DATA DIVISION.
+      ******************************************************************
+
+       FILE SECTION.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MSTORERM-IO
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-IO.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+
+       FD  R3INVUP-I
+           LABEL RECORDS ARE STANDARD.
+CY1772 01  R3INVUP-REC-I        PIC X(200).
+
+       FD  R3INV-RPT-O
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS R3INV-RPT-REC.
+       01  R3INV-RPT-REC.
+           05  RPT-CTL                   PIC X(1).
+           05  RPT-LINE.
+               10  CONTROL-DATE          PIC X(6).
+               10  FILLER                PIC X(126).
+
+      ******************************************************************
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+
+       77  SUB                    PIC 9.
+       77  MSG-SUB                PIC 9.
+       77  SAVE-PLANT-CODE        PIC X(4).
+       77  PAGE-COUNT             PIC 999.
+       77  LINE-COUNT             PIC 99.
+       77  ERROR-SW               PIC X.
+
+      *-----------------------------------------------------------------
+      *  Q C M D E X C   F I E L D S
+      *-----------------------------------------------------------------
+
+      *-----------------------------------------------------------------
+      *  M I S C E L L A N E O U S   F I E L D S
+      *-----------------------------------------------------------------
+
+      *-----------------------------------------------------------------
+      *  A R G U M E N T   V A L U E S
+      *-----------------------------------------------------------------
+
+       01  CODE-ARG                 PIC X(8)  VALUE SPACES.
+
+      *-----------------------------------------------------------------
+      *  F L A G S   A N D   S W I T C H E S
+      *-----------------------------------------------------------------
+
+       01  RTN-CODE                 PIC X.
+
+      *-----------------------------------------------------------------
+      *  R E P O R T   L I N E S
+      *-----------------------------------------------------------------
+
+       01  PRT-RPT-HDG-1.
+           05                    PIC X(3).
+           05  PRT-DATE-H1       PIC X(8).
+           05                    PIC X(38).
+           05                    PIC X(33)
+               VALUE "R/3 INVENTORY UPDATE ERROR REPORT".
+           05                    PIC X.
+           05  PRT-PLT-H1        PIC X(4).
+           05                    PIC X(34).
+           05                    PIC X(8) VALUE "TR3INVUP".
+           05                    PIC X(3).
+
+       01  PRT-RPT-HDG-2.
+           05                    PIC X(3).
+           05  PRT-TIME-H2       PIC X(8).
+           05                    PIC X(49).
+           05                    PIC X(6) VALUE "SEQ # ".
+           05  PRT-SEQ-H2        PIC X(5).
+           05                    PIC X(50).
+           05                    PIC X(5) VALUE "PAGE ".
+           05  PRT-PG-H2         PIC Z99.
+           05                    PIC X(3).
+
+       01  PRT-RPT-HDG-3.
+           05                    PIC X(3).
+           05                    PIC X(7) VALUE "CODE   ".
+           05                    PIC X(3).
+           05                    PIC X(5) VALUE "ERROR".
+           05                    PIC X(75).
+           05                    PIC X(40).
+
+       01  PRT-RPT-HDG-4.
+           05                    PIC X(3).
+           05                    PIC X(7)   VALUE ALL "-".
+           05                    PIC X(3).
+           05                    PIC X(110) VALUE ALL "-".
+           05                    PIC X(10).
+
+       01  ERR-RPT-LINE.
+           05                    PIC X(3).
+           05  ERR-RPT-CODE      PIC X(7).
+           05                    PIC X(3).
+           05  ERR-RPT-MSG       PIC X(110).
+           05                    PIC X(10).
+
+       01  NON-NUMERIC-MSG-LINE.
+           05                    PIC X(33)
+               VALUE "QUANTITY NOT NUMERIC FOR BIN(S): ".
+           05  NN-MSG-BINS.
+               10  NN-MSG-DATA       OCCURS 6 TIMES.
+                   15  NN-MSG-BIN    PIC X(12).
+                   15                PIC X(1).
+           05                    PIC X(2).
+
+      *-----------------------------------------------------------------
+      *  A C C U M U L A T O R S
+      *-----------------------------------------------------------------
+
+       01  TOT-ONHAND               PIC S9(8).
+
+      *-----------------------------------------------------------------
+      *  S A V E   F I E L D S
+      *-----------------------------------------------------------------
+
+      *-----------------------------------------------------------------
+      *  T A B L E S
+      *-----------------------------------------------------------------
+      *-------- REMOVED HARD-CODED PLANT TABLE VALUES.
+      *01  PLANT-ENTRIES.
+      *    05  FILLER      PIC X(7) VALUE "111N515".
+      *    05  FILLER      PIC X(7) VALUE "112N518".
+      *    05  FILLER      PIC X(7) VALUE "120N512".
+      *    05  FILLER      PIC X(7) VALUE "126N501".
+      *    05  FILLER      PIC X(7) VALUE "129N504".
+      *    05  FILLER      PIC X(7) VALUE "131N502".
+      *    05  FILLER      PIC X(7) VALUE "133N503".
+      *    05  FILLER      PIC X(7) VALUE "153N508".
+      *    05  FILLER      PIC X(7) VALUE "155N520".
+      *    05  FILLER      PIC X(7) VALUE "169N528".
+      *    05  FILLER      PIC X(7) VALUE "170N531".
+      *    05  FILLER      PIC X(7) VALUE "174N519".
+      *    05  FILLER      PIC X(7) VALUE "211N505".
+      *    05  FILLER      PIC X(7) VALUE "281N506".
+      *    05  FILLER      PIC X(7) VALUE "284N514".
+      *    05  FILLER      PIC X(7) VALUE "285N507".
+      *    05  FILLER      PIC X(7) VALUE "629N511".
+      *    05  FILLER      PIC X(7) VALUE "631N510".
+      *    05  FILLER      PIC X(7) VALUE "637N509".
+      *    05  FILLER      PIC X(7) VALUE "130N502".
+      *
+      *01  PLANT-TABLE REDEFINES PLANT-ENTRIES.
+      *    05  PLANT-DATA-LINE  OCCURS 19 TIMES  INDEXED BY I.
+      *        10  CSIS-PLT-NO    PIC X(3).
+      *        10  SAP-PLT-NO     PIC X(4).
+      *
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   A N D   F I L E   B U F F E R S
+      *-----------------------------------------------------------------
+
+      *--------- INPUT RECORDS FROM SAP R/3.
+       01  R3-INPUT-RECORD.
+           05  R3-HEADERID               PIC X(7).
+           05  R3-FILEID                 PIC X(7).
+           05  R3-LOC                    PIC X(4).
+           05  R3-CREATE-DATE            PIC X(8).
+           05  R3-CREATE-TIME            PIC X(6).
+           05  R3-FILE-SEQ               PIC 9(5).
+CY1772     05  FILLER                    PIC X(163).
+
+       01  R3-DATA-RECORD  REDEFINES  R3-INPUT-RECORD.
+           05  R3-CODE                   PIC X(7).
+           05  R3-UM                     PIC X(2).
+           05  R3-BIN-QTY      OCCURS 6 TIMES.
+               10  R3-BIN                PIC X(12).
+               10  R3-QTY                PIC 9(8).
+               10  R3-QTY-R    REDEFINES   R3-QTY
+                                         PIC X(8).
+CY1772     05  R3-MARKET-COST            PIC 9(11)V9(4).
+CY1772     05  R3-MARKET-COST-R  REDEFINES   R3-MARKET-COST
+                                         PIC X(15).
+CY1772     05  FILLER                    PIC X(56).
+
+       COPY MSTORERM   IN COPYLIB.
+       COPY MPLT0    IN COPYLIB.
+      *COPY MPLTP01  IN COPYLIB.
+       COPY MPLTSAP  IN COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       COPY DBCSACCT OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+       01  R3INVUP-EOF-SW                PIC X.
+
+      *-----------------------------------------------------------------
+      *  U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+
+      ******************************************************************
+       PROCEDURE DIVISION.
+      ******************************************************************
+
+       00-CONTROL.
+
+           PERFORM 10-HSK.
+
+           IF ERROR-SW = "N"
+               PERFORM 60-MAIN.
+
+           PERFORM 20-EOJ.
+
+           GOBACK.
+
+       10-HSK.
+
+           OPEN INPUT      R3INVUP-I
+                           MPLTINFO-I
+                I-O        MSTORERM-IO
+                EXTEND     R3INV-RPT-O.
+
+      *--------- GET SAP PLANT NUMBER.
+           MOVE "SAP " TO PLTINFOKEY  OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE MPLTINFO-SAP-PLT-CODE TO SAVE-PLANT-CODE
+                                         PRT-PLT-H1.
+
+      *--------- REMOVE PLANT CODE TABLE LOOK-UP.
+      *--------- GET PLANT NUMBER.
+      *    MOVE "P 01" TO PLTINFOKEY  OF MPLTINFO-REC-I.
+      *    READ MPLTINFO-I INTO BUF-MPLTINFO
+      *        INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *
+      *    SET I TO 1.
+      *    SEARCH PLANT-DATA-LINE
+      *        AT END
+      *            MOVE SPACES             TO  SAVE-PLANT-CODE
+      *        WHEN CSIS-PLT-NO (I) = MPLTINFO-COMPANY
+      *            MOVE SAP-PLT-NO (I)     TO  SAVE-PLANT-CODE.
+      *---------
+
+           MOVE "*****"               TO  PRT-SEQ-H2.
+           MOVE "N"                   TO  ERROR-SW.
+      *--------- READ HEADER RECORD.
+           PERFORM 9999-READ-R3INVUP-I.
+           IF R3-HEADERID NOT = "HEADER "
+               MOVE "** NO HEADER RECORD FOUND **"
+                                      TO  ERR-RPT-MSG
+               MOVE "Y"               TO  ERROR-SW
+           ELSE
+           IF SAVE-PLANT-CODE NOT = R3-LOC
+               MOVE "** FILE NOT FOR THIS PLANT **"
+                                      TO  ERR-RPT-MSG
+               MOVE R3-FILE-SEQ       TO  PRT-SEQ-H2
+               MOVE "Y"               TO  ERROR-SW
+           ELSE
+
+               MOVE R3-FILE-SEQ       TO  PRT-SEQ-H2.
+           PERFORM 11-MOVE-RPT-HDG-DATA.
+           PERFORM 9999-WRITE-RPT-HDGS.
+
+      *--------- READ FIRST UPDATE RECORD.
+           IF ERROR-SW = "N"
+               PERFORM 9999-READ-R3INVUP-I
+               IF R3-HEADERID = "TRAILER"
+                   MOVE "** NO UPDATE RECORDS FOUND **"
+                                      TO  ERR-RPT-MSG
+                   MOVE "Y"           TO  ERROR-SW.
+
+           IF ERROR-SW = "Y"
+               MOVE ERR-RPT-LINE      TO  RPT-LINE
+               PERFORM 9999-WRITE-RPT-REC.
+
+      *------- MOVE HEADING DATA TO REPORT.
+       11-MOVE-RPT-HDG-DATA.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO  PRT-DATE-H1.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  PRT-TIME-H2.
+           MOVE "*"                      TO  RPT-CTL.
+           MOVE DATE-YMD-OUT             TO  CONTROL-DATE.
+           WRITE R3INV-RPT-REC.
+           MOVE SPACES                   TO  R3INV-RPT-REC.
+
+       20-EOJ.
+      *----------- IF NO ERRORS WRITTEN TO REPORT, INDICATE THAT
+      *----------- ALL RECORDS WERE PROCESSED.
+           IF PAGE-COUNT = 1 AND LINE-COUNT < 6
+               MOVE SPACES               TO  ERR-RPT-CODE
+               MOVE "** ALL RECORDS PROCESSED **"
+                                         TO  ERR-RPT-MSG
+               MOVE ERR-RPT-LINE         TO  RPT-LINE
+               PERFORM 9999-WRITE-RPT-REC.
+
+           CLOSE           MSTORERM-IO
+                           R3INVUP-I
+                           MPLTINFO-I
+                           R3INV-RPT-O.
+
+      *-----------------------------------------------------------------
+      *    M A I N   P A R A G R A P H
+      *-----------------------------------------------------------------
+
+       60-MAIN.
+      *------- CHANGED PROCESSING TO READ UNTIL END-OF-FILE.  WHEN
+      *------- MULTIPLE TRANSMISSIONS ARE IN THE SAME FILE, WE NEED
+      *------- TO PROCESS UNTIL END-OF-FILE INSTEAD OF LOOKING FOR
+      *------- THE TRAILER RECORD.  THERE MAY BE MULTIPLE TRAILER
+      *------- RECORDS IN THE SAME FILE.
+
+           PERFORM 600-PROCESS-UPDATES UNTIL R3INVUP-EOF-SW = "Y".
+      *********OR R3-HEADERID = "TRAILER ".
+
+       600-PROCESS-UPDATES.
+           IF R3-HEADERID NOT = "HEADER " AND
+              R3-HEADERID NOT = "TRAILER"
+                MOVE R3-CODE TO CODE-ARG
+                PERFORM 9999-READ-MSTORERM-IO
+
+                MOVE "N"                      TO  ERROR-SW
+                MOVE R3-CODE                  TO  ERR-RPT-CODE
+                IF FILE-STATUS NOT = "00"
+                    MOVE "CODE DOES NOT EXIST IN DATABASE"
+                                              TO  ERR-RPT-MSG
+                    MOVE "Y"                  TO  ERROR-SW
+                END-IF
+
+                IF ERROR-SW = "Y"
+                    MOVE ERR-RPT-LINE         TO  RPT-LINE
+                    PERFORM 9999-WRITE-RPT-REC
+                ELSE
+                    PERFORM 610-UPDATE-MSTORERM.
+
+           PERFORM 9999-READ-R3INVUP-I.
+
+       610-UPDATE-MSTORERM.
+           MOVE 0                        TO  TOT-ONHAND
+                                             MSG-SUB.
+           MOVE SPACES                   TO  NN-MSG-BINS.
+           MOVE "20"                     TO  STR-ACT-DATE-CC.
+           MOVE DATE-YMD-OUT             TO  STR-ACT-DATE.
+           IF R3-UM > SPACES
+               MOVE R3-UM                TO  STR-UM.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+               IF R3-BIN (SUB) > SPACES
+                   IF R3-QTY-R (SUB) = SPACES
+                       MOVE 0            TO  R3-QTY (SUB)
+                   END-IF
+                   IF R3-QTY (SUB) NOT NUMERIC
+                       ADD 1             TO  MSG-SUB
+                       MOVE R3-BIN (SUB) TO  NN-MSG-BIN (MSG-SUB)
+                       MOVE "Y"          TO  ERROR-SW
+                   ELSE
+                       MOVE R3-BIN (SUB) TO  STR-LOC (SUB)
+                       MOVE R3-QTY (SUB) TO  STR-LOC-ONHAND (SUB)
+                       ADD R3-QTY (SUB)  TO  TOT-ONHAND
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           IF ERROR-SW = "Y"
+               MOVE NON-NUMERIC-MSG-LINE TO  ERR-RPT-MSG
+               MOVE ERR-RPT-LINE         TO  RPT-LINE
+               PERFORM 9999-WRITE-RPT-REC.
+
+           MOVE TOT-ONHAND               TO  STR-ONHAND.
+
+CY1772*------ MOVE MOVING PRICE TO MARKET COST FIELD.
+CY1772     IF R3-MARKET-COST NUMERIC
+CY1772         MOVE R3-MARKET-COST       TO  STR-MKT-COST.
+
+           PERFORM 9999-REWRITE-MSTORERM-IO.
+           IF FILE-STATUS NOT = "00"
+               STRING
+                   "PROBLEM WITH DB UPDATE:  "
+                   "FILE STATUS = "
+                   FILE-STATUS
+                   DELIMITED BY SIZE   INTO  ERR-RPT-MSG
+               MOVE ERR-RPT-LINE         TO  RPT-LINE
+               PERFORM 9999-WRITE-RPT-REC.
+
+      *-----------------------------------------------------------------
+      *9999 UTILITY SECTION.
+      *-----------------------------------------------------------------
+
+       9999-BLOWUP.
+           MOVE "TR3INVUP" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+      *---------------------------------
+      * R3INVUP-I
+      *---------------------------------
+
+       9999-READ-R3INVUP-I.
+           READ R3INVUP-I INTO R3-INPUT-RECORD
+               AT END MOVE "Y" TO R3INVUP-EOF-SW.
+
+      *---------------------------------
+      * READ MSTORERM
+      *---------------------------------
+
+       9999-READ-MSTORERM-IO.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-IO.
+           READ MSTORERM-IO INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      *---------------------------------
+      * UPDATE MSTORERM
+      *---------------------------------
+
+       9999-REWRITE-MSTORERM-IO.
+           REWRITE MSTORERM-REC-IO FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      *---------------------------------
+      * WRITE ERROR REPORT RECORD
+      *---------------------------------
+
+       9999-WRITE-RPT-REC.
+           MOVE "2"             TO  RPT-CTL.
+           WRITE R3INV-RPT-REC.
+           ADD 2                TO  LINE-COUNT.
+           IF LINE-COUNT > 55
+               PERFORM 9999-WRITE-RPT-HDGS.
+
+      *---------------------------------
+      * REPORT HEADING LINES
+      *---------------------------------
+
+       9999-WRITE-RPT-HDGS.
+           ADD 1                TO  PAGE-COUNT.
+           MOVE PAGE-COUNT      TO  PRT-PG-H2.
+
+           MOVE "0"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-1   TO  RPT-LINE.
+           WRITE R3INV-RPT-REC.
+
+           MOVE "1"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-2   TO  RPT-LINE.
+           WRITE R3INV-RPT-REC.
+
+           MOVE "2"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-3   TO  RPT-LINE.
+           WRITE R3INV-RPT-REC.
+
+           MOVE "1"             TO  RPT-CTL.
+           MOVE PRT-RPT-HDG-4   TO  RPT-LINE.
+           WRITE R3INV-RPT-REC.
+
+           MOVE 5               TO  LINE-COUNT.
+

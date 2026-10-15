@@ -1,0 +1,887 @@
+       IDENTIFICATION DIVISION.                                         00002000
+       PROGRAM-ID.           TDLYCHGS.                                  00003000
+       AUTHOR.               MELINDA MADDEN.                            00004000
+       DATE-WRITTEN.         JUNE 18, 1986.                             00005000
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.               00006000
+                                                                        00007000
+      *REMARKS.              THIS PROGRAM WILL READ THROUGH THE         00008000
+      *                      DAILY ABSTFILE CREATED FROM CUTOFF         00009000
+      *                      AND PRINT ONLY THE TRANSACTIONS LABELED    00010000
+      *                      "ISS", "RET", "ADJ" BY DEPARTMENT CODE.    00011000
+      *                      THIS REPORT WILL BE SORTED BY EXPENSE      00012000
+      *                      TYPE AND BY SHIFT.                         00013000
+      *C
+      *C  11JAN1994    DAVE PLUM    REQUEST #6462
+      *C  REVISED PROGRAM LOGIC TO SKIP THOSE TC 332 RECORDS WHICH HAVE
+      *C  A ZERO ADJUSTMENT QUANTITY (AND TC332-ADJUST NOT = 0).
+      *C
+      *C  02FEB1994    DAVE PLUM    -TEMPORARY SPECIAL VERSION-
+      *C  TEMPORARILY REVISE THE HARDCODED SHIFT SCHEDULE TO MEET
+      *C  LAWTON'S REQUIREMENTS UNTIL MORE PERMANENT CHANGES CAN
+      *C  BE MADE TO COMPLETELY REMOVE THE HARDCODING OF SHIFT START
+      *C  AND STOP TIMES.
+      *C
+      *C  07FEB1994    DAVE PLUM
+      *C    ADDED CALL TO THE COBOL ERROR HANDLER - MCXCBLERR.
+      *C
+      *C  10/14/1994   CATHY ZUBEK
+      *C    ADDED KEY TO MACCOUNT (KEY=SHFT) TO INDICATE NUMBER OF
+      *C    SHIFTS IN PLANT.  PROGRAM READS KEY DATA AND PERFORMS
+      *C    CORRESPONDING LOGIC FOR 2 OR 3 SHIFTS.
+      *C
+      *C  10/27/1994   CATHY ZUBEK    REQ #: 5619
+      *C    1.)  ADDED COPYLIB MEMBERS AND CHANGED ALL REFERENCES TO
+      *C         WORKING-STORAGE FIELDS TO THE COPYLIB MEMBER FIELDS.
+      *C    2.)  ADDED LOGIC TO HANDLE 4XX TRANSACTIONS (430 & 433) AND
+      *C         ENLARGED WORKING-STORAGE FIELD SIZES TO ACCOMMODATE
+      *C         THE 4XX TRANSACTIONS.
+      *C    3.)  INCREASED SIZE OF OUTPUT FIELDS TO HANDLE 4XX TRANS-
+      *C         ACTIONS.
+      *C    4.)  REPLACED "000215" HARD-CODED LOGIC WITH REFERENCES TO
+      *C         MACCOUNT-INFO, WHERE KEY=SADJ.
+      *C    5.)  ADDED TBLOWUP COPYLIB MEMBER AND TBLOWUP LOGIC.
+      *C
+      *C  11/25/1997   CATHY YODER    REQ #: 97-014
+      *C    DIRECTED PRINTED OUTPUT TO FILE "DDLYCHGS" INSTEAD OF TO
+      *C    MCPRT.  THIS WILL ALLOW PROCESSING THE REPORT THROUGH
+      *C    "TPRTRPT" WHICH WILL DIRECT THE OUTPUT TO DIFFERENT OUTQs
+      *C    BASED ON DEPARTMENT.
+      *C
+      *C  01/04/1998   JIM COFFMAN
+      *C    PER JANE TURNER VERBAL REQUEST, ADDED THE ABILITY TO
+      *C    INDICATE 'ISSI' STOREROOM FRENACHISED PART ISSUES FROM
+      *C    GOODYEAR STOREROOM PART ISSUES.
+      *C
+      *C  01/21/2002   BRUCE GEISER
+      *C    ADD PAGE AT END OF REPORT FOR GRAND TOTALS.
+      *C
+
+       ENVIRONMENT DIVISION.                                            00015000
+       CONFIGURATION SECTION.                                           00017000
+       SOURCE-COMPUTER.      HP-3000.                                   00018000
+       OBJECT-COMPUTER.      HP-3000.                                   00019000
+       COPY SPECIALN IN COPYLIB.
+                                                                        00021000
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+      ***  SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+
+           SELECT ONLINE-PRT ASSIGN TO DISK-DDLYCHGS.
+
+           SELECT SORT-FILE ASSIGN TO DISK-SORT.
+
+           SELECT TRANS-FILE ASSIGN TO DISK-ABSTFILE.
+
+           SELECT MACCOUNT
+             ASSIGN TO DATABASE-MCFLCA0101
+             ORGANIZATION IS INDEXED
+             ACCESS MODE IS DYNAMIC
+             RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+             FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.                                                   00029000
+                                                                        00032000
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FILE SECTION.
+
+      *------ DATABASE FILES ----------------------*
+       FD  MACCOUNT
+           LABEL RECORDS ARE STANDARD.
+       01  MACCOUNT-REC.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+
+       FD  TRANS-FILE                                                   00033000
+           DATA RECORD IS TRANS-REC                                     00034000
+           RECORD CONTAINS 80 CHARACTERS                                00035000
+           LABEL RECORDS ARE STANDARD.                                  00036000
+                                                                        00037000
+       01  TRANS-REC                    PIC X(80).                      00038000
+                                                                        00039000
+       FD  ONLINE-PRT                                                   00040000
+           DATA RECORD IS PRT-REC                                       00041000
+           RECORD CONTAINS 133 CHARACTERS                               00042000
+           LABEL RECORDS ARE OMITTED.                                   00043000
+                                                                        00044000
+       01  PRT-REC.                                                     00045000
+           05  PRT-CTL                   PIC X.
+           05  PRT-LINE                  PIC X(132).
+                                                                        00046000
+       SD  SORT-FILE                                                    00047000
+           DATA RECORD IS SORT-REC                                      00048000
+           RECORD CONTAINS 179 CHARACTERS.                              00049000
+
+                                                                        00050000
+       01  SORT-REC.                                                    00051000
+           05  SORT-DEPT                PIC X(6).                       00052000
+           05  SORT-MATL-CODE           PIC X(8).                       00053000
+           05  SORT-DESCR               PIC X(80).                      00054000
+           05  SORT-CLASS               PIC X(4).                       00055000
+           05  SORT-ACCT                PIC X(6).                       00056000
+           05  SORT-TRANS-CODE          PIC X(4).                       00057000
+           05  SORT-AVG-COST            PIC S9(11)V9(4).
+           05  SORT-QTY                 PIC S9(10).                     00059000
+           05  SORT-VALUE               PIC S9(12)V99.                  00060000
+           05  SORT-DATE.                                               00061000
+               10  SORT-YY              PIC XX.                         00062000
+               10  SORT-MM              PIC XX.                         00063000
+               10  SORT-DD              PIC XX.                         00064000
+           05  SORT-TIME.                                               00065000
+               10  SORT-HOURS            PIC XX.                        00066000
+               10  SORT-MINUTES          PIC XX.                        00067000
+               10  SORT-SECONDS          PIC XX.                        00068000
+           05  SORT-SHIFT               PIC X.                          00069000
+           05  SORT-EXP-TYPE            PIC X.                          00070000
+           05  SORT-EMP                  PIC X(4).                      00071000
+           05  SORT-DOCUMENT-NUM        PIC X(12).                      00072000
+           05  SORT-UNIT-MEASURE        PIC XX.                         00073000
+                                                                        00074000
+       WORKING-STORAGE SECTION.                                         00076000
+                                                                        00077000
+       77  NO-MORE-SORT                  PIC XXX     VALUE SPACES.      00078000
+       77  LINE-CNT                      PIC 99      VALUE 0.           00079000
+       77  PAGE-CNT                      PIC 9(4)    VALUE 0.           00080000
+       77  PREV-DEPT                     PIC X(8)    VALUE SPACES.      00081000
+       77  NEW-PAGE-FLAG                 PIC 9       VALUE 0.           00082000
+       77  NO-MORE-ABST                  PIC XXX     VALUE SPACES.      00083000
+       77  DEPT-ACCUM                    PIC S9(12)V99  VALUE 0.        00084000
+       77  TYPE-ACCUM                    PIC S9(12)V99  VALUE 0.        00085000
+       77  TOT-ENG-VALUE                 PIC S9(12)V99  VALUE 0.        00085000
+       77  TOT-OPR-VALUE                 PIC S9(12)V99  VALUE 0.        00085000
+       77  SHIFT-ACCUM                   PIC S9(12)V99  VALUE 0.        00086000
+       77  PREV-EXP-TYPE                 PIC X       VALUE SPACES.      00087000
+       77  PREV-SHIFT                    PIC X       VALUE SPACES.      00088000
+       77  HOLD-AVG-COST                 PIC S9(11)V9(4)  VALUE 0.
+       77  MCXCBLERR-SCOPE               PIC X(1)  VALUE "C".
+                                                                        00090000
+       01  TIME-DIV.                                                    00093000
+           05  HH-DIV                    PIC XX   VALUE SPACES.         00094000
+           05  MM-DIV                    PIC XX   VALUE SPACES.         00095000
+           05  SS-DIV                    PIC XX   VALUE SPACES.         00096000
+                                                                        00097000
+       01  TODAYS-DATE.                                                 00098000
+           05  TD-YY                     PIC XX   VALUE SPACES.         00099000
+           05  TD-MM                     PIC XX   VALUE SPACES.         00100000
+           05  TD-DD                     PIC XX   VALUE SPACES.         00101000
+                                                                        00102000
+       01  CURRENT-DATE.                                                00102000
+           05  CURRENT-YY        PIC X(2).                              00102000
+           05  CURRENT-MM        PIC X(2).                              00102000
+           05  CURRENT-DD        PIC X(2).                              00102000
+                                                                        00102000
+       01  DATE-DIVIDED.                                                00103000
+           05  MONTH-DIV                PIC XX   VALUE SPACES.          00104000
+           05  FILLER                   PIC X    VALUE SPACES.          00105000
+           05  DAY-DIV                  PIC XX   VALUE SPACES.          00106000
+           05  FILLER                   PIC X    VALUE SPACES.          00107000
+           05  YEAR-DIV                 PIC XX   VALUE SPACES.          00108000
+                                                                        00109000
+       01  SAVE-NUM-SHIFTS              PIC X.
+                                                                        00109000
+       01  SAVE-ACCT-CODE               PIC X(6).
+                                                                        00109000
+      *------- PARAMETERS FOR "SGETRPT" TO GET REPORT DISTRIBUTION
+      *------- INFORMATION.
+       01  SGETRPT-PARMS.
+           05  SGETRPT-PGM              PIC X(8).
+           05  SGETRPT-ID               PIC X(4).
+           05  SGETRPT-SW               PIC X.
+           05  SGETRPT-KEY              PIC X(10).
+           05  SGETRPT-PRINTER          PIC X(2).
+
+      ***********************************************************       00110000
+      **        ABSTFILE RECORD LAYOUT                         **       00111000
+      ***********************************************************       00112000
+                                                                        00113000
+       COPY DDAILYTC   OF COPYLIB.
+
+       COPY TC330      OF COPYLIB.
+
+       COPY TC332      OF COPYLIB.
+
+       COPY TC333      OF COPYLIB.
+
+       COPY TC430      OF COPYLIB.
+
+       COPY TC433      OF COPYLIB.
+                                                                        00277000
+      ************************************************************      00278000
+      **     REPORT PRINT LINES                                 **      00279000
+      ************************************************************      00280000
+                                                                        00281000
+       01  HEADER1.                                                     00282000
+           05  FILLER                     PIC X      VALUE SPACES.      00283000
+           05  FILLER                     PIC X(49)                     00284000
+               VALUE "TDLYCHGS".                                        00285000
+           05  FILLER                     PIC X(69)                     00286000
+               VALUE "CORPORATE STORES ACCOUNTING SYSTEM".              00287000
+           05  FILLER                     PIC X(5)   VALUE "DATE ".     00288000
+           05  DATE-H1                    PIC X(8)   VALUE SPACES.      00289000
+                                                                        00290000
+       01  HEADER2.                                                     00291000
+           05  FILLER                     PIC X      VALUE SPACES.      00292000
+           05  FILLER                     PIC X(6)   VALUE "PAGE".      00293000
+           05  PAGE-H2                    PIC ZZZ9   VALUE ZERO.        00294000
+           05  FILLER                     PIC X(40)  VALUE SPACES.      00295000
+           05  FILLER                     PIC X(36)                     00296000
+               VALUE "DAILY STOREROOM CHARGES BY DEPT".                 00297000
+           05  FILLER                     PIC X(32)  VALUE SPACES.      00298000
+           05  FILLER                     PIC X(5)   VALUE "TIME ".     00299000
+           05  TIME-H2.                                                 00300000
+               10  HH-H2                  PIC XX     VALUE SPACES.      00301000
+               10  FILLER                 PIC X      VALUE ":".         00302000
+               10  MM-H2                  PIC XX     VALUE SPACES.      00303000
+               10  FILLER                 PIC X      VALUE ":".         00304000
+               10  SS-H2                  PIC XX     VALUE SPACES.      00305000
+                                                                        00306000
+       01  HEADER3.                                                     00307000
+           05  FILLER             PIC X(8)   VALUE SPACES.              00308000
+           05  FILLER             PIC X(10)  VALUE "TRANS".             00309000
+           05  FILLER             PIC X(9)   VALUE "TRANS".             00310000
+           05  FILLER             PIC X(7)   VALUE "TRANS".             00311000
+           05  FILLER             PIC X(11)  VALUE "MATERIAL".          00312000
+           05  FILLER             PIC X(11)  VALUE "EXPENSE".           00313000
+           05  FILLER             PIC X(13)  VALUE "WORK".              00314000
+           05  FILLER             PIC X(8)   VALUE "EMP".               00315000
+           05  FILLER             PIC X(12)  VALUE "UM".                00316000
+           05  FILLER             PIC X(17)  VALUE "QTY".               00317000
+           05  FILLER             PIC X(17)  VALUE "UNIT".              00318000
+           05  FILLER             PIC X(10)  VALUE "VALUE".             00319000
+                                                                        00320000
+       01  HEADER4.                                                     00321000
+           05  FILLER           PIC X(8)   VALUE SPACES.                00322000
+           05  FILLER           PIC X(10)  VALUE "DATE".                00323000
+           05  FILLER           PIC X(9)   VALUE "TIME".                00324000
+           05  FILLER           PIC X(7)   VALUE "CODE".                00325000
+           05  FILLER           PIC X(11)  VALUE "CODE".                00326000
+           05  FILLER           PIC X(11)  VALUE "CLASS".               00327000
+           05  FILLER           PIC X(13)  VALUE "ORDER".               00328000
+           05  FILLER           PIC X(37)  VALUE "NO".                  00329000
+           05  FILLER           PIC X(26)   VALUE "COST".               00330000
+                                                                        00331000
+       01  HEADER5.                                                     00332000
+           05  FILLER           PIC X(8)   VALUE SPACES.                00333000
+           05  FILLER           PIC X(25)                               00334000
+               VALUE "MATERIAL DESCR".                                  00335000
+                                                                        00336000
+                                                                        00337000
+       01  BLANK-LINE           PIC X(133)   VALUE SPACES.              00338000
+                                                                        00339000
+       01  DEPT-HDG.                                                    00340000
+           05  FILLER           PIC X      VALUE SPACE.                 00341000
+           05  FILLER           PIC X(14)  VALUE "**********".          00342000
+           05  FILLER           PIC X(6)   VALUE "DEPT".                00343000
+           05  DEPT-HDR         PIC X(6)   VALUE SPACES.                00344000
+           05  FILLER           PIC X(2)   VALUE SPACES.                00345000
+           05  FILLER           PIC X(10)  VALUE "**********".          00346000
+           05  FILLER           PIC X(94)  VALUE SPACES.                00347000
+                                                                        00348000
+       01  DETAIL-LINE.                                                 00349000
+           05  FILLER-TOT                 PIC X(8)  VALUE SPACES.       00350000
+           05  PRT-DATE.                                                00351000
+               10  PRT-MM                 PIC XX    VALUE SPACES.       00352000
+               10  PRT-SLASH1             PIC X     VALUE SPACES.       00353000
+               10  PRT-DD                 PIC XX    VALUE SPACES.       00354000
+               10  PRT-SLASH2             PIC X     VALUE SPACES.       00355000
+               10  PRT-YY                 PIC XX    VALUE SPACES.       00356000
+           05  FILLER                     PIC X(2)  VALUE SPACES.       00357000
+           05  PRT-TIME.                                                00358000
+               10  PRT-HOURS              PIC XX    VALUE SPACES.       00359000
+               10  PRT-COLON1             PIC X     VALUE SPACES.       00360000
+               10  PRT-MINUTES            PIC XX    VALUE SPACES.       00361000
+               10  PRT-COLON2             PIC X     VALUE SPACES.       00362000
+               10  PRT-SECONDS            PIC XX    VALUE SPACES.       00363000
+           05  FILLER                     PIC X     VALUE SPACES.       00364000
+           05  PRT-TRANS                  PIC X(4)  VALUE SPACES.       00365000
+           05  FILLER                     PIC X(3)  VALUE SPACES.       00366000
+           05  PRT-MATL-CODE              PIC X(7)  VALUE SPACES.       00367000
+           05  FILLER                     PIC X(4)  VALUE SPACES.       00368000
+           05  PRT-ACCT                   PIC X(6)  VALUE SPACES.       00369000
+           05  FILLER                     PIC X(5)  VALUE SPACES.       00370000
+           05  PRT-WORK-ORDER             PIC X(12)  VALUE SPACES.      00371000
+           05  FILLER                     PIC X      VALUE SPACES.      00372000
+           05  PRT-EMP                    PIC X(4)  VALUE SPACES.       00373000
+           05  FILLER                     PIC X(4)  VALUE SPACES.       00374000
+           05  PRT-UM                     PIC XX     VALUE SPACES.      00375000
+           05  FILLER                     PIC X(2)   VALUE SPACES.      00376000
+           05  PRT-QTY                    PIC Z(10)-.                   00377000
+           05  FILLER                     PIC X(1)   VALUE SPACES.      00378000
+           05  PRT-UC                     PIC Z(11)9.9999.
+           05  FILLER                     PIC XX     VALUE SPACES.      00380000
+           05  PRT-VALUE                  PIC Z(11)9.99-.               00381000
+                                                                        00382000
+       01  DETAIL-LINE2.                                                00383000
+           05  FILLER                     PIC X(8)   VALUE SPACES.      00384000
+           05  PRT-DESCR                  PIC X(125)  VALUE SPACES.     00385000
+                                                                        00386000
+                                                                        00387000
+       01 REP-TOTAL-LINE.                                               00388000
+           05  FILLER          PIC X      VALUE SPACE.                  00389000
+           05  FILLER          PIC X(7)   VALUE "*******".              00390000
+           05  TOT-LITERAL     PIC X(31)  VALUE SPACES.                 00391000
+           05  FILLER          PIC X(73)  VALUE SPACES.                 00392000
+           05  VALUE-REPORT    PIC Z(11)9.99-.                          00393000
+                                                                        00394000
+      ************************************************************      00395000
+      **                                                        **      00396000
+      **           D A T A B A S E   B U F F E R S              **      00397000
+      **                                                        **      00398000
+      ************************************************************      00399000
+                                                                        00400000
+       01  FILE-STATUS.
+           05  FILE-STATUS-1     PIC X(1)    VALUE "0".
+           05  FILE-STATUS-2     PIC X(1)    VALUE "0".
+                                                                        00401000
+       01  STORES-BASE           PIC X(24)   VALUE "  STORES;".         00402000
+       01  STORES-PASSWORD       PIC X(8)    VALUE "JADE; ".            00403000
+
+       COPY DBMODES IN COPYLIB.
+                                                                        00413000
+       COPY DBSTAT IN COPYLIB.
+                                                                        00427000
+       COPY MACTINFO OF COPYLIB.
+                                                                        00427000
+      ******************                                                00428000
+      **    DTRANS    **                                                00429000
+      ******************                                                00430000
+      *----- ALLOW THE DTRANS FILE IS NEVER ACCESED BY THIS PGM
+      *----- THE BUFFER AREA DATA NAMES ARE USED.
+       COPY DTRANS IN COPYLIB.                                          00431000
+                                                                        00432000
+      *******************************************************           00433000
+      *   PARAMETERS USED IN 'TBLOWUP' ROUTINE.             *           00434000
+      *******************************************************           00437000
+                                                                        00438000
+       COPY TBLOWUP   OF COPYLIB.                                       00439000
+                                                                        00449000
+       COPY VCOMAREA  OF COPYLIB.
+
+      **********************************************                    00450000
+      *   C D E S C      P A R A M E T E R S       *                    00451000
+      **********************************************                    00452000
+                                                                        00453000
+       COPY CDESC IN COPYLIB.                                           00453100
+                                                                        00453200
+       01  CDE-CODE            PIC X(8).                                00454000
+       01  C-BASE              PIC X(10).                               00455000
+                                                                        00463000
+       COPY TDATECHK IN COPYLIB.
+                                                                        00465000
+       PROCEDURE DIVISION.                                              00466000
+                                                                        00467000
+       001-BEGIN SECTION.                                               00468000
+                                                                        00469000
+       010-MAINLINE.                                                    00470000
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+           PERFORM 011-READ-MACCOUNT-SHFT.
+           PERFORM 012-READ-MACCOUNT-SADJ.
+
+      *--------- GET REPORT DISTRIBUTION INFO.
+           MOVE "TDLYCHGS"      TO  SGETRPT-PGM.
+           CALL "SGETRPT" USING SGETRPT-PARMS.
+
+           SORT SORT-FILE ON ASCENDING KEY SORT-DEPT                    00471000
+                             ASCENDING KEY SORT-EXP-TYPE                00472000
+                            DESCENDING KEY SORT-SHIFT                   00473000
+                             ASCENDING KEY SORT-DATE                    00474000
+                             ASCENDING KEY SORT-TIME                    00475000
+           INPUT PROCEDURE IS 050-PROCESS-TRANS                         00476000
+           OUTPUT PROCEDURE IS 700-CREATE-REPORT.                       00477000
+           PERFORM 1000-CLOSE-FILES.                                    00478000
+           GOBACK.                                                      00479000
+
+      *-----------------------------------------------------*
+      * 011-READ-MACCOUNT-SHFT:            10/14/1994       *
+      *  READ MACCOUNT TO OBTAIN THE NUMBER OF SHIFTS IN    *
+      *  PLANT.  IF NO RECORD FOUND, ASSUME THREE SHIFTS,   *
+      *  AND MOVE "3" TO SAVE-NUM-SHIFTS.  IF NUMBER OF     *
+      *  SHIFTS NOT EQUAL 2 OR 3, AGAIN ASSUME 3 SHIFTS.    *
+      *-----------------------------------------------------*
+
+       011-READ-MACCOUNT-SHFT.
+           OPEN INPUT MACCOUNT.
+           MOVE "SHFT" TO INFOKEY OF MACCOUNT-REC.
+           READ MACCOUNT INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE "3" TO SAVE-NUM-SHIFTS
+           ELSE
+               IF FILE-STATUS = "00"
+                   MOVE MACCT-NUM-SHIFTS TO SAVE-NUM-SHIFTS
+           ELSE
+               MOVE "GET MACCOUNT-INFO 'SHFT'*011-R" TO
+                                             BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP.
+
+      *-----------------------------------------------------*
+      * 012-READ-MACCOUNT-SADJ:             10/27/1994      *
+      *  READ MACCOUNT TO OBTAIN THE ACCOUNTING INFORMATION.*
+      *  IF NO RECORD IS FOUND, CODE "000215" IS ASSUMED.   *
+      *-----------------------------------------------------*
+
+       012-READ-MACCOUNT-SADJ.
+           MOVE "00" TO FILE-STATUS.
+           MOVE "SADJ" TO INFOKEY OF MACCOUNT-REC.
+           READ MACCOUNT INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE "000215" TO SAVE-ACCT-CODE
+           ELSE
+               IF FILE-STATUS = "00"
+                   MOVE MACCT-SADJ-ACCT TO SAVE-ACCT-CODE
+           ELSE
+               MOVE "GET MACCOUNT-INFO 'SADJ'*012-R" TO
+                                             BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP.
+                                                                        00480000
+       050-PROCESS-TRANS SECTION.                                       00482000
+       050-PROCESS-TRANS-PARA.
+           PERFORM 100-BEGIN.                                           00483000
+           PERFORM 200-PROCESS-DETAIL                                   00484000
+               UNTIL NO-MORE-ABST = "YES".                              00485000
+                                                                        00486000
+      **********************************************************        00487000
+      *  TRANSFER CONTROL TO LAST STATEMENT IN INPUT PROCEDURE *        00488000
+      *  FOR SORTING OF RECORDS.                               *        00489000
+      **********************************************************        00490000
+                                                                        00491000
+           GO TO 699-PROCESS-EXIT.                                      00492000
+                                                                        00493000
+       100-BEGIN.                                                       00494000
+           OPEN INPUT TRANS-FILE.                                       00507000
+           PERFORM 400-READ-TRANS.                                      00508000
+                                                                        00509000
+       200-PROCESS-DETAIL.                                              00511000
+           IF DDAILYTC-TC = "330"
+               MOVE DDAILYTC-DATE              TO TRANS-DATE
+               MOVE DDAILYTC-TIME              TO TRANS-TIME
+               MOVE "RET"                      TO TRANS-CODE
+               MOVE TC330-CORPCODE             TO TRANS-STORES-CODE
+               MOVE TC330-DEPT                 TO TRANS-DEPT
+               MOVE TC330-EMP                  TO TRANS-EMP
+               MOVE TC330-QTY                  TO TRANS-QTY
+               COMPUTE TRANS-VALUE ROUNDED = TC330-QTY *
+                                     TC330-AVG-COST
+               MOVE TC330-AVG-COST             TO HOLD-AVG-COST
+               MOVE TC330-UM                   TO TRANS-UNIT-MEASURE
+               MOVE TC330-WORK-ORDER           TO TRANS-DOCUMENT-NUM
+               MOVE TC330-EXP-CLASS            TO TRANS-ACCT
+               PERFORM 600-BUILD-SORT-REC
+           ELSE
+               IF DDAILYTC-TC = "332" AND TC332-ADJ-QTY NOT = "0"
+                   MOVE DDAILYTC-DATE          TO TRANS-DATE
+                   MOVE DDAILYTC-TIME          TO TRANS-TIME
+                   MOVE "SADJ"                 TO TRANS-CODE
+                   MOVE TC332-CORP-CODE        TO TRANS-STORES-CODE
+                   MOVE TC332-DEPT-CHG         TO TRANS-DEPT
+                   MOVE SPACES                 TO TRANS-EMP
+                   MOVE TC332-ADJ-QTY          TO TRANS-QTY
+                   COMPUTE TRANS-VALUE ROUNDED = TC332-ADJ-QTY *
+                                         TC332-AVG-COST-BIG
+                   MOVE TC332-AVG-COST-BIG     TO HOLD-AVG-COST
+                   MOVE TC332-UM               TO TRANS-UNIT-MEASURE
+                   MOVE SPACES                 TO TRANS-DOCUMENT-NUM
+                   MOVE SAVE-ACCT-CODE         TO TRANS-ACCT
+                   PERFORM 600-BUILD-SORT-REC
+           ELSE
+               IF DDAILYTC-TC = "333"
+                   MOVE DDAILYTC-DATE          TO TRANS-DATE
+                   MOVE DDAILYTC-TIME          TO TRANS-TIME
+                   MOVE "ISS"                  TO TRANS-CODE
+                   MOVE TC333-FRAN-ID          TO TRANS-CODE-FRAN-ID
+                   MOVE TC333-CORPCODE         TO TRANS-STORES-CODE
+                   MOVE TC333-DEPT             TO TRANS-DEPT
+                   MOVE TC333-EMP              TO TRANS-EMP
+                   MOVE TC333-QTY              TO TRANS-QTY
+                   COMPUTE TRANS-VALUE ROUNDED = TC333-QTY *
+                                         TC333-AVG-COST
+                   MOVE TC333-AVG-COST         TO HOLD-AVG-COST
+                   MOVE TC333-UM               TO TRANS-UNIT-MEASURE
+                   MOVE TC333-WORK-ORDER       TO TRANS-DOCUMENT-NUM
+                   MOVE TC333-EXP-CLASS        TO TRANS-ACCT
+                   PERFORM 600-BUILD-SORT-REC
+           ELSE
+               IF DDAILYTC-TC = "430"
+                   MOVE DDAILYTC-DATE          TO TRANS-DATE
+                   MOVE DDAILYTC-TIME          TO TRANS-TIME
+                   MOVE "RET"                  TO TRANS-CODE
+                   MOVE TC430-CORPCODE         TO TRANS-STORES-CODE
+                   MOVE TC430-DEPT             TO TRANS-DEPT
+                   MOVE TC430-EMP              TO TRANS-EMP
+                   MOVE TC430-QTY              TO TRANS-QTY
+                   COMPUTE TRANS-VALUE ROUNDED = TC430-QTY *
+                                         TC430-AVG-COST
+                   MOVE TC430-AVG-COST         TO HOLD-AVG-COST
+                   MOVE TC430-UM               TO TRANS-UNIT-MEASURE
+                   MOVE TC430-WORK-ORDER       TO TRANS-DOCUMENT-NUM
+                   MOVE TC430-EXP-CLASS        TO TRANS-ACCT
+                   PERFORM 600-BUILD-SORT-REC
+           ELSE
+               IF DDAILYTC-TC = "433"
+                   MOVE DDAILYTC-DATE          TO TRANS-DATE
+                   MOVE DDAILYTC-TIME          TO TRANS-TIME
+                   MOVE "ISS"                  TO TRANS-CODE
+                   MOVE TC433-FRAN-ID          TO TRANS-CODE-FRAN-ID
+                   MOVE TC433-CORPCODE         TO TRANS-STORES-CODE
+                   MOVE TC433-DEPT             TO TRANS-DEPT
+                   MOVE TC433-EMP              TO TRANS-EMP
+                   MOVE TC433-QTY              TO TRANS-QTY
+                   COMPUTE TRANS-VALUE ROUNDED = TC433-QTY *
+                                         TC433-AVG-COST
+                   MOVE TC433-AVG-COST         TO HOLD-AVG-COST
+                   MOVE TC433-UM               TO TRANS-UNIT-MEASURE
+                   MOVE TC433-WORK-ORDER       TO TRANS-DOCUMENT-NUM
+                   MOVE TC433-EXP-CLASS        TO TRANS-ACCT
+                   PERFORM 600-BUILD-SORT-REC.
+           PERFORM 400-READ-TRANS.
+                                                                        00560000
+       400-READ-TRANS.                                                  00561000
+           READ TRANS-FILE INTO BUF-DDAILYTC                            00562000
+               AT END                                                   00563000
+                  MOVE "YES" TO NO-MORE-ABST.                           00564000
+                                                                        00566000
+       600-BUILD-SORT-REC.                                              00567000
+           MOVE TRANS-STORES-CODE TO SORT-MATL-CODE.                    00568000
+           MOVE "01" TO CDESC-RET-CODE.                                 00569000
+           MOVE TRANS-STORES-CODE TO CDE-CODE.                          00570000
+           MOVE STORES-BASE TO C-BASE.                                  00571000
+           CALL "CDESC" USING CDESC-RET-CODE, C-BASE, STATUS-AREA,      00572000
+                 BU-DISPLAY-MSG, CDE-CODE, CDESC-DATA.                  00573000
+           MOVE CDESC (1) TO SORT-DESCR.                                00574000
+           MOVE TRANS-CLASS TO SORT-CLASS.                              00575000
+           MOVE TRANS-DEPT TO SORT-DEPT.                                00576000
+           MOVE TRANS-ACCT TO SORT-ACCT.                                00577000
+           MOVE TRANS-CODE TO SORT-TRANS-CODE.                          00578000
+           MOVE TRANS-DATE TO SORT-DATE.                                00579000
+           MOVE TRANS-TIME TO SORT-TIME.                                00580000
+
+           IF (TRANS-ACCT > "000000" AND TRANS-ACCT < "000100")         00581000
+               OR (TRANS-ACCT = "000250" OR "000251" OR "000252"        00582000
+                    OR "000253" OR "000215" OR "000254")                00583000
+                     MOVE "E" TO SORT-EXP-TYPE                          00584000
+           ELSE                                                         00585000
+                     MOVE "O" TO SORT-EXP-TYPE.                         00586000
+
+      *-----------------------------------------------------*           00587000
+      *  CHECK TO SEE IF PLANT HAS TWO OR THREE SHIFTS, AND *           00587000
+      *  PERFORM THE APPROPRIATE LOGIC.  IF NUMBER OF       *
+      *  SHIFTS NOT EQUAL 2 OR THREE, ASSUME 3 SHIFTS.      *
+      *  10/14/94    CA ZUBEK.                              *
+      *-----------------------------------------------------*           00587000
+
+           IF SAVE-NUM-SHIFTS = "2"
+               PERFORM 601-PROCESS-TWO-SHIFTS
+           ELSE
+               PERFORM 602-PROCESS-THREE-SHIFTS.
+
+           MOVE TRANS-EMP TO SORT-EMP.                                  00597000
+           MOVE TRANS-UNIT-MEASURE TO SORT-UNIT-MEASURE.                00598000
+           MOVE TRANS-DOCUMENT-NUM TO SORT-DOCUMENT-NUM.                00599000
+           IF TRANS-CODE = "RET" OR "SADJ"                              00600000
+               COMPUTE SORT-QTY = TRANS-QTY * -1                        00601000
+               COMPUTE SORT-VALUE = TRANS-VALUE * -1                    00602000
+           ELSE                                                         00603000
+               MOVE TRANS-QTY TO SORT-QTY                               00604000
+               MOVE TRANS-VALUE TO SORT-VALUE.                          00605000
+           MOVE HOLD-AVG-COST TO SORT-AVG-COST.                         00606000
+           RELEASE SORT-REC.                                            00607000
+           MOVE SPACES TO SORT-REC.                                     00608000
+           MOVE 0 TO SORT-QTY                                           00609000
+                     SORT-VALUE.                                        00610000
+                                                                        00614000
+       699-PROCESS-EXIT.                                                00612000
+           EXIT.                                                        00613000
+                                                                        00611000
+      *---------------------------------------------------------*
+      * 601-PROCESS-TWO-SHIFTS:              10/14/94  CA ZUBEK *
+      *  THIS PARAGRAPH PERFORMED WHEN PLANT HAS TWO SHIFTS.    *
+      *---------------------------------------------------------*
+
+       601-PROCESS-TWO-SHIFTS.
+           IF TRANS-TIME > "185959" OR TRANS-TIME < "070000"            00588000
+               MOVE "N" TO SORT-SHIFT                                   00590000
+           ELSE                                                         00591000
+               IF TRANS-TIME > "065959" AND TRANS-TIME < "190000"       00592000
+                   MOVE "D" TO SORT-SHIFT.                              00593000
+
+
+      *---------------------------------------------------------*
+      * 602-PROCESS-THREE-SHIFTS:            10/14/94  CA ZUBEK *
+      *  THIS PARAGRAPH PERFORMED WHEN PLANT HAS THREE SHIFTS.  *
+      *---------------------------------------------------------*
+
+       602-PROCESS-THREE-SHIFTS.
+           IF TRANS-TIME > "225959" AND TRANS-TIME < "240000"           00588000
+                 OR TRANS-TIME < "070000"                               00589000
+               MOVE "N" TO SORT-SHIFT                                   00590000
+           ELSE                                                         00591000
+               IF TRANS-TIME > "065959" AND TRANS-TIME < "150000"       00592000
+                   MOVE "D" TO SORT-SHIFT                               00593000
+               ELSE                                                     00594000
+                   IF TRANS-TIME > "145959" AND TRANS-TIME < "230000"   00595000
+                       MOVE "A" TO SORT-SHIFT.                          00596000
+
+
+       700-CREATE-REPORT SECTION.                                       00615000
+       700-CREATE-REPORT-PARA.
+           DISPLAY "BEGIN REPORT".                                      00616000
+           PERFORM 710-BEGIN-REPORT.                                    00617000
+           PERFORM 720-PROCESS-DEPT                                     00618000
+              UNTIL NO-MORE-SORT = "YES".                               00619000
+           PERFORM 830-PRINT-GRAND-TOTAL.                               00617000
+                                                                        00620000
+      **************************************************                00621000
+      **  BRANCH TO LAST STATEMENT OF OUTPUT SECTION  **                00622000
+      **  TO COMPLETE PROCESSING OF REPORT            **                00623000
+      **************************************************                00624000
+                                                                        00625000
+           GO TO 899-CREATE-EXIT.                                       00626000
+                                                                        00627000
+       710-BEGIN-REPORT.                                                00628000
+           OPEN OUTPUT ONLINE-PRT.                                      00629000
+
+           ACCEPT CURRENT-DATE FROM DATE.
+           MOVE "*"          TO  PRT-CTL.
+           IF SGETRPT-SW = "Y"
+               STRING CURRENT-DATE "Y" DELIMITED BY SIZE INTO PRT-LINE
+           ELSE
+               MOVE CURRENT-DATE TO PRT-LINE.
+           WRITE PRT-REC.
+
+           RETURN SORT-FILE                                             00630000
+              AT END                                                    00631000
+                  MOVE "YES" TO NO-MORE-SORT.                           00632000
+                                                                        00633000
+       720-PROCESS-DEPT.                                                00634000
+           PERFORM 721-BEGIN-DEPT-CODE.                                 00635000
+           PERFORM 722-PROCESS-TYPE                                     00636000
+               UNTIL SORT-DEPT NOT = PREV-DEPT                          00637000
+                   OR NO-MORE-SORT = "YES".                             00638000
+           PERFORM 800-PRINT-DEPT-TOTAL.                                00639000
+                                                                        00640000
+       721-BEGIN-DEPT-CODE.                                             00641000
+           MOVE SORT-DEPT TO PREV-DEPT.                                 00642000
+           MOVE SORT-DEPT TO DEPT-HDR.                                  00643000
+
+           IF SGETRPT-SW = "Y"
+               MOVE "D"       TO PRT-CTL
+               MOVE SPACES    TO PRT-LINE
+               STRING SGETRPT-ID SORT-DEPT DELIMITED BY SIZE
+                              INTO PRT-LINE
+               WRITE PRT-REC.
+
+           MOVE 0 TO DEPT-ACCUM.                                        00644000
+           PERFORM 750-PRINT-HEADINGS.                                  00645000
+           PERFORM 751-PRINT-HEADINGS.                                  00646000
+                                                                        00647000
+       722-PROCESS-TYPE.                                                00648000
+           PERFORM 730-BEGIN-TYPE.                                      00649000
+           PERFORM 740-PROCESS-SHIFT                                    00650000
+              UNTIL SORT-EXP-TYPE NOT = PREV-EXP-TYPE                   00651000
+                OR SORT-DEPT NOT = PREV-DEPT                            00652000
+                  OR NO-MORE-SORT = "YES".                              00653000
+           PERFORM 810-PRINT-TYPE-TOTAL.                                00654000
+                                                                        00655000
+       730-BEGIN-TYPE.                                                  00656000
+           MOVE SORT-EXP-TYPE TO PREV-EXP-TYPE.                         00657000
+           MOVE 0 TO TYPE-ACCUM.                                        00658000
+                                                                        00659000
+       740-PROCESS-SHIFT.                                               00660000
+           PERFORM 741-BEGIN-SHIFT.                                     00661000
+           PERFORM 745-PROCESS-TRANS                                    00662000
+               UNTIL SORT-SHIFT NOT = PREV-SHIFT                        00663000
+                 OR SORT-EXP-TYPE NOT = PREV-EXP-TYPE                   00664000
+                     OR SORT-DEPT NOT = PREV-DEPT                       00665000
+                         OR NO-MORE-SORT = "YES".                       00666000
+           PERFORM 820-PRINT-SHIFT-TOTAL.                               00667000
+                                                                        00668000
+       741-BEGIN-SHIFT.                                                 00669000
+           MOVE SORT-SHIFT TO PREV-SHIFT.                               00670000
+           MOVE 0 TO SHIFT-ACCUM.                                       00671000
+                                                                        00672000
+       745-PROCESS-TRANS.                                               00674000
+           MOVE SORT-TRANS-CODE TO PRT-TRANS.                           00675000
+           MOVE SORT-DESCR TO PRT-DESCR.                                00676000
+           MOVE SORT-MATL-CODE TO PRT-MATL-CODE.                        00677000
+           MOVE SORT-QTY TO PRT-QTY.                                    00678000
+           MOVE SORT-VALUE TO PRT-VALUE.                                00679000
+           MOVE SORT-AVG-COST TO PRT-UC.                                00680000
+           MOVE SORT-ACCT TO PRT-ACCT.                                  00681000
+           MOVE SORT-YY TO PRT-YY.                                      00682000
+           MOVE SORT-MM TO PRT-MM.                                      00683000
+           MOVE SORT-DD TO PRT-DD.                                      00684000
+           MOVE SORT-HOURS TO PRT-HOURS.                                00685000
+           MOVE SORT-MINUTES TO PRT-MINUTES.                            00686000
+           MOVE SORT-SECONDS TO PRT-SECONDS.                            00687000
+           MOVE ":" TO PRT-COLON1                                       00688000
+                       PRT-COLON2.                                      00689000
+           MOVE SORT-EMP TO PRT-EMP.                                    00690000
+           MOVE SORT-DOCUMENT-NUM TO PRT-WORK-ORDER.                    00691000
+           MOVE SORT-UNIT-MEASURE TO PRT-UM.                            00692000
+           ADD SORT-VALUE TO SHIFT-ACCUM.                               00693000
+           MOVE "/" TO PRT-SLASH1                                       00694000
+                       PRT-SLASH2.                                      00695000
+
+      ********** REPLACED THE FOLLOWING CODE.
+      ***  WRITE PRT-REC FROM DETAIL-LINE AFTER 1.                      00696000
+      ***  WRITE PRT-REC FROM DETAIL-LINE2 AFTER 1.                     00697000
+      ***  WRITE PRT-REC FROM BLANK-LINE AFTER 1.                       00698000
+
+           MOVE DETAIL-LINE   TO  PRT-LINE.
+           MOVE "1"           TO  PRT-CTL.
+           WRITE PRT-REC.                                               00696000
+           MOVE DETAIL-LINE2  TO  PRT-LINE.
+           MOVE "1"           TO  PRT-CTL.
+           WRITE PRT-REC.                                               00696000
+           MOVE BLANK-LINE    TO  PRT-LINE.
+           MOVE "1"           TO  PRT-CTL.
+           WRITE PRT-REC.                                               00696000
+
+           ADD 3 TO LINE-CNT.                                           00699000
+           IF LINE-CNT > 55                                             00700000
+               MOVE 1 TO NEW-PAGE-FLAG                                  00701000
+               PERFORM 750-PRINT-HEADINGS.                              00702000
+           MOVE SPACES TO PRT-REC                                       00703000
+                          DETAIL-LINE.                                  00704000
+           RETURN SORT-FILE                                             00705000
+              AT END                                                    00706000
+                   MOVE "YES" TO NO-MORE-SORT.                          00707000
+           IF NEW-PAGE-FLAG = 1                                         00708000
+               MOVE 0 TO NEW-PAGE-FLAG                                  00709000
+               IF SORT-DEPT NOT = PREV-DEPT                             00710000
+                   NEXT SENTENCE                                        00711000
+               ELSE                                                     00712000
+                   PERFORM 751-PRINT-HEADINGS.                          00713000
+                                                                        00714000
+       750-PRINT-HEADINGS.                                              00716000
+           MOVE 1 TO DATE-MODE.                                         00717000
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO DATE-H1.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO TIME-DIV.
+           MOVE HH-DIV TO HH-H2.                                        00720000
+           MOVE MM-DIV TO MM-H2.                                        00721000
+           MOVE SS-DIV TO SS-H2.                                        00722000
+           ADD 1 TO PAGE-CNT.                                           00723000
+           MOVE PAGE-CNT TO PAGE-H2.                                    00724000
+           MOVE HEADER1     TO  PRT-LINE.
+           MOVE "0"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM HEADER1 AFTER ADVANCING NEW-PAGE.         00725000
+           MOVE HEADER2     TO  PRT-LINE.
+           MOVE "1"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM HEADER2 AFTER ADVANCING 1.                00726000
+           MOVE 3 TO LINE-CNT.                                          00727000
+                                                                        00728000
+       751-PRINT-HEADINGS.                                              00729000
+           MOVE DEPT-HDG    TO  PRT-LINE.
+           MOVE "3"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+           MOVE HEADER3     TO  PRT-LINE.
+           MOVE "2"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+           MOVE HEADER4     TO  PRT-LINE.
+           MOVE "1"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+           MOVE HEADER5     TO  PRT-LINE.
+           MOVE "1"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+           MOVE BLANK-LINE  TO  PRT-LINE.
+           MOVE "1"         TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM DEPT-HDG AFTER ADVANCING 3 LINES.         00730000
+      ***  WRITE PRT-REC FROM HEADER3 AFTER ADVANCING 2 LINES.          00731000
+      ***  WRITE PRT-REC FROM HEADER4 AFTER ADVANCING 1 LINES.          00732000
+      ***  WRITE PRT-REC FROM HEADER5 AFTER ADVANCING 1 LINES.          00733000
+      ***  WRITE PRT-REC FROM BLANK-LINE AFTER ADVANCING 1 LINES.       00734000
+           ADD 8 TO LINE-CNT.                                           00735000
+                                                                        00736000
+       800-PRINT-DEPT-TOTAL.                                            00737000
+           MOVE DEPT-ACCUM TO VALUE-REPORT.                             00738000
+           MOVE "DEPT TOTAL" TO TOT-LITERAL.                            00739000
+           MOVE REP-TOTAL-LINE   TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM REP-TOTAL-LINE AFTER ADVANCING 2 LINES.   00740000
+           ADD 2 TO LINE-CNT.                                           00741000
+           MOVE SORT-DEPT TO DEPT-HDR.                                  00742000
+                                                                        00743000
+       810-PRINT-TYPE-TOTAL.                                            00744000
+           MOVE TYPE-ACCUM TO VALUE-REPORT.                             00745000
+           IF PREV-EXP-TYPE = "E"                                       00746000
+               ADD TYPE-ACCUM               TO TOT-ENG-VALUE
+               MOVE "ENGINEERING EXP TOTAL" TO TOT-LITERAL              00747000
+           ELSE                                                         00748000
+               IF PREV-EXP-TYPE = "O"                                   00749000
+                   ADD TYPE-ACCUM             TO TOT-OPR-VALUE
+                   MOVE "OPERATING EXP TOTAL" TO TOT-LITERAL.           00750000
+           MOVE REP-TOTAL-LINE   TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM REP-TOTAL-LINE AFTER ADVANCING 2 LINES.   00751000
+           MOVE BLANK-LINE       TO  PRT-LINE.
+           MOVE "4"              TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM BLANK-LINE AFTER ADVANCING 4 LINES.       00752000
+           ADD 6 TO LINE-CNT.                                           00753000
+           ADD TYPE-ACCUM TO DEPT-ACCUM.                                00754000
+                                                                        00755000
+       820-PRINT-SHIFT-TOTAL.                                           00756000
+           MOVE SHIFT-ACCUM TO VALUE-REPORT.                            00757000
+           IF PREV-SHIFT = "N"                                          00758000
+               MOVE "NIGHT SHIFT TOTAL" TO TOT-LITERAL                  00759000
+           ELSE                                                         00760000
+               IF PREV-SHIFT = "D"                                      00761000
+                   MOVE "DAY SHIFT TOTAL" TO TOT-LITERAL                00762000
+               ELSE                                                     00763000
+                   IF PREV-SHIFT = "A"                                  00764000
+                       MOVE "AFTERNOON SHIFT TOTAL" TO TOT-LITERAL.     00765000
+           MOVE REP-TOTAL-LINE   TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM REP-TOTAL-LINE AFTER ADVANCING 2 LINES.   00766000
+           MOVE BLANK-LINE       TO  PRT-LINE.
+           MOVE "1"              TO  PRT-CTL.
+           WRITE PRT-REC.                                               00725000
+      ***  WRITE PRT-REC FROM BLANK-LINE AFTER ADVANCING 1 LINES.       00767000
+           ADD 3 TO LINE-CNT.                                           00768000
+           ADD SHIFT-ACCUM TO TYPE-ACCUM.                               00769000
+
+       830-PRINT-GRAND-TOTAL.
+           MOVE 1                TO  NEW-PAGE-FLAG.
+           PERFORM 750-PRINT-HEADINGS.
+           MOVE BLANK-LINE       TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.
+
+           MOVE "ENGINEERING EXP GRAND TOTAL" TO TOT-LITERAL.
+           MOVE TOT-ENG-VALUE    TO  VALUE-REPORT.
+           MOVE REP-TOTAL-LINE   TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.
+           MOVE BLANK-LINE       TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.
+
+           MOVE "OPERATING EXP GRAND TOTAL" TO TOT-LITERAL.
+           MOVE TOT-OPR-VALUE    TO VALUE-REPORT.
+           MOVE REP-TOTAL-LINE   TO  PRT-LINE.
+           MOVE "2"              TO  PRT-CTL.
+           WRITE PRT-REC.
+
+       899-CREATE-EXIT.                                                 00772000
+           EXIT.                                                        00773000
+                                                                        00774000
+       900-ERROR SECTION.
+                                                                        00776000
+       990-BLOWUP.                                                      00777000
+           MOVE "TDLYCHGS"   TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING C-BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, DUMMY-KSAM-STAT, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+                                                                        00796000
+       1000-CLOSE-FILES.                                                00797000
+           CLOSE ONLINE-PRT, TRANS-FILE, MACCOUNT.                      00798000
+

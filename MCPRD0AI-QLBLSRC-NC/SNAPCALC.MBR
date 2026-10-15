@@ -1,0 +1,271 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SNAPCALC.
+       DATE-WRITTEN.  MAY 1998.
+
+      ***************************************************************
+      *                                                             *
+      *C  S C A L C N A P                                           *
+      *C                                                            *
+      *C  THIS SUB PROGRAM CALCULATES REQUISITION AMOUNTS PER A     *
+      *C  FORMULA NAPANEE WANTED APPLIED. IT ESSENTIALLY TRIES TO   *
+      *C  DETERMINE IF A REQUISITION NEEDS TO BE CUT EVEN THOUGH    *
+      *C  THE CODE HAS FALLEN BELOW REORDER. THERE IS SIMILAR LOGIC *
+      *C  IN THE CALLING PROGRAM (TREQUPDT) BUT NAPANEE REQUESTED   *
+      *C  THAT NO REQ EVEN GET CUT IF THE REQ DID NOT MEET THEIR    *
+      *C  REQUIREMENTS. SINCE THESE REQUIREMENTS DID NOT APPLY TO   *
+      *C  ANY OTHER PLANT, IT SEEMED EASIEST TO WRITE A SUBPROGRAM  *
+      *C  THAT WOULD AFFECT ONLY NAPANEE.                           *
+      *                                                             *
+      ***************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DPOITEM
+               ASSIGN TO DATABASE-MCFLCS1001
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQITM
+               ASSIGN TO DATABASE-MCFLCS2202
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DPOITEM
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC.
+           COPY DDS-MCRPCS1000  OF MCFLCS1001.
+
+       FD  DREQITM
+           LABEL RECORDS ARE STANDARD.
+       01  DREQITM-REC.
+           COPY DDS-MCRPCS2200  OF MCFLCS2202.
+
+       FD  MREQ
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-REC.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       WORKING-STORAGE SECTION.
+       01  BASE                         PIC X(10).
+
+       01  CODE-ARG                     PIC X(8).
+
+       01  COMPANY-SAVE                 PIC X(3).
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  QTY-ON-DOCK                  PIC S9(8)V9(4) VALUE ZEROS.
+
+       01  REQ-QUANTITY                 PIC S9(8).
+
+       COPY SONORDER IN COPYLIB.
+
+       01  STR-QTY-ON-DOCK              PIC S9(8)   VALUE ZEROS.
+
+       01  SUB                          PIC 99.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       01  TOTAL-ON-DOCK                PIC S9(8).
+
+       01  TOTAL-STOCK                  PIC S9(8).
+
+       01  WORK-QUANTITY                PIC S9(8).
+
+      **************************************************************
+      **                DATABASE I/O BUFFER AREA                  **
+      **************************************************************
+
+       COPY DBSTAT   IN COPYLIB.
+
+       COPY DPOITEM  IN COPYLIB.
+
+       COPY DREQITM  IN COPYLIB.
+
+       COPY MREQ     IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+      **************************************************************
+      **                LINKAGE SECTION                           **
+      **************************************************************
+
+       LINKAGE SECTION.
+
+       01  PASSED-PARMS.
+           05  PASSED-CODE              PIC X(7).
+           05  CALC-REORDER-QTY         PIC S9(8).
+
+       01  CREATE-REQ-SW                PIC X.
+
+       PROCEDURE DIVISION USING  PASSED-PARMS, CREATE-REQ-SW.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK  THRU 1-H-X.
+           PERFORM 6-MAIN THRU 6-M-X.
+
+       2-EOJ.
+           CLOSE        DPOITEM
+                        DREQITM
+                        MREQ
+                        MSTORERM.
+           GOBACK.
+
+       1-HSK.
+           OPEN INPUT   DPOITEM
+                        DREQITM
+                        MREQ
+                        MSTORERM.
+           MOVE 0    TO TOTAL-STOCK,
+                        TOTAL-ON-DOCK.
+       1-H-X.
+           EXIT.
+
+       6-MAIN.
+           MOVE PASSED-CODE TO CORPCDE OF MSTORERM-REC,
+                               CODE-ARG.
+           READ MSTORERM INTO BUF-MSTORERM
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 2-EOJ.
+           IF STR-DIR-CHRG-DEPT = SPACES
+               NEXT SENTENCE
+           ELSE
+           MOVE "Y" TO CREATE-REQ-SW
+           GO TO 6-M-X.
+
+           PERFORM 60-GET-ONORDER THRU 60-GO-X.
+           ADD STR-ONHAND TO SONORDER-STR-ONORDER
+               GIVING TOTAL-STOCK.
+
+           PERFORM 61-GET-OPEN-REQS THRU 61-GOR-X.
+
+           PERFORM 62-GET-ONDOCK THRU 62-GO-X.
+
+           SUBTRACT STR-RESERVED FROM TOTAL-STOCK
+               GIVING WORK-QUANTITY.
+
+           SUBTRACT WORK-QUANTITY FROM STR-MAX
+               GIVING REQ-QUANTITY.
+
+           IF REQ-QUANTITY NOT > 0
+               NEXT SENTENCE
+           ELSE
+           IF STR-SOQ = 0
+               MOVE "Y" TO CREATE-REQ-SW
+               MOVE REQ-QUANTITY TO CALC-REORDER-QTY
+           ELSE
+           IF REQ-QUANTITY < STR-SOQ
+               NEXT SENTENCE
+           ELSE
+           MOVE "Y" TO CREATE-REQ-SW
+           MOVE REQ-QUANTITY TO CALC-REORDER-QTY.
+
+       6-M-X.
+           EXIT.
+
+       60-GET-ONORDER.
+           MOVE SPACES                  TO  SONORDER-PARMS.
+           MOVE "631"                   TO  COMPANY-SAVE.
+           MOVE "Y"                     TO  SONORDER-CALC-DIR-ORD-SW.
+           CALL "SONORDER" USING BASE,
+                                 CODE-ARG,
+                                 SONORDER-PARMS,
+                                 COMPANY-SAVE,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+       60-GO-X.    EXIT.
+
+       61-GET-OPEN-REQS.
+           MOVE PASSED-CODE TO CORPCDE OF DREQITM-REC.
+           START DREQITM KEY = CORPCDE OF DREQITM-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 61-GOR-X
+               ELSE
+               GO TO 61-GOR-X.
+       61-GOR-LOOP.
+           READ DREQITM NEXT INTO BUF-DREQITM
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 61-GOR-X.
+           IF REQITM-CORP-CODE NOT = PASSED-CODE GO TO 61-GOR-X.
+           MOVE REQITM-REQ-NUMBER TO REQNO OF MREQ-REC.
+           READ MREQ INTO BUF-MREQ
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 61-GOR-X.
+           IF REQ-RELEASE-STAT  =  "XX"
+               IF REQ-HOLD-STATUS  =  "BATCHFILE"
+                   NEXT SENTENCE
+               ELSE
+               GO TO 61-GOR-LOOP.
+           IF REQ-SUBD = "1210"
+               ADD REQITM-QTY-TO-ORD TO TOTAL-STOCK.
+           GO TO 61-GOR-LOOP.
+
+       61-GOR-X.
+
+       62-GET-ONDOCK.
+           MOVE PASSED-CODE TO CORPCDE OF DPOITEM-REC.
+           START DPOITEM KEY = CORPCDE OF DPOITEM-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 62-GO-X.
+       62-GO-LOOP.
+           READ DPOITEM NEXT INTO BUF-DPOITEM
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 62-GO-X.
+           IF ITM-CORP-CODE NOT EQUAL PASSED-CODE
+               ADD TOTAL-ON-DOCK TO TOTAL-STOCK
+               GO TO 62-GO-X.
+           IF ITM-QTY-DLVR > ITM-QTY-STORED
+               SUBTRACT ITM-QTY-STORED FROM ITM-QTY-DLVR GIVING
+                   QTY-ON-DOCK
+               IF ITM-UM = STR-UM
+                   MULTIPLY QTY-ON-DOCK  BY 1 GIVING
+                       STR-QTY-ON-DOCK ROUNDED
+                   ADD STR-QTY-ON-DOCK TO TOTAL-ON-DOCK
+               ELSE
+               IF ITM-UM = STR-UM1
+                   MULTIPLY QTY-ON-DOCK  BY  STR-UM1-CF GIVING
+                       STR-QTY-ON-DOCK ROUNDED
+                   ADD STR-QTY-ON-DOCK  TO  TOTAL-ON-DOCK
+               ELSE
+               IF ITM-UM = STR-UM2
+                   MULTIPLY QTY-ON-DOCK  BY  STR-UM2-CF GIVING
+                       STR-QTY-ON-DOCK ROUNDED
+                   ADD STR-QTY-ON-DOCK  TO  TOTAL-ON-DOCK.
+           GO TO 62-GO-LOOP.
+       62-GO-X.    EXIT.

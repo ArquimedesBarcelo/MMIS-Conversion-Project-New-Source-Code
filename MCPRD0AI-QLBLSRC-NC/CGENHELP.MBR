@@ -1,0 +1,590 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CGENHELP.
+       AUTHOR.     MARVIN MITCHELL.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER. AS400.
+       OBJECT-COMPUTER. AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+
+      *D  ONCE CALLED:
+      *D        CGENHELP will switch from the current screen of the
+      *D    calling program to the FGENHELP help screen located in
+      *D    the ZGENHELP display file.
+      *D
+      *D        It will then search the MVALIDTYPE (MCFPCS5100) data-
+      *D    database for the TYPE-CODE passed via the CGENHELP-TYPE
+      *D    field.  If the type-code is found, it will retrieve all
+      *D    records in the DVALIDDATA (MCFPCS5200) database that are
+      *D    linked to that type code.
+      *D
+      *D        The program then displays those records on the help
+      *D    screen and lets the user choose the code of their choice
+      *D    by placing an X to the left of that code and description
+      *D    and pressing <ENTER>.
+      *D
+      *D  ****  IF A CODE IS SELECTED:
+      *D           The program returns to the calling program with
+      *D           selected code in the CGENHELP-CODE field.
+      *D
+      *D  ****  IF NO CODE IS SELECTED:
+      *D           The program moves spaces to the CGENHELP-CODE
+      *D           field and returns to the calling program.
+      *D
+      *D  ****  IF AN ERROR IS DETECTED:
+      *D           The program will move a message to the field
+      *D           BU-DISPLAY-MSG and debugging info to the
+      *D           BU-DISPLAY-AREA fields 4 and 5.
+      *D        OTHERWISE:
+      *D           BU-DISPLAY-MSG  will contain spaces and
+      *D           BU-DISPLAY-AREA will contain zeros.
+      *D
+      *D    BEFORE RETURNING TO THE CALLING PROGRAM:
+      *D        CGENHELP will redisplay the screen that was on the
+      *D        CRT before it was called.
+      *D
+      *D    The following FOUR parameters are required to execute
+      *D    this program on the AS/400:
+      *D
+      *D    PARAMETERS:
+      *D       BU-DISPLAY-AREA         Returns:
+      *D                                 ZEROS if no errors occur.
+      *D
+      *D                                 DEBUGGING INFORMATION in
+      *D                                 BU-DISPLAY-FLDS 4 and 5 if
+      *D                                 an ERROR is detected.
+      *D
+      *D       BU-DISPLAY-MSG          Returns:
+      *D                                 SPACES of no errors occur.
+      *D
+      *D                                 Message to help locate the
+      *D                                 problem if an error occurs.
+      *D
+      *D       CGENHELP-PARMS
+      *D         01  CGENHELP-PARMS.
+      *D             05  CGENHELP-KEY.
+      *D                 10  CGENHELP-TYPE    PIC X(6).
+      *D                 10  CGENHELP-TYPE    PIC X(6).
+      *D
+      *D         Passed:
+      *D           Type Code in the CGENHELP-TYPE field.
+      *D
+      *D         Returns:
+      *D           SPACES in CGENHELP-CODE in no selection
+      *D           is made.
+      *D
+      *D           Valid Code in CGENHELP-CODE if a selection
+      *D           is made.
+      *D
+      *D       VIEW-COMARE             Passed:
+      *D                                 Name of current screen.
+      *D
+      *D    ADDITIONAL REQUIREMENTS:
+      *D       1)  The CGENHELP-PARMS field CGENHELP-TYPE must contain
+      *D           a valid six character type code.
+
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZGENHELP-SI
+               ORGANIZATION IS TRANSACTION
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MVALID-FILE
+               ASSIGN TO DATABASE-MCFLCS5101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DVALID-FILE
+               ASSIGN TO DATABASE-MCFLCS5201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                   PIC X(2000).
+
+       FD  MVALID-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  TYPE-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS5101.
+
+       FD  DVALID-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  DATA-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS5201.
+
+       WORKING-STORAGE SECTION.
+
+       COPY CATREAD  OF COPYLIB.
+       COPY DVLDDATA IN COPYLIB.
+       COPY CPYIND OF COPYLIB.
+       COPY IOFEEDBACK OF COPYLIB.
+       COPY MVLDTYPE IN COPYLIB.
+       COPY WSCONTROL OF COPYLIB.
+
+       01  COUNTERS.
+           05  CURRENT-SCREEN-NO         PIC 99 COMP-3 VALUE 0.
+           05  ENTRIES-ON-SCREEN         PIC 99 COMP-3 VALUE 0.
+           05  SCREEN-INDEX              PIC 99 COMP-3 VALUE 1.
+
+       01  DSPLY-STATUS.
+           05  DSPLY-STATUS-1            PIC X     VALUE "0".
+           05  DSPLY-STATUS-2            PIC X     VALUE "0".
+
+       COPY DBSTAT IN COPYLIB.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X     VALUE "0".
+           05  FILE-STATUS-2             PIC X     VALUE "0".
+
+       01  FHELPSC1.
+           COPY DD-FHELPSC1 OF ZGENHELP.
+
+       01  SAVE-KEY.
+           05  SAVE-TYPE                 PIC X(6)  VALUE SPACES.
+           05  SAVE-CODE                 PIC X(6)  VALUE SPACES.
+
+       01  SWITCHES.
+           05  EOF-SW                    PIC X     VALUE "N".
+           05  TOF-SW                    PIC X     VALUE "N".
+           05  FULL-SCREEN-SW            PIC X     VALUE "N".
+           05  TOP-OF-CURRENT-SCREEN-SW  PIC X     VALUE "N".
+
+       01  CGENHELP-VIEW-CFNAME          PIC X(16).
+
+       01  WS-DISPLAY-AREA.
+           05    FILLER                  PIC XX.
+           05  WS-DISPLAY-MSG            PIC X(27).
+           05    FILLER                  PIC XX.
+           05  WS-DISPLAY-STAT           PIC S9(4).
+           05    FILLER                  PIC XX.
+           05  WS-DISPLAY-FLD            PIC X(14).
+           05    FILLER                  PIC XX.
+
+       01  WS-SCREEN.
+           05  MVALID-DESC-WS            PIC X(50).
+           05  WS-DETAIL.
+               10  WS-ENTRIES   OCCURS  28  TIMES.
+                   15  WS-X              PIC X.
+                   15  WS-CODE           PIC X(6).
+                   15  WS-DESC           PIC X(30).
+
+      ***************************************
+      *     L I N K A G E  S E C T I O N    *
+      ***************************************
+       LINKAGE SECTION.
+       01  BU-DISPLAY-AREA               PIC X(110).
+       01  BU-DISPLAY-FLDS REDEFINES BU-DISPLAY-AREA.
+           05  BU-DISPLAY-LINE OCCURS 5 TIMES.
+               10  BU-DISPLAY-FLD        PIC X(14).
+               10  BU-DISPLAY-FLD9       PIC S9(8).
+
+       01  BU-DISPLAY-MSG.
+           05  BU-DISPLAY-MSG-1          PIC X.
+           05  BU-DISPLAY-MSG-2          PIC X(57).
+           05  BU-DISPLAY-PARA           PIC X(2).
+
+       COPY CGENHELP    OF COPYLIB.
+
+       COPY VCOMLINK    OF COPYLIB.
+
+       PROCEDURE DIVISION  USING
+                                 BU-DISPLAY-AREA,
+                                 BU-DISPLAY-MSG,
+                                 CGENHELP-PARMS,
+                                 VIEW-COMAREA.
+
+       START-PROGRAM.
+           PERFORM 1-HOUSEKEEPING THRU 1-EXIT.
+           PERFORM 6-MAIN         THRU 6-EXIT
+           PERFORM 2-END-OF-JOB   THRU 2-EXIT.
+           GOBACK.
+
+       1-HOUSEKEEPING.
+           MOVE SPACES TO BUF-DVALIDDATA.
+           MOVE SPACES TO BUF-MVALIDTYPE.
+           MOVE 0      TO CURRENT-SCREEN-NO.
+           MOVE 0      TO ENTRIES-ON-SCREEN.
+           MOVE 1      TO SCREEN-INDEX.
+           MOVE ZEROS  TO DSPLY-STATUS.
+           MOVE "0"    TO DSPLY-STATUS-2.
+           MOVE ZEROS  TO STATUS-AREA.
+           MOVE ZEROS  TO FILE-STATUS.
+           MOVE SPACES TO FHELPSC1.
+           MOVE SPACES TO SAVE-KEY.
+           MOVE "N"    TO   EOF-SW,
+                            TOF-SW,
+                            FULL-SCREEN-SW,
+                            TOP-OF-CURRENT-SCREEN-SW.
+           MOVE SPACES TO  WS-DISPLAY-AREA.
+
+           OPEN I-O DISPLAY-FILE.
+           OPEN INPUT MVALID-FILE.
+           OPEN INPUT DVALID-FILE.
+           MOVE SPACES       TO BU-DISPLAY-MSG.
+
+       1-EXIT.
+           EXIT.
+
+       2-END-OF-JOB.
+           CLOSE MVALID-FILE.
+           CLOSE DVALID-FILE.
+           CLOSE DISPLAY-FILE.
+
+       2-EXIT.
+           EXIT.
+
+       30-READ-FORWARD.
+           READ DVALID-FILE NEXT
+             INTO BUF-DVALIDDATA
+               AT END
+                 MOVE "Y" TO EOF-SW.
+
+       30-EXIT.
+           EXIT.
+
+       31-READ-BACKWARD.
+           READ DVALID-FILE PRIOR
+             INTO BUF-DVALIDDATA
+               AT END
+                 MOVE "Y" TO TOF-SW.
+
+       31-EXIT.
+           EXIT.
+
+       6-MAIN.
+           MOVE "FHELPSC1" TO CGENHELP-VIEW-CFNAME.
+
+           MOVE CGENHELP-TYPE TO VLDCODETYP OF DATA-REC,
+                                 VLDCODETYP OF TYPE-REC,
+                                 SAVE-TYPE.
+           MOVE SPACES TO WS-SCREEN, CGENHELP-CODE.
+
+           PERFORM 60-START-LIST THRU 60-EXIT.
+
+       6-PUT-BUFFER.
+           MOVE WS-SCREEN TO FHELPSC1.
+           MOVE FHELPSC1 TO DSPLY-REC.
+
+       6-SHOW.
+           PERFORM 99-SCREEN-WRITE THRU 99-EXIT.
+
+       6-READ.
+           PERFORM 98-SCREEN-READ  THRU 98-EXIT.
+
+       6-PROCESS.
+           IF VIEW-LASTKEY = 3
+             GO TO 6-EXIT
+           ELSE
+             IF VIEW-LASTKEY = 7
+                 IF TOF-SW = "Y"
+                     CLOSE DVALID-FILE
+                     OPEN INPUT DVALID-FILE
+                     READ DVALID-FILE FIRST INTO BUF-DVALIDDATA
+                     MOVE "N" TO TOF-SW
+                     MOVE  0  TO SCREEN-INDEX
+                     PERFORM 67-NEXT-SCREEN THRU 66-EXIT
+                     GO TO 6-PUT-BUFFER
+                 ELSE
+                 PERFORM 67-NEXT-SCREEN THRU 67-EXIT
+                 GO TO 6-PUT-BUFFER
+             ELSE
+               IF VIEW-LASTKEY = 6
+                 IF EOF-SW = "Y"
+                     CLOSE DVALID-FILE
+                     OPEN INPUT DVALID-FILE
+                     READ DVALID-FILE LAST INTO BUF-DVALIDDATA
+                     PERFORM 31-READ-BACKWARD THRU 31-EXIT
+                         UNTIL (VALID-CODE-TYPE = VALID-TYPE-CODE)
+                             OR (TOF-SW = "Y")
+                     SUBTRACT 1 FROM ENTRIES-ON-SCREEN
+                     PERFORM 66-PREVIOUS-SCREEN THRU 66-EXIT
+                     GO TO 6-PUT-BUFFER
+                 ELSE
+                 PERFORM 66-PREVIOUS-SCREEN THRU 66-EXIT
+                 GO TO 6-PUT-BUFFER.
+      *****   The following section of code is not needed for operation
+      *****   on the AS/400.  If the use of a function key is not
+      *****   specified in SDU, the program will automatically inform
+      *****   the user that the key selected is invalid.
+      *****
+      *****    ELSE
+      *****      IF VIEW-LASTKEY > 7  OR
+      *****          VIEW-LASTKEY = 5  OR
+      *****           VIEW-LASTKEY = 4   OR
+      *****             VIEW-LASTKEY = 3  OR
+      *****               VIEW-LASTKEY = 2  OR
+      *****                 VIEW-LASTKEY = 1
+      *****        MOVE 09  TO LANG-SETNUM
+      *****        MOVE 010 TO LANG-MSGNUM
+      *****        PERFORM 999-CATREAD THRU 999-EXIT
+      *****        PERFORM 6-PUT-BUFFER
+      *****        GO TO 6-SHOW.
+
+           MOVE DSPLY-REC TO WS-SCREEN.
+           MOVE   1       TO SCREEN-INDEX.
+           PERFORM 61-CHECK-FOR-X THRU 61-EXIT.
+
+       6-EXIT.
+           EXIT.
+
+       60-START-LIST.
+      *****  This paragraph initially fills the list screen with values.
+
+           START MVALID-FILE
+               KEY IS EQUAL TO VLDCODETYP OF TYPE-REC
+                 INVALID KEY
+                   MOVE "**ERROR** INVALID TYPE CODE PASSED TO CGENHELP"
+                       TO BU-DISPLAY-MSG
+                   GO TO 99-BLOWUP.
+
+           READ MVALID-FILE  INTO  BUF-MVALIDTYPE
+             INVALID KEY
+               MOVE "INVALID KEY ERROR FOR MVALID IN 60-"
+                   TO BU-DISPLAY-MSG
+               GO TO 99-BLOWUP.
+
+           MOVE VALID-TYPE-DESC TO MVALID-DESC-WS.
+
+           START DVALID-FILE
+               KEY IS EQUAL TO VLDCODETYP OF DATA-REC
+                 INVALID KEY
+                    MOVE "Y" TO EOF-SW
+                    MOVE  0  TO ENTRIES-ON-SCREEN
+                    MOVE  1  TO CURRENT-SCREEN-NO.
+
+           IF EOF-SW = "N"
+             PERFORM 67-NEXT-SCREEN THRU 67-EXIT.
+
+       60-EXIT.
+           EXIT.
+
+       61-CHECK-FOR-X.
+      *****  This paragraph checks to see if the user has selected a
+      *****  code and description from the list screen.
+
+           IF SCREEN-INDEX > ENTRIES-ON-SCREEN  OR
+              SCREEN-INDEX > 28
+             GO TO 61-EXIT.
+
+           IF WS-X (SCREEN-INDEX) NOT = SPACES
+             MOVE WS-CODE (SCREEN-INDEX) TO CGENHELP-CODE
+             GO TO 61-EXIT
+           ELSE
+             ADD 1 TO SCREEN-INDEX
+             GO TO 61-CHECK-FOR-X.
+
+       61-EXIT.
+           EXIT.
+
+       66-PREVIOUS-SCREEN.
+      *****  This paragraph checks to see which record the program
+      *****  is pointing to before filling the screen buffer with
+      *****  the values for the previous screen.
+      *****
+      *****  The TOP-OF-CURRENT-PAGE-SW is used to let the program
+      *****  know whether it is pointing to the first or last record
+      *****  on the current screen.  If the program is pointing to
+      *****  the last record on the current screen, it must traverse
+      *****  BACKWARD 28 records to account for the records that are
+      *****  currently on the screen, and then traverse BACKWARDS
+      *****  28 more records to fill the PREVIOUS screen.
+      *****  If the program is pointing to the first record of the
+      *****  current screen, it must only traverse BACKWARDS through
+      *****  28 valid records to fill the PREVIOUS screen.
+
+           IF CURRENT-SCREEN-NO = 1
+             GO TO 66-EXIT
+           ELSE
+             IF EOF-SW = "Y"
+               MOVE ENTRIES-ON-SCREEN TO SCREEN-INDEX
+             ELSE
+               MOVE 28 TO SCREEN-INDEX.
+
+           MOVE SPACES TO WS-DETAIL.
+
+           IF TOP-OF-CURRENT-SCREEN-SW = "N"
+             MOVE "N" TO FULL-SCREEN-SW
+             PERFORM 660-FILL-PREVIOUS THRU 660-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+             MOVE 28 TO SCREEN-INDEX
+             MOVE "N" TO FULL-SCREEN-SW
+             PERFORM 660-FILL-PREVIOUS THRU 660-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+             MOVE "Y" TO TOP-OF-CURRENT-SCREEN-SW
+           ELSE
+             MOVE "N" TO FULL-SCREEN-SW
+             PERFORM 660-FILL-PREVIOUS THRU 660-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y".
+
+           MOVE "N" TO EOF-SW.
+           SUBTRACT 1 FROM CURRENT-SCREEN-NO.
+
+       66-EXIT.
+           EXIT.
+
+       660-FILL-PREVIOUS.
+      *****  This paragraph fills the buffer with the values for
+      *****  the previous screen.
+
+           PERFORM 31-READ-BACKWARD THRU 31-EXIT.
+           IF VALID-CODE-TYPE NOT = SAVE-TYPE
+             MOVE "Y" TO TOF-SW
+             PERFORM 30-READ-FORWARD THRU 30-EXIT.
+
+           IF TOF-SW = "Y"
+             MOVE 0 TO SCREEN-INDEX
+             GO TO 660-CHECK.
+
+           IF VALID-CODE-DESC = SPACES
+             NEXT SENTENCE
+           ELSE
+             MOVE SPACE            TO  WS-X (SCREEN-INDEX)
+             MOVE VALID-CODE-KEY   TO  SAVE-KEY
+             MOVE SAVE-CODE        TO  WS-CODE (SCREEN-INDEX)
+             MOVE VALID-CODE-DESC  TO  WS-DESC (SCREEN-INDEX)
+             SUBTRACT 1 FROM SCREEN-INDEX.
+
+       660-CHECK.
+           IF TOF-SW = "Y"
+             MOVE "Y" TO FULL-SCREEN-SW
+           ELSE
+             IF SCREEN-INDEX < 1
+               MOVE "Y" TO FULL-SCREEN-SW.
+
+       660-EXIT.
+           EXIT.
+
+       67-NEXT-SCREEN.
+      *****  This paragraph checks to see which record the program
+      *****  is pointing to before filling the screen buffer with
+      *****  values for the NEXT screen.
+      *****
+      *****  The TOP-OF-CURRENT-PAGE-SW is used to let the program
+      *****  know whether it is pointing to the first or last record
+      *****  on the current screen.  If the program is pointing to
+      *****  the first record on the current screen, it must traverse
+      *****  FORWARDS 28 records to account for the records that are
+      *****  currently listed on the screen, and then traverse FOR-
+      *****  WARD 28 more records to fill the NEXT screen.
+      *****  If the program is pointing to the last record of the
+      *****  current screen, it must only traverse FORWARDS through
+      *****  28 valid records to fill the NEXT screen.
+
+           IF EOF-SW = "Y"
+              GO TO 67-EXIT.
+
+           MOVE SPACES TO WS-DETAIL.
+           MOVE   1    TO SCREEN-INDEX.
+           MOVE  "N"   TO FULL-SCREEN-SW.
+
+           IF TOP-OF-CURRENT-SCREEN-SW = "N"
+             PERFORM 670-FILL-NEXT THRU 670-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+           ELSE
+             PERFORM 670-FILL-NEXT THRU 670-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y"
+             MOVE SPACES TO WS-DETAIL
+             MOVE  "N"   TO FULL-SCREEN-SW
+             MOVE   1    TO SCREEN-INDEX
+             PERFORM 670-FILL-NEXT THRU 670-EXIT
+                 UNTIL FULL-SCREEN-SW = "Y".
+
+           MOVE "N"  TO TOP-OF-CURRENT-SCREEN-SW.
+           ADD   1   TO CURRENT-SCREEN-NO.
+
+       67-EXIT.
+           EXIT.
+
+       670-FILL-NEXT.
+      *****  This paragraph fills the buffer with the values for the
+      *****  next list screen.
+
+           IF VALID-CODE-DESC = SPACES
+             GO TO 670-READ
+           ELSE
+             MOVE SPACES          TO  WS-X (SCREEN-INDEX)
+             MOVE VALID-CODE-KEY  TO  SAVE-KEY
+             MOVE SAVE-CODE       TO  WS-CODE (SCREEN-INDEX)
+             MOVE VALID-CODE-DESC TO  WS-DESC (SCREEN-INDEX)
+             ADD      1           TO  SCREEN-INDEX.
+
+       670-READ.
+           PERFORM 30-READ-FORWARD THRU 30-EXIT
+           IF EOF-SW = "Y"   OR
+               VALID-CODE-TYPE NOT = SAVE-TYPE
+             SUBTRACT 1 FROM SCREEN-INDEX
+             MOVE SCREEN-INDEX  TO ENTRIES-ON-SCREEN
+             MOVE      "Y"      TO FULL-SCREEN-SW,
+                                   EOF-SW.
+
+           IF SCREEN-INDEX > 28
+             IF EOF-SW NOT = "Y"
+               MOVE 28  TO ENTRIES-ON-SCREEN
+               MOVE "Y" TO FULL-SCREEN-SW
+               IF VALID-CODE-DESC = SPACES
+                 PERFORM 671-SKIP-EMPTY-RECS THRU 671-EXIT.
+
+       670-EXIT.
+           EXIT.
+
+       671-SKIP-EMPTY-RECS.
+      *****  This paragraph is used to point to the next record in
+      *****  the database that does not have a description equal
+      *****  to spaces.
+
+           PERFORM 30-READ-FORWARD THRU 30-EXIT  UNTIL
+               (VALID-CODE-DESC NOT = SPACES) OR
+               (EOF-SW = "Y").
+
+           IF EOF-SW = "Y"
+             MOVE 28 TO ENTRIES-ON-SCREEN.
+
+       671-EXIT.
+           EXIT.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS CGENHELP-VIEW-CFNAME
+               INDICATORS ARE INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+             MOVE 3 TO VIEW-LASTKEY
+           ELSE
+             MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       98-EXIT.
+           EXIT.
+
+       98A-SCREEN-READ.
+           READ DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDICATORS ARE INDICS
+                   NO DATA MOVE DSPLY-STATUS TO DSPLY-STATUS.
+
+       98A-EXIT.
+           EXIT.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS CGENHELP-VIEW-CFNAME
+               INDICATORS ARE INDICS.
+
+       99-EXIT.
+           EXIT.
+
+       99-BLOWUP.
+           MOVE "** CGENHELP **" TO BU-DISPLAY-FLD (4).
+           MOVE CGENHELP-TYPE    TO BU-DISPLAY-FLD (5).
+           PERFORM 2-END-OF-JOB THRU 2-EXIT.
+           GOBACK.
+
+       99-BLOWUP-EXIT.
+           EXIT.

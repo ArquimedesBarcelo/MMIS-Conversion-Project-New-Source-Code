@@ -1,0 +1,1266 @@
+001100 IDENTIFICATION DIVISION.
+001200 PROGRAM-ID.     TINVHLD.
+001300 AUTHOR.         BARBARA WINTER/ANNETTE TREUDLER.
+001400 INSTALLATION.   GOODYEAR TIRE & RUBBER COMPANY.
+001500 DATE-WRITTEN.   MARCH 1985.
+001800*REMARKS.
+001900*         INVOICES ON HOLD REPORT.
+002000*
+002100***************************************************************
+002200***************************************************************
+002300***                   I N V H L D                           ***
+002400***                                                         ***
+002500***      THIS PROGRAM PRINTS ALL INVOICES ON HOLD.  IT      ***
+002600***      SHOWS INVOICE, FREIGHT, ITEM, AND ACCOUNTING       ***
+002700***      DATA BY REGISTER NUMBER.  THE REPORT IS SORTED     ***
+002800***      BY OLDEST DUE DATE OR BY REGISTER NUMBER.          ***
+002900***                                                         ***
+003000***     THE REPORT IS PRINTED TO A DISC FILE.  THE JOB      ***
+003100***     STREAM THAT RUNS THIS PROGRAM SETS THE SPOOLER      ***
+003200***     TYPE AND PRINTER NUMBER AND THEN RUNS A PROGRAM     ***
+003300***     CALLED "XPRTRPT".  THIS IS DONE SO THAT EACH        ***
+003400***     PLANT MAY HAVE THEIR OWN JOB STREAM AND CAN         ***
+003500***     ASSIGN THE REPORT TO ANY PRINTER THEY WISH.         ***
+003600***     "XPRTRPT" ALSO HAS THE ABILITY TO COMPRESS THE      ***
+003700***     132 CHARACTER REPORT TO FIT ON AN 80-COLUMN PRINTER.***
+003800***                                                         ***
+003900***************************************************************
+004000*   CALLING PROGRAM:    TRSCREEN                              *
+004100***************************************************************
+004110
+004120****************************************************************
+004130*
+004140*                        C H A N G E S
+004150*
+004160* JULY 31, 1985  ADDED A SORT OPTION TO ALLOW THE USER TO SORT
+004170* THE REPORT BY DATE OR REGISTER NUMBER.   DALE HOERLE
+      *
+      *C  JUNE 23, 1994   CR KALMAN
+      *C   ADDED CALL TO COBOL ERROR HANDLER -MCXCBLERR.
+      *C
+      *C  JULY 15, 1996   CA YODER
+      *C   MODIFIED FOR CENTURY DATABASE CHANGES.
+      *C
+004180****************************************************************
+004300 ENVIRONMENT DIVISION.
+004400 CONFIGURATION SECTION.
+004500 SOURCE-COMPUTER.    IBM-AS400.
+004600 OBJECT-COMPUTER.    IBM-AS400.
+       SPECIAL-NAMES.    C01 IS NEW-PAGE.
+
+004700 INPUT-OUTPUT SECTION.
+004800 FILE-CONTROL.
+004900     SELECT DISC-PRT           ASSIGN TO PRINTER-MCPRT.
+005000     SELECT HOLD-FILE          ASSIGN TO DISK-INVSRT.
+005100     SELECT SORT-FILE          ASSIGN TO DISK-SORT.
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOFREIGHT-I
+                  ASSIGN TO DATABASE-MCFLCS2404
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVITM-I
+                  ASSIGN TO DATABASE-MCFLCS2601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVACCT-I
+                  ASSIGN TO DATABASE-MCFLCS2701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+005200
+005300 DATA DIVISION.
+005400 FILE SECTION.
+005500
+005600 FD  DISC-PRT
+005700     RECORD CONTAINS 133 CHARACTERS.
+005800 01  PRT-REC.
+006000     05  PRT-LINE                PIC X(133).
+006100
+006200 FD  HOLD-FILE
+006300     RECORD CONTAINS 14 CHARACTERS.
+006400 01  HOLD-REC.
+006500     05  HOLD-REG-NO             PIC X(6).
+006600     05  HOLD-DUE-DATE           PIC X(8).
+006700
+006800 SD  SORT-FILE
+006900     RECORD CONTAINS 14 CHARACTERS.
+007000 01  SORT-REC.
+007100     05  SORT-INV-NO             PIC X(6).
+007200     05  SORT-DUE-DATE           PIC X(8).
+007300
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-MCRPCS2500   OF MCFLCS2501.
+
+       FD  DPOFREIGHT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHT-REC-I.
+           COPY DDS-MCRPCS2400   OF MCFLCS2404.
+
+       FD  DINVITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-REC-I.
+           COPY DDS-MCRPCS2600   OF MCFLCS2601.
+
+       FD  DINVACCT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVACCT-REC-I.
+           COPY DDS-MCRPCS2700   OF MCFLCS2701.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-MCRPCS0700   OF MCFLCS0701.
+007400
+007500
+007700**************************************************************
+007800*           W O R K I N G         S T O R A G E              *
+007900**************************************************************
+008000 WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+008100 01  PAGE-NUM                    PIC 9(4)   VALUE 0.
+008200 01  LINE-CTR                    PIC 9(3)   VALUE 70.
+9406CK 01  SCOPE   PIC X.
+008300
+008800 01  CE-TOTALS.
+008900     05  G-CE-1-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009000     05  G-CE-2-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009100     05  G-CE-3-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009200     05  G-CE-4-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009300     05  G-CE-5-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009400     05  G-CE-6-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009500     05  G-CE-7-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009600     05  G-CE-8-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009700     05  G-CE-9-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009800     05  G-CE-Z-TOTAL               PIC S9(13)V9(2) VALUE 0.
+009900     05  G-CE-EXT-TOTAL             PIC S9(13)V9(2) VALUE 0.
+010000     05  GRAND-TOTAL                PIC S9(13)V9(2) VALUE 0.
+010100
+010200 01  PO-WORK-AREA.
+010300     05  PO-WORK-P                 PIC X.
+010400     05  DISPLAY-PO.
+010500         07  PO-WORK-NO            PIC X(7).
+010600         07  PO-WORK-RLS           PIC X(3).
+010700         07  PO-WORK-RCV           PIC X(3).
+010800
+010900 01  WORK-VENDOR.
+011000     05  WORK-VEN                  PIC X(7).
+011100     05  FILLER                    PIC X(3).
+011300**************************************************************
+011400*                 C A L L E D  R O U T I N E S               *
+011500**************************************************************
+011600 COPY TBLOWUP IN COPYLIB.
+011700 01  VIEW-COMAREA.
+011800     05  FILLER                  PIC X(118)  VALUE ALL "0".
+011900     05  FILLER                  PIC S9(4)   COMP VALUE 9999.
+012000 01  KSAM-STATUS                 PIC X(2)    VALUE SPACES.
+012100
+012200
+012300*---------- PARMS FOR CALL TO "THDPRT2" - HEADER PAGE SUBPROG.
+012400 01  HD-RET-CODE                 PIC S9(4) COMP VALUE 0.
+012500 01  HD-FILE-NAME                PIC X(17) VALUE "DHDR04.PUB".
+012600 01  FNUM                        PIC S9(4) COMP VALUE 0.
+012800
+012900 COPY TDATECHK IN COPYLIB.
+012910 COPY ESCNAM2  IN COPYLIB.
+013000
+013100*----------  INTRINSIC "COMMAND"
+013900 COPY DATAB     IN COPYLIB.
+014000 01  DSET-NAME-AREA.
+014100     03  DSET-NAME               PIC X(10)  VALUE SPACES.
+014200     03  DPOFREIGHT              PIC X(12)  VALUE "DPOFREIGHT;".
+014300     03  DVENDOR                 PIC X(10)  VALUE "DVENDOR;".
+014400     03  DINVACCT                PIC X(10)  VALUE "DINVACCT;".
+014500     03  DINVRCD                 PIC X(10)  VALUE "DINVRCD;".
+014600     03  DINVITM                 PIC X(10)  VALUE "DINVITM;".
+014700
+014800 01  DATABASE-ARGS.
+014900     03  REG-ARG                 PIC X(6)   VALUE SPACES.
+015000     03  VEN-ARG                 PIC X(10)  VALUE SPACES.
+015100     03  DUMMY-ARG               PIC X(14)  VALUE SPACES.
+015200
+015300 01  ITEM-LIST-VALUES.
+015400     03  ALL-ITEM-LIST           PIC XX     VALUE "@;".
+015500     03  REG-SEARCH              PIC X(16)
+015600                                   VALUE "REGISTER-NUMBER;".
+015700     03  VENDOR-SEARCH           PIC X(10)  VALUE "VEN-CODE;".
+015900 COPY DINVRCD  IN COPYLIB.
+016000
+016100 COPY DFREIGHT IN COPYLIB.
+016300 COPY DINVITM  IN COPYLIB.
+016400
+016500 COPY DINVACCT IN COPYLIB.
+016700 COPY DVENDOR  IN COPYLIB.
+016900*************************************************************
+017000*              P R I N T   A R E A S                        *
+017100*************************************************************
+017200 01  PRINT-LINE                  PIC X(132)    VALUE SPACES.
+017300 01  HEAD1 REDEFINES PRINT-LINE.
+017400     05  FILLER                  PIC X(3).
+017500     05  HEAD1-DATE              PIC X(8).
+017600     05  FILLER                  PIC X(3).
+017700     05  HEAD1-TIME              PIC X(8).
+017800     05  FILLER                  PIC X(28).
+017900     05  HEAD1-TITLE             PIC X(30).
+018000     05  FILLER                  PIC X(40).
+018100     05  HEAD1-PAGE              PIC X(5).
+018200     05  HEAD1-PAGENO            PIC ZZZ9.
+018300     05  FILLER                  PIC X(3).
+018400
+018500 01  HEAD2 REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(1).
+018700     05  HEAD2-REGISTER          PIC X(8).
+018800     05  FILLER                  PIC X(3).
+018900     05  HEAD2-INVOICE           PIC X(14).
+019000     05  FILLER                  PIC X(3).
+019100     05  HEAD2-STATUS            PIC X(6).
+019200     05  FILLER                  PIC X(3).
+019300     05  HEAD2-INV-DATE          PIC X(12).
+019400     05  FILLER                  PIC X(3).
+019500     05  HEAD2-ENTRY-DATE        PIC X(10).
+019600     05  FILLER                  PIC X(3).
+019700     05  HEAD2-DUE-DATE          PIC X(8).
+019800     05  FILLER                  PIC X(3).
+019900     05  HEAD2-TERMS             PIC X(5).
+020000     05  FILLER                  PIC X(3).
+020100     05  HEAD2-PO                PIC X(9).
+020200     05  FILLER                  PIC X(4).
+020300     05  HEAD2-ID                PIC X(12).
+020400     05  HEAD2-ADD               PIC X(10).
+020500     05  FILLER                  PIC X(12).
+020600
+020700 01  LINE1 REDEFINES PRINT-LINE.
+020800     05  FILLER                  PIC X(2).
+020900     05  LINE1-REG               PIC X(5).
+021000     05  FILLER                  PIC X(5).
+021100     05  LINE1-INV-NO            PIC X(14).
+021200     05  FILLER                  PIC X(5).
+021300     05  LINE1-STATUS            PIC X(2).
+021400     05  FILLER                  PIC X(6).
+021500     05  LINE1-INV-DATE          PIC X(8).
+021600     05  FILLER                  PIC X(6).
+021700     05  LINE1-ENTRY-DATE        PIC X(8).
+021800     05  FILLER                  PIC X(4).
+021900     05  LINE1-DUE-DATE          PIC X(8).
+022000     05  FILLER                  PIC X(4).
+022100     05  LINE1-TERMS             PIC X(2).
+022200     05  FILLER                  PIC X(5).
+022300     05  LINE1-PO                PIC X(10).
+022400     05  FILLER                  PIC X(9).
+022500     05  LINE1-ID                PIC X(4).
+022600     05  LINE1-SLASH             PIC X.
+022700     05  LINE1-ADD               PIC X(4).
+022800     05  FILLER                  PIC X(20).
+023000 01  LINE2 REDEFINES PRINT-LINE.
+023100     05  FILLER                  PIC X.
+023200     05  LINE2-VENDOR            PIC X(8).
+023300     05  FILLER                  PIC X(5).
+023400     05  LINE2-NAME              PIC X(6).
+023500     05  FILLER                  PIC X(39).
+023600     05  LINE2-CHECK             PIC X(19).
+023700     05  FILLER                  PIC X(4).
+023800     05  LINE2-VERBAGE           PIC X(26).
+023900     05  FILLER                  PIC X(24).
+024000
+024100 01  LINE2A REDEFINES PRINT-LINE.
+024200     05  FILLER                  PIC X.
+024300     05  LINE2A-VENDOR-CODE      PIC X(7).
+024400     05  FILLER                  PIC X(6).
+024500     05  LINE2-NAME-OUT          PIC X(44).
+024600     05  FILLER                  PIC X(10).
+024700     05  LINE2A-CHECK-IND        PIC X.
+024800     05  FILLER                  PIC X(13).
+024900     05  LINE2A-VERBAGE          PIC X(20).
+025000     05  FILLER                  PIC X(30).
+025100
+025200 01  LINE3 REDEFINES PRINT-LINE.
+025300     05  FILLER                  PIC X.
+025400     05  LINE3-PO                PIC X(17).
+025500     05  LINE3-PO-EXT            PIC $$$$$$$$$$$.9999CR.
+025600     05  FILLER                  PIC X.
+025700     05  LINE3-INV-FRT           PIC X(15).
+025800     05  LINE3-FRT-AMT           PIC $$$$$$$$$$$.99CR.
+025900     05  LINE3-CE                PIC X(4).
+026000     05  LINE3-CE-CODE           PIC X(2).
+026100     05  LINE3-CE-AMOUNT         PIC X(12).
+026200     05  LINE3-CE-AMT            PIC $$$$$$$$$$$.99CR.
+026300     05  LINE3-NET               PIC X(14).
+026400     05  LINE3-NET-AMT           PIC $$$$$$$$$$$.99CR.
+026600
+026700 01  LINE4 REDEFINES PRINT-LINE.
+026800     05  FILLER                  PIC X.
+026900     05  LINE4-INV               PIC X(17).
+027000     05  LINE4-INV-EXT           PIC $$$$$$$$$$$.9999CR.
+027100     05  FILLER                  PIC X.
+027200     05  LINE4-INV-TAX           PIC X(15).
+027300     05  LINE4-TAX-AMT           PIC $$$$$$$$$$$.99CR.
+027400     05  LINE4-CE3               PIC X(18).
+027500     05  LINE4-AMT               PIC $$$$$$$$$$$.99CR.
+027600     05  LINE4-FRT               PIC X(14).
+027700     05  LINE4-FRT-AMT           PIC $$$$$$$$$$$.99CR.
+028000 01  LINE5 REDEFINES PRINT-LINE.
+028100     05  FILLER                  PIC X(38).
+028200     05  LINE5-INV-CON           PIC X(14).
+028300     05  LINE5-CON-AMT           PIC $$$$$$$$$$$.99CR.
+028400     05  LINE5-CE4               PIC X(18).
+028500     05  LINE5-AMT               PIC $$$$$$$$$$$.99CR.
+028600     05  LINE5-TAX               PIC X(14).
+028700     05  LINE5-TAX-AMT           PIC $$$$$$$$$$$.99CR.
+028900
+029000 01  LINE6 REDEFINES PRINT-LINE.
+029100     05  FILLER                  PIC X(3).
+029200     05  LINE6-PAY-IND           PIC X(18).
+029300     05  LINE6-IND               PIC XX.
+029400     05  FILLER                  PIC X(15).
+029500     05  LINE6-OTH               PIC X(14).
+029600     05  LINE6-OTH-AMT           PIC $$$$$$$$$$$.99CR.
+029700     05  LINE6-CE5               PIC X(18).
+029800     05  LINE6-AMT               PIC $$$$$$$$$$$.99CR.
+029900     05  LINE6-OTHER             PIC X(14).
+030000     05  LINE6-OTHER-AMT         PIC $$$$$$$$$$$.99CR.
+030200
+030300 01  LINE7 REDEFINES PRINT-LINE.
+030400     05  FILLER                  PIC X(38).
+030500     05  LINE7-INS               PIC X(14).
+030600     05  LINE7-INS-AMT           PIC $$$$$$$$$$$.99CR.
+030700     05  LINE7-CE6               PIC X(18).
+030800     05  LINE7-AMT               PIC $$$$$$$$$$$.99CR.
+030900     05  FILLER                  PIC X(30).
+031000
+031100 01  LINE8 REDEFINES PRINT-LINE.
+031200     05  FILLER                  PIC X(24).
+031500     05  FILLER                  PIC X(14).
+031600     05  LINE8-CALC-AMT          PIC X(14).
+031700     05  LINE8-CALC-AMOUNT       PIC $$$$$$$$$$$.99CR.
+031800     05  LINE8-CE7               PIC X(18).
+031900     05  LINE8-AMT               PIC $$$$$$$$$$$.99CR.
+032000     05  LINE8-COST              PIC X(14).
+032100     05  LINE8-COST-AMT          PIC $$$$$$$$$$$.99CR.
+032400 01  LINE9 REDEFINES PRINT-LINE.
+032500     05  FILLER                  PIC X(32).
+032800     05  FILLER                  PIC X(36).
+032900     05  LINE9-CE8               PIC X(18).
+033000     05  LINE9-AMT               PIC $$$$$$$$$$$.99CR.
+033100     05  FILLER                  PIC X(30).
+033200
+033300 01  LINE10 REDEFINES PRINT-LINE.
+033400     05  FILLER                  PIC X(68).
+033500     05  LINE10-CE9              PIC X(18).
+033600     05  LINE10-AMT              PIC $$$$$$$$$$$.99CR.
+033700     05  FILLER                  PIC X(30).
+033800
+033900 01  LINE10A REDEFINES PRINT-LINE.
+034000     05  FILLER                  PIC X(3).
+034100     05  LINE10-TAX              PIC X(8).
+034200     05  FILLER                  PIC X(7).
+034300     05  LINE10-TAX-CODE         PIC X(2).
+034400     05  FILLER                  PIC X(45).
+034500     05  LINE10A-CE              PIC X(3).
+034600     05  LINE10A-CODE            PIC X.
+034700     05  FILLER                  PIC X.
+034800     05  LINE10A-ACCTG           PIC X(9).
+034900     05  FILLER                  PIC X(7).
+035000     05  LINE10A-VALUE           PIC $$$$$$$$$$$.99CR.
+035100     05  FILLER                  PIC X(30).
+035200
+035300 01  HEAD3 REDEFINES PRINT-LINE.
+035400     05  FILLER                  PIC X(16).
+035500     05  HEAD3-COLLECT           PIC X(15).
+035600     05  FILLER                  PIC X(4).
+035700     05  HEAD3-PRO               PIC X(10).
+035800     05  FILLER                  PIC X(10).
+035900     05  HEAD3-CARRIER           PIC X(7).
+036000     05  FILLER                  PIC X(7).
+036100     05  HEAD3-FREIGHT           PIC X(14).
+036200     05  FILLER                  PIC X(49).
+036300
+036400 01  LINE11 REDEFINES PRINT-LINE.
+036500     05  FILLER                  PIC X(35).
+036600     05  LINE11-PRO              PIC X(16).
+036700     05  FILLER                  PIC X(6).
+036800     05  LINE11-CARRIER          PIC X(4).
+036900     05  FILLER                  PIC X(8).
+037000     05  LINE11-CHARGE           PIC $$$$$$$$$$$.99.
+037100     05  FILLER                  PIC X(49).
+037300 01  HEAD4 REDEFINES PRINT-LINE.
+037400     05  FILLER                  PIC X(6).
+037500     05  HEAD4-ITEM              PIC X(15).
+037600     05  FILLER                  PIC X(18).
+037700     05  HEAD4-QTY               PIC X(13).
+037800     05  FILLER                  PIC X(11).
+037900     05  HEAD4-PRICE-UM          PIC X(16).
+038000     05  HEAD4-ITEM-EXT          PIC X(17).
+038100     05  FILLER                  PIC X.
+038200     05  HEAD4-DATA              PIC X(15).
+038300     05  FILLER                  PIC X(8).
+038400     05  HEAD4-TAX               PIC X(8).
+038500     05  FILLER                  PIC X(4).
+038600
+038700 01  LINE12 REDEFINES PRINT-LINE.
+038800     05  FILLER                  PIC X(6).
+038900     05  LINE12-ITEM             PIC ZZZ9.
+039000     05  FILLER                  PIC X(3).
+039100     05  LINE12-CORP             PIC X(7).
+039200     05  LINE12-PO               PIC X(5).
+039300     05  FILLER                  PIC X(14).
+039400     05  LINE12-QTY              PIC ZZZZZZZZ.9999.
+039500     05  FILLER                  PIC X(3).
+039600     05  LINE12-PRICE            PIC $$$$$$$$$$$.9999.
+039700     05  FILLER                  PIC X.
+039800     05  LINE12-UM               PIC X(2).
+039900     05  FILLER                  PIC X(2).
+040000     05  LINE12-EXT              PIC $$$$$$$$$$$.9999CR.
+040100     05  FILLER                  PIC X(3).
+040200     05  LINE12-PRIME            PIC X(3).
+040300     05  FILLER                  PIC X.
+040400     05  LINE12-SUB              PIC X(3).
+040500     05  FILLER                  PIC X.
+040600     05  LINE12-SUBD             PIC X(4).
+040700     05  FILLER                  PIC X.
+040800     05  LINE12-DATA             PIC X(6).
+040900     05  FILLER                  PIC X(4).
+041000     05  LINE12-TAX              PIC X(2).
+041100     05  FILLER                  PIC X(10).
+041300 01  LINE13 REDEFINES PRINT-LINE.
+041400     05  FILLER                  PIC X(23).
+041500     05  LINE13-INV              PIC X(5).
+041600     05  LINE13-MEMO             PIC X(11).
+041700     05  LINE13-QTY              PIC ZZZZZZZZ.9999.
+041800     05  FILLER                  PIC X(3).
+041900     05  LINE13-PRICE            PIC $$$$$$$$$$$.9999.
+042000     05  FILLER                  PIC X.
+042100     05  LINE13-UM               PIC X(2).
+042200     05  FILLER                  PIC X(2).
+042300     05  LINE13-EXT              PIC $$$$$$$$$$$.9999CR.
+042400     05  FILLER                  PIC X(3).
+042500     05  LINE13-PRIME            PIC X(3).
+042600     05  FILLER                  PIC X.
+042700     05  LINE13-SUB              PIC X(3).
+042800     05  FILLER                  PIC X.
+042900     05  LINE13-SUBD             PIC X(4).
+043000     05  FILLER                  PIC X.
+043100     05  LINE13-DATA             PIC X(6).
+043200     05  FILLER                  PIC X(16).
+043300
+043400 01  LINE14 REDEFINES PRINT-LINE.
+043500     05  FILLER                  PIC X(97).
+043600     05  LINE14-PRIME            PIC X(3).
+043700     05  FILLER                  PIC X.
+043800     05  LINE14-SUB              PIC X(3).
+043900     05  FILLER                  PIC X.
+044000     05  LINE14-SUBD             PIC X(4).
+044100     05  FILLER                  PIC X.
+044200     05  LINE14-DATA             PIC X(6).
+044300     05  FILLER                  PIC X(16).
+044400
+044500 01  LINE15 REDEFINES PRINT-LINE.
+044600     05  FILLER                 PIC X(47).
+044700     05  L-INFO.
+044900         10  L-VALUE              PIC X(3).
+045000         10  FILLER               PIC X.
+045100         10  L-ITEM               PIC X(15).
+045200         10  FILLER               PIC X(3).
+045300         10  L-TOTAL              PIC $$$$$$$$$$9.99CR.
+045310     05  FILLER                   PIC X(47).
+045400
+045500 01  HEAD5 REDEFINES PRINT-LINE.
+045600     05  FILLER                   PIC X(47).
+045700     05  HEAD5-TITLE              PIC X(43).
+045710     05  FILLER                   PIC X(42).
+045800
+045900 01  HEAD6 REDEFINES PRINT-LINE.
+046000     05  FILLER                   PIC X(68).
+046100     05  HEAD6-TITLE              PIC X(20).
+046200     05  FILLER                   PIC X(2).
+046210     05  FILLER                   PIC X(42).
+
+       COPY CCHKOBJ   IN COPYLIB.
+       COPY CCRTFILE  IN COPYLIB.
+       COPY OVRPFDATA IN COPYLIB.
+
+       LINKAGE SECTION.
+
+       COPY THDPRTB IN COPYLIB.
+
+008400 01  DE-LINE.
+008500     05  DE-OPTION                PIC X.
+008600     05  FILLER                   PIC X(111).
+
+046400*************************************************************
+046500*************************************************************
+046600**                PROCEDURE DIVISION                       **
+046700**                                                         **
+046800**   FIND ALL INVOICES THAT ARE ON HOLD AND PRINT REPORT.  **
+046900**                                                         **
+047000**     1.  READ ENTIRE DINVRCD DATASET.                    **
+047100**     2.  IF INV-STATUS NOT = H OR I (H=HOLD INVOICE AND  **
+047200**            I=HOLD ITEMS) THEN GO TO 1.                  **
+047300**     3.  WRITE INVOICE TO A FILE.                        **
+047400**     4.  GO TO 1 UNTIL ALL OF INVRCD HAS BEEN READ.      **
+047500**     5.  SORT FILE BY OLDEST DUE DATE.                   **
+047600**     6.  READ SORT FILE.                                 **
+047700**     7.  USE REGISTER NUMBER AND READ DFREIGHT DATASET.  **
+047800**     8.  PRINT FREIGHT DATA UNTIL CHAIN ENDS ON DFREIGHT.**
+047900**     9.  USE REGISTER NUMBER AND READ DINVITM.           **
+048000**         A)  USE REGISTER NUMBER AND READ DINVACCT.      **
+048100**         B)  COMPARE DINVACCT ITEM NUMBER WITH DINVITM   **
+048200**             ITEM NUMBER.  IF ITEM NUMBERS MATCH,        **
+048300**             PRINT DATA.  CONTINUE THIS UNTIL ITEMS ARE  **
+048400**             DIFFERENT.  THEN GO TO 9.                   **
+048500**    10.  PRINT DINVITM DATA ON ITEMS UNTIL CHAIN ENDS.   **
+048600**    11.  GO TO 6 UNTIL ALL OF DINVRCD HAS BEEN READ.     **
+048700**                                                         **
+048800*************************************************************
+048900*************************************************************
+       PROCEDURE DIVISION USING HD-ROUTE-DATA, DE-LINE.
+049100 00-MAIN.
+9406CK     MOVE "C" TO SCOPE.
+9406CK     CALL "MCXCBLERR" USING SCOPE.
+
+049200     PERFORM 010-OPEN-FILES THRU 019-EXIT.
+049300
+049400     PERFORM 100-FIND-INVOICES-ON-HOLD THRU 199-EXIT.
+049500
+049600     PERFORM 200-SORT-BY-DUE-DATE THRU 299-EXIT.
+049700
+049800     PERFORM 300-BEGIN-REPORT THRU 399-EXIT.
+049900
+050000     PERFORM 020-CLOSE-FILES THRU 029-EXIT.
+050100
+050200     GOBACK.
+050400*************************************************************
+050500*           OPEN DATABASE AND PRINT FILE                    *
+050600*************************************************************
+050700 010-OPEN-FILES.
+           OPEN INPUT DINVRCD-I, DPOFREIGHT-I, DINVITM-I,
+                      DINVACCT-I, DVENDOR-I.
+051200
+      *----- CALL CCRTFILE TO CREATE A TEMPORARY FILE FOR SORTING
+      *----- LIBRARY 'QTEMP' IS USED FOR TEMPORARY FILES
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "INVSRT"      TO CCRTFILE-FILE.
+           MOVE "0014"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "90000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "02000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE "10"          TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'INVSRT' FAILED"
+                  TO BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP THRU 999-EXIT.
+052500
+052600*----------  OPEN OUTPUT FILE
+052700     OPEN OUTPUT HOLD-FILE.
+052800
+053200 019-EXIT.  EXIT.
+053300
+053400*************************************************************
+053500*               CLOSE DATABASE AND PRINT FILE               *
+053600*************************************************************
+053700 020-CLOSE-FILES.
+053800     CLOSE DISC-PRT, HOLD-FILE.
+           CLOSE DINVRCD-I, DPOFREIGHT-I, DINVITM-I, DINVACCT-I,
+                 DVENDOR-I.
+054000 029-EXIT.  EXIT.
+054200*************************************************************
+054300*************************************************************
+054400*       READ ALL OF DINVRCD ENTRIES AND USE ONLY THE        *
+054500*       RECORDS THAT ARE ON HOLD STATUS.                    *
+054600*************************************************************
+054700*************************************************************
+054800 100-FIND-INVOICES-ON-HOLD.
+           READ DINVRCD-I FIRST RECORD INTO BUF-DINVRCD.
+           IF FILE-STATUS NOT = "00"
+               GO TO 199-EXIT.
+
+           IF INV-STATUS = "H " OR "I "
+               GO TO 105-WRITE.
+
+       101-SERIAL-READ-DINVRCD.
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 199-EXIT
+               ELSE
+055400        MOVE "READN DINVRCD AT 101 IN TINVHLD" TO BU-DISPLAY-MSG
+055500        PERFORM 990-BLOWUP THRU 999-EXIT.
+055600
+055700     IF INV-STATUS = "H " OR "I "
+055800         GO TO 105-WRITE.
+055900     GO TO 101-SERIAL-READ-DINVRCD.
+056000
+056100 105-WRITE.
+056200
+056300*----------  WRITE INVOICE NUMBER AND DUE DATE TO A FILE
+056400     MOVE INV-REG-NO             TO HOLD-REG-NO.
+      *----------  ACCOUNT FOR CENTURY.
+056500     MOVE INV-DUE-CN             TO HOLD-DUE-DATE.
+056600     WRITE HOLD-REC.
+056700     GO TO 101-SERIAL-READ-DINVRCD.
+056800
+056900 199-EXIT.  EXIT.
+057000
+057100*************************************************************
+057200*************************************************************
+057300**         SORT HOLD FILE BY OLDEST DUE DATE               **
+057400*************************************************************
+057500*************************************************************
+057600 200-SORT-BY-DUE-DATE.
+057700     CLOSE HOLD-FILE.
+057800     IF DE-OPTION = "R"
+057900     SORT SORT-FILE ON ASCENDING KEY SORT-INV-NO
+058000          USING HOLD-FILE
+058100          GIVING HOLD-FILE
+058200     ELSE
+058300        SORT SORT-FILE ON ASCENDING KEY SORT-DUE-DATE
+058400             USING HOLD-FILE
+058500             GIVING HOLD-FILE.
+058600
+058700     OPEN  INPUT HOLD-FILE.
+
+058900 299-EXIT.  EXIT.
+059100*************************************************************
+059200*************************************************************
+059300**                 CREATE REPORT                           **
+059400**     READ EACH SORTED RECORD AND GET ALL ASSOCIATED      **
+059500**     ITEMS WITH THE INVOICE.  ITEM INFORMATION WILL      **
+059600**     BE RETRIEVED FROM DINVITM, DFREIGHT, AND DINVACCT.  **
+059700*************************************************************
+059800*************************************************************
+059900 300-BEGIN-REPORT.
+      *---------- OPEN THE PRINT FILE, GET THE FILE NUMBER OF THE PRINT
+      *---------- FILE, AND PRINT THE HEADER PAGE.
+
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"            TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES   TO OVRPRTF-COPIES.
+           MOVE "MCPRT"           TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT DISC-PRT.
+
+060300     CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM
+060400       HD-ROUTE-DATA, ESC-NAME.
+060500     IF HD-RET-CODE NOT = 0
+060600         DISPLAY "THDPRT2 ERROR, RET-CODE = ", HD-RET-CODE
+060700         PERFORM 990-BLOWUP THRU 999-EXIT.
+060800
+060900 303-CREATE-REPORT.
+061000     READ HOLD-FILE AT END
+061100        MOVE SPACES             TO PRINT-LINE
+061200        MOVE ALL "*"            TO PRINT-LINE
+061400        MOVE PRINT-LINE         TO PRT-LINE
+061500        WRITE PRT-REC AFTER ADVANCING 3 LINES
+061600        PERFORM 379-PRINT-TOTALS
+061610         GO TO 399-EXIT.
+061700
+061800*----------  READ EACH INVOICE RECORD
+062400
+062500 305-GET-DINVRCD.
+           MOVE HOLD-REG-NO TO REGISTERNO OF DINVRCD-REC-I.
+           READ DINVRCD-I INTO BUF-DINVRCD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               GO TO 303-CREATE-REPORT
+           ELSE
+           IF FILE-STATUS NOT = "00"
+063100        MOVE "DBGET DINVRCD AT 305 IN TINVHLD" TO BU-DISPLAY-MSG
+063200        PERFORM 990-BLOWUP THRU 999-EXIT.
+063300
+063400*----------  WRITE FIRST 14 LINES OF DINVRCD DATA
+063500     IF LINE-CTR > 58
+063600        PERFORM 800-NEW-PAGE THRU 809-EXIT.
+063700
+063800     MOVE SPACES                TO PRINT-LINE.
+063900     MOVE ALL "*"               TO PRINT-LINE.
+064100     MOVE PRINT-LINE            TO PRT-LINE.
+064200     WRITE PRT-REC AFTER ADVANCING 3 LINES.
+064300
+064400     MOVE SPACES                TO PRINT-LINE.
+064500     MOVE "REGISTER"            TO HEAD2-REGISTER.
+064600     MOVE "INVOICE NUMBER"      TO HEAD2-INVOICE.
+064700     MOVE "STATUS"              TO HEAD2-STATUS.
+064800     MOVE "INVOICE DATE"        TO HEAD2-INV-DATE.
+064900     MOVE "ENTRY DATE"          TO HEAD2-ENTRY-DATE.
+065000     MOVE "DUE-DATE"            TO HEAD2-DUE-DATE.
+065100     MOVE "TERMS"               TO HEAD2-TERMS.
+065200     MOVE "PO NUMBER"           TO HEAD2-PO.
+065300     MOVE "EMPLOYEE ID "        TO HEAD2-ID.
+065400     MOVE "ADD/CHANGE"          TO HEAD2-ADD.
+065600     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+065800     MOVE SPACES                TO PRINT-LINE.
+066000     MOVE INV-REG-NO-9          TO LINE1-REG.
+066100     MOVE INV-NO                TO LINE1-INV-NO.
+066200     MOVE INV-STATUS            TO LINE1-STATUS.
+066300     MOVE INV-DATE              TO DATE-VALIDATE-IN.
+066400     MOVE 4                     TO DATE-MODE.
+066500     CALL "TDATECHK" USING DATE-CHECK-AREA.
+066600     MOVE DATE-SLASH-OUT        TO LINE1-INV-DATE.
+066700     MOVE INV-ENTRY-DATE        TO DATE-VALIDATE-IN.
+066800     MOVE 4                     TO DATE-MODE.
+066900     CALL "TDATECHK" USING DATE-CHECK-AREA.
+067000     MOVE DATE-SLASH-OUT        TO LINE1-ENTRY-DATE.
+067100     MOVE INV-DUE-DATE          TO DATE-VALIDATE-IN.
+067200     MOVE 4                     TO DATE-MODE.
+067300     CALL "TDATECHK" USING DATE-CHECK-AREA.
+067400     MOVE DATE-SLASH-OUT        TO LINE1-DUE-DATE.
+067500     MOVE INV-TERMS             TO LINE1-TERMS.
+067600     MOVE INV-PO-RLSE           TO LINE1-PO.
+067700     MOVE INV-ADD-CLERK         TO LINE1-ID.
+067800     MOVE "/"                   TO LINE1-SLASH.
+067900     MOVE INV-MOD-CLERK         TO LINE1-ADD.
+068100     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+068300     MOVE SPACES                TO PRINT-LINE.
+068310     ADD 6 TO LINE-CTR.
+068320     IF LINE-CTR > 50
+068330         PERFORM 800-NEW-PAGE THRU 809-EXIT.
+068400
+068500     MOVE "VENDOR  "            TO LINE2-VENDOR.
+068600     MOVE "NAME  "              TO LINE2-NAME.
+068700     MOVE "NO CHECK INDIC (IT)" TO LINE2-CHECK.
+068800     MOVE "***  HOLD EXPLANATION  ***"    TO LINE2-VERBAGE.
+068900
+069100     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+069300     MOVE SPACES                TO PRINT-LINE.
+069500*----------  FILL IN VENDOR NAME
+069600     MOVE INV-VEN-CODE          TO VEN-ARG.
+           MOVE VEN-ARG               TO VENCDE OF DVENDOR-REC-I.
+           MOVE "00"                  TO VENITMNO OF DVENDOR-REC-I.
+           READ DVENDOR-I INTO BUF-DVENDOR
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE "***   VENDOR NAME NOT ON FILE   ****"
+                   TO LINE2-NAME-OUT
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DVENDOR AT 305 IN TINVHLD"
+                   TO BU-DISPLAY-MSG
+070100         PERFORM 990-BLOWUP THRU 999-EXIT.
+071100     MOVE VEN-ITM-DATA          TO LINE2-NAME-OUT.
+071200
+071300     MOVE INV-VEN-CODE          TO WORK-VENDOR.
+071400     MOVE WORK-VEN              TO LINE2A-VENDOR-CODE.
+071500     MOVE INV-NO-CHECK-INDIC    TO LINE2A-CHECK-IND.
+071600     MOVE INV-FREE-VERB         TO LINE2A-VERBAGE.
+071700
+071900     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+072100     MOVE SPACES                TO PRINT-LINE.
+072300     MOVE "PO MATERIAL EXT  "   TO LINE3-PO.
+072400     MOVE INV-P-MATL-EXT        TO LINE3-PO-EXT.
+072500     MOVE " INV FREIGHT    "    TO LINE3-INV-FRT.
+072600     MOVE INV-ADD-VFRT          TO LINE3-FRT-AMT.
+072700     MOVE " CE  "               TO LINE3-CE.
+072800     MOVE CE1-CODE              TO LINE3-CE-CODE.
+072900     MOVE CE1-ACCTG-DATA        TO LINE3-CE-AMOUNT.
+073000     MOVE CE1-TOTAL             TO LINE3-CE-AMT.
+073100     MOVE " NET TO VENDOR  "   TO LINE3-NET.
+073200     MOVE INV-NET-DUE-VENDOR    TO LINE3-NET-AMT.
+073400     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+073600     MOVE SPACES                TO PRINT-LINE.
+073700     IF CE1-CODE = "1"
+073800          ADD CE1-TOTAL TO G-CE-1-TOTAL, GRAND-TOTAL
+073900     ELSE
+074000     IF CE1-CODE = "2"
+074100          ADD CE1-TOTAL TO G-CE-2-TOTAL, GRAND-TOTAL
+074200     ELSE
+074300     IF CE1-CODE = "3"
+074400          ADD CE1-TOTAL TO G-CE-3-TOTAL, GRAND-TOTAL
+074500     ELSE
+074600          ADD CE1-TOTAL TO G-CE-Z-TOTAL, GRAND-TOTAL.
+074700
+074800     MOVE "INV MATERIAL EXT "   TO LINE4-INV.
+074900     MOVE INV-I-MATL-EXT        TO LINE4-INV-EXT.
+075000     MOVE " INV TAX        "    TO LINE4-INV-TAX.
+075100     MOVE INV-ADD-TAX           TO LINE4-TAX-AMT.
+075200     MOVE " CE 3 (FREIGHT) "    TO LINE4-CE3.
+075300     MOVE CE3-FRT               TO LINE4-AMT.
+075400     ADD CE3-FRT TO G-CE-3-TOTAL, GRAND-TOTAL.
+075500
+075600     MOVE " COLLECT FRT     "   TO LINE4-FRT.
+075700     MOVE INV-TOTAL-CFRT        TO LINE4-FRT-AMT.
+075900     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+076100     MOVE SPACES                TO PRINT-LINE.
+076300     MOVE  "INV-CONTAINERS"     TO LINE5-INV-CON.
+076400     MOVE INV-ADD-CTNRS         TO LINE5-CON-AMT.
+076500     MOVE " CE 4 (INSURANCE) "  TO LINE5-CE4.
+076600     MOVE CE4-INS               TO LINE5-AMT.
+076700     ADD CE4-INS TO G-CE-4-TOTAL, GRAND-TOTAL.
+076800     MOVE " ACCRUED TAX   "     TO LINE5-TAX.
+076900     COMPUTE LINE5-TAX-AMT ROUNDED =
+077000       INV-ATAX-AMT (1) + INV-ATAX-AMT (2) + INV-ATAX-AMT (3)
+077100          + INV-ATAX-AMT (4).
+077200     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+077400     MOVE SPACES                TO PRINT-LINE.
+077600     MOVE "PAYMENT INDICATOR "  TO LINE6-PAY-IND.
+077700     MOVE INV-PAYMENT-IND       TO LINE6-IND.
+077800     MOVE "INV OTHER     "      TO LINE6-OTH.
+077900     MOVE INV-ADD-OTHER         TO LINE6-OTH-AMT.
+078000     MOVE " CE 5 (TAX)        " TO LINE6-CE5.
+078100     MOVE CE5-TAX               TO LINE6-AMT.
+078200     ADD CE5-TAX TO G-CE-5-TOTAL, GRAND-TOTAL.
+078300     MOVE " OTHER ADJUST    "   TO LINE6-OTHER.
+078400     MOVE INV-ADJ-OTHER         TO LINE6-OTHER-AMT.
+078500     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+078700     MOVE SPACES                TO PRINT-LINE.
+078900     MOVE "INV INSURANCE "      TO LINE7-INS.
+079000     MOVE INV-ADD-INS           TO LINE7-INS-AMT.
+079100     MOVE " CE 6 (EXTEND ERR)   " TO LINE7-CE6.
+079200     MOVE CE6-EXT-ERR           TO LINE7-AMT.
+079300     ADD CE6-EXT-ERR TO G-CE-6-TOTAL, GRAND-TOTAL.
+079400     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+079600     MOVE SPACES                TO PRINT-LINE.
+080000     MOVE "CALC. INV AMT "      TO LINE8-CALC-AMT.
+080100     IF INV-PAYMENT-IND = SPACES
+080200        MOVE ZEROES TO LINE8-CALC-AMOUNT
+080300     ELSE
+080400        IF INV-PAYMENT-IND = "P"
+080500           COMPUTE LINE8-CALC-AMOUNT = INV-P-MATL-EXT +
+080600                   INV-ADD-VFRT + INV-ADD-TAX + INV-ADD-CTNRS
+080700                   + INV-ADD-INS + INV-ADD-OTHER
+080800     ELSE
+080900        IF INV-PAYMENT-IND = "I"
+081000           COMPUTE LINE8-CALC-AMOUNT = INV-I-MATL-EXT +
+081100                   INV-ADD-VFRT + INV-ADD-TAX + INV-ADD-CTNRS
+081200                   + INV-ADD-INS + INV-ADD-OTHER.
+081300     MOVE " CE 7 (PRICE ERR)   " TO LINE8-CE7.
+081400     MOVE CE7-UPRC-ERR          TO LINE8-AMT.
+081500     ADD CE7-UPRC-ERR TO G-CE-7-TOTAL, GRAND-TOTAL.
+081600     MOVE " COST DISTRIB    "   TO LINE8-COST.
+081700     MOVE INV-DIST-COST         TO LINE8-COST-AMT.
+081800     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+082000     MOVE SPACES                TO PRINT-LINE.
+082400     MOVE " CE 8 (OTHER)     "  TO LINE9-CE8.
+082500     MOVE CE8-OTHER             TO LINE9-AMT.
+082600     ADD CE8-OTHER TO G-CE-8-TOTAL, GRAND-TOTAL.
+082700     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+082900     MOVE SPACES                TO PRINT-LINE.
+083100     MOVE " CE 9 (CASH DSCNT)  " TO LINE10-CE9.
+083200     MOVE CE9-CASH-DSCNT        TO LINE10-AMT.
+083300     ADD CE9-CASH-DSCNT TO G-CE-9-TOTAL, GRAND-TOTAL.
+083400     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+083600     MOVE SPACES                TO PRINT-LINE.
+083700
+083800     MOVE "TAX CODE"            TO LINE10-TAX.
+083900     MOVE INV-TAX-CODE          TO LINE10-TAX-CODE.
+084000
+084100     IF CE-EXT-VALUE-1 NOT = ZEROES
+084200        MOVE "CE " TO LINE10A-CE
+084300         ADD 1 TO LINE-CTR
+084400        MOVE CE-EXT-CODE-1 TO LINE10A-CODE
+084500        MOVE CE-EXT-ACCTG-DATA-1 TO LINE10A-ACCTG
+084600        MOVE CE-EXT-VALUE-1 TO LINE10A-VALUE
+084700        PERFORM 309-FIND-EXT-TOTAL.
+084800     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+085000     MOVE SPACES                TO PRINT-LINE.
+085100     ADD 13                     TO LINE-CTR.
+085200
+085400*************************************************************
+085500*************************************************************
+085600**       USE REGISTER NUMBER AND RETRIEVE FREIGHT DATA     **
+085700*************************************************************
+085800*************************************************************
+           MOVE HOLD-REG-NO TO REGISTERNO OF DPOFREIGHT-REC-I.
+           START DPOFREIGHT-I KEY = REGISTERNO OF DPOFREIGHT-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 330-FIND-DINVITM
+               ELSE
+086200       MOVE "START DPOFREIGHT AT 305 IN INVHLD" TO BU-DISPLAY-MSG
+086300         MOVE HOLD-REG-NO           TO  BU-DISPLAY-FLD (1)
+086400         PERFORM 990-BLOWUP THRU 999-EXIT.
+
+086800     IF LINE-CTR > 58
+086900        PERFORM 800-NEW-PAGE THRU 809-EXIT.
+087000
+087100     MOVE "COLLECT FREIGHT"     TO HEAD3-COLLECT.
+087200     MOVE "PRO-NUMBER"          TO HEAD3-PRO.
+087300     MOVE "CARRIER"             TO HEAD3-CARRIER.
+087400     MOVE "FREIGHT CHARGE"      TO HEAD3-FREIGHT.
+087500     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+087700     MOVE SPACES                TO PRINT-LINE.
+087800     ADD 1                      TO LINE-CTR.
+087900
+088000
+088100 310-GET-DPOFREIGHT-LOOP.
+           READ DPOFREIGHT-I NEXT INTO BUF-DPOFREIGHT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 330-FIND-DINVITM
+               ELSE
+088800         MOVE "GET DPOFREIGHT AT 310 IN INVITM" TO BU-DISPLAY-MSG
+088900         MOVE HOLD-REG-NO  TO  BU-DISPLAY-FLD (1)
+089000         PERFORM 990-BLOWUP THRU 999-EXIT.
+           IF REGISTERNO OF DPOFREIGHT-REC-I NOT = HOLD-REG-NO
+               GO TO 330-FIND-DINVITM.
+089100
+089200     MOVE FRT-BILL-NO           TO LINE11-PRO.
+089300     MOVE FRT-CARRIER           TO LINE11-CARRIER.
+089400     MOVE FRT-CHARGES-9         TO LINE11-CHARGE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+089600     MOVE PRINT-LINE            TO PRT-LINE.
+089800     MOVE SPACES                TO PRINT-LINE.
+089900     ADD 1 TO LINE-CTR.
+090000     GO TO 310-GET-DPOFREIGHT-LOOP.
+090200*************************************************************
+090300*************************************************************
+090400**     GET ITEM INFO FROM DINVITM AND DINVACCT.            **
+090500*************************************************************
+090600*************************************************************
+090700 330-FIND-DINVITM.
+090800     IF LINE-CTR > 58
+090900        PERFORM 800-NEW-PAGE THRU 809-EXIT.
+091000
+           MOVE HOLD-REG-NO TO REGISTERNO OF DINVITM-REC-I.
+           START DINVITM-I KEY = REGISTERNO OF DINVITM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 303-CREATE-REPORT
+               ELSE
+091400         MOVE "FIND DINVITM AT 330 IN INVITM"  TO  BU-DISPLAY-MSG
+091500         MOVE HOLD-REG-NO            TO  BU-DISPLAY-FLD (1)
+091600         PERFORM 990-BLOWUP THRU 999-EXIT.
+092000
+092100     MOVE "ITEM  CORP CODE"     TO HEAD4-ITEM.
+092200     MOVE "QUANTITY PAID"       TO HEAD4-QTY.
+092300     MOVE "PRICE    UM"         TO HEAD4-PRICE-UM.
+092400     MOVE "ITEM EXTENSION"      TO HEAD4-ITEM-EXT.
+092500     MOVE "ACCOUNTING DATA"     TO HEAD4-DATA.
+092600     MOVE "TAX CODE"            TO HEAD4-TAX.
+092800     MOVE PRINT-LINE            TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+093000     MOVE SPACES                TO PRINT-LINE.
+093100     ADD 2 TO LINE-CTR.
+           MOVE HOLD-REG-NO TO REGISTERNO OF DINVACCT-REC-I
+           START DINVACCT-I KEY = REGISTERNO OF DINVACCT-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE "9999" TO INVACCT-ITEM
+               ELSE
+                   MOVE "START DINVACCT-66-PII" TO BU-DISPLAY-MSG
+                   MOVE HOLD-REG-NO             TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP THRU 999-EXIT.
+            PERFORM 360-GET-DINVACCT THRU 369-EXIT.
+
+093200
+094200 340-GET-DINVITM-LOOP.
+094300     IF LINE-CTR > 58
+094400        PERFORM 800-NEW-PAGE THRU 809-EXIT.
+094500
+           READ DINVITM-I NEXT INTO BUF-DINVITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 303-CREATE-REPORT
+               ELSE
+095200             MOVE "GET DINVRCD AT 340 IN INVHLD" TO BU-DISPLAY-MSG
+095300             MOVE HOLD-REG-NO  TO  BU-DISPLAY-FLD (1)
+095400             PERFORM 990-BLOWUP THRU 999-EXIT.
+           IF REGISTERNO OF DINVITM-REC-I NOT = HOLD-REG-NO
+               GO TO 303-CREATE-REPORT.
+095500
+095600     MOVE INVITM-ITEM-NO        TO  LINE12-ITEM.
+095700     MOVE INVITM-CORPCODE       TO  LINE12-CORP.
+095800     MOVE "   PO"               TO  LINE12-PO.
+095900     MOVE INVITM-PO-QTY-PD      TO  LINE12-QTY.
+096000     MOVE INVITM-PO-UPRICE      TO  LINE12-PRICE.
+096100     MOVE INVITM-PO-UM          TO  LINE12-UM.
+096200     IF INVITM-PO-QTY-PD = ZEROES
+096300        MOVE INVITM-PO-UPRICE TO LINE12-EXT
+096400     ELSE
+096500        MULTIPLY INVITM-PO-UPRICE BY INVITM-PO-QTY-PD
+096600            GIVING LINE12-EXT ROUNDED.
+096700     MOVE INVITM-TAX-CODE       TO  LINE12-TAX.
+096900 342-LOOP.
+097000     IF INVACCT-ITEM = INVITM-ITEM-NO
+097100         MOVE INVACCT-PRIME     TO  LINE12-PRIME
+097200         MOVE INVACCT-SUB       TO  LINE12-SUB
+097300         MOVE INVACCT-SUBD      TO  LINE12-SUBD
+097400         MOVE INVACCT-ADDL-DATA TO  LINE12-DATA
+               PERFORM 360-GET-DINVACCT THRU 369-EXIT
+           ELSE
+               PERFORM 360-GET-DINVACCT THRU 369-EXIT
+               IF INVACCT-ITEM = "9999"
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 342-LOOP.
+098200
+098300     ADD 1 TO LINE-CTR.
+098400     MOVE PRINT-LINE            TO  PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+098700     MOVE SPACES                TO PRINT-LINE.
+098900     MOVE INVITM-INV-QTY-PD     TO  LINE13-QTY.
+099000     MOVE INVITM-INV-UPRICE     TO  LINE13-PRICE.
+099100     MOVE INVITM-PO-UM          TO  LINE13-UM.
+099200     IF INVITM-INV-QTY-PD = ZEROES
+099300        MOVE INVITM-INV-UPRICE TO LINE13-EXT
+099400     ELSE
+099500        MULTIPLY INVITM-INV-UPRICE BY INVITM-INV-QTY-PD
+099600            GIVING LINE13-EXT ROUNDED.
+099700     IF INVITM-MEMO-INDIC = "X"
+099800         MOVE "MEMO QTY."       TO  LINE13-MEMO.
+099900     MOVE "INV  "               TO LINE13-INV.
+100000     IF INVACCT-ITEM = INVITM-ITEM-NO
+100100         MOVE INVACCT-PRIME     TO  LINE13-PRIME
+100200         MOVE INVACCT-SUB       TO  LINE13-SUB
+100300         MOVE INVACCT-SUBD      TO  LINE13-SUBD
+100400         MOVE INVACCT-ADDL-DATA TO  LINE13-DATA.
+100500
+100600     ADD 1                      TO  LINE-CTR.
+100700     MOVE PRINT-LINE            TO  PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+100900     MOVE SPACES                TO  PRINT-LINE.
+101100 358-CHECK-FOR-MORE-ACCTG.
+101200     IF LINE-CTR > 58
+101300        PERFORM 800-NEW-PAGE THRU 809-EXIT.
+101400
+101500     IF INVACCT-ITEM = INVITM-ITEM-NO
+101600         PERFORM 360-GET-DINVACCT  THRU  369-EXIT
+101700         IF INVACCT-ITEM  =  INVITM-ITEM-NO
+101800             MOVE INVACCT-PRIME     TO  LINE14-PRIME
+101900             MOVE INVACCT-SUB       TO  LINE14-SUB
+102000             MOVE INVACCT-SUBD      TO  LINE14-SUBD
+102100             MOVE INVACCT-ADDL-DATA TO  LINE14-DATA
+102200             MOVE PRINT-LINE        TO  PRT-LINE
+102300             WRITE PRT-REC AFTER ADVANCING 1 LINES
+102400             MOVE SPACES            TO  PRINT-LINE
+102500             ADD 1                  TO LINE-CTR
+102600             GO TO 358-CHECK-FOR-MORE-ACCTG.
+102700     GO TO 340-GET-DINVITM-LOOP.
+102800
+       360-GET-DINVACCT.
+           READ DINVACCT-I NEXT INTO BUF-DINVACCT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE "9999" TO INVACCT-ITEM
+               ELSE
+                   MOVE "GET DINVACCT *360 IN INVHLD"
+                        TO BU-DISPLAY-MSG
+                   MOVE HOLD-REG-NO TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP THRU 999-EXIT.
+           IF REGISTERNO OF DINVACCT-REC-I NOT = HOLD-REG-NO
+               MOVE "9999" TO INVACCT-ITEM.
+
+107100 369-EXIT.  EXIT.
+107200
+107300 379-PRINT-TOTALS.
+107400     PERFORM 800-NEW-PAGE.
+107500     MOVE SPACES TO PRINT-LINE.
+107700     MOVE "*** T O T A L   C H A R G E S ***" TO HEAD5-TITLE.
+107800     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 3 LINES.
+
+108000     MOVE "CE1" TO L-INFO.
+108100     MOVE G-CE-1-TOTAL TO L-TOTAL.
+108200     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+108410     MOVE SPACES TO PRINT-LINE.
+108420     MOVE "CE2" TO L-INFO.
+108430     MOVE G-CE-2-TOTAL TO L-TOTAL.
+108440     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+108500     MOVE SPACES TO PRINT-LINE.
+108600     MOVE "CE3  (FREIGHT) " TO L-INFO.
+108700     MOVE G-CE-3-TOTAL TO L-TOTAL.
+108800     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+109000     MOVE SPACES TO PRINT-LINE.
+109100     MOVE "CE4 (INSURANCE)" TO L-INFO.
+109200     MOVE G-CE-4-TOTAL TO L-TOTAL.
+109300     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+109500     MOVE SPACES TO PRINT-LINE.
+109600     MOVE "CE5 (TAX)" TO L-INFO.
+109700     MOVE G-CE-5-TOTAL TO L-TOTAL.
+109800     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+110000     MOVE SPACES TO PRINT-LINE.
+110100     MOVE "CE6 (EXTEND ERROR)" TO L-INFO.
+110200     MOVE G-CE-6-TOTAL TO L-TOTAL.
+110300     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+110500     MOVE SPACES TO PRINT-LINE.
+110600     MOVE "CE7 (PRICE ERROR)" TO L-INFO.
+110700     MOVE G-CE-7-TOTAL TO L-TOTAL.
+110800     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+111000     MOVE SPACES TO PRINT-LINE.
+111100     MOVE "CE8 (OTHER)" TO L-INFO.
+111200     MOVE G-CE-8-TOTAL TO L-TOTAL.
+111300     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+111500     MOVE SPACES TO PRINT-LINE.
+111600     MOVE "CE9 (CASH DISCOUNT)" TO L-INFO.
+111700     MOVE G-CE-9-TOTAL TO L-TOTAL.
+111800     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+112000     MOVE SPACES TO PRINT-LINE.
+112100     MOVE "CEZ " TO L-INFO.
+112200     MOVE G-CE-Z-TOTAL TO L-TOTAL.
+112300     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+112500     MOVE SPACES TO PRINT-LINE.
+112600     MOVE "---------------" TO HEAD6-TITLE.
+112700     MOVE PRINT-LINE TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+
+112900     MOVE SPACES TO PRINT-LINE.
+113000     MOVE "GRAND TOTAL" TO L-INFO.
+113100     MOVE GRAND-TOTAL TO L-TOTAL.
+           MOVE PRINT-LINE  TO PRT-LINE.
+065700     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+113500
+113600 399-EXIT.  EXIT.
+113800*************************************************************
+113900*             N E W   R E P O R T   P A G E                 *
+114000*************************************************************
+114100 800-NEW-PAGE.
+114200     MOVE SPACES                TO PRINT-LINE.
+114300     MOVE 1                     TO DATE-MODE.
+114400     CALL "TDATECHK" USING DATE-CHECK-AREA.
+114500     MOVE DATE-SLASH-OUT        TO HEAD1-DATE.
+114600     MOVE DATE-FORMATTED-TIME-OUT TO HEAD1-TIME.
+114700     MOVE "I N V O I C E S   ON   H O L D"
+114800                                TO HEAD1-TITLE.
+114900     MOVE "PAGE "               TO HEAD1-PAGE.
+115000     ADD 1                      TO PAGE-NUM.
+115100     MOVE PAGE-NUM              TO HEAD1-PAGENO.
+115300     MOVE PRINT-LINE            TO PRT-LINE.
+115400     WRITE PRT-REC AFTER ADVANCING NEW-PAGE.
+
+115500     MOVE SPACES                TO PRINT-LINE.
+115600     MOVE PRINT-LINE            TO PRT-LINE.
+115800     WRITE PRT-REC AFTER ADVANCING 2 LINES.
+115900     MOVE 3                     TO LINE-CTR.
+116000 809-EXIT.  EXIT.
+116010 309-FIND-EXT-TOTAL.
+116011
+116012     IF CE-EXT-CODE-1 = "1"
+116013        ADD CE-EXT-VALUE-1 TO G-CE-1-TOTAL, GRAND-TOTAL
+116014     ELSE
+116015     IF CE-EXT-CODE-1 = "2"
+116016         ADD CE-EXT-VALUE-1 TO G-CE-2-TOTAL, GRAND-TOTAL
+116017     ELSE
+116018     IF CE-EXT-CODE-1 = "3"
+116019         ADD CE-EXT-VALUE-1 TO G-CE-3-TOTAL, GRAND-TOTAL
+116020     ELSE
+116021     IF CE-EXT-CODE-1 = "4"
+116022         ADD CE-EXT-VALUE-1 TO G-CE-4-TOTAL, GRAND-TOTAL
+116023     ELSE
+116024     IF CE-EXT-CODE-1 = "5"
+116025         ADD CE-EXT-VALUE-1 TO G-CE-5-TOTAL, GRAND-TOTAL
+116026     ELSE
+116027     IF CE-EXT-CODE-1 = "6"
+116028         ADD CE-EXT-VALUE-1 TO G-CE-6-TOTAL, GRAND-TOTAL
+116029     ELSE
+116030     IF CE-EXT-CODE-1 = "7"
+116031         ADD CE-EXT-VALUE-1 TO G-CE-7-TOTAL, GRAND-TOTAL
+116032     ELSE
+116033     IF CE-EXT-CODE-1 = "8"
+116034         ADD CE-EXT-VALUE-1 TO G-CE-8-TOTAL, GRAND-TOTAL
+116035     ELSE
+116036     IF CE-EXT-CODE-1 = "9"
+116037         ADD CE-EXT-VALUE-1 TO G-CE-9-TOTAL, GRAND-TOTAL
+116038     ELSE
+116039     IF CE-EXT-CODE-1 = "Z"
+116040         ADD CE-EXT-VALUE-1 TO G-CE-Z-TOTAL, GRAND-TOTAL.
+116100
+001000************************************************************      XBLOWUP
+002000************************************************************      XBLOWUP
+003000*                    B L O W U P                           *      XBLOWUP
+004000*     CHECK FOR IMAGE, VIEW, OR SPOOL ERROR.  CLOSE        *      XBLOWUP
+005000*     FILES, GET OUT OF BLOCK MODE, AND DISPLAY            *      XBLOWUP
+006000*     APPROPRIATE ERROR MESSAGE ON SCREEN.                 *      XBLOWUP
+007000*                                                          *      XBLOWUP
+008000*     ALSO APPENDS THE ERROR MESSAGE TO A FILE CALLED      *      XBLOWUP
+009000*     BLOWUP.PUB.  TO READ THIS FILE, RUN "XBLPRT.OBJECT". *      XBLOWUP
+010000*                                                          *      XBLOWUP
+011000*         |||  PROGRAM IS ABORTED IN TBLOWUP  |||          *      XBLOWUP
+012000************************************************************      XBLOWUP
+013000************************************************************      XBLOWUP
+014000 990-BLOWUP.                                                      XBLOWUP
+015000     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,         XBLOWUP
+016000           VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,             XBLOWUP
+017000           BU-DISPLAY-FLDS.                                       XBLOWUP
+018000 999-EXIT.  EXIT.                                                 XBLOWUP
+       COPY OVRPFCALL IN COPYLIB.

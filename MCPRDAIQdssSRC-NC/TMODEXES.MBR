@@ -1,0 +1,697 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TMODEXES.
+      *REMARKS.    THIS PROGRAM IS THE EXECUTIVE CONTROLLING PROGRAM
+      *            FOR ALL MODIFICATIONS PERFORMED AGAINST DATABASE.
+      *            THE PROGRAMS THAT ARE CALLED ARE SELECTED BY THE
+      *            USER BY CHOOSING THE FUNCTION KEY THAT CORRESPONDS
+      *            TO THE MODIFICATION THAT NEEDS TO BE PERFORMED.
+      *                     F2  -  CHANGE THE W/O NUMBER THAT IS
+      *                             BEING MODIFIED
+      *                     F4  -  W/O MODIFICATION CAPABILITY
+      *                     F5  -  MATERIALS USED ON A W/O
+      *                     F6  -  LABOR USED ON A W/O
+      *                     F7  -  JOBPLAN USED ON A W/O.
+      *C
+      *C  NOV 1997  JEC COFFMAN
+      *C  REMOVED LOGIC TO REQUIRE THE PLANNER OR ENGINEER TO ENTER
+      *C  HIS USERID BEFORE PROCESSING. AT ONE TIME, WE WERE GOING TO
+      *C  USE THIS LOGIC TO PROHIBIT SOMEONE ELSE MESSING WITH THE
+      *C  DATA THAT WAS NOT INPUT VIA THIS ID.
+      *C
+      *C  01/04/2010  CA YODER  2010-00142425-001
+      *C     UPDATE LOGIC ASSIGNING WORKORDER LETTER SUFFIX.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  AS400.
+       OBJECT-COMPUTER.  AS400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZMODIFY-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT PERSONNEL-FILE
+               ASSIGN TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS PF-STATUS.
+           SELECT WO-BASIC-FILE
+               ASSIGN TO DATABASE-MCFLMM1001
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WBF-STATUS.
+           SELECT WO-NUMBER-FILE
+               ASSIGN TO DATABASE-MCFLMM0101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WNF-STATUS.
+           SELECT WO-PLANNED-FILE
+               ASSIGN TO DATABASE-MCFLMM1101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WPF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                         PIC X(2000).
+       FD  PERSONNEL-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PFREC.
+       01  PFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+       FD  WO-BASIC-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS BASREC.
+       01  BASREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+       FD  WO-NUMBER-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WONUMREC.
+       01  WONUMREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0101.
+       FD  WO-PLANNED-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PLANREC.
+       01  PLANREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+       WORKING-STORAGE SECTION.
+       77  SAVE-EXP-CLASS                    PIC X(8).
+       77  YEAR-DSP                          PIC X.
+      *---- 01/04/2010:  ADDED PARAMETER FOR CMMISYR.
+       77  MMIS-LETTER                PIC X.
+       01  BLOWUP-BASE                       PIC X(16).
+       01  BUFFER.
+           02  WO-NUMBER.
+               03  WO-NUMBER6                PIC X(6).
+               03  WO-NUMBER7                PIC X.
+               03  FILLER                    PIC XXX.
+           02  BUFFER-CMD-LINE               PIC X(79).
+           02  BUFFER-ERR-LINE               PIC X(79).
+       COPY CATREAD  OF COPYLIB.
+       COPY CPYIND   OF COPYLIB.
+       01  DATE-WORK-AREA.
+           02  FILLER                        PIC X.
+           02  DWY-2                         PIC X.
+           02  FILLER                        PIC X(4).
+       01  ERROR-BUFFER.
+           05  ERROR-LITERAL.
+               10  FILLER                    PIC X(40).
+               10  WO-1-10                   PIC X(10).
+               10  FILLER                    PIC X(24).
+           05  ERROR-DELAY                   PIC X(6).
+       01  FILE-STATUSES.
+           05  DSPLY-STATUS                  PIC XX.
+           05  PF-STATUS                     PIC XX.
+           05  WBF-STATUS                    PIC XX.
+           05  WNF-STATUS                    PIC XX.
+           05  WPF-STATUS                    PIC XX.
+       01  INPUT-SCREEN1.
+           05  INPUT-IDENTITY                PIC X(4).
+           05  INPUT-CMD-LINE                PIC X(79).
+           05  INPUT-ERR-LINE                PIC X(79).
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY JCWAREA OF COPYLIB.
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TMODEXES".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A.
+                   15  FILLER  PIC X(21) VALUE " UPDATE A SINGLE WORK".
+                   15  FILLER  PIC X(17) VALUE " ORDER EXECUTIVE ".
+                   15  FILLER  PIC X(16) VALUE "PROGRAM FOR THE ".
+                   15  FILLER  PIC X(6)  VALUE "PLANNE".
+               10  PROG-DESC-B     PIC X(60) VALUE "R/ENGINEER MODULE".
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  PER-PERSONNEL.      COPY MPERSONL OF COPYLIB.
+       01  RETURN-CODE                       PIC X.
+       01  SCREEN-CMD-ERR.
+           05  SCREEN-CMD-LINE               PIC X(79).
+           05  SCREEN-ERR-LINE               PIC X(79).
+       COPY DBSTAT OF COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       01  TRUE-VAL                          PIC 1 VALUE B"1".
+       01  WO-BASIC-DATA.      COPY DWOBASIC OF COPYLIB.
+       01  WO-PLANNED-DATA.    COPY DWOPLAN OF COPYLIB.
+       01  WO-NUMBER-BUF                     PIC X(10).
+       COPY WSCONTROL IN COPYLIB.
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS OF COPYLIB.
+       01  ERROR-SWITCH                      PIC S9(4) COMP-4.
+       COPY VCOMLINK OF COPYLIB.
+       PROCEDURE DIVISION USING DBPARAMETERS ERROR-SWITCH
+                            VIEW-COMAREA.
+       BEGIN-PROCESSING.
+           PERFORM 1-HSK THRU 11-GWAP-EXIT.
+      **************************************************************
+           PERFORM 6-MAIN UNTIL VIEW-LASTKEY = 3.
+      **************************************************************
+      *     THE PARAGRAPH 6-MAIN IS EXECUTED CONTINUOUSLY UNTIL    *
+      *        THE USER WISHES TO EITHER CHANGE THE WORK ORDER     *
+      *        NUMBER (PRESSES THE F2 FUNCTION KEY) OR TO EXIT     *
+      *        THE PROGRAM (PRESSES THE F3 FUNCTION KEY).          *
+      **************************************************************
+       2-EOJ.
+           CLOSE DISPLAY-FILE.
+           CLOSE PERSONNEL-FILE WO-BASIC-FILE WO-NUMBER-FILE.
+           CLOSE WO-PLANNED-FILE.
+           GOBACK.
+       1-HSK.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               MOVE "  PWORD" TO BLOWUP-BASE
+               MOVE "FAILED PASSWORD CHECK - TMODEXES"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           MOVE SPACES TO ERROR-BUFFER VIEW-NFNAME.
+           ACCEPT DATE-WORK-AREA FROM DATE.
+      *------- 01/04/2010:  UPDATED WORKORDER LETTER SUFFIX LOGIC.
+      *    IF DWY-2 = "0" MOVE "A" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "1" MOVE "B" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "2" MOVE "C" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "3" MOVE "D" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "4" MOVE "E" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "5" MOVE "F" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "6" MOVE "G" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "7" MOVE "H" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "8" MOVE "J" TO YEAR-DSP
+      *    ELSE
+      *    IF DWY-2 = "9" MOVE "K" TO YEAR-DSP
+      *    ELSE
+      *    MOVE "  MMISA" TO BLOWUP-BASE
+      *    MOVE "DATE RETRIEVAL ERROR FROM SYSTEM * TMODEXES *"
+      *         TO BU-DISPLAY-MSG
+      *    PERFORM 998-BLOWUP.
+
+           CALL "CMMISYR" USING MMIS-LETTER.
+           MOVE MMIS-LETTER    TO YEAR-DSP.
+      *-------
+
+           OPEN I-O   DISPLAY-FILE.
+           OPEN INPUT PERSONNEL-FILE.
+           OPEN INPUT WO-BASIC-FILE.
+           OPEN INPUT WO-NUMBER-FILE.
+           OPEN INPUT WO-PLANNED-FILE.
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+      ***************************************************************
+      *    MJCW-260 = 1 PERMITS ACCESS TO ENGINEER/VERBAL W/O'S     *
+      *    MJCW-260 = 2 PERMITS ACCESS TO PLANNER/VERBAL  W/O'S     *
+      *    MJCW-260 = 3 PERMITS ACCESS TO ALL TYPE        W/O'S     *
+      *    MJCW-260 = 4 PERMITS ACCESS TO ONLY VERBAL     W/O'S     *
+      ***************************************************************
+       10-SET-IDENTIFIER.
+           IF JCW-MJCW-260 = "1" OR "2"
+               NEXT SENTENCE
+           ELSE
+           MOVE SPACES TO ENG-PL-SCHD-ID
+           MOVE YEAR-DSP TO WO-NUMBER7
+           GO TO 11-GET-WO-ASKED4-PARA.
+           IF ENG-PL-SCHD-ID NOT = SPACES
+               MOVE YEAR-DSP TO WO-NUMBER7
+               GO TO 11-GET-WO-ASKED4-PARA.
+           IF ERROR-BUFFER = SPACES
+               IF VIEW-NFNAME = "FMODIFID"
+                   MOVE SPACES TO VIEW-NFNAME
+               ELSE
+               MOVE "FMODIFID" TO VIEW-CFNAME
+               MOVE SPACES TO INPUT-SCREEN1
+               MOVE INPUT-SCREEN1 TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ
+               MOVE DSPLY-REC TO INPUT-SCREEN1
+           ELSE
+           MOVE "FMODIFID" TO VIEW-CFNAME VIEW-NFNAME
+           MOVE ERROR-BUFFER TO INPUT-ERR-LINE
+           MOVE INPUT-SCREEN1 TO DSPLY-REC
+           PERFORM 99-SCREEN-WRITE
+           PERFORM 98-SCREEN-READ
+           MOVE DSPLY-REC TO INPUT-SCREEN1
+           MOVE SPACES TO ERROR-BUFFER
+           GO TO 10-SET-IDENTIFIER.
+           IF VIEW-LASTKEY = 3 GO TO 2-EOJ.
+           IF INPUT-IDENTITY = "    "
+               MOVE 40073 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 10-SET-IDENTIFIER.
+           MOVE 0 TO COND-WORD.
+           MOVE INPUT-IDENTITY TO PERCCNUM.
+           START PERSONNEL-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 42122 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 10-SET-IDENTIFIER.
+           MOVE INPUT-IDENTITY TO ENG-PL-SCHD-ID.
+      *    MOVE SPACES TO ENG-PL-SCHD-ID.
+           MOVE SPACES TO BUFFER.
+           MOVE YEAR-DSP TO WO-NUMBER7.
+       11-GET-WO-ASKED4-PARA.
+           MOVE "FMODIFWO" TO VIEW-CFNAME.
+           MOVE 66047 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO BUFFER-CMD-LINE.
+           MOVE BUFFER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO BUFFER.
+       11-GWAP-CONT.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY = 2 OR 6
+               MOVE  35126 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 11-GET-WO-ASKED4-PARA.
+           MOVE "0" TO RETURN-CODE.
+           CALL "TALWONO" USING WO-NUMBER RETURN-CODE.
+           IF RETURN-CODE = "1"
+               MOVE "0" TO RETURN-CODE
+               MOVE  47004 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WO-NUMBER TO WO-1-10
+               MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 11-GET-WO-ASKED4-PARA.
+           MOVE WO-NUMBER TO WO-NUMBER-BUF.
+           MOVE WO-NUMBER TO WONUM OF WONUMREC.
+           MOVE 0 TO COND-WORD.
+           START WO-NUMBER-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 47004 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WO-NUMBER TO WO-1-10
+               MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 11-GET-WO-ASKED4-PARA.
+           MOVE SPACES TO WO-BASIC-DATA WO-PLANNED-DATA.
+           MOVE SPACES TO SAVE-EXP-CLASS.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER TO WONUM OF BASREC.
+           START WO-BASIC-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WBF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17 GO TO 11-GWAP-CONT-1.
+           READ WO-BASIC-FILE INTO WO-BASIC-DATA
+               INVALID KEY    MOVE 15 TO COND-WORD.
+           IF WBF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15
+               GO TO 11-GWAP-CONT-1
+           ELSE
+           MOVE EXP-CLASS TO SAVE-EXP-CLASS
+           GO TO 11-GWAP-EXIT.
+       11-GWAP-CONT-1.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER TO WONUM OF PLANREC.
+           START WO-PLANNED-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+MMB083*    IF COND-WORD = 17 GO TO 11-GWAP-EXIT.
+MMB083     IF COND-WORD = 17
+MMB083         MOVE 47004 TO CATREAD-MSG-NUMBER
+MMB083         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+MMB083         MOVE WO-NUMBER TO WO-1-10
+MMB083         MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+MMB083         MOVE TRUE-VAL TO INDS (1) INDS (99)
+MMB083         GO TO 11-GET-WO-ASKED4-PARA.
+           READ WO-PLANNED-FILE INTO WO-PLANNED-DATA
+               INVALID KEY    MOVE 15 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF COND-WORD = 0
+               MOVE EXP-CLASS-P TO SAVE-EXP-CLASS.
+      *************************************************************************
+      *    LOGIC BELOW WAS ASTERISKED OUT 5-14-87 UNTIL SUCH TIME AS WE CAN   *
+      *    OR WANT TO RESTRICT USERS FROM ACCESSING W/O'S THAT THEY ARE NOT   *
+      *    ASSIGNED TO IN ACCORD WITH THE PLANNER OR ENGINEER FIELD ON W/O    *
+      *************************************************************************
+      *    IF JCW-MJCW-260 = "1"
+      *        IF IDENTITY-IN = ENGINEER
+      *            NEXT SENTENCE
+      *        ELSE
+      *        MOVE 51002 TO CATREAD-MSG-NUMBER
+      *        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *        GO TO 2-EOJ
+      *    ELSE
+      *    IF JCW-MJCW-260 = "2"
+      *        IF IDENTITY-IN = PLANNER
+      *            NEXT SENTENCE
+      *        ELSE
+      *        MOVE 51003 TO CATREAD-MSG-NUMBER
+      *        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+      *        GO TO 2-EOJ.
+       11-GWAP-EXIT.    EXIT.
+       6-MAIN.
+           IF VIEW-LASTKEY = 0
+               MOVE SPACES TO DSPLY-REC SCREEN-CMD-ERR
+               MOVE "FMODFUNC" TO VIEW-CFNAME
+               MOVE 66054 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-CMD-LINE
+               MOVE SCREEN-CMD-ERR TO DSPLY-REC
+               PERFORM 99-SCREEN-WRITE
+               PERFORM 98-SCREEN-READ.
+               IF VIEW-LASTKEY = 0
+                   MOVE SPACES TO BUFFER DSPLY-REC
+                   GO TO 2-EOJ.
+           IF VIEW-LASTKEY = 1 GO TO 2-EOJ.
+           IF VIEW-LASTKEY = 2
+               PERFORM 11-GET-WO-ASKED4-PARA THRU 11-GWAP-EXIT
+               GO TO 6-MAIN.
+           IF VIEW-LASTKEY = 3
+               IF VIEW-CFNAME = "FMODFUNC"
+                   GO TO 2-EOJ
+               ELSE
+               MOVE 0 TO VIEW-LASTKEY
+               GO TO 6-MAIN.
+           IF VIEW-LASTKEY = 4
+               IF WO-BASIC-DATA = SPACES
+                   IF JCW-MJCW-260 = "4"
+                       MOVE "FPAUTMSG" TO VIEW-CFNAME
+                       PERFORM 99-SCREEN-WRITE
+                       PERFORM 98-SCREEN-READ
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "E"
+                       IF JCW-MJCW-260 = "2"
+                           MOVE "FEAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TMODWORK" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "P"
+                       IF JCW-MJCW-260 = "1"
+                           MOVE "FPAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TMODWORK" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                            GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   CALL "TMODWORK" USING DBPARAMETERS
+                                         WO-NUMBER-BUF
+                                         VIEW-COMAREA
+                   IF VIEW-LASTKEY = 1
+                       GO TO 2-EOJ
+                   ELSE
+                   GO TO 6-MAIN
+               ELSE
+               CALL "TMODWORK" USING DBPARAMETERS
+                                     WO-NUMBER-BUF
+                                     VIEW-COMAREA
+               IF VIEW-LASTKEY = 1
+                   GO TO 2-EOJ
+               ELSE
+               GO TO 6-MAIN.
+           IF VIEW-LASTKEY = 5
+               IF SAVE-EXP-CLASS = "        "
+                   MOVE 49027 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                   MOVE TRUE-VAL TO INDS (1) INDS (99)
+                   MOVE 2 TO VIEW-LASTKEY
+                   GO TO 6-MAIN
+               ELSE
+               IF WO-BASIC-DATA = SPACES
+                   IF WO-START-STATUS = "AA" OR "AR"
+                       CALL "TMODMATL" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                        IF VIEW-LASTKEY = 1
+                            GO TO 2-EOJ
+                        ELSE
+                        GO TO 6-MAIN
+                   ELSE
+                   IF WO-NUM-SUFF-P = "000"
+                       MOVE 39044 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                       MOVE TRUE-VAL TO INDS (3) INDS (99)
+                       MOVE 2 TO VIEW-LASTKEY
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-STATUS-P = "DW" OR "FF"
+                       MOVE 49047 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                       MOVE TRUE-VAL TO INDS (1) INDS (99)
+                       MOVE 2 TO VIEW-LASTKEY
+                       GO TO 6-MAIN
+                   ELSE
+                   IF JCW-MJCW-260 = "4"
+                       MOVE "FPAUTMSG" TO VIEW-CFNAME
+                       PERFORM 99-SCREEN-WRITE
+                       PERFORM 98-SCREEN-READ
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "E"
+                       IF JCW-MJCW-260 = "2"
+                           MOVE "FEAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TMODMATL" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "P"
+                       IF JCW-MJCW-260 = "1"
+                           MOVE "FPAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TMODMATL" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   CALL "TMODMATL" USING DBPARAMETERS
+                                         WO-NUMBER-BUF
+                                         VIEW-COMAREA
+                   IF VIEW-LASTKEY = 1
+                       GO TO 2-EOJ
+                   ELSE
+                   GO TO 6-MAIN
+               ELSE
+               IF WO-STATUS = "DW" OR "FF"
+                   MOVE 49047 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE TRUE-VAL TO INDS (1) INDS (99)
+                   MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                   MOVE 2 TO VIEW-LASTKEY
+                   GO TO 6-MAIN
+               ELSE
+               CALL "TMODMATL" USING DBPARAMETERS
+                                     WO-NUMBER-BUF
+                                     VIEW-COMAREA
+               IF VIEW-LASTKEY = 1
+                   GO TO 2-EOJ
+               ELSE
+               GO TO 6-MAIN.
+           IF VIEW-LASTKEY = 7
+               IF WO-BASIC-DATA = SPACES
+                   IF WO-NUM-SUFF-P = "000"
+                       MOVE 39044 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE TRUE-VAL TO INDS (3) INDS (99)
+                       MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                       MOVE 2 TO VIEW-LASTKEY
+                       GO TO 6-MAIN
+                   ELSE
+                   IF JCW-MJCW-260 = "4"
+                       MOVE "FPAUTMSG" TO VIEW-CFNAME
+                       PERFORM 99-SCREEN-WRITE
+                       PERFORM 98-SCREEN-READ
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "E"
+                       IF JCW-MJCW-260 = "2"
+                           MOVE "FEAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TMODLABR" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "P"
+                       IF JCW-MJCW-260 = "1"
+                           MOVE "FPAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TMODLABR" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   CALL "TMODLABR" USING DBPARAMETERS
+                                         WO-NUMBER-BUF
+                                         VIEW-COMAREA
+                   IF VIEW-LASTKEY = 1
+                       GO TO 2-EOJ
+                   ELSE
+                   GO TO 6-MAIN
+               ELSE
+               CALL "TMODLABR" USING DBPARAMETERS
+                                     WO-NUMBER-BUF
+                                     VIEW-COMAREA
+               IF VIEW-LASTKEY = 1
+                   GO TO 2-EOJ
+               ELSE
+               GO TO 6-MAIN.
+           IF VIEW-LASTKEY = 8
+               IF WO-BASIC-DATA = SPACES
+                   IF WO-NUM-SUFF-P = "000"
+                       MOVE 39044 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE TRUE-VAL TO INDS (1) INDS (99)
+                       MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                       MOVE 2 TO VIEW-LASTKEY
+                       GO TO 6-MAIN
+                   ELSE
+                   IF JCW-MJCW-260 = "4"
+                       MOVE "FPAUTMSG" TO VIEW-CFNAME
+                       PERFORM 99-SCREEN-WRITE
+                       PERFORM 98-SCREEN-READ
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-START-STATUS = "AA" OR "AR"
+                       MOVE 42147 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE TRUE-VAL TO INDS (1) INDS (99)
+                       MOVE ERROR-BUFFER TO BUFFER-ERR-LINE
+                       MOVE 2 TO VIEW-LASTKEY
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "E"
+                       IF JCW-MJCW-260 = "2"
+                           MOVE "FEAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TJOBPLAN" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   IF WO-CURRENT-TYPE = "P"
+                       IF JCW-MJCW-260 = "1"
+                           MOVE "FPAUTMSG" TO VIEW-CFNAME
+                           PERFORM 99-SCREEN-WRITE
+                           PERFORM 98-SCREEN-READ
+                           GO TO 6-MAIN
+                       ELSE
+                       CALL "TJOBPLAN" USING DBPARAMETERS
+                                             WO-NUMBER-BUF
+                                             VIEW-COMAREA
+                       IF VIEW-LASTKEY = 1
+                           GO TO 2-EOJ
+                       ELSE
+                       GO TO 6-MAIN
+                   ELSE
+                   CALL "TJOBPLAN" USING DBPARAMETERS
+                                         WO-NUMBER-BUF
+                                         VIEW-COMAREA
+                   IF VIEW-LASTKEY = 1
+                       GO TO 2-EOJ
+                   ELSE
+                   GO TO 6-MAIN
+               ELSE
+               CALL "TJOBPLAN" USING DBPARAMETERS
+                                     WO-NUMBER-BUF
+                                     VIEW-COMAREA
+               IF VIEW-LASTKEY = 1
+                   GO TO 2-EOJ
+               ELSE
+               GO TO 6-MAIN.
+           IF VIEW-LASTKEY NOT = 3
+               MOVE 35126 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO SCREEN-CMD-LINE
+               MOVE 0 TO VIEW-LASTKEY
+               MOVE TRUE-VAL TO INDS (99).
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+           MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+       998-BLOWUP.
+           MOVE "TMODEXES" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+                            VIEW-COMAREA DUMMY-KSAM-STAT
+                            BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

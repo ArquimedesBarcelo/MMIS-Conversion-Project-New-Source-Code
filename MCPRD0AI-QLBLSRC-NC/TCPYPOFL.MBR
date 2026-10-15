@@ -1,0 +1,240 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.      TCOPYPO.
+       AUTHOR.          CA YODER.
+       DATE-WRITTEN.    MAY 1997.
+
+      ************************************************************
+      *                                                          *
+      *   T C O P Y P O        THIS PROGRAM COPIES RECORDS TO    *
+      *     BE RE-PROCESSED BY "TLOADPO" FROM MCFPPOFILE TO      *
+      *     MCFPPOFIL2.  THE RECORDS ARE THEN DELETED FROM       *
+      *     MCFPPOFILE.                                          *
+      *                                                          *
+      ************************************************************
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT INPUT-PO-FILE
+                  ASSIGN        TO DISK-MCFPPOFILE
+                  ORGANIZATION  IS RELATIVE
+                  ACCESS MODE   IS SEQUENTIAL
+                  FILE STATUS   IS FILE-STATUS.
+
+           SELECT OUTPUT-PO-FILE
+                  ASSIGN        TO DISK-MCFPPOFIL2
+                  ORGANIZATION  IS RELATIVE
+                  ACCESS MODE   IS SEQUENTIAL
+                  FILE STATUS   IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN        TO DATABASE-MCFLCS0501
+                  ORGANIZATION  IS INDEXED
+                  ACCESS MODE   IS DYNAMIC
+                  RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS   IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  INPUT-PO-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 202 CHARACTERS
+           DATA RECORD IS INPUT-PO-REC.
+       01  INPUT-PO-REC                       PIC X(202).
+
+       FD  OUTPUT-PO-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS OUTPUT-PO-REC.
+       01  OUTPUT-PO-REC                      PIC X(133).
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       WORKING-STORAGE SECTION.
+       77  SAVE-ERROR-DATE              PIC X(8)  VALUE SPACES.
+       77  SAVE-PO-NUM                  PIC X(10) VALUE SPACES.
+       77  SAVE-PO-ITEM                 PIC X(4)  VALUE SPACES.
+       77  HOLD-PO-ITEM                 PIC X(4)  VALUE SPACES.
+       77  PLT-ARG                      PIC X(4)  VALUE SPACES.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  HEADER-LINE.
+           05  FILLER             PIC X(3)    VALUE SPACES.
+           05  FILLER             PIC X(15)   VALUE "PURCHASE ORDERS".
+           05  FILLER             PIC X(18)   VALUE SPACES.
+           05  FILLER             PIC X(6)    VALUE "RTRANS".
+           05  FILLER             PIC X(91)   VALUE SPACES.
+
+       01  TRAILER-LINE.
+           05  FILLER             PIC X(3)    VALUE SPACES.
+           05  FILLER             PIC X(13)   VALUE "END PURCHASE ".
+           05  FILLER             PIC X(7)    VALUE "ORDERS ".
+           05  TRAILER-CTR        PIC 9(5)    VALUE 0.
+           05  FILLER             PIC X(105)  VALUE SPACES.
+
+      *------------------------------------------------------------*
+      *                         SWITCHES                           *
+      *------------------------------------------------------------*
+
+
+       01  INPUT-PO-EOF-SW             PIC X       VALUE "N".
+       01  FIRST-REC                   PIC X       VALUE "Y".
+
+      *------------------------------------------------------------*
+      *                     UTILITY BUFFER AREA                    *
+      *------------------------------------------------------------*
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY LANGSUB  OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+      *------------------------------------------------------------*
+      *                 DATABASE I/O BUFFER AREA                   *
+      *------------------------------------------------------------*
+
+       COPY POFILE IN COPYLIB.
+
+       COPY MPLT0 OF COPYLIB.
+
+       COPY MPLTP01 OF COPYLIB.
+
+       COPY PLANTS OF COPYLIB.
+
+      *------------------------------------------------------------*
+      *                     LINKAGE SECTION                        *
+      *------------------------------------------------------------*
+
+       LINKAGE SECTION.
+
+      *------ SWITCH TO TELL BXLOADPO2 IF NEW RECORDS HAVE BEEN COPIED
+      *------ TO MCFPPOFIL2.  IF NOT, BXLOADPO2 WILL END.
+       01  NEW-RECORDS-COPIED          PIC X.
+
+      *------------------------------------------------------------*
+      *            P R O C E D U R E   D I V I S I O N             *
+      *------------------------------------------------------------*
+
+       PROCEDURE DIVISION     USING NEW-RECORDS-COPIED.
+
+       PROC-DIV SECTION 01.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK.
+
+           PERFORM 6-MAIN UNTIL INPUT-PO-EOF-SW = "Y".
+
+           PERFORM 2-EOJ.
+
+           GOBACK.
+
+       1-HSK.
+           OPEN I-O     INPUT-PO-FILE
+                INPUT   MPLTINFO-I
+                OUTPUT  OUTPUT-PO-FILE.
+           MOVE 0                       TO  TRAILER-CTR.
+           MOVE "Y"                     TO  FIRST-REC.
+           MOVE "N"                     TO  NEW-RECORDS-COPIED.
+
+           MOVE "P 01"         TO  PLT-ARG.
+           MOVE PLT-ARG        TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ FAILED IN TUPDPOFL" TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                   TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE MPLTINFO-COMPANY              TO  WHICH-PLANT.
+
+           READ INPUT-PO-FILE INTO BUF-POFILE
+               AT END MOVE "Y"          TO  INPUT-PO-EOF-SW.
+
+       2-EOJ.
+           IF TRAILER-CTR > 0
+      *------------ ADD 2 IN ORDER TO ACCOUNT FOR THE HEADER
+      *------------ AND TRAILER RECORDS.
+               ADD 2                    TO  TRAILER-CTR
+               WRITE OUTPUT-PO-REC FROM TRAILER-LINE
+               MOVE "Y"                 TO  NEW-RECORDS-COPIED
+           ELSE
+               DISPLAY " **** NO RECORDS COPIED TO MCFPPOFIL2 ****".
+
+           CLOSE        INPUT-PO-FILE
+                        MPLTINFO-I
+                        OUTPUT-PO-FILE.
+
+       2-BLOWUP.
+           MOVE "TCPYPOFL" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+      *------------------------------------------------------------*
+      *                        6 - M A I N                         *
+      *------------------------------------------------------------*
+
+       6-MAIN.
+      *---------- CODED PURCHASE ORDER.
+           IF PO-TRANS = "3"
+               IF POFL-FLAG = "X"
+                   IF FIRST-REC = "Y"
+                       WRITE OUTPUT-PO-REC FROM HEADER-LINE
+                       MOVE "N"        TO  FIRST-REC
+                   END-IF
+                   ADD 1               TO  TRAILER-CTR
+                   WRITE OUTPUT-PO-REC FROM POFL-AKPOFILE-BUF
+                   DELETE INPUT-PO-FILE
+               END-IF
+           ELSE
+      *---------- NON-CODED PURCHASE ORDER.
+           IF PO-TRANS = "4"
+               IF POFL-FLAG = "X"
+                   IF FIRST-REC = "Y"
+                       WRITE OUTPUT-PO-REC FROM HEADER-LINE
+                       MOVE "N"           TO  FIRST-REC
+                   END-IF
+                   MOVE POFL-ERROR-DATE   TO  SAVE-ERROR-DATE
+                   MOVE PO-INPUT-NUM      TO  SAVE-PO-NUM
+                   IF KELLY-PLANT
+                       MOVE K-NSTR-ITM-NUM     TO  SAVE-PO-ITEM
+                   ELSE
+                       MOVE IN-NSTR-ITM-NUM    TO  SAVE-PO-ITEM
+                   END-IF
+                   ADD 1                  TO  TRAILER-CTR
+                   WRITE OUTPUT-PO-REC FROM POFL-AKPOFILE-BUF
+                   DELETE INPUT-PO-FILE
+               END-IF
+           ELSE
+      *---------- COPY NON-STR ITEM DESCRIPTIONS.
+               PERFORM 61-COPY-ITEMS.
+
+           READ INPUT-PO-FILE NEXT INTO BUF-POFILE
+               AT END MOVE "Y"    TO  INPUT-PO-EOF-SW.
+
+       61-COPY-ITEMS.
+           IF KELLY-PLANT
+               MOVE K-NSTR-ITM-NUM     TO  HOLD-PO-ITEM
+           ELSE
+               MOVE IN-NSTR-ITM-NUM    TO  HOLD-PO-ITEM.
+           IF POFL-ERROR-DATE = SAVE-ERROR-DATE  AND
+                 PO-INPUT-NUM = SAVE-PO-NUM
+               ADD 1                   TO  TRAILER-CTR
+               WRITE OUTPUT-PO-REC FROM POFL-AKPOFILE-BUF
+               DELETE INPUT-PO-FILE.
+

@@ -1,0 +1,728 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    TDELTPO.
+000500 AUTHOR.        KUT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+
+000800***************************************************************
+000900**                                                           **
+001000**   TDELTPO.UTIL   - UTILITY PROGRAM FOR CALLING THE        **
+001100**                    SUBROUTINE 'SDELTPO' WHICH DELETES     **
+001200**                    A PURCHASE ORDER.                      **
+001300**                                                           **
+001400***************************************************************
+      *
+      *C  07/22/96   CA YODER
+      *C    RE-COMPILED PROGRAM TO PICK UP CENTURY DATABASE CHANGES.
+      *C
+      *C  11/10/97   CA YODER
+      *C    ADDED SCREEN INTERFACE SO THAT USERS COULD MOVE POS TO
+      *C    HISTORY.  IF THIS PROGRAM IS CALLED FROM MCXTDELTPN, THE
+      *C    USER CANNOT USE THE DELETE CAPABILITY.  IF THIS PROGRAM
+      *C    IS CALLED FROM MCXTDELTPY, THE USER CAN JUST DELETE THE
+      *C    PO WITHOUT MOVING TO HISTORY.
+      *C
+      *C  02/04/98   CA YODER
+      *C    ADDED CHECKS TO MAKE SURE THE PO PASSES SEVERAL EDITS
+      *C    BEFORE MOVING THE PO TO HISTORY.  IF THIS PROGRAM IS
+      *C    CALLED FROM MCXTDELTPY, THE EDIT CHECKS ARE SKIPPED.
+      *C
+      *C 09DEC1999  DAVE PLUM
+      *C   REPLACED THE "STOP RUN" STATEMENT WITH A "GOBACK"
+      *C   STATEMENT.
+      *C
+DCR01 *C   NOV 21, 2003   D.RAUCH  DCR01
+DCR01 *C   ADDED CODE TO PROCESS REMOVAL OF PO LOGGING TRIGGER REC
+      *C
+      *C   JAN 08, 2004   CA YODER
+      *C   ADDED LOGIC TO PASS PARAMETER TO SDELTPO THAT THE ITEM
+      *C   IS BEING MOVED TO HISTORY.
+      *C
+      ****************************************************************
+
+
+001700 ENVIRONMENT DIVISION.
+001800 CONFIGURATION SECTION.
+001900 SOURCE-COMPUTER.  HP-3000.
+002000 OBJECT-COMPUTER.  HP-3000.
+
+       SPECIAL-NAMES.   I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                        LOCAL-DATA IS LOCAL-DATA-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZDELTPO-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPORCV-O
+                  ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2502
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+003600 DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC.
+           COPY DDS-ALL-FORMATS OF ZDELTPO.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  MPORCV-O
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS2502.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+
+011200 WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+002100
+002400 77 PUT-PO-IN-HIST-SW             PIC X(1)  VALUE SPACES.
+       77  DISPLAY-ITEM-SW              PIC X(1)  VALUE "N".
+       77  DISPLAY-REG-SW               PIC X(1)  VALUE "N".
+
+       01  DELETE-CAPABILITY-SW         PIC X  VALUE SPACES.
+           88  DELETE-ALLOWED                  VALUE "Y".
+           88  DELETE-NOT-ALLOWED              VALUE "N".
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT               PIC X(64)  VALUE SPACES.
+           05  MSG-FLD                PIC X(12)  VALUE SPACES.
+           05  MSG-FLD-9 REDEFINES MSG-FLD
+                                      PIC Z(11)9.
+
+DCR01 *==============================================================
+DCR01  01  WS-Z000-EXTRA-FLDS.
+DCR01      03  WS-Z000-PGM       PIC X(10)           VALUE "TDELTPO".
+DCR01  COPY POLOGSUBWS  IN COPYLIB.
+DCR01 *==============================================================
+
+
+       01  INVOICE-INDIC-SW           PIC X     VALUE SPACES.
+           88  INVOICING                        VALUE "Y".
+
+       01  PO-COMPLETE-SW             PIC X     VALUE SPACES.
+           88  PO-COMPLETE                      VALUE "Y".
+
+       01  ITEM-INFO-LINE.
+           05  FILLER                 PIC X(5).
+           05  IIL-ITEM               PIC X(4).
+           05  FILLER                 PIC X(7).
+           05  IIL-DLV                PIC Z(7)9.9(4).
+           05  FILLER                 PIC X(6).
+           05  IIL-STR                PIC Z(7)9.9(4).
+           05  FILLER                 PIC X(7).
+           05  IIL-PAID               PIC Z(7)9.9(4).
+
+       01  REGISTER-LINE.
+           05  FILLER                 PIC X(9).
+           05  REG-NUM                PIC X(5).
+002500
+002600
+002700**************************************************************
+002800**************************************************************
+002900**                                                          **
+003000**                DATABASE I/O BUFFER AREA                  **
+003100**                                                          **
+003200**************************************************************
+003300**************************************************************
+003400
+003500 COPY MPLTINFO IN COPYLIB.
+003600
+003700 COPY DPORECD IN COPYLIB.
+003800
+       COPY DPOITEM IN COPYLIB.
+
+       COPY DINVRCD IN COPYLIB.
+
+003900 COPY MPORCV IN COPYLIB.
+004000
+005400
+005500 COPY DATAB IN COPYLIB.
+005600
+005700 COPY DBSTHIST IN COPYLIB.
+005800
+       COPY JCWAREA IN COPYLIB.
+
+005900 01 ITEMS-LISTING.
+006000     05  ALL-ITEMS                PIC XX    VALUE "@;".
+006100     05  PO-SEARCH                PIC X(10) VALUE "PO-RCV-NO;".
+006200
+006300 01  ARG-VALUES.
+006400     05  PLT-ARG                  PIC X(4)  VALUE SPACES.
+006500     05  PO-ARG                   PIC X(14) VALUE SPACES.
+006600
+006900***01  PO-NUMBER                    PIC X(10).
+007000
+007100 01  BUILD-PO-NUM.
+007200     05  FILLER                   PIC X(1)  VALUE "P".
+007300     05  PO-NUM-REL               PIC X(10) VALUE SPACES.
+007400     05  FILLER                   PIC X(3)  VALUE "000".
+007500
+007600 01  COMPANY-SAVE                 PIC X(3)  VALUE SPACES.
+
+      *--------- SCREEN INFORMATION.
+       01  PO-DELETE-SCREEN.
+           05  SC-PO-NUM-REL.
+               10  SC-PO-NUM            PIC X(7).
+               10  SC-PO-REL            PIC 9(3).
+           05  SC-PO-DELETE-SW          PIC X.
+           05  SC-PO-DELETE-MSG1        PIC X(79).
+           05  SC-PO-DELETE-MSG2        PIC X(79).
+           05  SC-PO-ERRLINE            PIC X(79).
+           05  SC-PO-MSGLINE            PIC X(79).
+007700
+007800 COPY TBLOWUP IN COPYLIB.
+007900
+008000****COPY VIEWDUM IN COPYLIB.
+       COPY VCOMAREA IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+       COPY CATREAD IN COPYLIB.
+008100
+008200 PROCEDURE DIVISION.
+008300
+008400 PROC-DIV SECTION 01.
+008500
+008600
+008700 1-BEGIN.
+008800     PERFORM 1-HSK THRU 1-H-X.
+008900
+009000     PERFORM 6-MAIN THRU 6-M-X.
+009100
+009200     PERFORM 2-EOJ  THRU 2-EOJ-X.
+009300
+009400*****STOP RUN.
+           GOBACK.
+009500
+009600 1-HSK.
+009700
+           OPEN INPUT MPLTINFO-I, DPORECD-I, DPOITEM-I, DINVRCD-I.
+           OPEN I-O MPORCV-O, DISPLAY-FILE.
+
+      **********************************************
+      *  DOES PLANT USE INVOICING?
+      **********************************************
+
+           MOVE "PODL"       TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MPLTINFO 'PODL' *1-HSK" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE MPLTINFO-INVOICE-IND  TO  INVOICE-INDIC-SW.
+011600
+011700******************************************
+011800*   GET CO. CODE FROM MPLTINFO
+011900******************************************
+012000
+012100     MOVE "P 01"       TO PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+012500         MOVE "GET MPLTINFO 'P 01' *1-HSK" TO BU-DISPLAY-MSG
+012600         GO TO 2-BLOWUP
+012700     ELSE
+012800         MOVE MPLTINFO-COMPANY  TO  COMPANY-SAVE.
+
+      *------- SEE IF USER IS AUTHORIZED TO DELETE POS FROM THIS
+      *------- PROGRAM.
+      *------- IF TDELTPO JCW = "0", THE USER CANNOT DELETE POS.
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+           IF JCW-TDELTPO-307 = "0"
+               MOVE "N"  TO DELETE-CAPABILITY-SW
+           ELSE
+               MOVE "Y"  TO DELETE-CAPABILITY-SW.
+
+DCR01 *===============================================================
+DCR01      PERFORM Z001-SETUP-PO-LOGGING    THRU Z001-EXIT.
+DCR01 *===============================================================
+
+
+013000 1-H-X.
+013100     EXIT.
+013200
+013300
+013400 2-EOJ.
+           CLOSE DPORECD-I, MPORCV-O, MPLTINFO-I, DISPLAY-FILE,
+                 DPOITEM-I, DINVRCD-I.
+014500
+014600 2-EOJ-X.
+014700     EXIT.
+014800
+014900*********************************************
+015000*                                           *
+015100*  BLOWUP ROUTINE EXECUTES WHENEVER A       *
+015200*  FATAL ERROR OCCURS                       *
+015300*                                           *
+015400*********************************************
+015500
+015600 2-BLOWUP.
+015700     MOVE "TDELTPO"  TO  BU-PGM-NAME.
+015800     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+015900         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+016000             BU-DISPLAY-FLDS.
+016100
+016200
+016300
+016400**************************************************
+016500*                                                *
+016600*     6 - M A I N                                *
+016700*                                                *
+016800**************************************************
+016900
+017000
+017100 6-MAIN.
+           MOVE "DELTPO" TO VIEW-NFNAME.
+
+       6-PUT-BUFFER.
+           MOVE SPACES TO PO-DELETE-SCREEN.
+           MOVE ZEROS  TO SC-PO-REL.
+
+       6-SHOW-FORM.
+      *------- SHOW DELETE QUESTION IF USER IS ALLOWED TO DELETE PO.
+           IF DELETE-ALLOWED
+               MOVE B"1"          TO IND(10).
+
+           MOVE PO-DELETE-SCREEN  TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC       TO PO-DELETE-SCREEN.
+
+       6-READ-FIELDS.
+           IF VIEW-LASTKEY = 3
+               GO TO 6-M-X.
+
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *****    INVALID FUNCTION KEY    *****
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-PO-MSGLINE
+               MOVE B"1"           TO IND(99)
+               GO TO 6-SHOW-FORM.
+
+017200***  MOVE SPACES                  TO PO-NUMBER.
+017300***  DISPLAY "ENTER PO NUMBER TO DELETE X(10)".
+017400***  ACCEPT PO-NUMBER.
+017500***  IF PO-NUMBER = SPACES
+017600***      GO TO 6-M-X.
+017700***
+017800***  DISPLAY "PUT PO INTO THE HISTORY DATA BASE? (Y OR N)".
+017900***  ACCEPT PUT-PO-IN-HIST-SW.
+018000***  IF PUT-PO-IN-HIST-SW = "Y" OR "N"
+018100***      NEXT SENTENCE
+018200***  ELSE
+018300***      DISPLAY "INVALID RESPONSE; LETS TRY IT AGAIN"
+018400***      GO TO 6-MAIN.
+018500
+           IF DELETE-NOT-ALLOWED
+               MOVE "Y"                 TO  PUT-PO-IN-HIST-SW
+           ELSE
+           IF SC-PO-DELETE-SW = "Y"
+               MOVE "N"                 TO  PUT-PO-IN-HIST-SW
+           ELSE
+               MOVE "Y"                 TO  PUT-PO-IN-HIST-SW.
+
+           IF SC-PO-NUM = SPACES
+      ***  ENTER A PO NUMBER ***
+               MOVE  05  TO LANG-SETNUM
+               MOVE 104  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-PO-MSGLINE
+               MOVE B"1"           TO IND(99)  IND(01)
+               GO TO 6-SHOW-FORM.
+
+018600     MOVE SC-PO-NUM-REL           TO  PO-NUM-REL.
+018700     MOVE BUILD-PO-NUM            TO  PO-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      ***  PO DOES NOT EXIST IN PLANT DATABASE  ***
+                   MOVE  16  TO LANG-SETNUM
+                   MOVE  60  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO SC-PO-DELETE-MSG1
+                   MOVE SPACES         TO SC-PO-DELETE-MSG2
+      ***  ENTER ANOTHER P.O. TO MOVE TO HISTORY OR PRESS 'F3' TO END  ***
+                   MOVE   5  TO LANG-SETNUM
+                   MOVE 105  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO SC-PO-MSGLINE
+                   MOVE B"1"           TO IND(99), IND(1)
+                   GO TO 6-SHOW-FORM
+019200***          DISPLAY "PO DOESN'T EXIST; TRY AGAIN  ",
+019300***              PO-NUMBER
+019400***          GO TO 6-MAIN
+019500         ELSE
+019600             MOVE "FIND DPORECD * 6-MAIN" TO BU-DISPLAY-MSG
+019700             GO TO 2-BLOWUP.
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+      ***  PO DOES NOT EXIST IN PLANT DATABASE  ***
+                   MOVE  16  TO LANG-SETNUM
+                   MOVE  60  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO SC-PO-DELETE-MSG1
+                   MOVE SPACES         TO SC-PO-DELETE-MSG2
+020200***          DISPLAY "NO PO HEADER ENTRY; CANT PUT IN HISTORY"
+020300***          MOVE "N"             TO PUT-PO-IN-HIST-SW
+                   GO TO 6-SHOW-FORM
+020400         ELSE
+020500             MOVE "GET DPORECD * 6-MAIN" TO BU-DISPLAY-MSG
+020600             GO TO 2-BLOWUP.
+           IF PORCVNO OF DPORECD-REC-I NOT = PO-ARG
+      ***  PO DOES NOT EXIST IN PLANT DATABASE  ***
+                   MOVE  16  TO LANG-SETNUM
+                   MOVE  60  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO SC-PO-DELETE-MSG1
+                   MOVE SPACES         TO SC-PO-DELETE-MSG2
+020200***      DISPLAY "NO PO HEADER ENTRY; CANT PUT IN HISTORY"
+020300***          MOVE "N"             TO PUT-PO-IN-HIST-SW
+                   GO TO 6-SHOW-FORM.
+020700
+020800     IF PUT-PO-IN-HIST-SW = "Y"
+      *------------- SKIP EDITS FOR CALL FROM MCXTDELTPY.
+               IF DELETE-CAPABILITY-SW = "Y"
+                   MOVE "Y" TO PO-COMPLETE-SW
+               ELSE
+                   PERFORM 61-CHECK-ITEMS  THRU  61-CI-X
+               END-IF
+               IF PO-COMPLETE-SW = "Y"
+020900             PERFORM 60-UPDATE-STORES-HISTORY THRU 60-USH-X
+               ELSE
+                   MOVE MESSAGE-BUFFER     TO SC-PO-MSGLINE
+                   MOVE B"1"               TO IND(99)
+                   IF DISPLAY-ITEM-SW = "Y"
+                       MOVE ITEM-INFO-LINE TO SC-PO-DELETE-MSG1
+                   ELSE
+                       MOVE SPACES         TO SC-PO-DELETE-MSG1
+                   END-IF
+                   IF DISPLAY-REG-SW = "Y"
+                       MOVE REGISTER-LINE  TO SC-PO-DELETE-MSG2
+                   ELSE
+                       MOVE SPACES         TO SC-PO-DELETE-MSG2
+                   END-IF
+                   GO TO 6-SHOW-FORM.
+021000
+      *------- SWITCH TO INDICATE ITEM MOVE TO HISTORY.  RESET IN
+      *------- SDELTPO.
+           MOVE "H" TO BASE (1:1).
+
+021100     CALL "SDELTPO" USING BASE,
+021200                           PO-ARG,
+021300                           COMPANY-SAVE.
+
+
+DCR01 *===============================================================
+DCR01 *=== DON'T NEED THE DELETE TRANSACTION ASSOCIATED WITH A MOVE
+DCR01 *=== TO HISTORY - SO RMV THE "DELETE" TRIGGER RECORD
+DCR01 *===============================================================
+DCR01      PERFORM Z110-RMV-USER-TRIGGER    THRU Z110-EXIT.
+
+
+           MOVE SPACES TO PO-DELETE-SCREEN.
+           MOVE ZEROS  TO SC-PO-REL.
+
+021400***  DISPLAY "SUCCESSFUL CALL TO SDELTPO".
+      ***  PO SUCCESSFULLY MOVED TO HISTORY  ***
+           IF PUT-PO-IN-HIST-SW = "Y"
+               MOVE  16  TO LANG-SETNUM
+               MOVE 178  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-PO-DELETE-MSG1
+               MOVE SPACES         TO SC-PO-DELETE-MSG2
+           ELSE
+      ***  PO SUCCESSFULLY DELETED  ***
+               MOVE  16  TO LANG-SETNUM
+               MOVE 179  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-PO-DELETE-MSG1
+               MOVE SPACES         TO SC-PO-DELETE-MSG2.
+021500     GO TO 6-SHOW-FORM.
+021600
+021700 6-M-X.
+021800     EXIT.
+021900
+022000 60-UPDATE-STORES-HISTORY.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+023400         MOVE "GET MPORCV*60-USH" TO BU-DISPLAY-MSG
+023500         GO TO 2-BLOWUP.
+023600
+023700********* IF 'PO-RCV-SEQ' IS = 'HISTOK' ON THE PO MASTER
+023800********* 'MPORCV' THEN THIS MEANS THE PO HAS ALREADY BEEN
+023900********* MOVED TO THE HISTORY DATA BASE AND THEREFORE IS
+024000********* NOT COPIED OVER AGAIN.  OTHERWISE MARK 'PO-RCV-SEQ'
+024100********* WITH 'HISTSP' AND CALL 'SPOHIST'.  IF 'SPOHIST'
+024200********* SUCCESSFULLY COPYS THE PO OVER INTO THE HISTORY DB
+024300********* THEN IT WILL MARK 'PO-RCV-SEQ' WITH A 'HISTOK'
+024400********* INDICATOR
+      ********* NOTE ADDED A REWRITE OF MPORCV EVEN IF PO-RCV-SEQ
+      ********* WAS EQUAL TO 'HISTOK' SO THAT IT WOULD UNLOCK THE
+      ********* RECORD FOR 'MPORCV'  KURT MOVSESIAN 10/23/91
+024500
+024600     IF M-PO-RCV-SEQ = "HISTOK"
+               REWRITE MPORCV-REC-O FROM BUF-MPORCV
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                      END-REWRITE
+               IF FILE-STATUS NOT = "00"
+025400             MOVE "UPDATE1 MPORCV * 60-USH" TO BU-DISPLAY-MSG
+025500             GO TO 2-BLOWUP
+               ELSE
+024800             GO TO 60-USH-X.
+024900
+025000     MOVE "HISTSP" TO  M-PO-RCV-SEQ.
+           REWRITE MPORCV-REC-O FROM BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+025400         MOVE "UPDATE2 MPORCV*60-USH" TO BU-DISPLAY-MSG
+025500         GO TO 2-BLOWUP.
+025600
+025900     CALL "SPOHIST" USING BASE,
+026000                          BASE-STHIST,
+026100                          BUF-DPORECD,
+026200                          PO-ARG.
+026300
+026400 60-USH-X.
+026500     EXIT.
+
+       61-CHECK-ITEMS.
+           MOVE "N"                  TO DISPLAY-ITEM-SW
+                                        DISPLAY-REG-SW.
+           MOVE  09                  TO LANG-SETNUM.
+           MOVE 114                  TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER       TO ITEM-INFO-LINE.
+           MOVE "N"                  TO PO-COMPLETE-SW.
+           MOVE SPACES               TO MESSAGE-BUFFER.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "FIND DPOITEM *61-CI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+      **************************************
+      *                                    *
+      *  CHECK EACH ITEM IN DPOITEM TO SEE *
+      *  IF THE P.O. IS COMPLETE           *
+      *                                    *
+      **************************************
+
+       61-GET-DPOITEM.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 61-CHECK-OPEN-INVOICES
+               ELSE
+                   MOVE "GET DPOITEM*61-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               GO TO 61-CHECK-OPEN-INVOICES.
+
+           IF ITM-QTY-DLVR = ITM-QTY-STORED
+               NEXT SENTENCE
+           ELSE
+               MOVE  03  TO LANG-SETNUM
+               MOVE 633  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ITM-NUMBER       TO IIL-ITEM
+               MOVE ITM-QTY-DLVR     TO IIL-DLV
+               MOVE ITM-QTY-STORED   TO IIL-STR
+               MOVE ITM-QTY-PAID     TO IIL-PAID
+               MOVE "Y"              TO DISPLAY-ITEM-SW
+               GO TO 61-CI-X.
+
+           IF INVOICING
+               IF PO-NONPAY-IND > SPACES
+                   NEXT SENTENCE
+               ELSE
+               IF ITM-QTY-DLVR = ITM-QTY-PAID
+                   NEXT SENTENCE
+               ELSE
+                   MOVE  03  TO LANG-SETNUM
+                   MOVE 634  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ITM-NUMBER       TO IIL-ITEM
+                   MOVE ITM-QTY-DLVR     TO IIL-DLV
+                   MOVE ITM-QTY-STORED   TO IIL-STR
+                   MOVE ITM-QTY-PAID     TO IIL-PAID
+                   MOVE "Y"              TO DISPLAY-ITEM-SW
+                   GO TO 61-CI-X.
+
+           GO TO 61-GET-DPOITEM.
+
+      *****************************************************
+      *
+      *  EVEN THOUGH THE PO HAS PASSED THE CHECK FOR
+      *  (QUANTITY PAID = QUANTITY ORDERED) I CHECK TO
+      *  MAKE SURE ALL THE INVOICES ASSOCIATED WITH THE PO
+      *  HAVE BEEN MANIFESTED COMPLETELY (INV-STATUS = 2)
+      *
+      *****************************************************
+
+       61-CHECK-OPEN-INVOICES.
+           IF INVOICING
+               IF PO-NONPAY-IND > SPACES
+                   MOVE "Y"  TO  PO-COMPLETE-SW
+               ELSE
+                   PERFORM 62-CHECK-OPEN-INVOICES  THRU  62-COI-X
+               END-IF
+           ELSE
+               MOVE "Y"  TO  PO-COMPLETE-SW.
+
+       61-CI-X.
+           EXIT.
+
+      *****************************************************
+      *
+      *  EVEN THOUGH THE PO HAS PASSED THE CHECK FOR
+      *  (QUANTITY PAID = QUANTITY ORDERED) I CHECK TO
+      *  MAKE SURE ALL THE INVOICES ASSOCIATED WITH THE PO
+      *  HAVE BEEN MANIFESTED COMPLETELY (INV-STATUS = 2)
+      *
+      *****************************************************
+
+       62-CHECK-OPEN-INVOICES.
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "FIND DINVRCD *62-COI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       62-GET-DINVRCD.
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE "Y"  TO  PO-COMPLETE-SW
+                   GO TO 62-COI-X
+               ELSE
+                   MOVE "GET DINVRCD*62-GD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+           IF PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               MOVE "Y"  TO  PO-COMPLETE-SW
+               GO TO 62-COI-X.
+
+      ********  INVOICE IS COMPLETE (MANIFESTED) IF INV-STATUS = 2
+
+           IF INV-STATUS = "2"
+               GO TO 62-GET-DINVRCD
+           ELSE
+               MOVE  18  TO LANG-SETNUM
+               MOVE 093  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO REGISTER-LINE
+               MOVE INV-REG-NO     TO REG-NUM
+               MOVE  03  TO LANG-SETNUM
+               MOVE 635  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE "Y"  TO DISPLAY-REG-SW
+               GO TO 62-COI-X.
+
+       62-COI-X.
+           EXIT.
+
+        COPY DISPCALL IN COPYLIB.
+      *********************************************************
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.
+           EXIT.
+
+
+DCR01  COPY POLOGSUBR  IN COPYLIB.
+
+

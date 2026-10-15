@@ -1,0 +1,699 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    SMODIACC.
+000500 AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+000800
+000900******************************************************
+001000*                                                    *
+001100*   S M O D I A C C                   PU2-11         *
+001200*                                                    *
+001300*    THIS SUB PROGRAM MODIFIES ITEM ACCOUNTING       *
+001400*    INFO (SUBD. AND ADDTL INFO), AND TAX CODE       *
+001500*    FOR EVERY ITEM AT ONCE ON REQUIREMENT ORDERS    *
+001600*    ONLY!!                                          *
+001700******************************************************
+001800*   N O T E    T H I S   S U B R O U T I N E   I S   *
+001900*         C A L L E D    B Y :                       *
+002000*      1. SPOMOD                                     *
+002100******************************************************
+001200*C                                                   *
+001200*C  04/04/1995    CA ZUBEK    REQ. # 95-009          *
+001200*C  ADDED CALL TO "SPOTRACK" TO WRITE TO THE AUDIT   *
+001200*C  FILE WHEN UNIT PRICE CHANGES.                    *
+001200*C                                                   *
+001200*C  07/10/1995    CA YODER                           *
+001200*C  ADDED PO ITEM NUMBER TO FIELDS MOVED FOR         *
+001200*C  "SPOTRACK."                                      *
+      *C                                                   *
+      *C  07/18/1996    CA YODER                           *
+      *C  RE-COMPILED PROGRAM TO PICK UP CENTURY DATABASE  *
+      *C  CHANGES.                                         *
+      *C                                                   *
+      *C  06/07/99   CA YODER   (DECATUR REQUEST)          *
+      *C  RE-COMPILED TO PICK UP MTAX DATABASE CHANGE TO   *
+      *C  EXPAND TAX RATE PERCENTAGE FROM 2 DECIMAL PLACES *
+      *C  TO 4.                                            *
+      *C                                                   *
+002200
+002300
+002400 ENVIRONMENT DIVISION.
+002500 CONFIGURATION SECTION.
+002600 SOURCE-COMPUTER.  HP-3000.
+002700 OBJECT-COMPUTER.  HP-3000.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+012800
+012900 INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPURORD-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MVALIDPLTDATA-I
+                  ASSIGN TO DATABASE-MCFLCS1701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MTAX-I
+                  ASSIGN TO DATABASE-MCFLCS3701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+003500
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+003500
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                  PIC X(2000).
+      *    COPY DD-FMODIACC-O OF ZPURORD.
+
+       FD  MVALIDPLTDATA-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDPLTDATA-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1701.
+
+       FD  MTAX-I
+           LABEL RECORDS ARE STANDARD.
+       01  MTAX-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS3701.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       77  DECREASE-PRICE-SW            PIC 9  VALUE 0.
+003500 77  TOTAL-ITEM-CTR          PIC S9(4)  COMP-4 VALUE ZEROS.
+003600 77  SUB                     PIC S9(4)  COMP-4 VALUE ZEROS.
+       77  PERCENT-CHG-AMT         PIC S9(2)V9(2) COMP-3 VALUE ZEROS.
+003700
+003800**********************
+003900*                    *
+004000*  S W I T C H E S   *
+004100*                    *
+004200**********************
+004300
+004400 01  SWITCH-AREA.
+004500     05  ERR-SW                   PIC X      VALUE SPACES.
+           05  EDIT-ADDTL-DATA-SW       PIC X      VALUE SPACES.
+004600
+004700 01  WORK-AREA.
+004800     05  BUILD-VALID-DEPT-KEY.
+004900         10  DEPT-PREFIX          PIC XX   VALUE "DP".
+005000         10  DEPT-NUM             PIC X(8) VALUE SPACES.
+005100
+005200     05  BUILD-EXPENSE-CLASS.
+005300         10  FILLER               PIC X(2) VALUE "EC".
+005400         10  EXPENSE-CLASS        PIC X(6) VALUE SPACES.
+005500
+005600     05  BUILD-NEW-WORK.
+005700         10  FILLER               PIC X(2) VALUE "NW".
+005800         10  NEW-WORK             PIC X(6) VALUE SPACES.
+005900
+006000
+006100*************************************************************
+006200**                                                         **
+006300**      V I E W   C O M M U N I C A T I O N   A R E A      **
+006400**                                                         **
+006500*************************************************************
+006600
+006700 01  MESSAGE-BUFFER.
+006800     05  MSG-TEXT              PIC X(66)    VALUE SPACE.
+006900     05  MSG-FLD               PIC X(10)     VALUE SPACE.
+007000     05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(9)9.
+007100 01  MESSAGE-BUFFER-R  REDEFINES  MESSAGE-BUFFER.
+007200     05  MSG-TEXT-1R           PIC X(28).
+007300     05  MSG-ITEM-NO           PIC ZZZ9.
+007400     05  MSG-TEXT-2R           PIC X(6).
+007500     05  MSG-ITEM-TOT          PIC ZZZ9.
+007600     05  MSG-TEXT-3R           PIC X(34).
+007700
+007800
+008300 01  FIELD-NUMBER              PIC S9(4)    VALUE 1    COMP-4.
+008400
+008500 01  SAVE-MSG-BUFFER.
+008600     05  LB-MT-1R              PIC X(28).
+008900
+       COPY CATREAD IN COPYLIB.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+009400 COPY STC320    IN COPYLIB.
+009500
+009600**************************************************************
+009700**************************************************************
+009800**                                                          **
+009900**             TERMINAL I/O DATA AREA                       **
+010000**                                                          **
+010100**************************************************************
+010200**************************************************************
+010300
+010400 01  SCREEN-1.
+010500     05  DIS-PO-NUM               PIC X(7).
+010600     05  DIS-PO-RLSE              PIC X(3).
+010700     05  DE1-SUBDTL               PIC X(4).
+010800     05  DE1-ADDTDATA             PIC X(6).
+010900     05  DE1-TAX-CODE             PIC X(2).
+010910     05  DE1-PERCENT              PIC 9999.
+           05  DE1-PERCENT-9 REDEFINES DE1-PERCENT.
+               10  DE1-PCT-1            PIC 9.
+               10  DE1-PCT-2            PIC 9.
+               10  DE1-PCT-3            PIC 9.
+               10  DE1-PCT-4            PIC 9.
+           05  DE1-PERCENT-X REDEFINES DE1-PERCENT.
+               10  DE1-PCT-1X           PIC X.
+               10  DE1-PCT-2X           PIC X.
+               10  DE1-PCT-3X           PIC X.
+               10  DE1-PCT-4X           PIC X.
+           05  DE1-COMMAND-LINE         PIC X(79).
+           05  DE1-MESSAGE-LINE         PIC X(79).
+011000
+011100**************************************************************
+011200**************************************************************
+011300**                                                          **
+011400**                DATABASE I/O BUFFER AREA                  **
+011500**                                                          **
+011600**************************************************************
+011700**************************************************************
+011800
+011900 COPY DPOITEM IN COPYLIB.
+
+       COPY MPLT0 IN COPYLIB.
+
+       COPY MPLTPOPT IN COPYLIB.
+012000
+012500*********************
+012600*                   *
+012700*   DATA SET NAMES  *
+012800*                   *
+012900*********************
+013000
+013100 01  DSET-NAMES.
+013200     05  DSET-DPOITEM             PIC X(16)  VALUE "DPOITEM;".
+013300     05  DSET-MTAX                PIC X(16)  VALUE "MTAX;".
+013400     05  DSET-MVALIDPLTDATA  PIC X(16)  VALUE "MVALIDPLTDATA;".
+013500
+013800 COPY DBSTAT IN COPYLIB.
+014600
+014700 01 ITEMS-LISTING.
+014800     05  ALL-ITEMS              PIC XX    VALUE "@;".
+014900     05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+015000
+015100 01 ARG-VALUES.
+015200     05  PO-ARG                 PIC X(14) VALUE SPACES.
+015300     05  MVALIDPLT-ARG          PIC X(10) VALUE SPACES.
+015400     05  TAX-ARG                PIC X(2)  VALUE SPACES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+015800
+015900 COPY TBLOWUP IN COPYLIB.
+016000
+       01  PO-TRACK-DATA.
+           COPY DPOTRACK   IN COPYLIB.
+
+016100 LINKAGE SECTION.
+016200
+016300 01  BASE             PIC X(10).
+016400
+016500 01  BUILD-PO-SEARCH.
+016600     05  PO-PREFIX           PIC X.
+016700     05  PO-NO               PIC X(7).
+016800     05  PO-REL              PIC X(3).
+016900     05  PO-RCV              PIC X(3).
+017000
+017100 COPY VCOMLINK IN COPYLIB.
+017200
+017300 COPY DPORECD IN COPYLIB.
+017400
+017500 01  SWITCH-PARAMETERS.
+017600     05  FATAL-ERR-SW            PIC X.
+017700     05  COMPANY-SAVE            PIC X(3).
+017800
+017900
+018000**************************************
+018100*                                    *
+018200*  PRINTCNTL IS SET TO 1 THIS CAUSES *
+018300*  THE FIELD ON A SCREEN PRINTOUT    *
+018400*  TO BE UNDERLINED                  *
+018500*                                    *
+018600*  PAGECNTL IS SET TO 49 (OCTAL 61)  *
+018700*  THIS CAUSE THE LP TO EJECT AFTER  *
+018800*  THE SCREEN IS PRINTED             *
+018900*                                    *
+019000**************************************
+019100
+019200 01  SCREEN-PRINT-PARMS.
+019300     05  PRINTCNTL             PIC S9(4)    COMP-4.
+019400     05  PAGECNTL              PIC S9(4)    COMP-4.
+019500     05  SPOOLFIL-OPEN-SW      PIC X.
+019600
+019700 01  PASSED-SPOOL-PRT          PIC S9(2)    COMP-4.
+019800
+019900 COPY LANGSUB  IN COPYLIB.
+020000
+020100
+020200 PROCEDURE DIVISION USING  BASE,
+020300                           BUILD-PO-SEARCH,
+020400                           VIEW-COMAREA,
+020500                           BUF-DPORECD,
+020600                           SWITCH-PARAMETERS,
+020700                           SCREEN-PRINT-PARMS,
+020800                           PASSED-SPOOL-PRT,
+020900                           LANGUAGE-PARMS.
+021000
+021100 MODIFY-STOREROOM-ITEM SECTION 10.
+       BEGIN-HERE.
+           MOVE 0 TO DECREASE-PRICE-SW.
+           OPEN INPUT MVALIDPLTDATA-I, MTAX-I, MPLTINFO-I.
+           OPEN I-O DISPLAY-FILE, DPOITEM-O.
+
+021200     MOVE BUILD-PO-SEARCH  TO  PO-ARG,
+021300                               BU-DISPLAY-FLD (1).
+021400     PERFORM 62-MODIFY-REQUIREMENT-ITEMS  THRU 62-MRI-X.
+021500
+           CLOSE MVALIDPLTDATA-I, MTAX-I, DISPLAY-FILE, MPLTINFO-I,
+               DPOITEM-O.
+021600     GOBACK.
+021700
+021800
+021900******************************************************
+022000**                                                  **
+022100**   BLOWUP ROUTINE                                 **
+022200**                                                  **
+022300******************************************************
+022400
+022500 2-BLOWUP.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS TO COND-WORD.
+022600     MOVE "SMODIACC"  TO  BU-PGM-NAME.
+022700     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+022800         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+022900             BU-DISPLAY-FLDS.
+023000
+023100
+025900
+026000 4-PGM-ERROR.
+           MOVE B"1" TO IND (FIELD-NUMBER), IND(99).
+           MOVE MESSAGE-BUFFER TO DE1-MESSAGE-LINE.
+026800
+026900 4-PGM-ERROR-X.
+027000     EXIT.
+027100
+029000
+029100 62-MODIFY-REQUIREMENT-ITEMS.
+      *-------- GET MPLTINFO KEY=POPT TO CHECK TO SEE IF ADDTL-DATA
+      *-------- SHOULD BE VALIDATED
+           MOVE SPACES         TO  EDIT-ADDTL-DATA-SW.
+           MOVE "POPT"         TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+057600         MOVE "READ MPLTINFO 'POPT'*62-MRI" TO BU-DISPLAY-MSG
+057700         MOVE PLT-ARG  TO  BU-DISPLAY-FLD (1)
+057800         GO TO 2-BLOWUP
+057900     ELSE
+058000         MOVE MPLTINFO-ADDTL-DATA-EDIT-SW
+058100                                     TO  EDIT-ADDTL-DATA-SW.
+029200     MOVE "FMODIACC"  TO  VIEW-NFNAME.
+           MOVE SPACES              TO SCREEN-1.
+           MOVE PO-NO               TO DIS-PO-NUM.
+           MOVE PO-REL              TO DIS-PO-RLSE.
+           MOVE ZEROS               TO DE1-PERCENT.
+031500
+031600 62-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-1.
+032300
+032400     IF VIEW-LASTKEY = 3
+032500         GO TO 62-MRI-X
+032600     ELSE
+033900     IF VIEW-LASTKEY = 1 OR
+034000        VIEW-LASTKEY = 2 OR
+034100        VIEW-LASTKEY = 4 OR
+034200        VIEW-LASTKEY = 5 OR
+034300        VIEW-LASTKEY = 6 OR
+034400        VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+034600*        *** INVALID FUNCTION KEY ***
+034700         MOVE   9 TO LANG-SETNUM
+034800         MOVE  10 TO LANG-MSGNUM
+034900         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+035000         MOVE 3 TO  FIELD-NUMBER
+035100         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+035200         GO TO 62-SHOWFORM-SCREEN-1.
+035300
+037300***********************************
+037400*                                 *
+037500*  VALID SUB DETAIL CHECK FOR     *
+037600*     VALID DEPT NO.              *
+037700*                                 *
+037800***********************************
+037900
+038000 62-EDIT-DEPT.
+038100     IF DE1-SUBDTL = SPACES
+038200         GO TO 62-EDIT-ADDTL-DATA.
+038300     MOVE DE1-SUBDTL              TO  DEPT-NUM.
+038400     MOVE BUILD-VALID-DEPT-KEY    TO  MVALIDPLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+038500*A   CALL "DBGET" USING BASE, DSET-MVALIDPLTDATA, MODE7,
+038600*A       STATUS-AREA, ALL-ITEMS, BUF-MVALIDPLTDATA,
+038700*A           MVALIDPLT-ARG.
+038800     IF COND-WORD NOT = 0
+038900         IF COND-WORD = 17
+039000*            *** INVALID DEPARTMENT NO. ***
+039100             MOVE   4 TO LANG-SETNUM
+039200             MOVE  12 TO LANG-MSGNUM
+039300             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+039400             MOVE 3  TO FIELD-NUMBER
+039500             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+039600             GO TO 62-SHOWFORM-SCREEN-1
+039700         ELSE
+039800             MOVE "GET MVALIDPLT * 62-ED" TO BU-DISPLAY-MSG
+039900             GO TO 2-BLOWUP.
+040000
+040100***********************************
+040200*
+040300*  EDIT ADDITIONAL DATA FOR
+040400*  EITHER A VALID EXPENSE CLASS OR
+040500*  NEW WORK NUMBER
+040600*
+040700***********************************
+040800
+040900 62-EDIT-ADDTL-DATA.
+041000     IF DE1-ADDTDATA = SPACES  OR
+              EDIT-ADDTL-DATA-SW = "N"
+041100         GO TO 62-EDIT-TAX-CODE.
+041200     MOVE DE1-ADDTDATA            TO  EXPENSE-CLASS.
+041300     MOVE BUILD-EXPENSE-CLASS     TO  MVALIDPLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+041400*A   CALL "DBGET" USING BASE, DSET-MVALIDPLTDATA, MODE7,
+041500*A       STATUS-AREA, ALL-ITEMS, BUF-MVALIDPLTDATA,
+041600*A           MVALIDPLT-ARG.
+041700     IF COND-WORD NOT = 0
+041800         IF COND-WORD = 17
+041900             NEXT SENTENCE
+042000         ELSE
+042100             MOVE "GET1 MVALID * 62-EAD"  TO  BU-DISPLAY-MSG
+042200             MOVE MVALIDPLT-ARG           TO  BU-DISPLAY-FLD (2)
+042300             GO TO 2-BLOWUP
+042400     ELSE
+042500         GO TO 62-EDIT-TAX-CODE.
+042600
+042700     MOVE DE1-ADDTDATA            TO  NEW-WORK.
+042800     MOVE BUILD-NEW-WORK          TO  MVALIDPLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+042900*A   CALL "DBGET" USING BASE, DSET-MVALIDPLTDATA, MODE7,
+043000*A       STATUS-AREA, ALL-ITEMS, BUF-MVALIDPLTDATA,
+043100*A           MVALIDPLT-ARG.
+043200     IF COND-WORD NOT = 0
+043300         IF COND-WORD = 17
+043400*            "INVALID EXPENSE CLASS OR NEW WORK NUMBER"
+043500             MOVE   9 TO LANG-SETNUM
+043600             MOVE  62 TO LANG-MSGNUM
+043700             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+043800             MOVE 4         TO FIELD-NUMBER
+043900             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+044000             GO TO 62-SHOWFORM-SCREEN-1
+044100         ELSE
+044200             MOVE "GET2 MVALID * 62-EAD"  TO  BU-DISPLAY-MSG
+044300             MOVE MVALIDPLT-ARG           TO  BU-DISPLAY-FLD (2)
+044400             GO TO 2-BLOWUP.
+044500
+044600**********************
+044700*                    *
+044800*   T A X   C O D E  *
+044900*                    *
+045000**********************
+045100
+045200 62-EDIT-TAX-CODE.
+045300     IF DE1-TAX-CODE = SPACES
+045400         GO TO 62-PROCESS-CHANGES.
+045500     MOVE DE1-TAX-CODE            TO  TAX-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE TAX-ARG TO TAXCDE OF MTAX-REC-I.
+           START MTAX-I KEY = TAXCDE OF MTAX-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+045600*A   CALL "DBGET" USING BASE, DSET-MTAX, MODE7,
+045700*A       STATUS-AREA, ALL-ITEMS, BUF-MTAX, TAX-ARG.
+045800     IF COND-WORD NOT = ZERO
+045900         IF COND-WORD = 17
+046000*            *** TAX CODE DOES NOT EXIST ***
+046100             MOVE  20 TO LANG-SETNUM
+046200             MOVE   7 TO LANG-MSGNUM
+046300             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+046400             MOVE 5  TO  FIELD-NUMBER
+046500             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+046600             GO TO 62-SHOWFORM-SCREEN-1
+046700         ELSE
+046800             MOVE "GET MTAX * 62-ETC"  TO  BU-DISPLAY-MSG
+046900             MOVE TAX-ARG          TO  BU-DISPLAY-FLD (2)
+047000             GO TO 2-BLOWUP.
+047100
+047200 62-PROCESS-CHANGES.
+           IF DE1-PCT-1X = "-"
+               MOVE 1 TO DECREASE-PRICE-SW
+               MOVE 0 TO DE1-PCT-1
+           ELSE
+           IF DE1-PCT-2X = "-"
+               MOVE 1 TO DECREASE-PRICE-SW
+               MOVE 0 TO DE1-PCT-1 DE1-PCT-2
+           ELSE
+           IF DE1-PCT-3X = "-"
+               MOVE 1 TO DECREASE-PRICE-SW
+               MOVE 0 TO DE1-PCT-1 DE1-PCT-2 DE1-PCT-3.
+      **************************************************************
+      *    IF THE PERCENTAGE IS INPUT WITH A NEGATIVE SIGN AS      *
+      *    THE LAST BYTE OF THE FIELD, THE PROGRAM WILL DECREASE   *
+      *    THE PRICE AMOUNTS INSTEAD OF INCREASE THEM              *
+      **************************************************************
+047300     IF DE1-SUBDTL = SPACES  AND
+047400        DE1-ADDTDATA = SPACES AND
+047500        DE1-TAX-CODE = SPACES AND
+047510        DE1-PERCENT = ZEROES
+047600         GO TO 62-MRI-X.
+047700
+047800**     NOW PROCESSING
+047900     MOVE  14 TO LANG-SETNUM.
+048000     MOVE   2 TO LANG-MSGNUM.
+048100     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+048400     MOVE MESSAGE-BUFFER TO DE1-COMMAND-LINE.
+           MOVE B"1" TO IND (98).
+           MOVE SCREEN-1       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN.
+050200
+050300     PERFORM 64-UPDATE-DPOITEM  THRU  64-UD-X.
+050500
+051200 62-MRI-X.
+051300     EXIT.
+051400
+051500
+051600 64-UPDATE-DPOITEM.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-O.
+           START DPOITEM-O KEY = PORCVNO OF DPOITEM-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 64-UD-X
+               ELSE
+                   MOVE 99 TO COND-WORD.
+052700*A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+052800*A       STATUS-AREA, PO-SEARCH, PO-ARG.
+052900     IF COND-WORD NOT = 0
+053000         MOVE "FIND DPOITEM * 64-UD" TO BU-DISPLAY-MSG
+053100         GO TO 2-BLOWUP.
+053400
+           IF DE1-PERCENT NOT = ZEROS
+               DIVIDE DE1-PERCENT BY 100 GIVING PERCENT-CHG-AMT
+           ELSE
+               MOVE ZEROS TO PERCENT-CHG-AMT.
+
+053500     MOVE ZEROS                   TO  TOTAL-ITEM-CTR,
+053600                                      SUB.
+053700**    HAVE PROCESSED UP TO ITEM #
+053800     MOVE   8                     TO  LANG-SETNUM.
+053900     MOVE   2                     TO  LANG-MSGNUM.
+054000     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+054100     MOVE MESSAGE-BUFFER          TO  LB-MT-1R.
+           MOVE SPACES                  TO  MESSAGE-BUFFER.
+           MOVE LB-MT-1R                TO  MSG-TEXT-1R.
+055800
+055900 64-GET-DPOITEM.
+056000     ADD 1   TO  SUB.
+056100     IF SUB > 10
+056200         PERFORM 641-DISPLAY-PROGRESS-MSG  THRU  641-DPM-X.
+056300
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-O NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-REC-O NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+056400*A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+056500*A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, PO-ARG.
+056600     IF COND-WORD NOT = 0
+056700         IF COND-WORD = 15
+056800             GO TO 64-UD-X
+056900         ELSE
+057000             MOVE "GET DPOITEM * 64-GD" TO BU-DISPLAY-MSG
+057100             GO TO 2-BLOWUP.
+057101
+057300     IF DE1-SUBDTL NOT = SPACES
+057400         MOVE DE1-SUBDTL          TO  ITM-SUB-DETL.
+057500     IF DE1-ADDTDATA NOT = SPACES
+057600         MOVE DE1-ADDTDATA        TO  ITM-ADDL-DATA.
+057700     IF DE1-TAX-CODE NOT = SPACES
+057800         MOVE DE1-TAX-CODE        TO  ITM-TAX-CODE.
+
+      *--- MOVE OLD ITEM PRICE TO AUDIT FILE RECORD.
+           MOVE ITM-UNIT-PRICE          TO  OLD-ITEM-PRICE.
+
+057810     IF PERCENT-CHG-AMT NOT = ZEROES
+              IF DECREASE-PRICE-SW = 1
+                  COMPUTE ITM-UNIT-PRICE = ITM-UNIT-PRICE -
+                      (ITM-UNIT-PRICE * PERCENT-CHG-AMT)
+              ELSE
+057820        COMPUTE ITM-UNIT-PRICE =
+057830           (ITM-UNIT-PRICE * PERCENT-CHG-AMT) + ITM-UNIT-PRICE.
+057900
+      *--- IF PRICE CHANGED, WRITE THE CHANGE TO THE AUDIT FILE.
+           IF ITM-UNIT-PRICE NOT = OLD-ITEM-PRICE
+               MOVE ITM-UNIT-PRICE      TO  NEW-ITEM-PRICE
+               MOVE ITM-QTY-ORD         TO  OLD-ITEM-QTY
+                                            NEW-ITEM-QTY
+               MOVE ITM-PO-RCV-NO       TO  PO-NUM-TRACK
+               MOVE ITM-NUMBER          TO  PO-ITEM-NUM
+               CALL "SPOTRACK"  USING PO-TRACK-DATA.
+
+           MOVE 0 TO COND-WORD.
+           REWRITE DPOITEM-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+058000*A   CALL "DBUPDATE" USING BASE, DSET-DPOITEM, MODE1,
+058100*A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM.
+058200     IF COND-WORD NOT = 0
+058300         MOVE "UPDATE DPOITEM * 64-UD" TO BU-DISPLAY-MSG
+058400         GO TO 2-BLOWUP.
+058401
+058510     IF PERCENT-CHG-AMT NOT = ZEROES
+058520        PERFORM 642-PREPARE-STC320 THRU 642-EXIT
+058521        MOVE SPACES TO BU-DISPLAY-MSG
+058530        CALL "STC320" USING BASE, STC320-PARMS, STATUS-AREA,
+058540                      BU-DISPLAY-MSG, BU-DISPLAY-FLDS
+058550        IF BU-DISPLAY-MSG NOT = SPACES
+058560           GO TO 2-BLOWUP.
+058600     ADD 1                        TO  TOTAL-ITEM-CTR.
+058700     GO TO 64-GET-DPOITEM.
+058800
+059600 64-UD-X.
+059700     EXIT.
+059800
+059900 641-DISPLAY-PROGRESS-MSG.
+060000     MOVE TOTAL-ITEM-CTR          TO  MSG-ITEM-NO.
+           MOVE MESSAGE-BUFFER          TO  DE1-COMMAND-LINE.
+           MOVE B"1" TO IND (98).
+           MOVE SCREEN-1                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN.
+060600     MOVE ZEROS                   TO  SUB.
+060700
+060800 641-DPM-X.
+060900     EXIT.
+060910
+060920 642-PREPARE-STC320.
+060930     MOVE COMPANY-SAVE          TO STC320-COMPANY-SAVE.
+060940     MOVE ITM-QTY-ORD           TO STC320-QTY.
+060950     MOVE ITM-UM                TO STC320-QTY-UM.
+           MOVE ITM-NUMBER            TO STC320-ITEM.
+060960     MOVE ITM-UNIT-PRICE        TO STC320-PRICE.
+060970     MOVE ITM-PRICE-UM          TO STC320-PRICE-UM.
+060980     MOVE ITM-PO-RCV-NO         TO STC320-PO-NUM.
+060990     MOVE ITM-CORP-CODE         TO STC320-CODE.
+061000     MOVE PO-BUDGET-NUMBER      TO STC320-BUDGET-NO.
+061010     MOVE "21"                  TO STC320-ITEM-TC-ID.
+061020     MOVE SPACES                TO STC320-REQ-NO.
+061030     MOVE ITM-CLASS             TO STC320-SUB.
+061040     MOVE ITM-SUB-DETL          TO STC320-SUBD.
+061050     MOVE ITM-ADDL-DATA         TO STC320-ADDTL-DATA.
+061060     MOVE ITM-TAX-CODE          TO STC320-TAX-CODE.
+061070     MOVE PO-CURRENCY-CODE      TO STC320-CUR-CODE.
+061080     MOVE 0                     TO STC320-OLD-BUDGET-AMT.
+061090 642-EXIT.  EXIT.
+
+       COPY DISPCALL IN COPYLIB.
+
+061100 999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+062700 999-CATREAD-EXIT.
+062800     EXIT.

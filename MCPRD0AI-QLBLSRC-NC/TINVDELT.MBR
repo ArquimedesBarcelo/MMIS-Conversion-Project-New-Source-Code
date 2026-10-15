@@ -1,0 +1,524 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TINVDELT.
+       AUTHOR.        KURT MOVSESIAN.
+       INSTALLATION.  GOODYEAR TIRE AND RUBBER CO.
+       DATE-WRITTEN.  JUNE 22, 1985.
+
+      *REMARKS.        INVOICE PROCESSING.
+      **************************************************************
+      *                                                            *
+      *   T I N V D E L T                                          *
+      *                                                            *
+      *   THIS SUB PROGRAM DELETES AN ENTIRE INVOICE.              *
+      *   THE INVOICE CAN BE BUT DOESNT HAVE TO BE ON HOLD FOR     *
+      *   THE DELETE TO OCCUR.                                     *
+      *                                                            *
+      **************************************************************
+      *   N O T E    T H I S   S U B R O U T I N E   I S           *
+      *         C A L L E D    B Y :                               *
+      *      1. TINVMOD.SOURCE - INVOICE MODIFICATION              *
+      **************************************************************
+      *   N O T E    T H I S   S U B R O U T I N E                 *
+      *         C A L L S :                                        *
+      *      1. TINVBACK.SOURCE - BACKS OUT AN INVOICE.            *
+      **************************************************************
+      *C*
+      *C*  05/08/96    CA YODER    REQ #94-005
+      *C*    ADDED CURRENCY CODE AND DESCRIPTION TO DISPLAY SCREEN.
+      *C*
+      *C*  07/12/96    CA YODER
+      *C*    RE-COMPILED TO PICK UP CENTURY DATABASE CHANGES.
+      *C*
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    HP-3000.
+       OBJECT-COMPUTER.    HP-3000.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+            SELECT DISPLAY-FILE
+                   ASSIGN TO WORKSTATION-ZINVOICE-SI
+                   ORGANIZATION IS TRANSACTION
+                   ACCESS IS SEQUENTIAL
+                   FILE STATUS IS DISPLAY-STATUS
+                   CONTROL-AREA IS WS-CONTROL.
+            SELECT MPLTINFO-I
+                   ASSIGN TO DATABASE-MCFLCS0501
+                   ORGANIZATION IS INDEXED
+                     ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   FILE STATUS IS FILE-STATUS.
+            SELECT DINVITM-O
+                   ASSIGN TO DATABASE-MCFLCS2601
+                   ORGANIZATION IS INDEXED
+                     ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   FILE STATUS IS FILE-STATUS.
+            SELECT DINVACCT-O
+                   ASSIGN TO DATABASE-MCFLCS2701
+                   ORGANIZATION IS INDEXED
+                     ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   FILE STATUS IS FILE-STATUS.
+            SELECT DPORECD-I
+                   ASSIGN TO DATABASE-MCFLCS0901
+                   ORGANIZATION IS INDEXED
+                     ACCESS MODE IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                     WITH DUPLICATES
+                   FILE STATUS IS FILE-STATUS.
+            SELECT MVALIDUM-I
+                  ASSIGN TO DATABASE-MCFLCS0401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC.
+           COPY DD-INVMOD5-O OF ZINVOICE.
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0501.
+       FD  DINVITM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2601.
+       FD  DINVACCT-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVACCT-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2701.
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0901.
+       FD  MVALIDUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDUM-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0401.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1         PIC X VALUE "0".
+           05  FILE-STATUS-2         PIC X VALUE "0".
+       77  BLOWUP-SW                 PIC X        VALUE SPACE.
+
+       01  BUILD-TM-DISCOUNT-KEY.
+           05  FILLER                PIC X(3)  VALUE "TMP".
+           05  BUILD-TM-DISCOUNT-VALUE  PIC X  VALUE SPACES.
+
+       01  BUILD-TM-DUE-DATE-KEY.
+           05  FILLER                PIC X(3)  VALUE "TMD".
+           05  BUILD-TM-DATE-VALUE   PIC X     VALUE SPACES.
+
+
+      *************************************************************
+      **                                                         **
+      **      V I E W   C O M M U N I C A T I O N   A R E A      **
+      **                                                         **
+      *************************************************************
+
+       01  FORM-NAMES.
+           05  HEADER                PIC X(7)     VALUE "INVMOD5".
+
+       01  SAVE-VIEW-STATUS          PIC S9(4)    VALUE ZERO  COMP.
+       01  SAVE-COND-WORD            PIC S9(4)    VALUE ZERO  COMP.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(68)    VALUE SPACE.
+           05  MSG-FLD               PIC X(8)     VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC ZZZZZZZ9.
+
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76    COMP.
+
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE ZERO  COMP.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1     COMP.
+
+       01  BUILD-CC-KEY.
+           05  BUILD-CC-VALUE        PIC X(2)     VALUE SPACES.
+
+      *************************************************************
+      **                                                         **
+      **           D A T A   E N T R Y   B U F F E R S           **
+      **                                                         **
+      *************************************************************
+
+       01  DE-BUFFER1.
+           05  DE1-REG-NUM           PIC ZZZZ9.
+           05  DE1-PO-RLSE.
+               10  DE1-PO            PIC X(7).
+               10  DE1-RLSE          PIC X(3).
+           05  DE1-INV-NUM           PIC X(14).
+           05  DE1-STATUS            PIC X.
+           05  DE1-MFEST-NO          PIC X(8).
+           05  DE1-INV-DATE          PIC X(8).
+           05  DE1-DUE-DATE          PIC X(8).
+           05  DE1-INV-TERMS.
+               10  DE1-TERMS-DUE-PCT  PIC X.
+               10  DE1-TERMS-DUE-DATE PIC X.
+           05  DE1-ENTRY-DATE        PIC X(8).
+           05  DE1-MOD-DATE          PIC X(8).
+           05  DE1-ADD-CLERK         PIC X(4).
+           05  DE1-MOD-CLERK         PIC X(4).
+           05  DE1-PO-TERMS-PERCENT  PIC X(5).
+           05  DE1-PO-TERMS-DUE      PIC X(18).
+           05  DE1-INV-CE            PIC X.
+           05  DE1-CE-AMT            PIC -(11)9.99.
+           05  DE1-CE-ACCTG          PIC X(9).
+           05  DE1-I-MATL-EXT        PIC -(11)9.99.
+           05  DE1-P-MATL-EXT        PIC -(11)9.99.
+           05  DE1-PAYMENT-IND       PIC X.
+           05  DE1-VEN-CODE.
+               10  DE1-VEN7          PIC X(7).
+               10  DE1-VEN3          PIC X(3).
+           05  DE1-NET-DUE-VENDOR    PIC -(11)9.99.
+           05  DE1-DIST-COST         PIC -(11)9.99.
+           05  DE1-NO-CHECK-INDIC    PIC X.
+           05  DE1-CUR-CODE          PIC X(2).
+           05  DE1-CUR-DESC          PIC X(12).
+           05  DE1-COMMAND-LINE      PIC X(79).
+           05  DE1-MSG-LINE          PIC X(79).
+
+
+      *************************************************************
+      **                                                         **
+      **             D A T A B A S E   B U F F E R S             **
+      **                                                         **
+      *************************************************************
+
+       COPY DINVITM   IN COPYLIB.
+
+       COPY DINVACCT  IN COPYLIB.
+
+       COPY MPLTINFO  IN COPYLIB.
+
+       COPY DPORECD   IN COPYLIB.
+
+       COPY MVALIDUM  IN COPYLIB.
+
+      *************************************************************
+      **                                                         **
+      **  D A T A B A S E   C O M M U N I C A T I O N   A R E A  **
+      **                                                         **
+      *************************************************************
+
+       COPY DBMODES  IN COPYLIB.
+
+       COPY DBSTAT   IN COPYLIB.
+       COPY TDATECHK IN COPYLIB.
+       COPY TBLOWUP  IN COPYLIB.
+       COPY CATREAD  IN COPYLIB.
+       COPY DISPDATA IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+
+      *************************************************************
+      **                                                         **
+      **                L I N K A G E   A R E A                  **
+      **                                                         **
+      *************************************************************
+
+       LINKAGE SECTION.
+
+       01  BASE                      PIC X(10).
+
+       COPY VCOMLINK  IN COPYLIB.
+
+      *01  SCREEN-PRINT-PARMS.
+      *    05  PRINT-CTL             PIC S9(4)    COMP.
+      *    05  PAGE-CTL              PIC S9(4)    COMP.
+      *    05  SPOOLFIL-OPEN-SW      PIC X.
+      *
+      *01  PASS-SPOOL-PRT-NO         PIC S9(2)    COMP.
+
+       01  ARGUMENT-VALUES.
+           05  PLT-ARG               PIC X(4).
+           05  PO-ARG                PIC X(14).
+           05  VEN-ARG.
+               10  VEN-ARG1-7        PIC X(7).
+               10  VEN-ARG8-10       PIC X(3).
+           05  CORPCODE-ARG          PIC X(8).
+           05  REGISTER-ARG          PIC X(6).
+
+       COPY DINVRCD  IN COPYLIB.
+
+       COPY LANGSUB  IN COPYLIB.
+
+
+       PROCEDURE DIVISION USING  BASE,
+                                 VIEW-COMAREA,
+      *                          SCREEN-PRINT-PARMS,
+      *                          PASS-SPOOL-PRT-NO,
+                                 ARGUMENT-VALUES,
+                                 BUF-DINVRCD,
+                                 LANGUAGE-PARMS.
+
+
+       DELETE-INVOICE SECTION 06.
+
+           OPEN INPUT MPLTINFO-I, DPORECD-I, MVALIDUM-I.
+           OPEN I-O   DINVITM-O, DINVACCT-O, DISPLAY-FILE.
+           PERFORM  6-DELETE-INVOICE  THRU  6-DELETE-INVOICE-X.
+           CLOSE MPLTINFO-I, DINVITM-O, DINVACCT-O, DISPLAY-FILE,
+                 DPORECD-I, MVALIDUM-I.
+           GOBACK.
+
+       2-BLOWUP.
+           MOVE REGISTER-ARG        TO  BU-DISPLAY-FLD (1).
+           MOVE "TINVDELT"          TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+
+       6-DELETE-INVOICE.
+           MOVE SPACE               TO  DE-BUFFER1.
+           MOVE INV-REG-NO-9        TO  DE1-REG-NUM.
+           MOVE INV-PO-NO           TO  DE1-PO.
+           MOVE INV-RLSE            TO  DE1-RLSE.
+           MOVE INV-NO              TO  DE1-INV-NUM.
+           MOVE INV-STATUS          TO  DE1-STATUS.
+           MOVE INV-MFEST-NO        TO  DE1-MFEST-NO.
+           MOVE 4                   TO  DATE-MODE.
+           MOVE INV-DATE            TO  DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-SLASH-OUT      TO  DE1-INV-DATE.
+           IF INV-DUE-DATE NOT = SPACE
+               MOVE INV-DUE-DATE    TO  DATE-VALIDATE-IN
+               CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+               MOVE DATE-SLASH-OUT  TO  DE1-DUE-DATE.
+           MOVE INV-TERMS           TO  DE1-INV-TERMS.
+           PERFORM 61-GET-TERMS-DESC  THRU 61-GTD-X.
+           MOVE INV-ENTRY-DATE      TO  DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-SLASH-OUT      TO  DE1-ENTRY-DATE.
+           IF INV-MOD-DATE NOT = SPACE
+               MOVE INV-MOD-DATE    TO  DATE-VALIDATE-IN
+               CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+               MOVE DATE-SLASH-OUT  TO  DE1-MOD-DATE.
+           MOVE INV-ADD-CLERK       TO  DE1-ADD-CLERK.
+           MOVE INV-MOD-CLERK       TO  DE1-MOD-CLERK.
+           MOVE CE1-CODE            TO  DE1-INV-CE.
+           MOVE CE1-TOTAL           TO  DE1-CE-AMT.
+           MOVE CE1-ACCTG-DATA      TO  DE1-CE-ACCTG.
+           MOVE INV-I-MATL-EXT      TO  DE1-I-MATL-EXT.
+           MOVE INV-P-MATL-EXT      TO  DE1-P-MATL-EXT.
+           MOVE INV-PAYMENT-IND     TO  DE1-PAYMENT-IND.
+           MOVE INV-NET-DUE-VENDOR  TO  DE1-NET-DUE-VENDOR.
+           MOVE INV-DIST-COST       TO  DE1-DIST-COST.
+           MOVE INV-VEN-CODE        TO  DE1-VEN-CODE.
+           MOVE INV-NO-CHECK-INDIC  TO  DE1-NO-CHECK-INDIC.
+
+           INITIALIZE BUF-DPORECD.
+           MOVE INV-PO-RCV-NO TO PORCVNO OF DPORECD-I-REC.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE HIGH-VALUES TO PORCVNO OF DPORECD-I-REC.
+           START DPORECD-I KEY > PORCVNO OF DPORECD-I-REC
+              INVALID KEY MOVE "00" TO FILE-STATUS.
+
+           IF INV-CURR-CODE NOT = SPACES
+               MOVE INV-CURR-CODE             TO  BUILD-CC-VALUE
+                                                  DE1-CUR-CODE
+           ELSE
+               MOVE PO-CURRENCY-CODE          TO  BUILD-CC-VALUE
+                                                  DE1-CUR-CODE.
+           MOVE BUILD-CC-KEY TO VALIDUM OF MVALIDUM-I-REC.
+           IF BUILD-CC-VALUE NOT = SPACES
+               READ MVALIDUM-I INTO BUF-MVALIDUM
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE "** ERROR **"         TO  DE1-CUR-DESC
+               END-IF
+               MOVE  VALID-CURRENCY-DESC      TO  DE1-CUR-DESC.
+
+       6-FILLBUFF1-CONT.
+           MOVE HEADER  TO  VIEW-NFNAME.
+
+       6-SHOWFORM1.
+      *    MOVE 3              TO SRF-MODE.
+           MOVE DE-BUFFER1     TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO DE-BUFFER1.
+           IF VIEW-LASTKEY = 3
+               GO TO  6-DELETE-INVOICE-X
+           ELSE
+           IF VIEW-LASTKEY = 1  OR
+              VIEW-LASTKEY = 2  OR
+              VIEW-LASTKEY = 4  OR
+              VIEW-LASTKEY = 5  OR
+              VIEW-LASTKEY = 6  OR
+              VIEW-LASTKEY = 7  OR
+              VIEW-LASTKEY = 8
+      *        ***  INVALID FUNCTION KEY ENTERED  ***
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE1-MSG-LINE
+               MOVE B"1" TO IND(99)
+               GO TO  6-SHOWFORM1.
+
+       6-PROCESS-INVOICE.
+           IF INV-STATUS = "H" OR "I"
+               NEXT SENTENCE
+           ELSE
+               CALL "TINVBACK" USING BASE,
+                                     ARGUMENT-VALUES,
+                                     BUF-DINVRCD.
+
+           PERFORM 61-DELETE-INVOICE  THRU  61-DI-X.
+
+
+       6-DELETE-INVOICE-X.
+           EXIT.
+
+
+       61-GET-TERMS-DESC.
+           MOVE INV-DUE-PCT           TO  BUILD-TM-DISCOUNT-VALUE.
+           MOVE BUILD-TM-DISCOUNT-KEY TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY  OF MPLTINFO-I-REC.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *    CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+      *        STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "GET MPLTINFO1 * 61-GTD" TO BU-DISPLAY-MSG
+                   MOVE PLT-ARG  TO  BU-DISPLAY-FLD (4)
+                   GO TO 2-BLOWUP
+           ELSE
+               MOVE MPLTINFO-DISC-AMNT-DESC TO DE1-PO-TERMS-PERCENT.
+
+           MOVE INV-DUE-CODE          TO  BUILD-TM-DATE-VALUE.
+           MOVE BUILD-TM-DUE-DATE-KEY TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY  OF MPLTINFO-I-REC.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+      *    CALL "DBGET" USING BASE, DSET-MPLTINFO, MODE7,
+      *        STATUS-AREA, ALL-ITEMS, BUF-MPLTINFO, PLT-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 17
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "GET MPLTINFO2 * 61-GPT" TO BU-DISPLAY-MSG
+                   MOVE PLT-ARG  TO  BU-DISPLAY-FLD (4)
+                   GO TO 2-BLOWUP
+           ELSE
+               MOVE MPLTINFO-TMD-DESC       TO DE1-PO-TERMS-DUE.
+
+       61-GTD-X.
+           EXIT.
+
+
+       61-DELETE-INVOICE.
+           MOVE 0 TO COND-WORD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVITM-O-REC.
+           START DINVITM-O KEY = REGISTERNO OF DINVITM-O-REC
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 61-DELETE-DINVACCT
+               ELSE
+                   GO TO 2-BLOWUP.
+
+       61-GET-DINVITM.
+           MOVE 0 TO COND-WORD.
+           READ DINVITM-O NEXT INTO BUF-DINVITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 61-DELETE-DINVACCT
+               ELSE
+                   GO TO 2-BLOWUP.
+           IF REGISTERNO OF DINVITM-O-REC NOT = REGISTER-ARG
+               GO TO 61-DELETE-DINVACCT.
+
+           DELETE DINVITM-O
+              INVALID KEY MOVE 99 TO COND-WORD.
+           IF COND-WORD = ZERO
+               GO TO 61-GET-DINVITM
+           ELSE
+               MOVE "DELETE DINVITM*61-GD"  TO  BU-DISPLAY-MSG
+               GO TO  2-BLOWUP.
+
+       61-DELETE-DINVACCT.
+           MOVE 0 TO COND-WORD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVACCT-O-REC.
+           START DINVACCT-O KEY = REGISTERNO OF DINVACCT-O-REC
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 61-DI-X
+               ELSE
+                   MOVE "FIND DINVACCT*61-DD"  TO  BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       61-DELETE-DINVACCT-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DINVACCT-O NEXT INTO BUF-DINVACCT
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 61-DI-X
+               ELSE
+                   MOVE "GET DINVACCT*61-DDL"  TO  BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+           IF REGISTERNO OF DINVACCT-O-REC NOT = REGISTER-ARG
+               GO TO 61-DI-X.
+
+           DELETE DINVACCT-O
+              INVALID KEY MOVE 99 TO COND-WORD.
+           IF COND-WORD = ZERO
+               GO TO  61-DELETE-DINVACCT-LOOP
+           ELSE
+               MOVE "DBDELETE DINVACCT*61-DDL"  TO  BU-DISPLAY-MSG
+               GO TO  2-BLOWUP.
+
+
+      *61-DELETE-DINVRCD.
+      *    CALL "DBDELETE" USING  BASE,
+      *                           DSET-DINVRCD,
+      *                           MODE1,
+      *                           STATUS-AREA.
+      *    IF COND-WORD = ZERO
+      *        NEXT SENTENCE
+      *    ELSE
+      *        MOVE "DBDELETE DINVRCD 61-DD"  TO  BU-DISPLAY-MSG
+      *        GO TO  2-BLOWUP.
+      *
+       61-DI-X.
+           EXIT.
+
+       COPY DISPCALL IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

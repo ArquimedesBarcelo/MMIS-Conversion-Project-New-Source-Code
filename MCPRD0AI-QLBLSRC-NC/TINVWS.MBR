@@ -1,0 +1,540 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.       TINVWS.
+       AUTHOR.           C.I.HILLES.
+      *INSTALLATION.     GOODYEAR TIRE & RUBBER CO.
+      *DATE-WRITTEN.     JULY 1985.
+      *DATE-COMPILED.    CURRENT-DATE.
+      *REMARKS.      INVENTORY WORKSHEET PROGRAM.
+      *              THIS PROGRAM CREATES A STOREROOM INVENTORY WORKSHEET.
+      *
+      *C  06/12/96    JEFF BUNGO
+      *C  EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C  EXPAND BUFFER FOR INVENTORY WORKSHEET NUMBER TO INCLUDE
+      *C  THE EXPANSION OF THE FIELD FOR CENTURY.
+      *C
+      *C  03/26/97    JIM COFFMAN
+      *C  PROVIDED THE USER WITH THE ABILITY TO EXIT THE PROGRAM
+      *C  WHEN THEY WERE AT THE ROUTE SCREEN AND REALIZED THAT
+      *C  THEY HAD MADE A MISTAKE. IT WILL BUMP THE 'IV0000' COUNTER
+      *C  IN DWLITEM BUT NOT ACTUALLY CREATE THE WORKSHEET.
+      *C
+      *C  10/13/97    JEFF BUNGO
+      *C  ADD EDIT TO FORCE ENTRY OF A HIGH VALUE IN THE RANGE.
+      *C  THIS IS TO PREVENT "RUN AWAYS".
+      *C
+      *C  06/20/2002    CA YODER    LAWTON REQUEST
+      *C  FOR FREEZE ALL CODES DUE TO BE INVENTORIED, ADD OPTION TO
+      *C  SPECIFY MAXIMUM NUMBER OF CODES TO FREEZE AT ONE TIME.
+      *C
+      *C  12/03/2002    CA YODER    UNION CITY REQUEST
+      *C  FOR FREEZE RANGE OF CODES, ADD OPTION TO INCLUDE CODES WITH
+      *C  NO ACTIVITY IN CERTAIN PERIOD OF TIME.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.   HP-3000.
+       OBJECT-COMPUTER.   HP-3000.
+       COPY SPECIALN IN COPYLIB.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MWRKLIST-WK-O
+               ASSIGN TO DATABASE-MCFLCS0301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+004300     SELECT INVFILE ASSIGN TO DISK-INVFILE.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZINVWS-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD INVFILE
+           RECORD CONTAINS 7 CHARACTERS
+           DATA RECORD IS INV-RECORD.
+       01  INV-RECORD.
+           05  INV-CODE                  PIC X(7).
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  MWRKLIST-WK-O
+           LABEL RECORDS ARE STANDARD.
+       01  MWRKLIST-WK-REC-O.
+           COPY DDS-MCRPCS0300  OF MCFLCS0301.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                   PIC X(1500).
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+       01  FIRST-TIME-SW                 PIC X(1).
+       01  WORKSHEET-CREATED-FLAG        PIC X(1).
+       01  ANY-WORKSHEET-CREATED         PIC X(1).
+       01  SUB                           PIC S9(4) COMP-4.
+       01  EXIT-MAIN-SCRN                PIC X(1).
+       01  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+
+      **************************************************************
+      **                                                          **
+      **          S U B P R O G R A M   A R E A S                 **
+      **                                                          **
+      **************************************************************
+       COPY TSHWRDFM   IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY ESCNAM2    IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY CDESC      IN COPYLIB.
+       COPY CCRTFILE   IN COPYLIB.
+       COPY COMMAND    IN COPYLIB.
+
+       01  OVR-FROMFILE                  PIC X(26) VALUE "INVFILE".
+       01  OVR-TOFILE.
+           05  OVR-TOFILE-PREFIX         PIC X(4) VALUE "DINV".
+           05  OVR-TOFILE-NUMBER         PIC 9(4).
+           05  FILLER                    PIC X(18).
+
+      *---------- PARAMETERS FOR CALL TO "TSTRMJOB" - TO STREAM JOB
+       01  STRMJOB-COMAREA.
+           05  STRM-RET-CODE             PIC X(2)  VALUE "00".
+           05  STRM-MODE                 PIC S9(4) COMP-4 VALUE 0.
+           05  STRM-CO-CODE              PIC X(3).
+           05  STRM-PRE-RUN-CARDS.
+               10  STRM-PRE-RUN-CARD1    PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD2    PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD3    PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD4    PIC X(80) VALUE SPACES.
+           05  STRM-RUN-CARD             PIC X(80) VALUE SPACES.
+           05  STRM-JOB-NAME             PIC X(8).
+           05  STRM-ROUTE-DATA           PIC X(80) VALUE SPACES.
+           05  STRM-OPTION-AREA.
+               10  STRM-OPTION-CARD.
+                   15  SF-FREEZE-UNFREEZE PIC X.
+                   15  SF-FREEZE-TYPE    PIC X.
+                   15  SF-SORT-OPTION    PIC X.
+                   15  SF-LOW-VALUE      PIC X(12).
+                   15  SF-HIGH-VALUE     PIC X(12).
+                   15  SF-SPOOL-PRT      PIC 9(2).
+                   15  SF-NUM            PIC 9(4).
+                   15  SF-CLASS-SELECT   PIC X(4).
+                   15  SF-MAX-CODES      PIC 9(4).
+                   15  SF-NUM-MONTHS     PIC 9(2).
+                   15  FILLER            PIC X(37)  VALUE SPACES.
+               10  FILLER                PIC X(81).
+           05  STRM-OPTION-FILLER        PIC X(559) VALUE SPACES.
+           05  STRM-OPTION-CARD2-CTR     PIC X(1)  VALUE "1".
+           05  STRM-OPTION-CARD3         PIC X(80) VALUE SPACES.
+           05  STRM-PRTRPT-AREA.
+               10  STRM-PRTRPT-FLAG      PIC X(1).
+               10  STRM-PRTRPT-FILE      PIC X(17).
+               10  STRM-PRTRPT-SPOOLTYP  PIC X(1).
+               10  STRM-PRTRPT-PRINTER   PIC 9(3).
+
+      *****************************************************************
+      **                                                             **
+      **    D A T A B A S E   B U F F E R S                          **
+      **                                                             **
+      *****************************************************************
+       COPY DWLITEM    IN COPYLIB.
+       01  BUF-MWRKLIST.
+           05  WRKLIST-KEY               PIC X(6).
+           05  FILLER                    PIC X(2).
+           05  WRKLIST-DATE              PIC 9(4).
+           05  FILLER                    PIC X(2).
+
+      *****************************************************************
+      **                                                             **
+      **     D A T A B A S E   W O R K                               **
+      **                                                             **
+      *****************************************************************
+       01  BASE                          PIC X(10) VALUE SPACES.
+       COPY DBSTAT IN COPYLIB.
+       01  WL-ARG                        PIC X(6).
+       01  DSET-NAME                     PIC X(16).
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       01 DB-VALUES.
+           05  WS-KEY    VALUE "IV0000"  PIC X(6).
+           05  CODE-ARG                  PIC X(8).
+
+      **************************************************************
+      *                      VIEW                                  *
+      **************************************************************
+       COPY FUNCTDEF   IN COPYLIB.
+       COPY VCOMAREA   IN COPYLIB.
+
+       01  MESSAGE-BUFFER.
+           05  MESSAGE-BUFFER-1          PIC X(1).
+           05  FILLER                    PIC X(75).
+       01  FIELD-NUMBER                PIC S9(4)   VALUE 1      COMP-4.
+
+
+      ************************************************************
+      *             SCREEN BUFFERS                               *
+      ************************************************************
+       01  DE-FIELDS-1.
+           05  DE-FREEZE-UNFREEZE        PIC X.
+           05  DE-FREEZE-TYPE            PIC X.
+           05  V-CUR-WS                  PIC ZZZ9.
+           05  DE-SORT-OPTION            PIC X.
+           05  DE-COMMAND-LINE-1         PIC X(79).
+           05  DE-MESSAGE-LINE-1         PIC X(79).
+
+       01 DE-FIELDS-2.
+           05  DE-CODES.
+               10  DE-CODE OCCURS 10 TIMES PIC X(7).
+           05  DE-COMMAND-LINE-2         PIC X(79).
+           05  DE-MESSAGE-LINE-2         PIC X(79).
+
+       01  DE-FIELDS-3.
+           05  DE-LOW-VALUE.
+               10  DE-LOW-VALUE-1        PIC X(1).
+               10  DE-LOW-VALUE-REST     PIC X(11).
+           05  DE-HIGH-VALUE             PIC X(12).
+           05  DE-CLASS-SELECT           PIC X(4).
+           05  DE-ANS                    PIC X.
+           05  DE-MAX-CODES              PIC 9(4).
+           05  DE-NUM-MONTHS             PIC 9(2).
+           05  DE-COMMAND-LINE-3         PIC X(79).
+           05  DE-MESSAGE-LINE-3         PIC X(79).
+
+       01  DE-FIELDS-4.
+           05  V-CUR-WS-NUMBER           PIC ZZZ9.
+           05  DE-COMMAND-LINE-4         PIC X(79).
+           05  DE-MESSAGE-LINE-4         PIC X(79).
+
+       COPY LANGUAGE   IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       0000-START.
+           MOVE SPACES TO DE-FIELDS-1, DE-FIELDS-2, DE-FIELDS-3.
+           PERFORM 9999-OPEN-STUFF.
+           MOVE "N"                      TO  EXIT-MAIN-SCRN.
+           MOVE "N"                      TO  ANY-WORKSHEET-CREATED.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X
+             UNTIL EXIT-MAIN-SCRN = "Y".
+           IF ANY-WORKSHEET-CREATED = "Y"
+               PERFORM 7200-SHOW-CUR-WS THRU 7290-SCW-X.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "TINVWS"                 TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+             VIEW-COMAREA FILE-STATUS BU-DISPLAY-MSG
+             BU-DISPLAY-FLDS.
+
+       6000-MAIN.
+           MOVE "N"                      TO  WORKSHEET-CREATED-FLAG.
+           MOVE "FINVWS"                 TO  VIEW-NFNAME.
+           PERFORM 9999-GETNEXTFORM.
+       6010-SHOWFORM.
+           PERFORM 9999-DO-SCREEN-1.
+           IF VIEW-LASTKEY = EXIT-PROGRAM
+               MOVE "Y"                  TO  EXIT-MAIN-SCRN
+               GO TO 6990-MAIN-X.
+
+           IF DE-FREEZE-UNFREEZE NOT = "A" AND "B"
+               MOVE 1 TO SRF-ERROR-FLD
+               MOVE 00020 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 6010-SHOWFORM.
+
+           IF DE-FREEZE-TYPE NOT = "1" AND "2" AND "3" AND "4" AND "5"
+                                    AND "6" AND "7"
+               MOVE 2 TO SRF-ERROR-FLD
+               MOVE 00020 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 6010-SHOWFORM.
+
+           IF DE-SORT-OPTION NOT = "0" AND "1" AND "2" AND "3" AND "4"
+                                    AND "5" AND "6"
+               MOVE 3 TO SRF-ERROR-FLD
+               MOVE 00020 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 6010-SHOWFORM.
+
+           MOVE DE-FREEZE-UNFREEZE       TO  SF-FREEZE-UNFREEZE.
+           MOVE DE-FREEZE-TYPE           TO  SF-FREEZE-TYPE.
+           MOVE DE-SORT-OPTION           TO  SF-SORT-OPTION.
+
+           IF DE-FREEZE-TYPE = "1"
+               PERFORM 7000-SINGLE-CODES THRU 7090-SC-X
+           ELSE
+               PERFORM 7100-RANGE THRU 7190-R-X.
+
+           IF WORKSHEET-CREATED-FLAG = "Y"
+           AND DE-FREEZE-UNFREEZE = "A"
+               CALL "SROUTE" USING BASE, STATUS-AREA, VIEW-COMAREA,
+                 LANGUAGE-PARMS, STRM-ROUTE-DATA
+               IF VIEW-LASTKEY = EXIT-PROGRAM
+                   MOVE "Y" TO EXIT-MAIN-SCRN
+                   MOVE "N" TO ANY-WORKSHEET-CREATED
+                   GO TO 6990-MAIN-X.
+
+      *------ THE SINGLE CODES OPTION IS DONE ONLINE.  ANY OTHER
+      *------ OPTION IS DONE IN BATCH MODE (RANGES OF ITEMS).
+           IF WORKSHEET-CREATED-FLAG = "Y"
+               IF DE-FREEZE-TYPE = "1"
+                   CALL "TINVRNG" USING STRM-ROUTE-DATA,
+                     STRM-OPTION-AREA
+               ELSE
+                   MOVE "TINVRNG"        TO  STRM-RUN-CARD
+                   MOVE "BXINVRNG"       TO  STRM-JOB-NAME
+                   CALL "TSTRMJOB" USING STRMJOB-COMAREA.
+
+       6990-MAIN-X.
+           EXIT.
+
+       7000-SINGLE-CODES.
+           MOVE "Y"                      TO  FIRST-TIME-SW.
+           MOVE SPACES                   TO  DE-FIELDS-2.
+           MOVE "FSINGLE"                TO  VIEW-NFNAME.
+           PERFORM 9999-GETNEXTFORM.
+       7010-SHOWFORM.
+           MOVE 8                        TO  SRF-KEYSET.
+           PERFORM 9999-DO-SCREEN-2.
+           IF VIEW-LASTKEY = 7 OR EXIT-PROGRAM OR DE-CODES = SPACES
+               IF WORKSHEET-CREATED-FLAG = "Y"
+                   CLOSE INVFILE
+                   GO TO 7090-SC-X
+               ELSE
+                   GO TO 7090-SC-X.
+
+      *------ EDIT EACH CODE TO MAKE SURE THEY CAN FREEZE IT, DUDE
+      *------ BUT, DUDE, ONLY IF YOU ARE FREEZING, NOT UNFREEZING
+           IF DE-FREEZE-UNFREEZE = "A"
+               MOVE 0                    TO  SUB
+               PERFORM UNTIL SUB = 10
+               OR (MESSAGE-BUFFER-1 NOT = SPACES)
+                   ADD 1                 TO  SUB
+                   IF DE-CODE (SUB) > SPACES
+                       CALL "CINVEDIT" USING BASE, STATUS-AREA,
+                         DE-CODE (SUB), MESSAGE-BUFFER
+                   END-IF
+               END-PERFORM
+               IF MESSAGE-BUFFER-1 NOT = SPACES
+                   MOVE SUB              TO  SRF-ERROR-FLD
+                   GO TO 7010-SHOWFORM.
+
+           IF FIRST-TIME-SW = "Y"
+               MOVE "N"                  TO  FIRST-TIME-SW
+               PERFORM 7400-GET-UPDATE-WS-NUMBER THRU 7490-GUWN-X.
+
+      *------ WRITE THE CODES TO THE FILE FOR USE BY THE INVENTORY
+      *------ WORKSHEET CREATE PROGRAM.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 10
+               IF DE-CODE (SUB) > SPACES
+                   MOVE DE-CODE (SUB)    TO  INV-CODE
+                   WRITE INV-RECORD
+               END-IF
+           END-PERFORM.
+
+           IF DE-FREEZE-UNFREEZE = "A"
+               MOVE "Y"                  TO  ANY-WORKSHEET-CREATED.
+
+           MOVE SPACES                   TO  SF-LOW-VALUE,
+                                             SF-HIGH-VALUE,
+                                             SF-CLASS-SELECT.
+
+      *------ INITIALIZE FIELDS TO ZERO BECAUSE TINVRNG USES THEM
+           MOVE 0                        TO  SF-MAX-CODES
+                                             SF-NUM-MONTHS.
+
+           MOVE SPACES                   TO  DE-FIELDS-2.
+           PERFORM 9999-RESET-SCREEN.
+           GO TO 7010-SHOWFORM.
+
+       7090-SC-X.
+           EXIT.
+
+       7100-RANGE.
+           INITIALIZE                        DE-FIELDS-3.
+           MOVE 0                        TO  DE-MAX-CODES
+                                             DE-NUM-MONTHS.
+       7100-RANGE-2.
+           MOVE 8                        TO  SRF-KEYSET.
+           IF DE-FREEZE-TYPE = "5"
+               MOVE "FALLCODE"           TO  VIEW-NFNAME
+           ELSE
+           IF DE-FREEZE-TYPE = "6"
+               MOVE "FDUIN"              TO  VIEW-NFNAME
+           ELSE
+               MOVE "FRANGE"             TO  VIEW-NFNAME.
+           PERFORM 9999-GETNEXTFORM.
+           PERFORM 9999-DO-SCREEN-3.
+           IF VIEW-LASTKEY = 7 OR EXIT-PROGRAM
+               GO TO 7190-R-X.
+
+      *------ IF FREEZING/UNFREEZING ALL ITEMS IN STORE, OR DUE TO BE
+      *------ INVENTORIED, MUST INPUT A 'Y' TO CONTINUE
+           IF DE-FREEZE-TYPE = "5" OR "6"
+               MOVE SPACES               TO  DE-LOW-VALUE-REST
+               MOVE SPACES               TO  DE-HIGH-VALUE
+               MOVE SPACES               TO  DE-CLASS-SELECT
+      *********IF DE-LOW-VALUE-1 NOT = "Y"
+               IF DE-ANS NOT = "Y"
+                   GO TO 7190-R-X
+PDR            END-IF
+PDR        ELSE
+PDR            IF DE-LOW-VALUE IS GREATER THAN DE-HIGH-VALUE
+PDR                MOVE 1 TO SRF-ERROR-FLD
+PDR                MOVE 08006 TO CATREAD-MSG-NUMBER
+PDR                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+PDR                GO TO 7100-RANGE
+      *----------JSB 10/13/97, FORCE ENTRY ON HIGH RANGE
+               ELSE IF DE-HIGH-VALUE = SPACES
+                        MOVE 1 TO SRF-ERROR-FLD
+                        MOVE 09082 TO CATREAD-MSG-NUMBER
+                        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                        GO TO 7100-RANGE.
+
+           MOVE DE-LOW-VALUE             TO  SF-LOW-VALUE.
+           MOVE DE-HIGH-VALUE            TO  SF-HIGH-VALUE.
+           MOVE DE-CLASS-SELECT          TO  SF-CLASS-SELECT.
+           MOVE DE-MAX-CODES             TO  SF-MAX-CODES.
+           MOVE DE-NUM-MONTHS            TO  SF-NUM-MONTHS.
+           PERFORM 7400-GET-UPDATE-WS-NUMBER THRU 7490-GUWN-X.
+           IF DE-FREEZE-UNFREEZE = "A"
+               MOVE "Y"                  TO  ANY-WORKSHEET-CREATED.
+      *****MOVE SPACES                   TO  DE-LOW-VALUE-1.
+
+       7190-R-X.
+           EXIT.
+
+       7200-SHOW-CUR-WS.
+           MOVE 8                        TO  SRF-KEYSET.
+           MOVE "FCURWS"                 TO  VIEW-NFNAME.
+           PERFORM 9999-GETNEXTFORM.
+           PERFORM 9999-DO-SCREEN-4.
+       7290-SCW-X.
+           EXIT.
+
+       7400-GET-UPDATE-WS-NUMBER.
+      *------ THE 'TINVWS' PROGRAM WILL ALWAYS DO THE CREATION OF THE
+      *------ INVENTORY FILE, NEVER THE 'TINVRNG' PROGRAM.  THIS FILE
+      *------ IS CREATED IMMEDIATELY AFTER THE LAST INVENTORY WS#
+      *------ IS UPDATED IN MWRKLIST.  A WORKSHEET IS NEEDED ONLY
+      *------ FOR 'FREEZE' WORKSHEETS OR FOR UNFREEZING SINGLE CODES.
+      *------ FOR UNFREEZING A RANGE, NO WORKSHEET IS NEEDED SINCE
+      *------ THERE IS NOTHING TO PROCESS USING MP5 (TINVUP).
+      *------ NOTE: WORKSHEET-CREATED-FLAG IS YES EVEN IT THE ACTUAL
+      *------ WORKSHEET WAS NOT CREATED IN THE CASE OF UNFREEZING
+           MOVE "Y"                      TO  WORKSHEET-CREATED-FLAG.
+           IF DE-FREEZE-UNFREEZE = "A" OR DE-FREEZE-TYPE = "1"
+               NEXT SENTENCE
+           ELSE
+               GO TO 7490-GUWN-X.
+
+           MOVE "IV0000"                 TO  WL-ARG.
+           PERFORM 9999-GETKEY-MWRKLIST-WK-O.
+
+           ADD 1                         TO  WRKLIST-DATE.
+           MOVE WRKLIST-DATE             TO  OVR-TOFILE-NUMBER.
+           IF DE-FREEZE-UNFREEZE = "A"
+               MOVE WRKLIST-DATE         TO  V-CUR-WS-NUMBER
+               MOVE WRKLIST-DATE         TO  V-CUR-WS
+           ELSE
+               MOVE ZERO                 TO  V-CUR-WS-NUMBER,
+                                             V-CUR-WS.
+           MOVE WRKLIST-DATE             TO  SF-NUM.
+
+           MOVE "MWRKLIST;"              TO  DSET-NAME.
+           PERFORM 9999-DSET-LOCK.
+           PERFORM 9999-UPDATE-MWRKLIST-WK-O.
+           PERFORM 9999-UNLOCK.
+
+           MOVE "*LIBL"                  TO  CCRTFILE-LIBRARY.
+           MOVE OVR-TOFILE               TO  CCRTFILE-FILE.
+           MOVE  0007                    TO  CCRTFILE-RECORD-LENGTH.
+           MOVE  01000                   TO  CCRTFILE-NO-RECORDS.
+           MOVE  01000                   TO  CCRTFILE-INCREMENT-AMT.
+           MOVE  99                      TO  CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'XXXXXXXX' FAILED"
+                                         TO  BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+      *------ OVERRIDE THE INVFILE TO THE ACTUAL FILE NAME.  THE FILE
+      *------ NAME IN OVERRIDE COMMAND WAS BUILT UP IN UPDATE-WS PARA
+      *------ WE ONLY USE THE FILE HERE IN THE EVENT OF SINGLE CODES.
+           IF DE-FREEZE-TYPE = "1"
+               PERFORM 9999-OVERRIDE
+               OPEN OUTPUT INVFILE.
+
+       7490-GUWN-X.
+           EXIT.
+
+       COPY HCATREAD IN COPYLIB.
+       COPY SCRNCL1  IN COPYLIB.
+       COPY SCRNCL2  IN COPYLIB.
+       COPY SCRNCL3  IN COPYLIB.
+       COPY SCRNCL4  IN COPYLIB.
+       COPY SCRNCALL IN COPYLIB.
+       9999-OPEN-STUFF.
+           OPEN I-O   MWRKLIST-WK-O        .
+           OPEN I-O   DISPLAY-FILE.
+
+       9999-CLOSE-STUFF.
+           CLOSE      MWRKLIST-WK-O        .
+           CLOSE      DISPLAY-FILE.
+       COPY DLOCKCAL IN COPYLIB.
+       COPY UNLOCK   IN COPYLIB.
+
+       9999-OVERRIDE.
+           MOVE SPACES TO COMMAND-WORK.
+           STRING "OVRDBF FILE(" DELIMITED BY SIZE,
+              OVR-FROMFILE DELIMITED BY SPACES,
+              ") TOFILE(" DELIMITED BY SIZE,
+              OVR-TOFILE DELIMITED BY SPACES,
+              ")" DELIMITED BY SIZE
+            INTO COMMAND-WORK.
+           CALL "QCMDEXC" USING COMMAND-WORK, COMMAND-LEN.
+
+       9999-GETKEY-MWRKLIST-WK-O.
+           MOVE 0 TO COND-WORD.
+           MOVE WL-ARG TO WLKEY OF MWRKLIST-WK-REC-O.
+           READ MWRKLIST-WK-O INTO BUF-MWRKLIST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MWRKLIST-WK-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MWRKLIST-WK-O.
+           MOVE HIGH-VALUES TO WLKEY OF MWRKLIST-WK-REC-O.
+           START MWRKLIST-WK-O KEY > WLKEY OF MWRKLIST-WK-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-UPDATE-MWRKLIST-WK-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MWRKLIST-WK-REC-O FROM BUF-MWRKLIST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MWRKLIST-WK-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+

@@ -1,0 +1,2186 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TSUPDATE.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.            *** THIS PROGRAM UPDATES A WORK ORDER
+      *                        FROM THE SUPERVISOR'S FUNCTIONS
+      *                        SUBROUTINES CALLED:
+      *                          TSFTSTRT
+      *                          TALWONO
+      *                          TSUPDT
+      *                          TPRINTWO
+      *                          TCHNGWO
+      *                          TNEWCOMP
+      *                          TZONECHG
+      *                          ****.
+      *C**********************************************************
+      *C  03/09/93  JSB  #6306
+      *C    WRITE WO TO PM OPEN QUEUE IF THE STATUS IS CHANGED
+      *C    FROM "PR" TO "IP".  CALL SPMNEWWO TO WRITE TO QUEUE.
+      *C    CALL SPMCWSD TO UPDATE SCHED DATE IN PREV-MAINT AND
+      *C    AND TRANS-FILE TO DATE "IP".
+      *C**********************************************************
+      *C  08/23/93  JSB
+      *C    REMOVED CALL TO SPMNEWWO TO RELEASE RECORD TO THE QUEUE
+      *C    THE CALL TO SPMCWSD WILL RELEASE THE RECORD TO THE QUEUE
+      *C    AND REMOVE THE SCHEDULE RECORD FROM PM-SCHEUDLE.
+      *C**********************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          I-O-FEEDBACK     IS I-O-FEEDBACK-AREA
+                               REQUESTOR        IS WORK-STATION
+                               SYSTEM-CONSOLE   IS CONSOLE
+                               LOCAL-DATA       IS LOCAL-DATA-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-OPEN-QUEUE
+                  ASSIGN       TO DATABASE-MCFLMM1903
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURRENT-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZCORLESS-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS ARE STANDARD.
+       01  PP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  WO-OPEN-QUEUE
+           LABEL RECORDS ARE STANDARD.
+       01  QWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1903.
+
+       FD  CURRENT-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  LC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1601.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  PLANNED-SW          PIC 9       VALUE 0.
+       77  ERR-SW              PIC 9       VALUE 0.
+       77  DISP-SW             PIC 9       VALUE 0.
+       77  QUEUE-PRTY          PIC 9       VALUE 0.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  FUNCTION-CODE       PIC XX      VALUE "CW".
+       77  LV-BUF-DATA         PIC X(11)   VALUE SPACES.
+       77  UPDATE-SW           PIC X       VALUE "A".
+       77  UPDATE-ERROR        PIC X(76).
+       77  RET-CODE            PIC X.
+       77  WO-STAT-SAVE        PIC XX.
+       77  WORK-STATUS         PIC XX.
+       77  DT-ERROR-SW         PIC 9       VALUE 0.
+       77  DT-ERR-MSG-1        PIC X(72).
+       77  Q-HOLD-AREA         PIC X(100).
+       77  RESERVE-SW          PIC S9(4)   VALUE 0   COMP-4.
+       77  HIGH-VALS           PIC X(10).
+       77  TRUE-VAL            PIC 1       VALUE B"1".
+       77  FALS-VAL            PIC 1       VALUE B"0".
+       77  COMPLETE-DATE       PIC X(06)   VALUE SPACES.
+       77  UPDATE-CODE         PIC XX      VALUE "CW".
+       77  RETURN-COD          PIC 9999.
+       77  RETURN-C            PIC S9(4)    COMP.
+       77  RETURN-ERROR        PIC X(78).
+       77  SAVE-WO-STATUS      PIC X(2)     VALUE SPACES.
+       77  CRAFT-TABLE         PIC X(2000)  VALUE SPACES.
+       77  USER-CODE           PIC X(8)     VALUE SPACES.
+       77  PRINT-DATA          PIC X(800)   VALUE SPACES.
+
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TSUPDATE".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                   "THE SUPERVISORS UPDATE PROGRAM".
+               10  PROG-DESC-A2    PIC X(30) VALUE
+                   ".  ALLOWS SUPERVISOR TO UPDATE".
+               10  PROG-DESC-B1    PIC X(30) VALUE
+                   "OR OVERRIDE WORKORDER INPUT FR".
+               10  PROG-DESC-B2    PIC X(30) VALUE
+                   "OM SUPERVISOR's FUNCTIONS.    ".
+               10  PROG-FUNCTION1  PIC X(30) VALUE
+                   "RUNS FROM f2 KEY OF SUPERVISOR".
+               10  PROG-FUNCTION2  PIC X(30) VALUE
+                   " FUNCTIONS MENU.              ".
+           05  PASSWORD-FLAG       PIC X.
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X       VALUE "0".
+           05 FILE-STAT-2      PIC X       VALUE "0".
+
+       01  SCREEN-DATA.
+           05  CRAFT-BUF               PIC X(04).
+           05  STAT-BUF                PIC XX.
+           05  WO-NUM-BUF.
+               10  WO-BUF-6            PIC X(06).
+               10  WO-YR-BUF           PIC X.
+               10  WO-SUF-BUF          PIC XXX.
+           05  FAIL-BUF.
+               10  FAIL-BUF-1-2.
+                   15  FAIL-BUF-1      PIC X.
+                   15  FAIL-BUF-2      PIC X.
+               10  FAIL-BUF-3-6.
+                   15  FAIL-BUF-3      PIC X.
+                   15  FAIL-BUF-4      PIC X.
+                   15  FAIL-BUF-5      PIC X.
+                   15  FAIL-BUF-6      PIC X.
+           05  TIME-BUF.
+               10  HRS-BUF             PIC XX.
+               10  MIN-BUF             PIC XX.
+           05  DATE-BUF.
+               10  MM-BUF              PIC XX.
+               10  DD-BUF              PIC XX.
+               10  YY-BUF              PIC XX.
+           05  COMM-BUF                PIC X(60).
+           05  ERR-MSG-1               PIC X(76).
+           05  ERR-MSG-2               PIC X(76).
+           05  ERR-MSG-3.
+               10  MSG1                PIC X(10).
+               10  I-DATE.
+                   15  I-MM            PIC XX.
+                   15  I-DD            PIC XX.
+                   15  I-YY            PIC XX.
+               10  MSG5                PIC X(08).
+               10  I-TIME.
+                   15  I-HRS           PIC XX.
+                   15  I-MIN           PIC XX.
+               10  MSG8                PIC X(38).
+           05  SCREEN-MSGS.
+               10  CMDMSG              PIC X(79).
+               10  ERRMSG              PIC X(79).
+
+       01  TIME-HOLD.
+           05  HOLD-HRS        PIC XX.
+           05  HOLD-MINS       PIC XX.
+
+       01  TODAYS-DATE.
+           05  TD-CC           PIC 99.
+           05  TD-YY           PIC 99.
+           05  TD-MM           PIC 99.
+           05  TD-DD           PIC 99.
+
+       01  CUR-DATE-WA.
+           05  CUR-DATE-YY     PIC XX.
+           05  CUR-DATE-MM     PIC XX.
+           05  CUR-DATE-DD     PIC XX.
+
+       01  DATE-FLIP-AREA.
+           05  DATE-CHECK-HOLD.
+               10  MM-DC       PIC XX.
+               10  DD-DC       PIC XX.
+               10  FILLER      PIC XX.
+           05  DATE-CHECK.
+               10  DC-MM       PIC XX.
+               10  DC-DD       PIC XX.
+               10  DC-YY       PIC XX.
+
+       01  DATE-HOLD.
+           05  DATE-HOLD-CC    PIC XX.
+           05  DATE-HOLD-YY    PIC XX.
+           05  DATE-HOLD-MM    PIC XX.
+           05  DATE-HOLD-DD    PIC XX.
+
+       01  DATE-HOLD-MDY.
+           05  DH-MM           PIC XX.
+           05  DH-DD           PIC XX.
+           05  DH-YY           PIC XX.
+
+       01  IN-DATE.
+           05  IN-DATE-CC      PIC XX.
+           05  IN-DATE-YY      PIC XX.
+           05  IN-DATE-MM      PIC XX.
+           05  IN-DATE-DD      PIC XX.
+
+       01  DATE-START-BUF.
+           05  DATE-START.
+               10  DS-C        PIC XX.
+               10  DS-Y        PIC XX.
+               10  DS-M        PIC XX.
+               10  DS-D        PIC XX.
+           05  TIME-START      PIC X(04).
+
+       01  DATE-COMP-BUF.
+           05  DATE-CMP.
+               10  DC-C        PIC XX.
+               10  DC-Y        PIC XX.
+               10  DC-M        PIC XX.
+               10  DC-D        PIC XX.
+           05  TIME-CMP        PIC X(04).
+
+       01  PROCESSING-LITERAL.
+           05  FILLER          PIC X(26)
+                VALUE "PROCESSING FOR WORK ORDER ".
+           05  WO-NO-LIT       PIC X(10).
+           05  FILLER          PIC X(12)
+                VALUE " IS COMPLETE".
+
+       01  TIME-BUFF.
+           05  TIME-HM.
+               10  TIME-HRS    PIC XX.
+               10  TIME-MINS   PIC XX.
+           05  FILLER          PIC XXXX.
+
+       01  COMMENTS-BUFFER.
+           05  CMTS-1          PIC X(70).
+           05  CMTS-2          PIC X(70).
+           05  CMTS-3          PIC X(70).
+           05  CMTS-4          PIC X(70).
+           05  CMTS-5          PIC X(70).
+
+       01  WO-NUMBER-WORK.
+           05  WO-NUM-WO-1-7.
+               10  FILLER      PIC X(6).
+               10  WO-NUM-WO-7 PIC X.
+           05  WO-NUM-WO-8-10  PIC XXX.
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF        PIC X(04).
+           05  CNAM-BUF        PIC X(16).
+
+       01  DATA-BUFFER.
+           05  WOCW-BUF        PIC X(10).
+           05  FAILC-BUF       PIC X(06).
+           05  EDOWN-BUF       PIC X.
+           05  EDOWN-CW-BUF    PIC X.
+
+       01  DT-ERR-MSG-2.
+           05  DT-MSG-2        PIC X(28).
+           05  MSG-HRS         PIC XX.
+           05  FILLER          PIC X     VALUE ":".
+           05  MSG-MIN         PIC XX.
+           05  FILLER          PIC X(06) VALUE SPACES.
+           05  MSG-MM          PIC XX.
+           05  FILLER          PIC X     VALUE "/".
+           05  MSG-DD          PIC XX.
+           05  FILLER          PIC X     VALUE "/".
+           05  MSG-YY          PIC XX.
+
+       01  WHENSTART-MSG.
+           05  FILLER  PIC X(10) VALUE "INPUT DATE".
+           05  FILLER  PIC X(02) VALUE SPACES.
+           05  FILLER  PIC X(02) VALUE SPACES.
+           05  FILLER  PIC X(02) VALUE SPACES.
+           05  FILLER  PIC X(08) VALUE "AND TIME".
+           05  FILLER  PIC X(02) VALUE SPACES.
+           05  FILLER  PIC X(02) VALUE SPACES.
+           05  FILLER  PIC X(23) VALUE "CC# STARTED WORK ORDER ".
+           05  FILLER  PIC X(15) VALUE "AND PRESS ENTER".
+
+       01  VWO-STATUS-MSG.
+           05  VWO-STAT-MSG    PIC X(50).
+           05  VWO-DASH        PIC XXX.
+           05  VWO-ST          PIC XX.
+
+       01  PWO-STATUS-MSG.
+           05  PWO-STAT-MSG    PIC X(44).
+           05  PWO-ST          PIC XX.
+
+       01  USER-INPUT.
+           05  USER-IP-DATE-TIME.
+               10  USER-IP-DATE.
+                   15  UIPD-MM         PIC XX.
+                   15  UIPD-DD         PIC XX.
+                   15  UIPD-YY         PIC XX.
+               10  USER-IP-TIME.
+                   15  UIPD-HRS        PIC XX.
+                   15  UIPD-MIN        PIC XX.
+           05  USER-IP-WORK.
+               10  USER-IP-WORK-DATE.
+                   15  USER-IP-CC      PIC XX.
+                   15  USER-IP-YY      PIC XX.
+                   15  USER-IP-MM      PIC XX.
+                   15  USER-IP-DD      PIC XX.
+               10  USER-IP-WORK-TIME   PIC XXXX.
+           05  OO-CW-SW                PIC X.
+
+       01  SAVE-PRIORITY.
+           05  PRIORITY-1      PIC X.
+           05  PRIORITY-2      PIC X.
+
+       01  DB-ERROR.
+           05  DB-FUNC   PIC X(10) VALUE SPACES.
+           05  DB-FILE   PIC X(18) VALUE SPACES.
+           05  FILLER    PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD  PIC XX.
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY JCWAREA        IN COPYLIB.
+
+       01  EQP-EQUIP-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  MESSAGE-DATA.
+           COPY DWOMSG         IN COPYLIB.
+
+       01  LABOR-CURR-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+       01  MESSAGE-BUFFER-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       01  WHO-VARIABLES.
+           COPY WHOPARMS       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       01  LAST-WO-USED-WA.
+           COPY MLASTWO        IN COPYLIB.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               WO-TRACK-DATA
+                               LAST-WO-USED-WA.
+       CHECK-PASSWORD.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG NOT = "N"
+               GO TO BEGIN.
+           GOBACK.
+
+       BEGIN.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          WO-OPEN-QUEUE.
+           OPEN INPUT          CURRENT-LABOR.
+           OPEN I-O            WO-PLANNED.
+           OPEN I-O            WO-BASIC.
+           OPEN I-O            DISPLAY-FILE.
+
+           ACCEPT CUR-DATE-WA  FROM DATE.
+           MOVE 20             TO TD-CC.
+           IF CUR-DATE-YY > 70
+               MOVE 19         TO TD-CC.
+           MOVE CUR-DATE-YY    TO TD-YY.
+           MOVE CUR-DATE-MM    TO TD-MM.
+           MOVE CUR-DATE-DD    TO TD-DD.
+           MOVE HIGH-VALUES    TO HIGH-VALS.
+           MOVE "UPDATE"       TO SCREEN-NAME.
+
+       6-MAIN.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE TRUE-VAL       TO IND(61).
+           MOVE 0              TO ERR-SW DT-ERROR-SW DISP-SW.
+           MOVE SPACES         TO SCREEN-DATA OO-CW-SW.
+           MOVE LYU-X          TO WO-YR-BUF.
+           MOVE "XXXX"         TO TIME-BUF.
+           MOVE "XXXXXX"       TO DATE-BUF.
+
+       61-SHOWFORM.
+           MOVE HIGH-VALS      TO WONUM OF WO-BASIC
+                                  WONUM OF WO-PLANNED.
+           START WO-BASIC      KEY = WONUM OF WO-BASIC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           START WO-PLANNED    KEY = WONUM OF WO-PLANNED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+           IF DT-ERROR-SW = 1
+               MOVE SPACES     TO ERR-MSG-1 ERR-MSG-2
+               MOVE SPACES     TO ERR-MSG-3 MESSAGE-BUFFER
+               MOVE 0          TO DT-ERROR-SW
+               MOVE DT-ERR-MSG-1 TO ERR-MSG-1
+               MOVE DT-ERR-MSG-2 TO ERR-MSG-2
+               MOVE TRUE-VAL   TO IND(14)
+               GO TO 61-SHOWFORM.
+
+           IF DT-ERROR-SW = 2
+               MOVE SPACES     TO ERR-MSG-1 ERR-MSG-2
+               MOVE SPACES     TO ERR-MSG-3 MESSAGE-BUFFER
+               MOVE 0          TO DT-ERROR-SW
+      **********************************************************************
+      **    MESSAGE 046/032:
+      ** TIME/DATE ENTERED IS GREATER THAN CURRENT TIME/DATE
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  32        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO ERR-MSG-1
+               MOVE TRUE-VAL   TO IND(14)
+               GO TO 61-SHOWFORM.
+
+           MOVE FALS-VAL       TO IND(30).
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+           IF KEY-HIT = 1 OR 3
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT = 5
+               CALL "TSFTSTRT" USING DBPARAMETERS
+                               WO-TRACK-DATA
+               GO TO 6-MAIN.
+
+           IF KEY-HIT = 6
+               MOVE "S"        TO RETURN-BYTE
+               CALL "TCHNGWO"  USING  DBPARAMETERS
+                               WO-TRACK-DATA
+               GO TO 6-MAIN.
+
+           IF KEY-HIT = 7
+               CALL "TZONECHG" USING DBPARAMETERS
+               GO TO 6-MAIN.
+
+           MOVE 0              TO PLANNED-SW.
+           MOVE SPACES         TO WO-BASIC-DATA WO-PLANNED-DATA.
+
+      ****************************************************************
+      **   "11" STATUS WILL CAUSE "IP" TO BE PLACED IN THE FIELD    **
+      **   "22" STATUS WILL CAUSE "LV" TO BE PLACED IN THE FIELD    **
+      **   "33" STATUS WILL CAUSE "CW" TO BE PLACED IN THE FIELD    **
+      ****************************************************************
+           IF STAT-BUF = "11"  MOVE "IP" TO STAT-BUF.
+           IF STAT-BUF = "22"  MOVE "LV" TO STAT-BUF.
+           IF STAT-BUF = "33"  MOVE "CW" TO STAT-BUF.
+
+      **************************************************************
+      *    CHECK FOR VALID CRAFTSMAN NUMBER                        *
+      **************************************************************
+           IF CRAFT-BUF = "NEWS" OR "9999"
+      **********************************************************************
+      **    MESSAGE 035/047:
+      ** INVALID CLOCK CARD NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  47        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(61)
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE CRAFT-BUF      TO PERCCNUM OF PER-PERSONNEL.
+           READ PER-PERSONNEL  INTO WO-PERS-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+      **********************************************************************
+      **    MESSAGE 035/049:
+      ** INVALID CRAFTSMAN NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  49        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               MOVE TRUE-VAL   TO IND(61)
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE CRAFT-BUF      TO CNUM-BUF.
+           MOVE SPACES         TO CNAM-BUF.
+
+      **************************************************************
+      *    CHECK FOR VALID WORK ORDER STATUS                       *
+      **************************************************************
+           IF STAT-BUF = "IP" OR "LV" OR "CW" OR "HP" OR
+                         "HM" OR "HL" OR "VO"
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 035/001:
+      ** INVALID STATUS
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE   1        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF STAT-BUF = "HM" OR "VO" OR "HL"
+               IF COMM-BUF NOT = SPACES
+                   NEXT SENTENCE
+               ELSE
+      **********************************************************************
+      **    MESSAGE 029/025:
+      ** COMMENT IS REQUIRED
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE  25        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 17         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+      **************************************************************
+      *    ALIGN AND CHECK FOR A VALID WORK ORDER NUMBER           *
+      **************************************************************
+           IF WO-BUF-6 = SPACES
+      **********************************************************************
+      **    MESSAGE 049/004:
+      ** WORKORDER NUMBER IS REQUIRED
+      **********************************************************************
+               MOVE  49        TO CATREAD-MSG-SET
+               MOVE   4        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE "0"            TO RET-CODE.
+           MOVE WO-NUM-BUF     TO WO-NUMBER-WORK.
+           CALL "TALWONO"      USING WO-NUMBER-WORK RET-CODE.
+           MOVE WO-NUMBER-WORK TO WO-NUM-BUF.
+
+           MOVE WO-NUMBER-WORK TO WONUM OF WO-BASIC.
+           START WO-BASIC      KEY = WONUM OF WO-BASIC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 61-CHECK-PLANNED.
+
+           READ WO-BASIC       NEXT INTO WO-BASIC-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO 61-CHECK-PLANNED
+               ELSE
+                   STRING
+                   "  READ WO-BASIC ERROR - FILE STATUS IS "
+                               FILE-STAT
+                   DELIMITED BY SIZE INTO MSG-TEXT
+                   MOVE 3      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           IF WO-NUMBER-WORK NOT = WO-NUM
+               GO TO 61-CHECK-PLANNED.
+
+           IF WO-STATUS = "DW" OR "FF" OR "VO"
+      **********************************************************************
+      **    MESSAGE 029/044:
+      ** CANNOT CHANGE WORK ORDERS WITH THIS CURRENT STATUS
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE  44        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO VWO-STAT-MSG
+               MOVE SPACES     TO MESSAGE-BUFFER
+               MOVE " - "      TO VWO-DASH
+               MOVE WO-STATUS  TO VWO-ST
+               MOVE VWO-STATUS-MSG TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF STAT-BUF = "HP"
+               IF COMM-BUF NOT = SPACES
+                   NEXT SENTENCE
+               ELSE
+      **********************************************************************
+      **    MESSAGE 029/025:
+      ** COMMENT IS REQUIRED
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE  25        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 17         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO WO-PLANNED-DATA.
+           GO TO 61-VALIDATE-FC.
+
+       61-CHECK-PLANNED.
+           MOVE WO-NUMBER-WORK TO WONUM OF WO-PLANNED.
+           START WO-PLANNED    KEY = WONUM OF WO-PLANNED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+      **********************************************************************
+      **    MESSAGE 035/040:
+      ** INVALID WORKORDER NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  40    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  3     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM
+               ELSE
+                   STRING
+                   " START WO-PLANNED ERROR - FILE STATUS IS "
+                               FILE-STAT
+                   DELIMITED BY SIZE INTO MSG-TEXT
+                   MOVE 3      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           READ WO-PLANNED     NEXT INTO WO-PLANNED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+      **********************************************************************
+      **    MESSAGE 035/040:
+      ** INVALID WORKORDER NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  40    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE  3     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM
+               ELSE
+               STRING
+               "  READ WO-PLANNED ERROR - FILE STATUS IS "
+                               FILE-STAT
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF WO-NUMBER-WORK NOT = WO-NUM-PLANNED
+               MOVE "  READ WO-PLANNED ERROR"
+                               TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF STAT-BUF = "HP"
+      **********************************************************************
+      **    MESSAGE 000/000:
+      **  WORKORDER IS ALREADY A PLANNED WORKORDER
+      **********************************************************************
+               MOVE SPACES     TO MESSAGE-BUFFER
+      *        MOVE    0       TO CATREAD-MSG-SET
+      *        MOVE    0       TO CATREAD-MSG-NUM
+      *        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE "WORKORDER IS ALREADY A PLANNED WORKORDER"
+                               TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF STAT-BUF = "IP"
+               IF EXP-CLASS-P = "        "
+      **********************************************************************
+      **    MESSAGE 029/046:
+      ** CANNOT 'IP' WORK ORDER WITHOUT EXPENSE CLASS
+      **********************************************************************
+                   MOVE  29    TO CATREAD-MSG-SET
+                   MOVE  46    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 3      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM.
+
+           IF APPROVAL-CODE-P NOT = "A "
+      **********************************************************************
+      **    MESSAGE 049/012:
+      ** WORK ORDER IS UNAPPROVED
+      **********************************************************************
+               MOVE  49        TO CATREAD-MSG-SET
+               MOVE  12        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF WO-NUM-SUFF-P = "000"
+      **********************************************************************
+      **    MESSAGE 029/116:
+      ** CANNOT WRITE LABOR TO A MASTER SUFFIXED WORKORDER
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE 116        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF WO-STATUS-P = "DW" OR "FF" OR "VO" OR "OO"
+      **********************************************************************
+      **    MESSAGE 029/047:
+      ** CANNOT UPDATE PLANNED WORKORDER OF STATUS
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE  47        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO PWO-STAT-MSG
+               MOVE WO-STATUS-P TO PWO-ST
+               MOVE PWO-STATUS-MSG TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO WO-BASIC-DATA.
+           MOVE 1              TO PLANNED-SW.
+
+      **************************************************************
+      *    VALIDATE FAILURE CODE                                   *
+      **************************************************************
+       61-VALIDATE-FC.
+           IF STAT-BUF NOT = "CW"
+               MOVE SPACES     TO FAIL-BUF
+               GO TO 61-RAPD-CONT.
+
+           MOVE SPACES         TO CNUM-BUFFER DATA-BUFFER.
+           MOVE CRAFT-BUF      TO CNUM-BUF.
+           MOVE WO-NUM-BUF     TO WOCW-BUF.
+           MOVE FAIL-BUF       TO FAILC-BUF.
+           MOVE "S"            TO RETURN-BYTE.
+
+           CALL "TAPPORTN"     USING CNUM-BUFFER
+                               FUNCTION-CODE
+                               DATA-BUFFER
+                               LV-BUF-DATA
+                               DBPARAMETERS
+                               WO-TRACK-DATA
+                               LABOR-CURR-DATA.
+
+           MOVE FAILC-BUF      TO FAIL-BUF.
+
+       61-RAPD-CONT.
+      **************************************************************
+      *    IF THE DATE AND THE TIME IS NOT INPUT BY THE USER       *
+      *        THE CURRENT DATE AND CURRENT TIME AS MAINTAINED     *
+      *        BY THE COMPUTER IS SUBSTITUTED                      *
+      **************************************************************
+           ACCEPT CUR-DATE-WA  FROM DATE.
+           MOVE 20             TO TD-CC.
+           IF CUR-DATE-YY > 70
+               MOVE 19         TO TD-CC.
+           MOVE CUR-DATE-YY    TO TD-YY.
+           MOVE CUR-DATE-MM    TO TD-MM.
+           MOVE CUR-DATE-DD    TO TD-DD.
+           ACCEPT TIME-BUFF    FROM TIME.
+
+           IF TIME-BUF IS NOT NUMERIC
+               MOVE TIME-MINS  TO MIN-BUF
+               MOVE TIME-HRS   TO HRS-BUF.
+
+           IF DATE-BUF IS NOT NUMERIC
+               MOVE CUR-DATE-MM TO MM-BUF
+               MOVE CUR-DATE-DD TO DD-BUF
+               MOVE CUR-DATE-YY TO YY-BUF
+               MOVE DATE-BUF   TO DATE-CHECK
+               PERFORM DATE-FLIP
+               MOVE DATE-CHECK TO DATE-BUF.
+
+           MOVE TIME-BUF       TO USER-IP-TIME.
+           MOVE TIME-HM        TO TIME-INIT.
+           MOVE DATE-BUF       TO DATE-CHECK DATE-HOLD-MDY.
+           MOVE DH-MM          TO DATE-INIT-MM.
+           MOVE DH-DD          TO DATE-INIT-DD.
+           MOVE DH-YY          TO DATE-INIT-YY.
+           MOVE 20             TO DATE-INIT-CC.
+           IF DATE-INIT-YY > 70
+               MOVE 19         TO DATE-INIT-CC.
+           PERFORM DATE-FLIP.
+           MOVE DATE-CHECK     TO DATE-HOLD-MDY.
+           MOVE DH-MM          TO UIPD-MM IN-DATE-MM.
+           MOVE DH-DD          TO UIPD-DD IN-DATE-DD.
+           MOVE DH-YY          TO UIPD-YY IN-DATE-YY.
+           MOVE 20             TO IN-DATE-CC.
+           IF IN-DATE-YY > 70
+               MOVE 19         TO IN-DATE-CC.
+
+      **************************************************************
+      *    THE WORK ORDER IS UPDATED BY THE VERIFIED DATA READ     *
+      *        FROM THE INPUT SCREEN                               *
+      **************************************************************
+           MOVE 0              TO ERR-SW.
+           PERFORM 613-MODIFY-WO-INFO THRU 613-MWI-EXIT.
+           IF ERR-SW = 1
+               MOVE 0          TO ERR-SW
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF ERR-SW = 2
+               GO TO 6-MAIN.
+
+           IF DT-ERROR-SW > 0
+               GO TO 61-SHOWFORM.
+
+      **************************************************************
+      *        WRITE LABOR RECORDS                                 *
+      **************************************************************
+           IF STAT-BUF = "IP" OR "LV" OR "CW"
+               NEXT SENTENCE
+           ELSE
+               GO TO 61-UPDATE-QUEUE.
+
+           CALL "TSUPDT"       USING DBPARAMETERS
+                               WO-TRACK-DATA
+                               WO-NUMBER-WORK
+                               SCREEN-DATA
+                               USER-INPUT
+                               WO-BASIC-DATA.
+
+       61-UPDATE-QUEUE.
+      **************************************************************
+      ***      UPDATE QUEUE FILE                                 ***
+      **************************************************************
+           PERFORM CLEAR-RESERVE THRU CR-EXIT.
+           IF PLANNED-SW = 1
+               GO TO 61-QUEUE-DEL.
+           IF STAT-BUF NOT = "LV"
+               GO TO 61-QUEUE-DEL.
+           IF WO-STATUS = "CW"
+               GO TO 61-QUEUE-DEL.
+
+           MOVE EQUIP-NUM      TO EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO EQP-EQUIP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE 5          TO RIME-NO.
+
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE ZONE           TO Q-ZONE.
+           MOVE "1 "           TO Q-PRTY.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE EQUIP-DOWN     TO Q-EQP-DOWN.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE EQUIP-NUM      TO Q-EQUIP-NUM.
+           MOVE DESCRIPTION-1  TO Q-DESCRIPTION.
+           MOVE CRAFTS-REQD-1  TO Q-SKILL-1.
+           MOVE CRAFTS-REQD-2  TO Q-SKILL-2.
+           MOVE CRAFTS-REQD-3  TO Q-SKILL-3.
+           IF PRIORITY = "1 "  MOVE 9 TO QUEUE-PRTY.
+           IF PRIORITY = "2 "  MOVE 6 TO QUEUE-PRTY.
+           IF PRIORITY = "3 "  MOVE 4 TO QUEUE-PRTY.
+           IF PRIORITY = "4 "  MOVE 2 TO QUEUE-PRTY.
+           IF PRIORITY = "5 "  MOVE 1 TO QUEUE-PRTY.
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+           MOVE "A"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+           GO TO 61-SKIP-QUEUE.
+
+       61-QUEUE-DEL.
+           MOVE SPACES         TO WO-QUEUE-DATA.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE "D"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+
+       61-SKIP-QUEUE.
+           IF COMM-BUF = SPACES
+               GO TO 6-MAIN
+           ELSE
+               MOVE SPACES     TO COMMENTS-BUFFER
+               MOVE COMM-BUF   TO CMTS-1.
+
+           IF PLANNED-SW = 0
+               MOVE "1"        TO RETURN-BYTE
+               CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COMMENTS-BUFFER
+               MOVE "9999"     TO FROM-CC
+               MOVE "SUPERVISOR UPDATE PROGRAM   " TO FROM-SIGNON
+               MOVE WO-NUM     TO TO-WO
+               MOVE "9999"     TO TO-CC
+               MOVE COMMENTS-BUFFER TO MESSAGES-1-5
+               CALL "TUPDATEM" USING MESSAGE-DATA
+                               UPDATE-SW
+                               UPDATE-ERROR
+               GO TO 6-MAIN.
+
+           MOVE SPACES         TO WO-BASIC-DATA.
+           MOVE WO-NUM-PLANNED TO WO-NUM.
+           MOVE WO-STATUS-P    TO WO-STATUS.
+           MOVE WO-START-STATUS TO WO-STRT-STATUS.
+           MOVE DATE-RECD-P-CN TO DATE-RECD-CN.
+           MOVE TIME-RECD-P    TO TIME-RECD.
+           MOVE APPROVAL-CODE-P TO APPROVAL-CODE.
+           MOVE REQUESTER-P    TO REQUESTER-B.
+           MOVE EQUIP-NUM-P    TO EQUIP-NUM.
+           MOVE EQUIP-NAME-P   TO EQUIP-NAME.
+           MOVE TYPE-NUM-P     TO TYPE-NUM.
+           MOVE DEPT-P         TO DEPT.
+           MOVE ZONE-PRIORITY-P TO ZONE-PRIORITY.
+           MOVE LOCATION-P     TO LOCATION.
+           MOVE EQUIP-DOWN-P   TO EQUIP-DOWN.
+           MOVE EXP-CLASS-P    TO EXP-CLASS.
+           MOVE DESCRIPTION-1-P TO DESCRIPTION-1.
+           MOVE DESCRIPTION-2-1-P  TO DESCRIPTION-2-1.
+           MOVE DESCRIPTION-2-2-P  TO DESCRIPTION-2-2.
+           MOVE DATE-STRT-P-CN TO DATE-STRT-CN.
+           MOVE TIME-STRT-P    TO TIME-STRT.
+           MOVE DATE-COMP-P-CN TO DATE-COMP-CN.
+           MOVE TIME-COMP-P    TO TIME-COMP.
+           MOVE ALL "*"        TO CRAFTS-REQD-1.
+           MOVE ALL "*"        TO CRAFTS-REQD-2.
+           MOVE ALL "*"        TO CRAFTS-REQD-3.
+           MOVE ALL "*"        TO CRAFTSMEN-1.
+           MOVE ALL "*"        TO CRAFTSMEN-2.
+           MOVE ALL "*"        TO CRAFTSMEN-3.
+
+           MOVE "1"            TO RETURN-BYTE.
+           CALL "TPRINTWO"     USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COMMENTS-BUFFER.
+
+           IF STAT-BUF = "HP"
+               MOVE "2"        TO RETURN-BYTE
+               CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COMMENTS-BUFFER.
+
+           MOVE "9999"         TO FROM-CC.
+           MOVE "SUPERVISOR UPDATE PROGRAM   " TO FROM-SIGNON.
+           MOVE WO-NUM         TO TO-WO.
+           MOVE "9999"         TO TO-CC.
+           MOVE COMMENTS-BUFFER TO MESSAGES-1-5.
+               CALL "TUPDATEM" USING MESSAGE-DATA
+                               UPDATE-SW
+                               UPDATE-ERROR.
+           GO TO 6-MAIN.
+
+       613-MODIFY-WO-INFO.
+           MOVE HIGH-VALS      TO WONUM OF WO-BASIC.
+           START WO-BASIC      KEY = WONUM OF WO-BASIC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           MOVE HIGH-VALS      TO WONUM OF WO-PLANNED.
+           START WO-PLANNED    KEY = WONUM OF WO-PLANNED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+      **************************************************************
+      *    THE WORK ORDER IS UPDATED BY THE VERIFIED DATA READ     *
+      *        FROM THE INPUT SCREEN                               *
+      **************************************************************
+           MOVE WO-NUMBER-WORK TO WONUM OF WO-BASIC
+                                  WONUM OF WO-PLANNED.
+           IF PLANNED-SW = 1
+               GO TO 613-MODIFY-PLANNED.
+
+           START WO-BASIC      KEY = WONUM OF WO-BASIC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               STRING
+               " START WO-BASIC ERROR - FILE STATUS IS "
+               FILE-STAT "   613-MODIFY-WO-INFO"
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               MOVE 1          TO ERR-SW
+               GO TO 613-END-UPDATE.
+
+           READ WO-BASIC       NEXT INTO WO-BASIC-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               STRING
+               "  READ WO-BASIC ERROR - FILE STATUS IS "
+               FILE-STAT "   613-MODIFY-WO-INFO"
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               MOVE 1          TO ERR-SW
+               GO TO 613-END-UPDATE.
+
+           IF WO-NUMBER-WORK NOT = WO-NUM
+               STRING
+               "  READ WO-BASIC ERROR - FILE STATUS IS "
+               FILE-STAT "   613-MODIFY-WO-INFO"
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               MOVE 1          TO ERR-SW
+               GO TO 613-END-UPDATE.
+
+           GO TO 613-MODIFY-CONTINUED.
+
+       613-MODIFY-PLANNED.
+           START WO-PLANNED    KEY = WONUM OF WO-PLANNED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               STRING
+               " START WO-PLANNED ERROR - FILE STATUS IS "
+               FILE-STAT "   613-MODIFY-PLANNED"
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               MOVE 1          TO ERR-SW
+               GO TO 613-END-UPDATE.
+
+           READ WO-PLANNED     NEXT INTO WO-PLANNED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               STRING
+               "  READ WO-PLANNED ERROR - FILE STATUS IS "
+               FILE-STAT "   613-MODIFY-PLANNED"
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               MOVE 1          TO ERR-SW
+               GO TO 613-END-UPDATE.
+
+           IF WO-NUMBER-WORK NOT = WO-NUM-PLANNED
+               STRING
+               "  READ WO-PLANNED ERROR - FILE STATUS IS "
+               FILE-STAT "   613-MODIFY-PLANNED"
+               DELIMITED BY SIZE INTO MSG-TEXT
+               MOVE 3          TO FIELD-NUMBER
+               MOVE 1          TO ERR-SW
+               GO TO 613-END-UPDATE.
+
+       613-MODIFY-CONTINUED.
+           IF PLANNED-SW = 1
+               MOVE WO-STATUS-P TO SAVE-WO-STATUS
+           END-IF.
+           PERFORM 6131-CHECK-TIME-DATE THRU 6131-CTD-EXIT.
+           IF DT-ERROR-SW > 0
+               GO TO 613-MWI-EXIT.
+
+           IF SPACES = UIPD-MM OR UIPD-DD OR UIPD-YY OR USER-IP-TIME
+               MOVE 1          TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 030/032:
+      ** DATE STARTED AND TIME REQUIRED
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE  32        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 12         TO FIELD-NUMBER
+               GO TO 613-MWI-EXIT.
+
+           IF USER-IP-DATE IS NOT NUMERIC OR USER-IP-TIME IS NOT NUMERIC
+               MOVE 1          TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/013:
+      ** INVALID START DATE OR TIME
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  12        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 12         TO FIELD-NUMBER
+               GO TO 613-MWI-EXIT.
+
+           IF DATE-FLAG = 1
+               IF UIPD-MM > "00" AND < "13"
+                   IF UIPD-DD > "00" AND < "32"
+                       IF UIPD-YY IS NUMERIC
+                           IF USER-IP-TIME > "    " AND < "2400"
+                              NEXT SENTENCE
+                           ELSE
+                           MOVE 1 TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/015:
+      ** INVALID START TIME
+      **********************************************************************
+                           MOVE  35 TO CATREAD-MSG-SET
+                           MOVE  15 TO CATREAD-MSG-NUM
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE 12  TO FIELD-NUMBER
+                           GO TO 613-MWI-EXIT
+                       ELSE
+                       MOVE 1  TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/032:
+      ** INVALID YEAR
+      **********************************************************************
+                       MOVE 35 TO CATREAD-MSG-SET
+                       MOVE 32 TO CATREAD-MSG-NUM
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 16 TO FIELD-NUMBER
+                       GO TO 613-MWI-EXIT
+                   ELSE
+                   MOVE 1      TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/030:
+      ** INVALID DAY
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  30    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 15     TO FIELD-NUMBER
+                   GO TO 613-MWI-EXIT
+               ELSE
+                   MOVE 1      TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/031:
+      ** INVALID MONTH
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  31    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 14     TO FIELD-NUMBER
+                   GO TO 613-MWI-EXIT
+           ELSE
+               IF UIPD-MM > "00" AND < "13"
+                   IF UIPD-DD > "00" AND < "32"
+                       IF UIPD-YY IS NUMERIC
+                           IF USER-IP-TIME > "    " AND < "2400"
+                              NEXT SENTENCE
+                           ELSE
+                           MOVE 1 TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/015:
+      ** INVALID START TIME
+      **********************************************************************
+                           MOVE  35 TO CATREAD-MSG-SET
+                           MOVE  15 TO CATREAD-MSG-NUM
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE 12 TO FIELD-NUMBER
+                           GO TO 613-MWI-EXIT
+                       ELSE
+                       MOVE 1  TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/032:
+      ** INVALID YEAR
+      **********************************************************************
+                       MOVE 35 TO CATREAD-MSG-SET
+                       MOVE 32 TO CATREAD-MSG-NUM
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 16 TO FIELD-NUMBER
+                       GO TO 613-MWI-EXIT
+                   ELSE
+                   MOVE 1      TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/030:
+      ** INVALID DAY
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  30    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 14     TO FIELD-NUMBER
+                   GO TO 613-MWI-EXIT
+               ELSE
+                   MOVE 1      TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 035/031:
+      ** INVALID MONTH
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  31    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 15     TO FIELD-NUMBER
+                   GO TO 613-MWI-EXIT.
+
+           MOVE UIPD-YY        TO DATE-HOLD-YY.
+           MOVE UIPD-MM        TO DATE-HOLD-MM.
+           MOVE UIPD-DD        TO DATE-HOLD-DD.
+           MOVE 20             TO DATE-HOLD-CC.
+           IF DATE-HOLD-YY > 70
+               MOVE 19         TO DATE-HOLD-CC.
+
+           IF DATE-HOLD > TODAYS-DATE
+               MOVE 1          TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 030/023:
+      ** DATE IS GREATER THAN CURRENT DATE
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE  23        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 14         TO FIELD-NUMBER
+               GO TO 613-MWI-EXIT.
+
+           IF DATE-HOLD = TODAYS-DATE AND
+              USER-IP-TIME > TIME-HM
+               MOVE 1          TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 046/015:
+      ** TIME ENTERED GREATER THAN CURRENT TIME
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  15        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 12         TO FIELD-NUMBER
+               GO TO 613-MWI-EXIT.
+
+           MOVE UIPD-YY        TO USER-IP-YY.
+           MOVE UIPD-MM        TO USER-IP-MM.
+           MOVE UIPD-DD        TO USER-IP-DD.
+           MOVE "20"           TO USER-IP-CC.
+           IF USER-IP-YY > 70
+               MOVE "19"       TO USER-IP-CC.
+           MOVE USER-IP-TIME   TO USER-IP-WORK-TIME.
+
+           IF PLANNED-SW = 0
+               IF USER-IP-WORK < DATE-TIME-RECD
+                   MOVE 1      TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 030/005:
+      ** DATE OR TIME ENTERED LESS THAN DATE OR TIME W/O RECEIVED
+      **********************************************************************
+                   MOVE  30    TO CATREAD-MSG-SET
+                   MOVE   5    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 12     TO FIELD-NUMBER
+                   GO TO 613-MWI-EXIT
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF USER-IP-WORK < DATE-TIME-RECD-P
+               MOVE 1          TO ERR-SW
+      **********************************************************************
+      **    MESSAGE 030/005:
+      ** DATE OR TIME ENTERED LESS THAN DATE OR TIME W/O RECEIVED
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE   5        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 12         TO FIELD-NUMBER
+               GO TO 613-MWI-EXIT.
+
+           MOVE SPACES         TO ERR-MSG-1 ERR-MSG-2 ERR-MSG-3.
+
+           IF PLANNED-SW = 0
+               MOVE DATE-STRT-CN   TO DATE-START
+               MOVE TIME-STRT      TO TIME-START
+               MOVE DATE-COMP-CN   TO DATE-CMP
+               MOVE TIME-COMP      TO TIME-CMP
+               MOVE WO-STATUS      TO WORK-STATUS
+           ELSE
+               MOVE DATE-STRT-P-CN TO DATE-START
+               MOVE TIME-STRT-P    TO TIME-START
+               MOVE DATE-COMP-P-CN TO DATE-CMP
+               MOVE TIME-COMP-P    TO TIME-CMP
+               MOVE WO-STATUS-P    TO WORK-STATUS.
+
+           IF WORK-STATUS = "SW"
+               MOVE WORK-STATUS TO WO-STAT-SAVE
+               IF STAT-BUF = "IP"
+                   IF DATE-START = SPACES
+                       MOVE UIPD-MM  TO DS-M
+                       MOVE UIPD-DD  TO DS-D
+                       MOVE UIPD-YY  TO DS-Y
+                       MOVE "20"     TO DS-C
+                       IF DS-Y > "70"
+                           MOVE "19" TO DS-C
+                       END-IF
+                       MOVE USER-IP-TIME TO TIME-START
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF STAT-BUF = "VO" OR "HM" OR "HL"
+               MOVE STAT-BUF   TO WO-STAT-SAVE
+           ELSE
+           IF STAT-BUF = "IP"
+               IF DATE-START = SPACES
+                   MOVE UIPD-MM  TO DS-M
+                   MOVE UIPD-DD  TO DS-D
+                   MOVE UIPD-YY  TO DS-Y
+                   MOVE "20"     TO DS-C
+                   IF DS-Y > "70"
+                       MOVE "19" TO DS-C
+                   END-IF
+                   MOVE USER-IP-TIME TO TIME-START
+                   MOVE STAT-BUF TO WO-STAT-SAVE
+               ELSE
+               IF WORK-STATUS = "CW"
+      **********************************************************************
+      **    MESSAGE 027/003:
+      **  AN IN-PROCESS STATUS WAS ISSUED FOR AN ALREADY CLOSED WORK ORDER
+      **********************************************************************
+                   MOVE  27    TO CATREAD-MSG-SET
+                   MOVE  3     TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO ERR-MSG-1
+               ELSE
+                   MOVE STAT-BUF TO WO-STAT-SAVE
+           ELSE
+           IF STAT-BUF = "CW"
+               IF WORK-STATUS = "CW"
+      **********************************************************************
+      **    MESSAGE 027/002:
+      **  A CLOSED STATUS WAS ISSUED FOR AN ALREADY CLOSED WORK ORDER
+      **********************************************************************
+                   MOVE  27    TO CATREAD-MSG-SET
+                   MOVE  2     TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO ERR-MSG-1
+                   MOVE IN-DATE  TO DATE-CMP
+                   MOVE TIME-BUF TO TIME-CMP
+               ELSE
+               IF DATE-START = SPACES
+      **********************************************************************
+      **    MESSAGE 049/039:
+      **  WORK ORDER IS BEING CLOSED WITHOUT EVER BEING MADE IN-PROGRESS
+      **********************************************************************
+                   MOVE  49    TO CATREAD-MSG-SET
+                   MOVE  39    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO ERR-MSG-1
+                   IF DATE-CMP = SPACES
+                       MOVE IN-DATE  TO DATE-CMP
+                       MOVE TIME-BUF TO TIME-CMP
+                       MOVE STAT-BUF TO WO-STAT-SAVE
+                   ELSE
+                       MOVE STAT-BUF TO WO-STAT-SAVE
+               ELSE
+                   MOVE STAT-BUF TO WO-STAT-SAVE
+                   IF DATE-CMP NOT = SPACES
+                       NEXT SENTENCE
+                   ELSE
+                       MOVE IN-DATE  TO DATE-CMP
+                       MOVE TIME-BUF TO TIME-CMP.
+
+           IF PLANNED-SW = 0
+               MOVE DATE-START TO DATE-STRT-CN
+               MOVE TIME-START TO TIME-STRT
+               MOVE DATE-CMP   TO DATE-COMP-CN
+               MOVE TIME-CMP   TO TIME-COMP
+               MOVE WO-STAT-SAVE TO WO-STATUS
+           ELSE
+               MOVE DATE-START TO DATE-STRT-P-CN
+               MOVE TIME-START TO TIME-STRT-P
+               MOVE DATE-CMP   TO DATE-COMP-P-CN
+               MOVE TIME-CMP   TO TIME-COMP-P
+               MOVE WO-STAT-SAVE TO WO-STATUS-P.
+
+           IF STAT-BUF = "IP" OR "LV" OR "CW"
+               NEXT SENTENCE
+           ELSE
+               GO TO 613-MWI-CONT.
+
+           IF STAT-BUF = "IP" AND WORK-STATUS = "CW"
+               GO TO 613-DISP-MSG.
+
+           IF STAT-BUF = "IP" AND DATE-START NOT = SPACES
+               GO TO 613-DISP-MSG.
+
+           MOVE CRAFT-BUF      TO PERCCNUM OF CURRENT-LABOR.
+           READ  CURRENT-LABOR INTO LABOR-CURR-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO 613-NO-LABOR-RECORD.
+
+           IF CRAFT-BUF NOT = LCS-EMPL-NUM
+               GO TO 613-NO-LABOR-RECORD.
+
+           GO TO 613-MWI-CONT.
+
+       613-NO-LABOR-RECORD.
+      *************************************************************
+      *  WHEN 'LV' OR 'CW' AND NO CURRENT-LABOR RECORD HAS BEEN   *
+      *    WRITTEN  (CRAFTSMAN DID NOT 'IP' ONTO WORKORDER)       *
+      *************************************************************
+           MOVE WHENSTART-MSG  TO ERR-MSG-3.
+           MOVE TRUE-VAL       TO IND(18).
+
+       613-SHOWFORM.
+           MOVE TRUE-VAL       TO IND(30).
+           MOVE "00"           TO SCREEN-STATUS.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+           IF KEY-HIT = 1 OR 3
+               GO TO END-OF-JOB.
+
+           IF DISP-SW = 1
+               IF KEY-HIT = 0
+                   GO TO 613-MWI-CONT
+               ELSE
+                   MOVE SPACES TO PROGRAM-NAME
+                   MOVE 2      TO ERR-SW
+                   GO TO 613-END-UPDATE.
+
+       613-READ-IN.
+           MOVE I-MM           TO UIPD-MM.
+           MOVE I-DD           TO UIPD-DD.
+           MOVE I-YY           TO UIPD-YY.
+           MOVE USER-IP-DATE   TO DATE-CHECK.
+           PERFORM DATE-FLIP.
+           MOVE DATE-CHECK     TO USER-IP-DATE.
+           MOVE I-HRS          TO UIPD-HRS.
+           MOVE I-MIN          TO UIPD-MIN.
+
+           IF SPACES = UIPD-MM OR UIPD-DD OR UIPD-YY OR USER-IP-TIME
+      **********************************************************************
+      **    MESSAGE 030/032:
+      ** DATE STARTED AND TIME REQUIRED
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE  32        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM.
+
+           IF USER-IP-DATE IS NOT NUMERIC
+           OR USER-IP-TIME IS NOT NUMERIC
+      **********************************************************************
+      **    MESSAGE 035/013:
+      ** INVALID START DATE OR TIME
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  13        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM.
+
+           IF DATE-FLAG = 1
+               IF UIPD-MM > "00" AND < "13"
+                   IF UIPD-DD > "00" AND < "32"
+                       IF UIPD-YY IS NUMERIC
+                           IF USER-IP-TIME > "    " AND < "2400"
+                               MOVE "Y"          TO OO-CW-SW
+                               IF PLANNED-SW = 0
+                                   MOVE UIPD-MM  TO DATE-STRT-MM
+                                   MOVE UIPD-DD  TO DATE-STRT-DD
+                                   MOVE UIPD-YY  TO DATE-STRT-YY
+                                   MOVE 20       TO DATE-STRT-CC
+                                   IF DATE-STRT-YY > 70
+                                       MOVE 19   TO DATE-STRT-CC
+                                   END-IF
+                                   MOVE USER-IP-TIME TO TIME-STRT
+                                   MOVE DATE-CMP TO DATE-COMP-CN
+                                   MOVE TIME-CMP TO TIME-COMP
+                                   MOVE STAT-BUF TO WO-STATUS
+                               ELSE
+                               MOVE UIPD-MM  TO DATE-STRT-P-MM
+                               MOVE UIPD-DD  TO DATE-STRT-P-DD
+                               MOVE UIPD-YY  TO DATE-STRT-P-YY
+                               MOVE 20       TO DATE-STRT-P-CC
+                               IF DATE-STRT-P-YY > 70
+                                   MOVE 19   TO DATE-STRT-P-CC
+                               END-IF
+                               MOVE USER-IP-TIME TO TIME-STRT-P
+                               MOVE DATE-CMP TO DATE-COMP-P-CN
+                               MOVE TIME-CMP TO TIME-COMP-P
+                               MOVE STAT-BUF TO WO-STATUS-P
+                           ELSE
+      **********************************************************************
+      **    MESSAGE 035/015:
+      ** INVALID START TIME
+      **********************************************************************
+                           MOVE  35 TO CATREAD-MSG-SET
+                           MOVE  15 TO CATREAD-MSG-NUM
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE 21 TO FIELD-NUMBER
+                           PERFORM 65-ERROR
+                           GO TO 613-SHOWFORM
+                       ELSE
+      **********************************************************************
+      **    MESSAGE 035/032:
+      ** INVALID YEAR
+      **********************************************************************
+                       MOVE 35 TO CATREAD-MSG-SET
+                       MOVE 32 TO CATREAD-MSG-NUM
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 20 TO FIELD-NUMBER
+                       PERFORM 65-ERROR
+                       GO TO 613-SHOWFORM
+                   ELSE
+      **********************************************************************
+      **    MESSAGE 035/030:
+      ** INVALID DAY
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  30    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 19     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 613-SHOWFORM
+               ELSE
+      **********************************************************************
+      **    MESSAGE 035/031:
+      ** INVALID MONTH
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  31        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM.
+
+           IF DATE-FLAG = 3
+           IF UIPD-MM > "00" AND < "13"
+               IF UIPD-DD > "00" AND < "32"
+                   IF UIPD-YY IS NUMERIC
+                       IF USER-IP-TIME > "    " AND < "2400"
+                           MOVE "Y"          TO OO-CW-SW
+                           IF PLANNED-SW = 0
+                               MOVE UIPD-MM  TO DATE-STRT-MM
+                               MOVE UIPD-DD  TO DATE-STRT-DD
+                               MOVE UIPD-YY  TO DATE-STRT-YY
+                               MOVE 20       TO DATE-STRT-CC
+                               IF DATE-STRT-YY > 70
+                                   MOVE 19   TO DATE-STRT-CC
+                               END-IF
+                               MOVE USER-IP-TIME TO TIME-STRT
+                               MOVE DATE-CMP TO DATE-COMP-CN
+                               MOVE TIME-CMP TO TIME-COMP
+                               MOVE STAT-BUF TO WO-STATUS
+                           ELSE
+                           MOVE UIPD-MM  TO DATE-STRT-P-MM
+                           MOVE UIPD-DD  TO DATE-STRT-P-DD
+                           MOVE UIPD-YY  TO DATE-STRT-P-YY
+                           MOVE 20       TO DATE-STRT-P-CC
+                           IF DATE-STRT-P-YY > 70
+                               MOVE 19   TO DATE-STRT-P-CC
+                           END-IF
+                           MOVE USER-IP-TIME TO TIME-STRT-P
+                           MOVE DATE-CMP TO DATE-COMP-P-CN
+                           MOVE TIME-CMP TO TIME-COMP-P
+                           MOVE STAT-BUF TO WO-STATUS-P
+                       ELSE
+      **********************************************************************
+      **    MESSAGE 035/015:
+      ** INVALID START TIME
+      **********************************************************************
+                       MOVE 35 TO CATREAD-MSG-SET
+                       MOVE 15 TO CATREAD-MSG-NUM
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 21 TO FIELD-NUMBER
+                       PERFORM 65-ERROR
+                       GO TO 613-SHOWFORM
+                   ELSE
+      **********************************************************************
+      **    MESSAGE 035/032:
+      ** INVALID YEAR
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  32    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 20     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 613-SHOWFORM
+               ELSE
+      **********************************************************************
+      **    MESSAGE 035/030:
+      ** INVALID DAY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  30        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM
+           ELSE
+      **********************************************************************
+      **    MESSAGE 035/031:
+      ** INVALID MONTH
+      **********************************************************************
+           MOVE  35            TO CATREAD-MSG-SET
+           MOVE  31            TO CATREAD-MSG-NUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 19             TO FIELD-NUMBER
+           PERFORM 65-ERROR
+           GO TO 613-SHOWFORM.
+
+           MOVE UIPD-YY        TO DATE-HOLD-YY.
+           MOVE UIPD-MM        TO DATE-HOLD-MM.
+           MOVE UIPD-DD        TO DATE-HOLD-DD.
+           MOVE 20             TO DATE-HOLD-CC.
+           IF DATE-HOLD-YY > 70
+               MOVE 19         TO DATE-HOLD-CC.
+
+           IF DATE-HOLD > TODAYS-DATE
+      **********************************************************************
+      **    MESSAGE 030/023:
+      ** DATE IS GREATER THAN CURRENT DATE
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE  23        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM.
+
+           IF DATE-HOLD = TODAYS-DATE AND
+              USER-IP-TIME > TIME-HM
+      **********************************************************************
+      **    MESSAGE 046/015:
+      ** TIME ENTERED GREATER THAN CURRENT TIME
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  15        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 23         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM.
+
+           MOVE UIPD-YY        TO USER-IP-YY.
+           MOVE UIPD-MM        TO USER-IP-MM.
+           MOVE UIPD-DD        TO USER-IP-DD.
+           MOVE "20"           TO USER-IP-CC.
+           IF USER-IP-YY > 70
+               MOVE "19"       TO USER-IP-CC.
+           MOVE USER-IP-TIME   TO USER-IP-WORK-TIME.
+
+           IF PLANNED-SW = 0
+               IF USER-IP-WORK < DATE-TIME-RECD
+      **********************************************************************
+      **    MESSAGE 030/005:
+      ** DATE OR TIME ENTERED LESS THAN DATE OR TIME W/O RECEIVED
+      **********************************************************************
+                   MOVE  30    TO CATREAD-MSG-SET
+                   MOVE   5    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 18     TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 613-SHOWFORM
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF USER-IP-WORK < DATE-TIME-RECD-P
+      **********************************************************************
+      **    MESSAGE 030/005:
+      ** DATE OR TIME ENTERED LESS THAN DATE OR TIME W/O RECEIVED
+      **********************************************************************
+               MOVE  30        TO CATREAD-MSG-SET
+               MOVE   5        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 18         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 613-SHOWFORM.
+
+           MOVE SPACES         TO ERR-MSG-1 ERR-MSG-2.
+           MOVE SPACES         TO ERR-MSG-3 MESSAGE-BUFFER.
+
+       613-DISP-MSG.
+           MOVE 1              TO DISP-SW.
+      **********************************************************************
+      **    MESSAGE 042/014:
+      ** PRESS 'ENTER' TO CONTINUE OR PRESS 'F2' TO CANCEL
+      **********************************************************************
+           MOVE  42            TO CATREAD-MSG-SET.
+           MOVE  14            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO ERR-MSG-2.
+           GO TO 613-SHOWFORM.
+
+       613-MWI-CONT.
+           MOVE 0              TO DISP-SW.
+
+           IF PLANNED-SW = 0
+               DELETE WO-BASIC
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                   END-DELETE
+           ELSE
+               DELETE WO-PLANNED
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+
+           IF FILE-STAT NOT = "00"
+               GO TO 613-END-UPDATE.
+
+           IF STAT-BUF = "HM" OR "HL"
+               IF PLANT-IDENT = "126 " OR "153 " OR "111 "
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 613-BYPASS-CRAFTSMAN-LOAD.
+
+           IF PLANNED-SW = 1 GO TO 613-BYPASS-CRAFTSMAN-LOAD.
+           IF CRAFTSMEN-1 = SPACES
+               MOVE CRAFT-BUF  TO CRAFTSMEN-1
+           ELSE
+           IF CRAFTSMEN-2 = SPACES
+               IF CRAFT-BUF = CRAFTSMEN-1
+                   NEXT SENTENCE
+               ELSE
+               MOVE CRAFT-BUF  TO CRAFTSMEN-2
+           ELSE
+           IF CRAFTSMEN-3 = SPACES
+               IF CRAFT-BUF = CRAFTSMEN-1 OR CRAFTSMEN-2
+                   NEXT SENTENCE
+               ELSE
+                   MOVE CRAFT-BUF TO CRAFTSMEN-3.
+
+       613-BYPASS-CRAFTSMAN-LOAD.
+           PERFORM 6130-SET-FAIL-THRU-COMP THRU 6130-SFTC-EXIT.
+           IF PLANNED-SW = 1
+               WRITE PWO-REC   FROM WO-PLANNED-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                   END-WRITE
+           ELSE
+           IF STAT-BUF = "HP"
+               MOVE 1          TO PLANNED-SW
+               MOVE WO-NUM     TO WO-NUM-PLANNED
+               MOVE "OO"       TO WO-STATUS-P
+               ACCEPT CUR-DATE-WA FROM DATE
+               MOVE 20             TO TD-CC
+               IF CUR-DATE-YY > 7
+                   MOVE 19         TO TD-CC
+               END-IF
+               MOVE CUR-DATE-YY    TO TD-YY
+               MOVE CUR-DATE-MM    TO TD-MM
+               MOVE CUR-DATE-DD    TO TD-DD
+               MOVE TODAYS-DATE TO DATE-RECD-P-CN
+               ACCEPT TIME-BUFF FROM TIME
+               MOVE TIME-HM    TO TIME-RECD-P
+               MOVE REQUESTER-B TO REQUESTER-P
+               MOVE "U"        TO APPROVAL-CODE-P
+               MOVE EQUIP-NUM  TO EQUIP-NUM-P
+               MOVE EQUIP-NAME TO EQUIP-NAME-P
+               MOVE TYPE-NUM   TO TYPE-NUM-P
+               MOVE DEPT       TO DEPT-P
+               MOVE ZONE-PRIORITY TO ZONE-PRIORITY-P
+               MOVE LOCATION   TO LOCATION-P
+               MOVE EQUIP-DOWN TO EQUIP-DOWN-P
+               MOVE EXP-CLASS  TO EXP-CLASS-P
+               MOVE DESCRIPTION-1 TO DESCRIPTION-1-P
+               MOVE DESCRIPTION-2 TO DESCRIPTION-2-P
+               MOVE SPACES     TO DATE-REQD-CN TIME-REQD
+               MOVE SPACES     TO DATE-STRT-P-CN TIME-STRT-P
+               MOVE SPACES     TO FAILURE-CODE-P
+               MOVE SPACES     TO DATE-COMP-P-CN TIME-COMP-P
+               MOVE WO-STRT-TYPE TO WO-START-TYPE
+               MOVE "P"        TO WO-CURRENT-TYPE
+               MOVE "INIT"     TO PLANNER
+               MOVE "R"        TO PLNR-RESP-IND
+               WRITE PWO-REC   FROM WO-PLANNED-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                   END-WRITE
+           ELSE
+           IF STAT-BUF = "IP"
+               MOVE "IP"       TO WO-STATUS
+               MOVE SPACES     TO FAILURE-CODE DATE-COMP-CN TIME-COMP
+               WRITE VWO-REC   FROM WO-BASIC-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                   END-WRITE
+           ELSE
+           WRITE VWO-REC       FROM WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+      *IF STATUS "PR" CHANGED TO "IP",WRITE TO PM QUEUE,UPDATE SCH DATE
+           IF PLANNED-SW = 1
+               IF SAVE-WO-STATUS = "PR" AND WO-STATUS-P = "IP"
+      *------------RELEASE TO QUEUE AND REMOVE FROM PM-SCHEDULE
+                   MOVE 0      TO RETURN-C
+                   MOVE SPACES TO RETURN-ERROR
+                   MOVE "IP"   TO UPDATE-CODE
+                   CALL "SPMCWSD" USING WO-NUMBER-WORK
+                               UPDATE-CODE
+                               CUR-DATE-WA
+                               DBPARAMETERS
+                               RETURN-C
+                               RETURN-ERROR
+           END-IF.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TSUPDATE"     TO PROGRAM-NAME.
+           MOVE "SUPV"         TO USER-ID.
+           MOVE CRAFT-BUF      TO CLOCK-CARD.
+           MOVE STAT-BUF       TO TRANS-STATUS.
+           MOVE TODAYS-DATE    TO DATE-STAMP-CN.
+           MOVE TIME-HM        TO TIME-STAMP.
+
+           IF PLANNED-SW = 1
+               MOVE WO-NUM-PLANNED    TO WO-NUM-TRACK
+               MOVE WO-START-STATUS   TO WO-TYPE-STATUS
+               MOVE WO-STATUS-P       TO WO-STATUS-TRACK
+           ELSE
+           MOVE WO-NUM         TO WO-NUM-TRACK
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+
+       613-END-UPDATE.
+           MOVE HIGH-VALS      TO WONUM OF WO-BASIC.
+           START WO-BASIC      KEY = WONUM OF WO-BASIC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           MOVE HIGH-VALS      TO WONUM OF WO-PLANNED.
+           START WO-PLANNED    KEY = WONUM OF WO-PLANNED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+           IF STAT-BUF = "CW"
+               IF WO-START-STATUS = "AA"
+                   MOVE 0      TO RETURN-C
+                   MOVE SPACES TO RETURN-ERROR
+                   MOVE "CW"   TO UPDATE-CODE
+                   MOVE DATE-COMP-P TO COMPLETE-DATE
+                   CALL "SPMCWSD" USING WO-NUMBER-WORK
+                               UPDATE-CODE
+                               COMPLETE-DATE
+                               DBPARAMETERS
+                               RETURN-C
+                               RETURN-ERROR
+                   IF RETURN-C NOT = 0
+                       DISPLAY
+                       "ERROR UPDATING PM TRANSACTION FILE:"
+                       DISPLAY RETURN-ERROR.
+
+           IF PROGRAM-NAME NOT = SPACES
+               CALL "TWOTRACK" USING WO-TRACK-DATA.
+
+      ****************************************
+      *    END OF WORKORDER UPDATE LOOP      *
+      ****************************************
+       613-MWI-EXIT.           EXIT.
+
+       6130-SET-FAIL-THRU-COMP.
+           IF PLANNED-SW = 0
+               NEXT SENTENCE
+           ELSE
+           GO TO 6130-SFTC-CONT.
+
+           IF STAT-BUF = "LV"
+               MOVE "IP"       TO WO-STATUS.
+
+           MOVE EDOWN-CW-BUF   TO EQUIP-DOWN-CW.
+           IF FAIL-BUF NOT = "     "
+               MOVE FAIL-BUF   TO FAILURE-CODE.
+
+           IF TIME-STRT-HH NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-STRT-HH NOT LESS THAN 24
+               SUBTRACT 24     FROM TIME-STRT-HH.
+
+           IF TIME-STRT-MM NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-STRT-MM > 59 SUBTRACT 60 FROM TIME-STRT-MM.
+
+           IF TIME-COMP-HH NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-COMP-HH NOT LESS THAN 24
+               SUBTRACT 24     FROM TIME-COMP-HH.
+
+           IF TIME-COMP-MM NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-COMP-MM > 59 SUBTRACT 60 FROM TIME-COMP-MM.
+           GO TO 6130-SFTC-EXIT.
+
+       6130-SFTC-CONT.
+           IF STAT-BUF = "LV"
+               MOVE "IP"       TO WO-STATUS-P.
+
+           MOVE EDOWN-CW-BUF   TO EQUIP-DOWN-CW-P.
+           IF FAIL-BUF NOT = "     "
+               MOVE FAIL-BUF   TO FAILURE-CODE-P.
+
+           IF TIME-STRT-P-HH NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-STRT-P-HH NOT LESS THAN 24
+               SUBTRACT 24     FROM TIME-STRT-P-HH.
+
+           IF TIME-STRT-P-MM NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-STRT-P-MM > 59 SUBTRACT 60 FROM TIME-STRT-P-MM.
+
+           IF TIME-COMP-P-HH NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-COMP-P-HH NOT LESS THAN 24
+               SUBTRACT 24     FROM TIME-COMP-P-HH.
+
+           IF TIME-COMP-P-MM NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+           IF TIME-COMP-P-MM > 59 SUBTRACT 60 FROM TIME-COMP-P-MM.
+
+       6130-SFTC-EXIT.         EXIT.
+
+       6131-CHECK-TIME-DATE.
+           ACCEPT CUR-DATE-WA  FROM DATE.
+           MOVE 20             TO TD-CC.
+           IF CUR-DATE-YY > 70
+               MOVE 19         TO TD-CC.
+           MOVE CUR-DATE-YY    TO TD-YY.
+           MOVE CUR-DATE-MM    TO TD-MM.
+           MOVE CUR-DATE-DD    TO TD-DD.
+           MOVE TODAYS-DATE    TO DATE-HOLD.
+           ACCEPT TIME-BUFF    FROM TIME
+           MOVE TIME-MINS      TO HOLD-MINS.
+           MOVE TIME-HRS       TO HOLD-HRS.
+
+           IF IN-DATE = DATE-HOLD
+               IF TIME-BUF > TIME-HOLD
+                   MOVE 2      TO DT-ERROR-SW
+                   GO TO 6131-CTD-EXIT
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF IN-DATE > DATE-HOLD
+               MOVE 2          TO DT-ERROR-SW
+               GO TO 6131-CTD-EXIT.
+
+           IF STAT-BUF = "IP"
+      **********************************************************************
+      **    MESSAGE 046/030:
+      ** TIME/DATE ENTERED IS LESS THAN TIME/DATE RECEIVED
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  30        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DT-ERR-MSG-1
+      **********************************************************************
+      **    MESSAGE 046/036:
+      ** TIME/DATE RECEIVED IS:
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  36        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER    TO DT-MSG-2
+               IF PLANNED-SW = 0
+                   MOVE DATE-RECD-CN   TO DATE-HOLD
+                   MOVE TIME-RECD      TO TIME-HOLD
+                   MOVE DATE-HOLD-MM   TO DH-MM
+                   MOVE DATE-HOLD-DD   TO DH-DD
+                   MOVE DATE-HOLD-YY   TO DH-YY
+                   MOVE DATE-HOLD-MDY  TO DATE-CHECK
+                   PERFORM DATE-FLIP
+                   MOVE DATE-CHECK     TO DATE-HOLD-MDY
+                   MOVE DH-MM          TO MSG-MM
+                   MOVE DH-DD          TO MSG-DD
+                   MOVE DH-YY          TO MSG-YY
+                   MOVE HOLD-HRS       TO MSG-HRS
+                   MOVE HOLD-MINS      TO MSG-MIN
+               ELSE
+                   MOVE DATE-RECD-P-CN TO DATE-HOLD
+                   MOVE TIME-RECD-P    TO TIME-HOLD
+                   MOVE DATE-HOLD-MM   TO DH-MM
+                   MOVE DATE-HOLD-DD   TO DH-DD
+                   MOVE DATE-HOLD-YY   TO DH-YY
+                   MOVE DATE-HOLD-MDY  TO DATE-CHECK
+                   PERFORM DATE-FLIP
+                   MOVE DATE-CHECK     TO DATE-HOLD-MDY
+                   MOVE DH-MM          TO MSG-MM
+                   MOVE DH-DD          TO MSG-DD
+                   MOVE DH-YY          TO MSG-YY
+                   MOVE HOLD-HRS       TO MSG-HRS
+                   MOVE HOLD-MINS      TO MSG-MIN
+           ELSE
+           IF STAT-BUF = "CW"
+      **********************************************************************
+      **    MESSAGE 046/031:
+      ** TIME/DATE ENTERED IS LESS THAN TIME/DATE STARTED
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  31        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DT-ERR-MSG-1
+      **********************************************************************
+      **    MESSAGE 046/037:
+      ** TIME/DATE STARTED IS:
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  37        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER   TO DT-MSG-2
+               IF PLANNED-SW = 0
+                   MOVE DATE-STRT-CN TO DATE-HOLD
+                   MOVE TIME-STRT    TO TIME-HOLD
+                   MOVE DATE-HOLD-MM TO DH-MM
+                   MOVE DATE-HOLD-DD TO DH-DD
+                   MOVE DATE-HOLD-YY TO DH-YY
+                   MOVE DATE-HOLD-MDY TO DATE-CHECK
+                   PERFORM DATE-FLIP
+                   MOVE DATE-CHECK   TO DATE-HOLD-MDY
+                   MOVE DH-MM        TO MSG-MM
+                   MOVE DH-DD        TO MSG-DD
+                   MOVE DH-YY        TO MSG-YY
+                   MOVE HOLD-HRS     TO MSG-HRS
+                   MOVE HOLD-MINS    TO MSG-MIN
+               ELSE
+                   MOVE DATE-STRT-P-CN TO DATE-HOLD
+                   MOVE TIME-STRT-P    TO TIME-HOLD
+                   MOVE DATE-HOLD-MM   TO DH-MM
+                   MOVE DATE-HOLD-DD   TO DH-DD
+                   MOVE DATE-HOLD-YY   TO DH-YY
+                   MOVE DATE-HOLD-MDY  TO DATE-CHECK
+                   PERFORM DATE-FLIP
+                   MOVE DATE-CHECK     TO DATE-HOLD-MDY
+                   MOVE DH-MM          TO MSG-MM
+                   MOVE DH-DD          TO MSG-DD
+                   MOVE DH-YY          TO MSG-YY
+                   MOVE HOLD-HRS       TO MSG-HRS
+                   MOVE HOLD-MINS      TO MSG-MIN
+           ELSE
+           GO TO 6131-CTD-EXIT.
+
+           IF IN-DATE = DATE-HOLD
+               IF TIME-BUF < TIME-HOLD
+                   MOVE 1      TO DT-ERROR-SW
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF IN-DATE < DATE-HOLD
+               MOVE 1          TO DT-ERROR-SW.
+
+       6131-CTD-EXIT.          EXIT.
+
+       CLEAR-RESERVE.
+           MOVE CRAFT-BUF      TO PERCCNUM OF WO-OPEN-QUEUE.
+           START WO-OPEN-QUEUE KEY = PERCCNUM OF WO-OPEN-QUEUE
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO CR-EXIT
+               ELSE
+                   DISPLAY "START WO-OPEN-QUEUE ERROR - FILE STATUS IS "
+                           FILE-STAT
+                   GO TO END-OF-JOB.
+
+       CLEAR-LOOP.
+           READ WO-OPEN-QUEUE  NEXT INTO WO-QUEUE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO CR-EXIT
+               ELSE
+                   DISPLAY "READ WO-OPEN-QUEUE ERROR - FILE STATUS IS "
+                               FILE-STAT
+                   GO TO END-OF-JOB.
+
+           IF CRAFT-BUF NOT = Q-CC-NUM
+               GO TO CR-EXIT.
+
+           IF Q-RESERVE NOT = "XX"
+               GO TO CLEAR-LOOP.
+
+           MOVE WO-QUEUE-DATA  TO Q-HOLD-AREA.
+           MOVE "D"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+
+           MOVE Q-HOLD-AREA    TO WO-QUEUE-DATA.
+           MOVE SPACES         TO Q-RESERVE.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE "A"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+           GO TO CLEAR-LOOP.
+
+       CR-EXIT.                EXIT.
+
+       DATE-FLIP.
+           IF DATE-FLAG = 3
+               MOVE DATE-CHECK TO DATE-CHECK-HOLD
+               MOVE DD-DC      TO DC-MM
+               MOVE MM-DC      TO DC-DD.
+
+       END-OF-JOB.
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               WO-BASIC.
+           CLOSE               WO-OPEN-QUEUE.
+           CLOSE               WO-PLANNED.
+           CLOSE               CURRENT-LABOR.
+           CLOSE               DISPLAY-FILE.
+           GOBACK.
+
+       65-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+
+       999-CATREAD.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+

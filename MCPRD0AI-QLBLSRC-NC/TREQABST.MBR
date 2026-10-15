@@ -1,0 +1,1465 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.       TREQABST.
+
+      *C******************************************************************
+      *C
+      *C    THIS PROGRAM ABSTRACTS REQUISITION INFORMATION FROM THE
+      *C    MCFPCS5700 FILE (REQUISITION NUMBERS ARE STORED HERE DURING
+      *C    THE DAY'S PROCESSING FOR AKRON-BASED PLANTS ONLY AND SAP/R3
+      *C    PLANTS) AND FOR REQUISITIONS DEIGNATED TO GO TO CORPORATE WRITES
+      *C    937 TRANSACTIONS TO DDAILYTC TO BE PROCESSED AT CUTOFF. THESE
+      *C    TRANSACTIONS ARE THEN READ BY A PROGRAM ON THE MAINFRAME AND
+      *C    A FILE IS CREATED WHICH IS LOADED INTO THE CORPORATE
+      *C    PURCHASING SYSTEM. IN THE CASE OF SAP/R3 REQS, THE DATA IS
+      *C    SENT USING SAPCOMM TO THE UNIX MACHINE AND THE FILE IS
+      *C    PROCESSED INTO SAP/R3 AT THE MAINFRAME.
+      *C******************************************************************
+      *
+      *C* 11/15/1995      CA YODER
+      *C*   ADDED LOGIC TO MOVE LITERAL VALUES TO FIELDS IN TC1 RECORD.
+      *C*   CORPORATE PURCHASING NEEDED VALUES IN THESE FIELDS, SO VALUES
+      *C*   FOR THE TECH CENTER WERE USED.  IF ANOTHER PLANT NEEDS TO
+      *C*   UTILIZE THIS PROGRAM, ANOTHER METHOD WILL NEED TO BE WORKED
+      *C*   OUT.
+      *C*
+      *C* SEPTEMBER 1996  JE COFFMAN  REQ# 6619
+      *C*   EXPANDED DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C*
+      *C  11/7/97         JEFF BUNGO
+      *C    ADDED LOGIC FOR DES MOINES LITERAL VALUES IN TC1 RECORD.
+      *C
+      *C  OCT 1999        JE COFFMAN
+      *C    ADDED LOGIC TO WRITE A FILE FOR SAP/R3 REQUISITIONS DATA
+      *C    PROCESSING FOR MEDICINE HAT.
+      *C
+      *C  01/06/00        CA YODER
+      *C    ADDED LOGIC TO PROCESS "RL" RECORDS IN THE MCORPREQ FILE
+      *C    TO SEND RELEASES TO CORPORATE PURCHASING FROM AKRON.
+      *C
+      *C  03/05/01        JE COFFMAN
+      *C    ADDED MBUYER AND MSTORERM SO THAT BUYER CODE AND
+      *C    DISBURSEMENT INSTRUCTIONS CAN BE SENT FOR DES
+      *C    MOINES CORPORATE CODES.
+      *C
+      *C  08/23/01        CA YODER
+      *C    REMOVED KEN BARR'S NAME AND REPLACED IT WITH CLIFF OYER
+      *C    FOR TECH CENTER REQS.
+      *C
+      *C  12/19/01       DAVE PLUM
+      *C    REPLACED CLIFF OYER'S NAME WITH CHARLIE STUMP FOR THE
+      *C    TECH CENTER'S REQUISITIONS.
+      *C
+      *C  05/04/2005     CA YODER    REQ #2005-56302
+      *C    CHANGED NAME AND DEPARTMENT TO JEFF HUBBARD, DEPT 550A.
+      *C
+      ********************************************************************
+
+002100 ENVIRONMENT DIVISION.
+002200 CONFIGURATION SECTION.
+002300 SOURCE-COMPUTER.  IBM-AS400.
+002400 OBJECT-COMPUTER.  IBM-AS400.
+       COPY SPECIALN OF COPYLIB.
+002900 INPUT-OUTPUT SECTION.
+003000 FILE-CONTROL.
+003300     SELECT CORP-FIL2    ASSIGN TO DISK-CORPFIL2.
+
+           SELECT DDAILYTC
+                  ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                     WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQDESC-I
+                  ASSIGN TO DATABASE-MCFLCS2301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                      WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQITM-I
+                  ASSIGN TO DATABASE-MCFLCS2201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                      WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MBUYER-I
+                  ASSIGN TO DATABASE-MCFLCS0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCORPREQ-O
+                  ASSIGN TO DATABASE-MCFLCS5701
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                      WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+            SELECT MPLTINFO-O
+                   ASSIGN TO DATABASE-MCFLCS0501
+                   ORGANIZATION IS INDEXED
+                   ACCESS IS DYNAMIC
+                   RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-I
+                  ASSIGN TO DATABASE-MCFLCS2001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+003200     SELECT REQ-REPORT   ASSIGN TO DISK-CORPRPTF.
+
+           SELECT R3FILE       ASSIGN TO DISK-R3REQFI2.
+
+003400     SELECT SORT-FILE    ASSIGN TO DISK-SORTFILE.
+003500
+003600 DATA DIVISION.
+003700 FILE SECTION.
+005900 FD  CORP-FIL2
+006000     LABEL RECORDS ARE OMITTED
+006100     RECORD CONTAINS 20 CHARACTERS.
+006200 01  CORP-FIL2-RCD.
+006300     05  CORP-FIL2-REQNO           PIC X(12).
+006400     05  CORP-FIL2-STATUS          PIC XX.
+006500**** 05  FILLER                    PIC X(6).
+           05  CORP-FIL2-RLSE            PIC X(6).
+006600
+       FD  DDAILYTC
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1601.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS1002.
+
+       FD  DREQDESC-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQDESC-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2301.
+
+       FD  DREQITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQITM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2201.
+
+       FD  MBUYER-I
+           LABEL RECORDS ARE STANDARD.
+       01  MBUYER-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0601.
+
+       FD  MCORPREQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MCORPREQ-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS5701.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  MPLTINFO-O
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-O.
+           COPY DDS-MCRPCS0500 OF MCFLCS0501.
+
+       FD  MREQ-I
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2001.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+004400 FD  REQ-REPORT
+004500     LABEL RECORDS ARE OMITTED
+004600     RECORD CONTAINS 133 CHARACTERS
+004700     DATA RECORD IS PRINT-RCD.
+004800 01  PRINT-RCD.
+004900     05  PRT-CTL                   PIC 9.
+005000     05  PRINT-LINE                PIC X(132).
+005100
+005900 FD  R3FILE
+006000     LABEL RECORDS ARE OMITTED
+006100     RECORD CONTAINS 20 CHARACTERS.
+006200 01  R3FILE-RCD.
+006300     05  R3FILE-REQNO              PIC X(12).
+006400     05  R3FILE-STATUS             PIC XX.
+006500     05  FILLER                    PIC X(6).
+006600
+005200 SD  SORT-FILE
+005300     RECORD CONTAINS 20 CHARACTERS.
+005400 01  SORT-RCD.
+005500     05  SORT-REQNO                PIC X(12).
+005600     05  SORT-STATUS               PIC X(2).
+005700     05  FILLER                    PIC X(6).
+005800
+006700 WORKING-STORAGE SECTION.
+006900 77  DATE-WANTED-JULIAN            PIC S9(4) COMP VALUE ZEROS.
+006800 77  J-CURRENT-YY                  PIC S9(4) COMP VALUE ZEROS.
+007000 77  LEAD-TIME                     PIC S9(4) COMP VALUE ZEROS.
+007100 77  PRIME-SAVE                    PIC X(3)       VALUE SPACES.
+007200 77  RECORDS-READ-CTR              PIC S9(4) COMP VALUE ZEROS.
+       77  SAVE-D-LINENO                 PIC 99         VALUE ZEROES.
+       77  SAVE-RECORD-SEQ               PIC 99         VALUE ZEROS.
+       77  SAVE-REQ-NO                   PIC X(12)      VALUE SPACES.
+007300 77  SUB                           PIC S9(4) COMP VALUE ZEROS.
+       77  SUB1                          PIC S9(4) COMP VALUE ZEROS.
+       77  SUB2                          PIC S9(4) COMP VALUE ZEROS.
+007400 77  TODAYS-JULIAN                 PIC S9(7) COMP VALUE ZEROS.
+007500
+007600 01  AKRON-DATA-BUFFER.
+      *------ REMOVED THIS FIELD BECAUSE IT WAS ADDING AN EXTRA BLANK
+      *------ TO EACH TRANSACTION.    9/26/95
+007700*    05  AKRON-HASP-CONTROL        PIC X(1).
+007800     05  AKRON-TC                  PIC X(1).
+007900     05  AKRON-DATA                PIC X(249).
+008000     05  TC1-BUFFER REDEFINES AKRON-DATA.
+008100         10  TC1-REQ-NUMBER        PIC X(12).
+008200         10  TC1-ACCOUNTING-DATA.
+008300             15  TC1-COMPANY       PIC 9(3).
+008400             15  TC1-PRIME         PIC 9(3).
+008500             15  TC1-SUB-ACCT      PIC 9(3).
+008600             15  TC1-SUB-DTL       PIC 9(3).
+008700             15  TC1-ADDTL-DATA    PIC 9(6).
+008800         10  TC1-ACCOUNTING-DATA-R REDEFINES TC1-ACCOUNTING-DATA.
+008900             15  FILLER            PIC X(9).
+009000             15  TC1-SUB-DTL-R     PIC X(3).
+009100             15  TC1-ADDTL-DATA-R  PIC X(6).
+009200         10  TC1-BUDGET-NUMBER.
+                   15  TC1-BUDGET-LIT    PIC X(3).
+                   15  TC1-BUDGET-YR     PIC X(2).
+                   15  TC1-BUDGET-MO     PIC X(2).
+                   15  FILLER            PIC X(5).
+009300         10  TC1-BUDGET-AMNT       PIC S9(9).
+009400         10  TC1-RCDV-DEPT         PIC X(4).
+               10  TC1-RCDV-PLANT        PIC X(4).
+               10  TC1-RCDV-BLDG         PIC X(4).
+               10  TC1-SHIPTO-CODE       PIC X(13).
+009600         10  TC1-REQ-DATE.
+                   15  TC1-RD-MM         PIC XX.
+                   15  TC1-RD-DD         PIC XX.
+                   15  TC1-RD-YY         PIC XX.
+009700         10  TC1-FOR-DEPT          PIC X(4).
+               10  TC1-CONFIRMING-PONO   PIC X(6).
+               10  TC1-CONFIRMING-RELNO  PIC X(3).
+               10  TC1-BRIEF-DESC        PIC X(36).
+009900         10  TC1-DATE-WANTED.
+                   15  TC1-DW-MM         PIC XX.
+                   15  TC1-DW-DD         PIC XX.
+                   15  TC1-DW-YY         PIC XX.
+                   15  FILLER            PIC X(14).
+               10  TC1-REQUESTER-NAME    PIC X(25).
+               10  TC1-REQUESTER-DEPT    PIC X(4).
+               10  TC1-REQUESTER-PHNUM   PIC X(7).
+010100         10  TC1-ORIGINATOR        PIC X(4).
+010200         10  FILLER                PIC X(1).
+010300         10  TC1-CHANGE-NOTICE     PIC X(1).
+010400         10  TC1-PROJECT-MGR       PIC X(15).
+               10  TC1-LOCAL-PRINT-IND   PIC X(1).
+               10  TC1-BUYER-NAME        PIC X(10).
+               10  TC1-REQUISITIONER-ID  PIC X(8).
+               10  TC1-INSP-REQD-IND     PIC X.
+               10  TC1-ADDL-INFO         PIC X(15).
+010500         10  TC1-REQMT-ORD         PIC X(06).
+010600
+010700     05  TC3-BUFFER REDEFINES AKRON-DATA.
+010800         10  TC3-ITEM-NO           PIC 9(4).
+010900         10  TC3-ITEM-NO-SUFFIX    PIC X(1).
+011000         10  TC3-ITEM-QTY          PIC 9(9)V99.
+011100         10  TC3-ITEM-QTY-UM       PIC X(5).
+011200         10  TC3-ITEM-PRICE        PIC 9(9)V9(5).
+011300         10  TC3-ITEM-PRICE-UM     PIC X(5).
+011400         10  TC3-CSIS-CODE         PIC X(7).
+011500         10  TC3-PRODUCT-KEY       PIC X(20).
+               10  TC3-COMM-CODE-IND     PIC X(1).
+011600         10  FILLER                PIC X(181).
+011700
+011800     05  TC4-BUFFER REDEFINES AKRON-DATA.
+               10  TC4-DATA.
+011900             15  TC4-LINE-NO       PIC 9(3).
+012000             15  TC4-ITEM-DESCR    PIC X(43).
+012100         10  FILLER                PIC X(203).
+012200
+012300     05  TC5-BUFFER REDEFINES AKRON-DATA.
+012400         10  TC5-COMMENT-LINE-NO   PIC 9(3).
+012500         10  TC5-COMMENT           PIC X(70).
+012600         10  FILLER                PIC X(176).
+012700
+012800     05  TC6-BUFFER REDEFINES AKRON-DATA.
+012900         10  TC6-CHG-NOTICE-NO     PIC 9(3).
+013000         10  TC6-CHG-NOTICE-DATE   PIC 9(6).
+013100         10  TC6-CHG-NOTICE-REASON PIC X(40).
+013200         10  TC6-CHG-NOTICE-BUDGET-AMT PIC S9(9).
+013300         10  FILLER                PIC X(191).
+013400
+013500     05  TC8-BUFFER REDEFINES AKRON-DATA.
+013600         10  TC8-CHG-NOTICE-TEXT-LINE-NO PIC 9(3).
+013700         10  TC8-CHG-NOTICE-TEXT   PIC X(70).
+013800         10  TC8-ITEM-QTY          PIC 9(7).
+013900         10  TC8-ITEM-QTY-UM       PIC X(5).
+014000         10  TC8-ITEM-NO           PIC X(3).
+014100         10  FILLER                PIC X(161).
+014200
+014300     05  TC9-BUFFER REDEFINES AKRON-DATA.
+014400         10  TC9-ITEM-NO           PIC X(4).
+014500         10  TC9-ITEM-NO-SUFFIX    PIC X(1).
+014600         10  TC9-DELIVERY-DATE.
+014700             15  TC9-DD-MM         PIC 99.
+014800             15  TC9-DD-DD         PIC 99.
+014900             15  TC9-DD-YY         PIC 99.
+015000         10  TC9-DELIVERY-QTY      PIC 9(9)V99.
+015100         10  TC9-MRP-NUMBER        PIC X(7).
+015200         10  FILLER                PIC X(220).
+015300
+015400     05  TCC-BUFFER REDEFINES AKRON-DATA.
+015500         10  TCC-PO-NO             PIC X(7).
+015600         10  TCC-PO-REL            PIC X(3).
+015700         10  TCC-ITEM-NO           PIC X(4).
+015800         10  TCC-CLOSE-QTY         PIC 9(9)V99.
+015900         10  FILLER                PIC X(224).
+016000
+016100 01  AKRON-WS-RCD REDEFINES AKRON-DATA-BUFFER.
+           05  AKRON-CTL-DATA.
+      *------ REMOVED THIS FIELD BECAUSE IT WAS ADDING AN EXTRA BLANK
+      *------ TO EACH TRANSACTION.    9/26/95
+016200*        10  CNTRL-HASP-CONTROL    PIC X(1).
+016300         10  CNTRL-HEADER          PIC X(25).
+016400         10  CNTRL-SEQUENCE-NO     PIC 9(3).
+016500         10  FILLER                PIC X(1).
+016600         10  CNTRL-TRANSMIT-DATE.
+016700             15  CTD-MM            PIC 99.
+016800             15  CTD-DD            PIC 99.
+016900             15  CTD-YY            PIC 99.
+017000     05  FILLER                    PIC X(215).
+017100
+017200 01  COMPANY-SAVE.
+017300     05  FILLER                    PIC X(2)  VALUE SPACES.
+017400         88  AKRON-PLT                       VALUE "11".
+017500     05  FILLER                    PIC X(1)  VALUE SPACES.
+017600
+024900 01  DASH-LINE.
+025000     05  FILLER       PIC X(132) VALUE ALL "-".
+025100
+028000 01  DATES-AND-TIMES.
+028100     05  CUR-DATE.
+028200         10  YY                    PIC XX.
+028300         10  MM                    PIC XX.
+028400         10  DD                    PIC XX.
+028500     05  CUR-DATE-9  REDEFINES  CUR-DATE.
+028600         10  YY-9                  PIC 99.
+028700         10  MM-9                  PIC 99.
+028800         10  DD-9                  PIC 99.
+028900
+       01  DAY-DIGIT                     PIC X.
+
+017700 01  DESC-TABLE.
+017800     05  D-TAB OCCURS 96 TIMES.
+017900         10  D-LINENO              PIC 99.
+018000         10  D-T.
+018100             15  D-T-36            PIC X(36).
+018200             15  D-T-43            PIC X(43).
+018300
+025200 01  DETAIL-LINE.
+025300     05  REQ-NO-OUT       PIC X(12) VALUE SPACES.
+025400     05  FILLER           PIC X(3)  VALUE SPACES.
+025500     05  CORP-CODE-OUT    PIC X(7)  VALUE SPACES.
+025600     05  FILLER           PIC X(2)  VALUE SPACES.
+025700     05  ID-OUT           PIC X(4)  VALUE SPACES.
+025800     05  FILLER           PIC X(2)  VALUE SPACES.
+025900     05  DATE-WANTED-OUT  PIC X(8)  VALUE SPACES.
+026000     05  FILLER           PIC X(3)  VALUE SPACES.
+026100     05  UM-OUT           PIC X(2)  VALUE SPACES.
+026200     05  FILLER           PIC X(2)  VALUE SPACES.
+026300     05  QTY-OUT          PIC Z(7)9.
+           05  FILLER           PIC X(2)  VALUE SPACES.
+           05  RLSE-OUT         PIC X(6).
+026400     05  FILLER           PIC X(10) VALUE "  ________".
+026500     05  FILLER           PIC X(7)  VALUE "     __".
+026600
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       01  GREG-DATE.
+           05  GREG-CC                   PIC XX.
+           05  GREG-DATE-YMD.
+               10  GREG-YY               PIC XX.
+               10  GREG-MM               PIC XX.
+               10  GREG-DD               PIC XX.
+
+038700********************************************
+038800*                                          *
+038900*    REPORT HEADINGS                       *
+039000*                                          *
+039100********************************************
+039200
+018400 01  HDR-0.
+018500     05 FILLER PIC X(25) VALUE SPACES.
+018600     05 FILLER PIC X(75) VALUE ALL "*".
+018700     05 FILLER PIC X(32) VALUE SPACES.
+018800
+018900 01  HDR-1.
+019000     05 FILLER PIC X(25) VALUE SPACES.
+019100     05 FILLER PIC X(2)  VALUE "**".
+019200     05 FILLER PIC X(71) VALUE SPACES.
+019300     05 FILLER PIC X(2)  VALUE "**".
+019400     05 FILLER PIC X(32) VALUE SPACES.
+019500
+019600 01  HDR-2.
+019700     05 FILLER PIC X(25) VALUE SPACES.
+019800     05 FILLER PIC XX    VALUE "**".
+019900     05 FILLER PIC X(26) VALUE " MA4-  REQUISITIONS THAT W".
+020000     05 FILLER PIC X(7)  VALUE "ERE TRA".
+020100     05 FILLER PIC X(16) VALUE "NSMITTED TO CORP".
+020200     05 FILLER PIC X(22) VALUE "ORATE PURCHASING      ".
+020300     05 FILLER PIC XX    VALUE "**".
+020400     05 FILLER PIC X(32) VALUE SPACES.
+020500
+020600 01  HDR-3.
+020700     05 FILLER PIC X(25) VALUE SPACES.
+020800     05 FILLER PIC X(25) VALUE "** THE PURPOSE OF THIS RE".
+020900     05 FILLER PIC X(25) VALUE "PORT IS TO INFORM YOU OF ".
+021000     05 FILLER PIC X(25) VALUE "THOSE ITEMS            **".
+021100     05 FILLER PIC X(32) VALUE SPACES.
+021200
+021300 01  HDR-4.
+021400     05 FILLER PIC X(25) VALUE SPACES.
+021500     05 FILLER PIC X(25) VALUE "** THAT HAVE BEEN SENT TO".
+021600     05 FILLER PIC X(25) VALUE " THE MAINFRAME FOR PROCES".
+021700     05 FILLER PIC X(25) VALUE "SING BY THE CORPORATE  **".
+021800     05 FILLER PIC X(32) VALUE SPACES.
+021900
+022000 01  HDR-5.
+022100     05 FILLER PIC X(25) VALUE SPACES.
+022200     05 FILLER PIC X(25) VALUE "** PURCHASING SYSTEM     ".
+022300     05 FILLER PIC X(25) VALUE "                         ".
+022400     05 FILLER PIC X(25) VALUE "                       **".
+022500     05 FILLER PIC X(32) VALUE SPACES.
+022600
+       01  JULIAN-DATE      PIC X(7).
+       01  JULIAN-DATE-9 REDEFINES JULIAN-DATE  PIC 9(7).
+
+       01  LEAP-YEAR-FLAG   PIC X.
+
+022700 01  PRINT-HDR1.
+022800     05  FILLER       PIC X(6)  VALUE " PAGE ".
+022900     05  PAGE-NO-OUT  PIC ZZZ9  VALUE ZEROS.
+023000     05  FILLER       PIC X(5)  VALUE SPACES.
+023100     05  FILLER       PIC X(21) VALUE "R E Q U I S I T I O N".
+023200     05  FILLER       PIC X(20) VALUE "     R E P O R T    ".
+023300     05  FILLER       PIC X(4)  VALUE SPACES.
+023400     05  PRT-CO       PIC X(3)  VALUE SPACES.
+023500     05  FILLER       PIC X(10) VALUE "     DATE ".
+023600     05  PRT-DATE     PIC X(8)  VALUE SPACES.
+023700     05  FILLER       PIC X(2)  VALUE SPACES.
+023800     05  PRT-TIME     PIC X(8)  VALUE SPACES.
+023900     05  FILLER       PIC X(15) VALUE SPACES.
+024000     05  FILLER       PIC X(8)  VALUE "TREQABST".
+024100
+024200 01  PRINT-HDR2.
+024300     05  FILLER       PIC X(22) VALUE "REQ NO.        CODE   ".
+024400     05  FILLER       PIC X(06) VALUE "  ID  ".
+024500     05  FILLER       PIC X(13) VALUE "DATE WANTED  ".
+024600     05  FILLER       PIC X(09) VALUE "UM    QTY".
+           05  FILLER       PIC X(13) VALUE "     RQMT ORD".
+024700*****05  FILLER       PIC X(81) VALUE SPACES.
+           05  FILLER       PIC X(68) VALUE SPACES.
+024800
+       01  TIME-SAVE.
+           05  HRS-SAVE     PIC XX.
+           05  MIN-SAVE     PIC XX.
+           05  SEC-SAVE     PIC XX.
+
+       01  WORK-BUFFER.
+            05  WORK-BUFF OCCURS 250 TIMES.
+                10  W-B     PIC X.
+
+026700**********************
+026800*                    *
+026900*  S W I T C H E S   *
+027000*                    *
+027100**********************
+027200
+029000 COPY TDATECHK   IN COPYLIB.
+029100
+       COPY DDAILYTC   IN COPYLIB.
+
+       COPY TC937      IN COPYLIB.
+
+027300 01  SWITCH-AREA.
+027400     05  ERR-SW                    PIC X     VALUE "N".
+027500     05  AT-LEAST-ONE-REQ          PIC X     VALUE "N".
+027600     05  AT-LEAST-ONE-ENG-MAT      PIC X     VALUE "N".
+027700     05  AT-LEAST-ONE-RAW-MAT      PIC X     VALUE "N".
+027800     05  RETURN-RCD-SW             PIC X     VALUE "N".
+027900
+029900 01  WORK-AREA.
+030000     05  PAGE-CTR                  PIC 9(2)  VALUE ZEROS.
+030100     05  LINE-CTR                  PIC 9(2)  VALUE ZEROS.
+030200     05  SAVE-SEQ-NO               PIC 9(6)  VALUE ZEROS.
+           05  HOLD-DESC-LINE-NO         PIC 9(3)  VALUE ZEROS.
+030300
+030400**************************************************************
+030500**************************************************************
+030600**                                                          **
+030700**                DATABASE I/O BUFFER AREA                  **
+030800**                                                          **
+030900**************************************************************
+031000**************************************************************
+031100
+       COPY DPOITEM    IN COPYLIB.
+
+032000 COPY DREQDESC   IN COPYLIB.
+032100
+031800 COPY DREQITM    IN COPYLIB.
+031900
+       COPY MBUYER     IN COPYLIB.
+
+031200 COPY MCORPREQ   IN COPYLIB.
+031300
+032200 COPY MPLTINFO   IN COPYLIB.
+032300
+031400 COPY MREQ       IN COPYLIB.
+031500
+       COPY MSTORERM   IN COPYLIB.
+
+032600*********************
+032700*                   *
+032800*   DATA SET NAMES  *
+032900*                   *
+033000*********************
+033100
+033200 01  DSET-NAMES.
+           05  DSET-DDAILYTC             PIC X(16) VALUE "DDAILYTC;".
+033700     05  DSET-DREQDESC             PIC X(16) VALUE "DREQDESC;".
+033600     05  DSET-DREQITM              PIC X(16) VALUE "DREQITM;".
+034000     05  DSET-MCORPREQ             PIC X(16) VALUE "MCORPREQ;".
+033800     05  DSET-MPLTINFO             PIC X(16) VALUE "MPLTINFO;".
+033400     05  DSET-MREQ                 PIC X(16) VALUE "MREQ;".
+033300     05  DSET-NAME                 PIC X(16) VALUE SPACES.
+034100
+034200 COPY DATAB      IN COPYLIB.
+034300
+034400 01 ITEMS-LISTING.
+034500     05  ALL-ITEMS                 PIC XX    VALUE "@;".
+034600     05  REQ-SEARCH                PIC X(12) VALUE "REQ-NUMBER;".
+034700
+034800 01 ARG-VALUES.
+034900     05  REQ-ARG                   PIC X(12) VALUE SPACES.
+035000     05  PLT-ARG                   PIC X(4)  VALUE SPACES.
+           05  CODE-ARG                  PIC X(8)  VALUE SPACES.
+           05  PO-ARG.
+               10  FILLER                PIC X     VALUE "P".
+               10  PO-ARG-NUM            PIC X(7).
+               10  FILLER                PIC X(6)  VALUE "999000".
+035100
+035200 COPY MULTLOCK   IN COPYLIB.
+035300
+035400*    ADDITIONAL-CDESC-PARAMETERS.
+035500
+035600 01  RET-CODE                      PIC XX    VALUE SPACES.
+035700 01  DE-CODE                       PIC X(8)  VALUE SPACES.
+035800
+       COPY CDESC OF COPYLIB.
+
+       01  HOLD-LOCAL-DESC               PIC X(80)  VALUE SPACES.
+
+039300 COPY TBLOWUP    IN COPYLIB.
+039400
+039500 COPY VIEWDUM    IN COPYLIB.
+039600
+       LINKAGE SECTION.
+       01  PROC-REQS-IND    PIC XX.
+
+039700 PROCEDURE DIVISION   USING PROC-REQS-IND.
+039800 BEGIN-HERE.
+039900     PERFORM 1-HSK  THRU  1-H-X.
+040000     PERFORM 6-MAIN THRU  6-MAIN-X.
+040100     PERFORM 2-EOJ  THRU  2-EOJ-X.
+040300     GOBACK.
+040400
+040500*********************************************
+040600*                                           *
+040700*  OPEN ALL FILES & DATA BASE               *
+040800*                                           *
+040900*********************************************
+041000
+041100 1-HSK.
+           DISPLAY "********* REQUISITION R/3 EXTRACT **********".
+           DISPLAY "WHAT TYPE OF RECORDS SHOULD BE EXTRACTED?   ".
+           DISPLAY "   A  - CORPORATE PURCHASING                ".
+           DISPLAY "   R3 - SYNERGY R3                          ".
+      **** ACCEPT PROC-REQS-IND.
+           DISPLAY "PROC REQS IND ACCEPTED = " PROC-REQS-IND.
+           IF PROC-REQS-IND = "A "
+               OPEN OUTPUT CORP-FIL2.
+           IF PROC-REQS-IND = "R3"
+               OPEN OUTPUT R3FILE.
+           OPEN I-O    DDAILYTC.
+           OPEN INPUT  DREQDESC-I.
+           OPEN INPUT  DREQITM-I.
+           OPEN INPUT  MBUYER-I.
+           OPEN I-O    MCORPREQ-O.
+           OPEN INPUT  MPLTINFO-I.
+           OPEN I-O    MPLTINFO-O.
+           OPEN INPUT  MREQ-I.
+           OPEN INPUT  MSTORERM-I.
+041200     OPEN OUTPUT REQ-REPORT.
+           OPEN INPUT  DPOITEM-I.
+
+042500**********************************************
+042600*                                            *
+042700*    DO DBGET MPLTINFO WITH  "P 01" =        *
+042800*    PLTINFO-KEY TO GET PLANT CODE TO        *
+042900*    PRINT ON THE PAGE HEADINGS              *
+043000*                                            *
+043100**********************************************
+043200
+043300     MOVE "P 01"         TO  PLT-ARG.
+           MOVE 0              TO  COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+043600     IF COND-WORD NOT = ZERO
+043700         MOVE "GET MPLTINFO*1-HSK" TO BU-DISPLAY-MSG
+043800         MOVE PLT-ARG              TO BU-DISPLAY-FLD (2)
+043900         GO TO 2-BLOWUP.
+044000     MOVE MPLTINFO-COMPANY  TO  COMPANY-SAVE.
+044100     MOVE MPLTINFO-PRIME    TO  PRIME-SAVE.
+044200
+044300*********************************************
+044400*                                           *
+044500*  RETRIEVE THAT TRANSMISSION SEQUENCE      *
+044600*  MAINTAINED IN RECORD KEY 'CREQ'.         *
+044700*                                           *
+044800*********************************************
+044900
+045000     MOVE "CREQ"         TO  PLT-ARG.
+           MOVE 0              TO  COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+045300     IF COND-WORD NOT = ZERO
+045400         MOVE SPACES             TO  MPLTINFO-DATA
+045500         MOVE "CREQ"             TO  MPLTINFO-KEY
+045600                                     PLT-ARG
+045700         MOVE ZEROES             TO  MPLTINFO-CREQ-SEQ
+046000         WRITE MPLTINFO-REC-O FROM BUF-MPLTINFO
+               READ MPLTINFO-I INTO BUF-MPLTINFO
+046800     ELSE
+046900     MOVE MPLTINFO-CREQ-SEQ      TO  SAVE-SEQ-NO.
+047000
+047100**********************************************
+047200*                                            *
+047300*   CALL TDATECHK FOR TODAYS DATE & TIME     *
+047400*                                            *
+047500**********************************************
+047600     MOVE 1                          TO  DATE-MODE.
+047700     CALL "TDATECHK" USING DATE-CHECK-AREA.
+047800     MOVE DATE-SLASH-OUT             TO  PRT-DATE.
+047900     MOVE DATE-FORMATTED-TIME-OUT    TO  PRT-TIME,
+                                               TIME-SAVE.
+048000     MOVE DATE-YMD-OUT               TO  CUR-DATE.
+048100
+048200**************************************************
+048300*                                                *
+048400*   COMPUTE TODAYS JULIAN DATE TO BE USED LATER  *
+048500*   WHEN COMPUTING DATE WANTED                   *
+048600*                                                *
+048700**************************************************
+048800
+048900     MOVE YY-9            TO  GREG-YY.
+049000     MOVE MM-9            TO  GREG-MM.
+049100     MOVE DD-9            TO  GREG-DD.
+049200     IF GREG-YY > "70"
+               MOVE "19"        TO  GREG-CC
+           ELSE
+           MOVE "20"            TO  GREG-CC.
+           MOVE SPACES          TO  JULIAN-DATE.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+049800     MOVE JULIAN-DATE-9   TO  TODAYS-JULIAN.
+049900
+050000     PERFORM 621-REPORT-HDR THRU 621-R-H-X.
+050100     PERFORM 621-PAGE-HDR  THRU  621-P-H-X.
+050200 1-H-X.
+050300     EXIT.
+050400
+050500 2-EOJ.
+           IF PROC-REQS-IND = "A "
+               CLOSE CORP-FIL2.
+           CLOSE DDAILYTC.
+           CLOSE DREQDESC-I.
+           CLOSE DREQITM-I.
+           CLOSE MCORPREQ-O.
+           CLOSE MPLTINFO-I.
+           CLOSE MPLTINFO-O.
+           CLOSE MREQ-I.
+041200     CLOSE REQ-REPORT.
+           CLOSE DPOITEM-I.
+050700
+051700 2-EOJ-X.
+051800     EXIT.
+051900
+052000*********************************************
+052100*                                           *
+052200*  BLOWUP ROUTINE EXECUTES WHENEVER A       *
+052300*  FATAL ERROR OCCURS                       *
+052400*                                           *
+052500*********************************************
+052600
+052700 2-BLOWUP.
+052800     MOVE "TREQABST"              TO  BU-PGM-NAME.
+052900     MOVE REQ-ARG                 TO  BU-DISPLAY-FLD (1).
+053000     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+053100         VIEW-COMAREA, DUMMY-KSAM-STAT, BU-DISPLAY-MSG,
+053200             BU-DISPLAY-FLDS.
+053300
+053400 2-BLOWUP-X.
+053500     EXIT.
+053600
+053700***************************
+053800*                         *
+053900*  M A I N                *
+054000*                         *
+054100***************************
+054200
+054300 6-MAIN.
+054400     PERFORM 60-READ-MCORPREQ  THRU  60-RM-X.
+054500
+           IF PROC-REQS-IND = "A "
+054600         SORT SORT-FILE ON ASCENDING KEY SORT-REQNO
+054700             USING CORP-FIL2
+054800             GIVING CORP-FIL2
+055000         OPEN INPUT CORP-FIL2
+055100         PERFORM 60-READ-REQ-FILE  THRU  60-RRF-X.
+054900
+           IF PROC-REQS-IND = "R3"
+               SORT SORT-FILE ON ASCENDING KEY SORT-REQNO
+                   USING R3FILE
+                   GIVING R3FILE
+               CALL "SR3REQEX".
+055200 6-MAIN-X.
+055300     EXIT.
+055400
+055500
+055600**************************************************
+055700*                                                *
+055800*   THIS ROUTINE LOCKS THE MCORPREQ DATA SET SO  *
+055900*   THAT NO MORE PROCESSING CAN BE DONE TO IT    *
+056000*   AND THEN READS EVERY ENTRY AND WRITES THEM   *
+056100*   TO CORPFILE OR R3FILE DEPENDING ON STATUS.   *
+      *   IT, THEN, DELETES THE RECORD FROM THE
+056200*   MCORPREQ DATA SET.  THIS IS DONE TO INSURE   *
+056300*   THAT ALL ENTRIES ARE PROCESSED ONLY ONCE     *
+056400*   YET NOT TIE UP THE MCORPREQ DATA SET THE     *
+056500*   ENTIRE TIME THIS PROGRAM IS RUNNING.         *
+056600*                                                *
+056700**************************************************
+056800
+056900 60-READ-MCORPREQ.
+           READ MCORPREQ-O NEXT INTO BUF-MCORPREQ
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   GO TO 60-CLOSE-CORPFIL2
+               ELSE
+               MOVE "GET MCORPREQ * 60-RM" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+059600
+           IF PROC-REQS-IND = "A "
+               IF MCORPREQ-REQ-STATUS = "A "
+059700             MOVE SPACES                   TO  CORP-FIL2-RCD
+059800             MOVE MCORPREQ-REQ-NUMBER      TO  CORP-FIL2-REQNO
+059900             MOVE MCORPREQ-REQ-STATUS      TO  CORP-FIL2-STATUS
+060000             WRITE CORP-FIL2-RCD
+                   DELETE MCORPREQ-O
+                   GO TO 60-READ-MCORPREQ
+               ELSE
+               IF MCORPREQ-REQ-STATUS = "RL"
+                   MOVE SPACES                   TO  CORP-FIL2-RCD
+                   MOVE MCORPREQ-REQ-NUMBER      TO  CORP-FIL2-REQNO
+                   MOVE MCORPREQ-REQ-STATUS      TO  CORP-FIL2-STATUS
+                   MOVE MCORPREQ-RLSE            TO  CORP-FIL2-RLSE
+                   WRITE CORP-FIL2-RCD
+                   DELETE MCORPREQ-O
+                   GO TO 60-READ-MCORPREQ
+               ELSE
+               GO TO 60-READ-MCORPREQ
+           ELSE
+           IF PROC-REQS-IND = "R3"
+               IF MCORPREQ-REQ-STATUS = "R3"
+                   MOVE SPACES                   TO  R3FILE-RCD
+                   MOVE MCORPREQ-REQ-NUMBER      TO  R3FILE-REQNO
+                   MOVE MCORPREQ-REQ-STATUS      TO  R3FILE-STATUS
+                   WRITE R3FILE-RCD
+                   DELETE MCORPREQ-O
+                   GO TO 60-READ-MCORPREQ
+               ELSE
+               GO TO 60-READ-MCORPREQ
+           ELSE
+           GO TO 60-READ-MCORPREQ.
+
+       60-CLOSE-CORPFIL2.
+           IF PROC-REQS-IND = "A "
+               CLOSE CORP-FIL2.
+           IF PROC-REQS-IND = "R3"
+               CLOSE R3FILE.
+062800
+064000 60-RM-X.
+064100     EXIT.
+064200
+064300*********************************************
+064400*                                           *
+064500*  THIS PROCEDURES READS ALL CODES IN       *
+064600*  'CORP-FIL2' AND ABSTRACTS THE REQ        *
+064700*  DATA TO THE FILE TO BE TRANSMITTED       *
+064800*  TO CORPORATE PURCHASING.                 *
+064900*********************************************
+065000 60-READ-REQ-FILE.
+065100     READ CORP-FIL2 AT END
+065200         PERFORM 600-CHECK-FOR-ONE
+065300         GO TO 60-RRF-X.
+065400
+           MOVE CORP-FIL2-REQNO TO SAVE-REQ-NO.
+           MOVE 0               TO SAVE-RECORD-SEQ.
+
+065500     ADD 1 TO RECORDS-READ-CTR.
+065600     IF RECORDS-READ-CTR = 1
+065700         PERFORM 601-SET-CONTROL-RCD THRU 601-SCR-X.
+065800
+065900     PERFORM 602-ABSTRACT-REQ-DATA THRU 602-ARD-X.
+066000
+066100     GO TO 60-READ-REQ-FILE.
+066200
+066300 60-RRF-X.    EXIT.
+066400
+066500 600-CHECK-FOR-ONE.
+066600     IF AT-LEAST-ONE-REQ  =  "N"
+066700         MOVE "**  NO REQUISITIONS PROCESSED  **"
+066800             TO PRINT-LINE
+066900         MOVE 3  TO  PRT-CTL
+067000         WRITE PRINT-RCD
+067100     ELSE
+067200     PERFORM 65-UPDATE-MPLTINFO  THRU  65-U-M-X.
+067300
+067400 601-SET-CONTROL-RCD.
+067500     MOVE SPACES                     TO AKRON-DATA-BUFFER.
+067600     MOVE "CSIS REQUISITIONS       " TO CNTRL-HEADER.
+      *------ SEQUENCE NUMBER WAS INCREMENTING BY 2, SO THIS ADD STMT.
+      *------ WAS COMMENTED OUT.  THE COUNTER IS INCREMENTED LATER IN
+      *------ THE PROGRAM.  THE VALUE IN MPLTINFO WILL BE THE NEXT
+      *------ SEQUENCE NUMBER TO BE WRITTEN.      11/15/95
+067700*    ADD 1                           TO SAVE-SEQ-NO.
+067800     MOVE SAVE-SEQ-NO                TO CNTRL-SEQUENCE-NO.
+067900     MOVE MM                         TO CTD-MM.
+068000     MOVE DD                         TO CTD-DD.
+068100     MOVE YY                         TO CTD-YY.
+           MOVE SPACES                     TO BUF-DDAILYTC.
+           MOVE CUR-DATE                   TO DDAILYTC-DATE.
+           ACCEPT DDAILYTC-TIME FROM TIME.
+           MOVE COMPANY-SAVE               TO DDAILYTC-PLT.
+           MOVE "937"                      TO DDAILYTC-TC.
+           MOVE SPACES                     TO TC937-REQNO.
+           MOVE 0                          TO TC937-RECORD-TYPE.
+           MOVE 01                         TO TC937-RECORD-SEQ.
+068200     MOVE AKRON-CTL-DATA             TO TC937-DATA.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF CONTROL RECORD FAILED"
+                                           TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS            TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+068400 601-SCR-X.    EXIT.
+068500
+068600 602-ABSTRACT-REQ-DATA.
+068700     MOVE CORP-FIL2-REQNO             TO REQ-ARG.
+068800 602-ABSTRACT-MREQ-INFO.
+      *------ THIS PARAGRAPH CONTAINS VALUES USED FOR THE TECH CENTER.
+      *------ IF OTHER PLANTS NEED TO USE THIS PROGRAM, IT WILL HAVE TO
+      *------ BE CHANGED.           11/15/95
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF MREQ-REC-I.
+           READ MREQ-I INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD.
+069100     IF COND-WORD NOT = 0
+069200         IF COND-WORD = 17
+069300             GO TO 602-ARD-X
+069400         ELSE
+069500         MOVE "READ ERROR IN MREQ  "  TO BU-DISPLAY-MSG
+069600         MOVE COND-WORD               TO BU-DISPLAY-FLD9 (1)
+069700         PERFORM 2-BLOWUP.
+069800     MOVE SPACES                      TO AKRON-DATA,
+069900                                         DETAIL-LINE.
+070000     MOVE "1"                         TO AKRON-TC.
+070100     MOVE MREQ-NUMBER                 TO TC1-REQ-NUMBER,
+070200                                         REQ-NO-OUT.
+070300     MOVE REQ-CO                      TO TC1-COMPANY.
+070400     MOVE REQ-PRIME                   TO TC1-PRIME.
+           IF REQ-SUB = "   "
+               MOVE ZEROES                  TO REQ-SUB.
+070500     MOVE REQ-SUB                     TO TC1-SUB-ACCT.
+      *------ MOVE SUBDETAIL TO REDEFINES FIELD INSTEAD OF TO A NUMERIC
+      *------ FIELD BECAUSE THE FIRST DIGIT WAS BEING TRUNCATED, CAUSING
+      *------ A BLANK IN THE SUBDETAIL FIELD.  11/02/95
+070600     MOVE REQ-SUBD                    TO TC1-SUB-DTL-R.
+           IF REQ-ADDTL-DATA = "        "
+               MOVE 000000                  TO REQ-A-D-6.
+070700     MOVE REQ-A-D-6                   TO TC1-ADDTL-DATA.
+           IF REQ-BUDGET-NO = SPACES
+               MOVE "PUR"                   TO TC1-BUDGET-LIT
+               MOVE YY                      TO TC1-BUDGET-YR
+               MOVE MM                      TO TC1-BUDGET-MO
+           ELSE
+070800         MOVE REQ-BUDGET-NO           TO TC1-BUDGET-NUMBER.
+070900     MOVE REQ-BUDGET-AMT              TO TC1-BUDGET-AMNT.
+           MOVE REQ-DATE-MM                 TO TC1-RD-MM.
+           MOVE REQ-DATE-DD                 TO TC1-RD-DD.
+           MOVE REQ-DATE-YY                 TO TC1-RD-YY.
+           MOVE REQ-DATE-WANT-MM            TO TC1-DW-MM.
+           MOVE REQ-DATE-WANT-DD            TO TC1-DW-DD.
+           MOVE REQ-DATE-WANT-YY            TO TC1-DW-YY.
+071200     MOVE REQ-DATE-WANTED             TO DATE-WANTED-OUT.
+071400     MOVE REQ-ORIGINATOR              TO TC1-ORIGINATOR,
+071500                                         ID-OUT.
+           MOVE SPACES                      TO HOLD-LOCAL-DESC.
+           PERFORM 66-GET-CORP-CODE.
+
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC.
+           READ MSTORERM-I INTO BUF-MSTORERM
+              INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               IF STR-BUYER = "    "
+                   NEXT SENTENCE
+               ELSE
+               MOVE STR-BUYER TO BUYERCDE OF MBUYER-REC
+               READ MBUYER-I INTO BUF-MBUYER
+               MOVE BUYER-NAME TO TC1-BUYER-NAME.
+
+           IF COMPANY-SAVE = "112"
+      *----------- HARD-CODED VALUES FOR TECH CENTER ------------------
+      *********MOVE "KEN BARR      "            TO TC1-REQUESTER-NAME
+      *********MOVE "CLIFF OYER    "            TO TC1-REQUESTER-NAME
+      *********MOVE "CHARLIE STUMP "            TO TC1-REQUESTER-NAME
+               MOVE "JEFF HUBBARD  "            TO TC1-REQUESTER-NAME
+               MOVE "550A"                      TO TC1-REQUESTER-DEPT
+                                                   TC1-RCDV-DEPT
+                                                   TC1-FOR-DEPT
+               MOVE "  78591"                   TO TC1-REQUESTER-PHNUM
+               MOVE "TC"                        TO TC1-ADDL-INFO
+      *----------------------------------------------------------------
+           ELSE
+           IF COMPANY-SAVE = "310"
+      *----------- HARD-CODED VALUES FOR DES MOINES  ------------------
+               MOVE "DAVID MANKA   "            TO TC1-REQUESTER-NAME
+               MOVE "750 "                      TO TC1-REQUESTER-DEPT
+               MOVE "DESM"                      TO TC1-RCDV-DEPT
+                                                   TC1-FOR-DEPT
+               MOVE "DES MOINES   "             TO TC1-SHIPTO-CODE
+               MOVE "  68174"                   TO TC1-REQUESTER-PHNUM
+               MOVE "  "                        TO TC1-ADDL-INFO
+               MOVE "111"                       TO TC1-COMPANY
+      *----------------------------------------------------------------
+           END-IF.
+
+           IF CORP-FIL2-STATUS = "RL"
+               MOVE CORP-FIL2-RLSE          TO TC1-REQMT-ORD
+                                               RLSE-OUT
+           ELSE
+               MOVE SPACES                  TO TC1-REQMT-ORD
+                                               RLSE-OUT.
+
+071600     MOVE AKRON-DATA-BUFFER           TO WORK-BUFFER.
+           MOVE SPACES                      TO BUF-DDAILYTC.
+           MOVE CUR-DATE                    TO DDAILYTC-DATE.
+           ACCEPT DDAILYTC-TIME FROM TIME.
+           MOVE COMPANY-SAVE                TO DDAILYTC-PLT.
+           MOVE "937"                       TO DDAILYTC-TC.
+           MOVE SAVE-REQ-NO                 TO TC937-REQNO.
+           MOVE "1"                         TO TC937-RECORD-TYPE.
+           MOVE ZEROS                       TO TC937-RECORD-SEQ.
+           MOVE 0                           TO SUB1
+                                               SUB2.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC RECORD 1 FAILED"
+                                            TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS             TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           MOVE 0                           TO SUB1.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC RECORD 2 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS             TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           MOVE 0                           TO SUB1.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC RECORD 3 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS             TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           MOVE 0                           TO SUB1.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC RECORD 4 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS             TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           MOVE 0                           TO SUB1.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC RECORD 5 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS      TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           MOVE 0                           TO SUB1.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC RECORD 6 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS      TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+071800     MOVE "Y"                         TO AT-LEAST-ONE-REQ.
+071900
+072000 602-ABSTRACT-DREQITM-INFO.
+           MOVE REQ-ARG TO REQNO OF DREQITM-REC-I.
+072100     START DREQITM-I KEY = REQNO OF DREQITM-REC-I
+072200         INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 602-ARD-X
+               ELSE
+               MOVE "START ERROR ON DREQITM * 602-ADI"
+                   TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+072400 602-ABSTRACT-DREQITM-LOOP.
+072500     READ DREQITM-I NEXT INTO BUF-DREQITM
+072600         AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   GO TO 602-ABSTRACT-DESC
+               ELSE
+               MOVE "READ ERROR ON DREQITM * 602-ADI"
+                   TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+           IF REQITM-REQ-NUMBER NOT = REQ-ARG GO TO 602-ABSTRACT-DESC.
+073400     MOVE SPACES                      TO AKRON-DATA.
+073500     MOVE "3"                         TO AKRON-TC.
+           IF CORP-FIL2-STATUS = "RL"
+               PERFORM 6021-FIND-ITEM-NO THRU 6021-FIN-X
+           ELSE
+           MOVE 1                           TO TC3-ITEM-NO.
+073600*    MOVE REQITM-NUMBER               TO TC3-ITEM-NO.
+073700     MOVE REQITM-QTY-TO-ORD           TO TC3-ITEM-QTY,
+073800                                         QTY-OUT.
+073900     MOVE REQITM-UM                   TO TC3-ITEM-QTY-UM,
+074000                                         UM-OUT.
+074100     MOVE REQITM-UNIT-PRICE           TO TC3-ITEM-PRICE.
+074200     MOVE REQITM-PRICE-UM             TO TC3-ITEM-PRICE-UM
+074300     MOVE REQITM-CORP-CODE            TO TC3-CSIS-CODE,
+074400                                         CORP-CODE-OUT.
+074500     MOVE AKRON-DATA-BUFFER           TO WORK-BUFFER.
+           MOVE SPACES                      TO BUF-DDAILYTC.
+           MOVE CUR-DATE                    TO DDAILYTC-DATE.
+           ACCEPT DDAILYTC-TIME FROM TIME.
+           MOVE COMPANY-SAVE                TO DDAILYTC-PLT.
+           MOVE "937"                       TO DDAILYTC-TC.
+           MOVE SAVE-REQ-NO                 TO TC937-REQNO.
+           MOVE "3"                         TO TC937-RECORD-TYPE.
+           MOVE ZEROS                       TO TC937-RECORD-SEQ.
+           MOVE 0                           TO SUB1
+                                               SUB2.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC ITEM RECORD 1 FAILED"
+                                            TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS             TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           MOVE 0                           TO SUB1.
+           MOVE SPACES                      TO TC937-DATA.
+           PERFORM 6090-BUILD-DDAILYTC-RECORD THRU 6090-BDR-X.
+           ADD 1                            TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC ITEM RECORD 2 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS             TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+074700     ADD 1                            TO LINE-CTR.
+074800     IF LINE-CTR > 50
+074900         PERFORM 621-PAGE-HDR THRU 621-P-H-X.
+075000     MOVE 1                           TO PRT-CTL.
+075100     MOVE DETAIL-LINE                 TO PRINT-LINE.
+075200     WRITE PRINT-RCD.
+075300     GO TO 602-ABSTRACT-DREQITM-LOOP.
+075400
+075500 602-ABSTRACT-DESC.
+075600     MOVE 0                           TO SUB
+                                               HOLD-DESC-LINE-NO
+                                               SAVE-RECORD-SEQ.
+           MOVE "4"                         TO TC937-RECORD-TYPE.
+075700     MOVE SPACES                      TO DESC-TABLE.
+           MOVE REQ-ARG                     TO REQNO OF DREQDESC-REC-I.
+075800     START DREQDESC-I KEY = REQNO OF DREQDESC-REC-I
+075900         INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 602-ARD-CONT
+               ELSE
+               MOVE "CANNOT FIND DESCRIPTION * 602-AD"
+                   TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+076100 602-ABSTRACT-DESC-LOOP.
+076200     READ DREQDESC-I NEXT INTO BUF-DREQDESC
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "46"
+                   GO TO 602-ARD-CONT
+               ELSE
+               IF FILE-STATUS = "10" OR "14"
+                   IF HOLD-LOCAL-DESC = SPACES
+076600               PERFORM 6020-LOAD-DRS THRU 6020-LD-X
+                       VARYING SUB FROM 1 BY 1
+076700                   UNTIL (SUB > 94) OR (D-T (SUB) = SPACES)
+076800               GO TO 602-ARD-CONT
+                   ELSE
+                   ADD 1                     TO SUB
+                   ADD 1                     TO SAVE-D-LINENO
+                   MOVE SAVE-D-LINENO        TO D-LINENO (SUB)
+                   MOVE HOLD-LOCAL-DESC      TO D-T (SUB)
+                   PERFORM 6020-LOAD-DRS THRU 6020-LD-X
+                     VARYING SUB FROM 1 BY 1
+                       UNTIL (SUB > 94) OR (D-T (SUB) = SPACES)
+                   GO TO 602-ARD-CONT
+               ELSE
+               MOVE "READ ERROR ON DREQDESC * 602-ADL"
+                   TO BU-DISPLAY-MSG
+               PERFORM 2-BLOWUP.
+           IF REQDESC-REQ-NUMBER NOT = REQ-ARG
+               IF HOLD-LOCAL-DESC = SPACES
+076600             PERFORM 6020-LOAD-DRS THRU 6020-LD-X
+                      VARYING SUB FROM 1 BY 1
+076700                    UNTIL (SUB > 94) OR (D-T (SUB) = SPACES)
+076800             GO TO 602-ARD-CONT
+                   ELSE
+                   ADD 1                     TO SUB
+                   ADD 1                     TO SAVE-D-LINENO
+                   MOVE SAVE-D-LINENO        TO D-LINENO (SUB)
+                   MOVE HOLD-LOCAL-DESC      TO D-T (SUB)
+                   PERFORM 6020-LOAD-DRS THRU 6020-LD-X
+                     VARYING SUB FROM 1 BY 1
+                       UNTIL (SUB > 94) OR (D-T (SUB) = SPACES)
+                   GO TO 602-ARD-CONT.
+077300     ADD 1                             TO SUB.
+077400     MOVE REQDESC-LINE-NO              TO D-LINENO (SUB),
+                                                SAVE-D-LINENO.
+077500     MOVE REQDESC-DATA                 TO D-T (SUB).
+077600     GO TO 602-ABSTRACT-DESC-LOOP.
+
+       602-ARD-CONT.
+           MOVE SPACES            TO AKRON-DATA.
+           ADD 1                  TO SAVE-RECORD-SEQ.
+           MOVE SAVE-RECORD-SEQ   TO TC937-RECORD-SEQ.
+           ADD 1                  TO HOLD-DESC-LINE-NO.
+           MOVE HOLD-DESC-LINE-NO TO TC4-LINE-NO.
+           MOVE STR-DISB-INSTR    TO TC4-ITEM-DESCR.
+           MOVE TC4-DATA          TO TC937-DATA.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC DISB RECORD FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+
+077700 602-ARD-X.    EXIT.
+077800
+077900 6020-LOAD-DRS.
+078000     MOVE SPACES                       TO AKRON-DATA.
+078100     MOVE "4"                          TO AKRON-TC.
+      *------ EVERY LINE NUMBER HAS TO BE UNIQUE FOR CORP. PURCH., SO A
+      *------ NEW FIELD WAS ADDED TO KEEP TRACK OF THE LINE NUMBERS.
+078200*    MOVE D-LINENO (SUB)               TO TC4-LINE-NO.
+           ADD 1                             TO HOLD-DESC-LINE-NO.
+           MOVE HOLD-DESC-LINE-NO            TO TC4-LINE-NO.
+078300     MOVE D-T-36 (SUB)                 TO TC4-ITEM-DESCR.
+078400     MOVE SPACES                       TO BUF-DDAILYTC.
+078500     MOVE CUR-DATE                     TO DDAILYTC-DATE.
+           ACCEPT DDAILYTC-TIME FROM TIME.
+           MOVE COMPANY-SAVE                 TO DDAILYTC-PLT.
+           MOVE "937"                        TO DDAILYTC-TC.
+           MOVE SAVE-REQ-NO                  TO TC937-REQNO.
+           MOVE "4"                          TO TC937-RECORD-TYPE.
+           MOVE SAVE-RECORD-SEQ              TO TC937-RECORD-SEQ.
+      *------ MOVE DATA BUFFER INSTEAD OF TC4-DATA; THEREFORE,
+      *------ THE TRANSACTION NUMBER IS MOVED ALSO.   9/26/95
+           MOVE AKRON-DATA-BUFFER            TO TC937-DATA.
+           ADD 1                             TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC DESC RECORD 1 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS              TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           ADD 1                             TO SAVE-RECORD-SEQ.
+           IF SAVE-RECORD-SEQ = 98 MOVE 95 TO SUB.
+
+078600     IF D-T-43 (SUB) = SPACES GO TO 6020-LD-X.
+
+           ADD 1                             TO HOLD-DESC-LINE-NO.
+           MOVE HOLD-DESC-LINE-NO            TO TC4-LINE-NO.
+
+078900     MOVE D-T-43 (SUB)                 TO TC4-ITEM-DESCR.
+      *------ MOVE DATA BUFFER INSTEAD OF TC4-DATA; THEREFORE,
+      *------ THE TRANSACTION NUMBER IS MOVED ALSO.   9/26/95
+           MOVE AKRON-DATA-BUFFER            TO TC937-DATA.
+           ADD 1                             TO TC937-RECORD-SEQ.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "WRITE OF DDAILYTC DESC RECORD 2 FAILED"
+                   TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS              TO BU-DISPLAY-FLD9 (1)
+               PERFORM 2-BLOWUP.
+           ADD 1                             TO SAVE-RECORD-SEQ.
+           IF SAVE-RECORD-SEQ = 98 MOVE 95 TO SUB.
+       6020-LD-X.    EXIT.
+079200
+       6090-BUILD-DDAILYTC-RECORD.
+           ADD 1                     TO SUB1.
+           IF SUB1 > 47 GO TO 6090-BDR-X.
+           ADD 1                     TO SUB2.
+      *****IF SUB2 > 235 GO TO 6090-BDR-X.
+           IF SUB2 > 250 GO TO 6090-BDR-X.
+           MOVE W-B (SUB2)           TO TC937-BYTE (SUB1).
+           GO TO 6090-BUILD-DDAILYTC-RECORD.
+       6090-BDR-X.    EXIT.
+
+       6021-FIND-ITEM-NO.
+           MOVE CORP-FIL2-RLSE       TO  PO-ARG-NUM.
+           MOVE 1                    TO  TC3-ITEM-NO.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY >= PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               GO TO 6021-FIN-X.
+
+       6021-GET-DPOITEM.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" OR
+               PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               GO TO 6021-FIN-X.
+           IF ITM-CORP-CODE = REQITM-CORP-CODE
+               MOVE ITM-NUMBER       TO  TC3-ITEM-NO
+               GO TO 6021-FIN-X
+           ELSE
+               GO TO 6021-GET-DPOITEM.
+
+       6021-FIN-X.    EXIT.
+
+079300*******************************************
+079400*                                         *
+079500*  PRINT ROUTINE TO PRINT REQUISITION     *
+079600*                                         *
+079700*******************************************
+079800
+079900 621-PRINT-REQ.
+080000     IF LINE-CTR > 50
+080100         PERFORM 621-PAGE-HDR.
+080200******************************************
+080300*                                        *
+080400*  PRINT ROUTINE TO PRINT HDR OF         *
+080500*  REQUISTION REPORT                     *
+080600*                                        *
+080700******************************************
+080800
+080900 621-PAGE-HDR.
+081000     ADD 1                     TO  PAGE-CTR.
+081100     MOVE PAGE-CTR             TO  PAGE-NO-OUT.
+081200     MOVE ZEROS                TO  LINE-CTR.
+081300     MOVE ZEROS                TO  PRT-CTL.
+081400     MOVE PRINT-HDR1           TO  PRINT-LINE.
+081500     WRITE PRINT-RCD.
+081600     MOVE 1                    TO  PRT-CTL.
+081700     MOVE PRINT-HDR2           TO  PRINT-LINE.
+081800     WRITE PRINT-RCD.
+081900     MOVE DASH-LINE            TO  PRINT-LINE.
+082000     WRITE PRINT-RCD.
+082100
+082200 621-P-H-X.
+082300     EXIT.
+082400
+082500**************************************************
+082600*                                                *
+082700*   THIS PROCEDURE PRINTS THE REPORT HEADER      *
+082800*                                                *
+082900**************************************************
+083000
+083100 621-REPORT-HDR.
+083200     MOVE SPACES         TO PRINT-LINE.
+083300     MOVE 0              TO PRT-CTL.
+083400     WRITE PRINT-RCD.
+083500     MOVE 1              TO PRT-CTL.
+083600     MOVE HDR-0          TO PRINT-LINE.
+083700     WRITE PRINT-RCD.
+083800     WRITE PRINT-RCD.
+083900     MOVE HDR-1          TO PRINT-LINE.
+084000     WRITE PRINT-RCD.
+084100     MOVE HDR-2          TO PRINT-LINE.
+084200     WRITE PRINT-RCD.
+084300     MOVE HDR-3          TO PRINT-LINE.
+084400     WRITE PRINT-RCD.
+084500     MOVE HDR-4          TO PRINT-LINE.
+084600     WRITE PRINT-RCD.
+084700     MOVE HDR-5          TO PRINT-LINE.
+084800     WRITE PRINT-RCD.
+084900     MOVE HDR-0          TO PRINT-LINE.
+085000     WRITE PRINT-RCD.
+085100     WRITE PRINT-RCD.
+085200
+085300 621-R-H-X.
+085400     EXIT.
+085500******************************************
+085600*                                        *
+085700*  ROUTINE UPDATES THE LAST REQ NO.      *
+085800*  MAINTAINED IN MPLTINFO. A LOCK OF     *
+085900*  MPLTINFO IS DONE AT THE RECORD LEVEL  *
+086000*  USING PLTINFO-KEY = "PREQ"            *
+086100*                                        *
+086200******************************************
+086300
+086400 65-UPDATE-MPLTINFO.
+087400     MOVE "CREQ"         TO  PLTINFOKEY OF MPLTINFO-REC-O.
+087500     READ MPLTINFO-O INTO BUF-MPLTINFO
+087600         INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+087700     IF FILE-STATUS NOT = "00"
+087800         MOVE "GET MPLTINFO * 65-UM" TO BU-DISPLAY-MSG
+087900         MOVE PLT-ARG                TO BU-DISPLAY-FLD (2)
+088000         GO TO 2-BLOWUP.
+088100     ADD 1               TO  SAVE-SEQ-NO.
+088200     MOVE SAVE-SEQ-NO    TO  MPLTINFO-REQ-NO.
+088300     REWRITE MPLTINFO-REC-O FROM BUF-MPLTINFO
+088400         INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+088500     IF FILE-STATUS NOT = "00"
+088600         MOVE "UPDATE MPLTINFO* 65-UM" TO
+088700             BU-DISPLAY-MSG
+088800         GO TO 2-BLOWUP.
+089500
+089600 65-U-M-X.
+089700     EXIT.
+
+       66-GET-CORP-CODE.
+           MOVE REQ-ARG TO REQNO OF DREQITM-REC-I.
+           START DREQITM-I KEY = REQNO OF DREQITM-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS = "00"
+               READ DREQITM-I NEXT INTO BUF-DREQITM
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS = "00"
+                   MOVE REQITM-CORP-CODE    TO CODE-ARG
+                   MOVE 2                   TO CDESC-LINES-TO-GET
+                   MOVE "F"                 TO CDESC-DESC-OPTION
+                   MOVE "R"                 TO CDESC-LOCAL-DESC-OPTION
+                   CALL "CDESC" USING RET-CODE,
+                                      BASE,
+                                      STATUS-AREA,
+                                      BU-DISPLAY-MSG,
+                                      CODE-ARG,
+                                      CDESC-DATA
+                   IF CDESC-LINES-GOT  =  0
+                       MOVE SPACES          TO TC1-BRIEF-DESC
+                   ELSE
+                       MOVE CDESC (1)       TO TC1-BRIEF-DESC
+                       MOVE CDESC (2)       TO HOLD-LOCAL-DESC
+                   END-IF
+               ELSE
+                   MOVE SPACES              TO TC1-BRIEF-DESC
+               END-IF
+           ELSE
+               MOVE SPACES                  TO TC1-BRIEF-DESC
+           END-IF.

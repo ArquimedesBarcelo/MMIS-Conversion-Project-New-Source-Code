@@ -1,0 +1,360 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     CRCVTRG.
+       AUTHOR.         EXLTECH, INC - DAN RAUCH
+
+      **===========================================================**
+      ** -----------  T R I G G E R    P R O G R A M  ------------- *
+      **===========================================================**
+
+      ***************************************************************
+      **                     C R C V T R G                         **
+      ** RECEIVING TRIGGER PROGRAM ON FILE MCFPCS1200 (DRCVITEM)   **
+      ** TO MONITOR CHANGES TO FIELD RCV-QTY-DLVR (RECEIVE QTY)    **
+      **                  --------------------                     **
+      ** IF RCV-QTY-DLVR IS CHANGED & PO BELONGS TO ARIBA BUYER    **
+      **    THEN DETERMINE THE AMOUNT OF CHANGE(+ OR -) AND CALL   **
+      **    CRCVLOG TO WRITE RECEIVING LOG FILES.                  **
+      **                  --------------------                     **
+      ** COMPILE TO DB FILE LIBRARY NOT MCPRD                      **
+      ***************************************************************
+      **                MODIFICATION   HISTORY
+      ***************************************************************
+      ** --------- ----------  -----------------------------------
+      **    WHO       WHEN     WHAT (DESCRIPTION)
+      ** --------- ----------  -----------------------------------
+      ** DCR01     09/26/2003  REMOVED "PROD" LIBRARY CHECK
+      ** --------- ----------  -----------------------------------
+      ************************************************************
+
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *================================================================
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DPORECD-FILE       ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+      *============================================================    ====
+       DATA DIVISION.
+      *============================================================    ====
+       FILE SECTION.
+
+       FD  DPORECD-FILE.
+       01  DPORECD-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0901.
+       COPY DPORECD    IN COPYLIB.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      * FILE STATUS AREA
+      *****************************************************************
+       COPY FILESTATUS  IN COPYLIB.
+
+       COPY CRCVLOGPRM  IN COPYLIB.
+
+      *************************************************************    ****
+      *  RECEIVING ITEM IMAGE
+      *************************************************************    ****
+       COPY DRCVITEM IN COPYLIB.
+
+      *************************************************************    ****
+      *  HOLD AREA FOR BEFORE/AFTER IMAGES
+      *************************************************************    ****
+       01  WS-BEFORE-IMAGE        PIC X(500)          VALUE SPACE.
+       01  WS-AFTER-IMAGE         PIC X(500)          VALUE SPACE.
+
+      **************************************************************** *
+      *  DATABASE RECORD TABLE AREA
+      **************************************************************** *
+       01  WS-DATABASE-RECORD-AREA.
+           03  WS-BEFORE-DBR-STR  PIC 9(08) BINARY  VALUE ZERO.
+           03  WS-BEFORE-DBR-LEN  PIC 9(08) BINARY  VALUE ZERO.
+
+           03  WS-AFTER-DBR-STR   PIC 9(08) BINARY  VALUE ZERO.
+           03  WS-AFTER-DBR-LEN   PIC 9(08) BINARY  VALUE ZERO.
+
+      **************************************************************** *
+      * TRIGGER PROGRAM BUFFER AREA  (record length * 2) + 96
+      ****************************************************************
+       01  WS-BUFFER-DATA.
+           03  WS-BD-FILE-NAME    PIC X(10)       VALUE SPACE.
+           03  WS-BD-LIBR-NAME    PIC X(10)       VALUE SPACE.
+           03  WS-BD-MBR-NAME     PIC X(10)       VALUE SPACE.
+           03  WS-BD-EVENT        PIC X(01)       VALUE SPACE.
+               88  BD-RECORD-INSERT               VALUE "1".
+               88  BD-RECORD-DELETE               VALUE "2".
+               88  BD-RECORD-UPDATE               VALUE "3".
+           03  WS-BD-TIME         PIC X(01)       VALUE SPACE.
+           03  WS-BD-COMMIT-LVL   PIC X(01)       VALUE SPACE.
+           03  FILLER             PIC X(03)       VALUE SPACE.
+           03  WS-BD-CCSID         PIC 9(08) BINARY VALUE ZERO.
+           03  FILLER              PIC X(08)        VALUE SPACE.
+           03  WS-BD-BEFORE-OS     PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-BEFORE-LENGTH PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-BEFORE-NULL1  PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-BEFORE-NULL2  PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-AFTER-OS      PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-AFTER-LENGTH  PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-AFTER-NULL1   PIC 9(08) BINARY VALUE ZERO.
+           03  WS-BD-AFTER-NULL2   PIC 9(08) BINARY VALUE ZERO.
+           03  FILLER              PIC X(16)      VALUE SPACE.
+
+DCR01  COPY ZMPLTWS     IN COPYLIB.
+
+      **************************************************************** *
+      * JUST SOME WORK FIELDS
+      ****************************************************************
+       01  WS-MISC-WORK-FIELDS.
+           03  WS-RCVL-KEY        PIC X(04)        VALUE "RCVL".
+           03  WS-LEVEL           PIC S9(03)  COMP-3   VALUE +0.
+           03  WS-SAVE-PGM        PIC X(10)            VALUE SPACE.
+           03  WS-CALLING-PGM     PIC X(10)            VALUE SPACE.
+           03  WS-OBJECT-TYPE     PIC X(07)            VALUE "*PGM".
+           03  WS-LIBRARY-NAME    PIC X(10)            VALUE SPACE.
+
+           03  WS-BEFORE-QTY      PIC S9(08)V9999      VALUE +0.
+           03  WS-AFTER-QTY       PIC S9(08)V9999      VALUE +0.
+           03  WS-DIFF-QTY        PIC S9(08)V9999      VALUE +0.
+
+
+      *==============================================================  ==
+      *===              L I N K A G E    S E C T I O N              =  ==
+      *==============================================================  ==
+       LINKAGE SECTION.
+       01  LS-BUFFER-DATA         PIC X(1500).
+       01  LS-BUFFER-LENGTH       PIC X(2).
+
+
+      *==============================================================  ==
+      *===        P R O C E D U R E    D I V I S I O N              == =
+      *=============================================================== =
+       PROCEDURE DIVISION  USING LS-BUFFER-DATA LS-BUFFER-LENGTH.
+       0000-PROGRAM-ENTRY.
+
+           OPEN INPUT  DPORECD-FILE.
+
+           MOVE LS-BUFFER-DATA    TO WS-BUFFER-DATA.
+
+      *=---------------------------------------------------------------=
+      *= MAKE SURE RECEIPTS LOGGING PROCESS IS TURNED ON               =
+      *=---------------------------------------------------------------=
+           MOVE WS-RCVL-KEY        TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           IF  WS-ZMPLT-PLTINFODTA(1:1) NOT = "Y"
+               GO TO 0000-CLOSE-FILES
+           END-IF.
+
+DCR01 *=-------------- SEPT 26, 2003 ------------------------------    =
+DCR01 *=--REMOVED CODE CHECKING FOR A PRODUCTION LIBRARY BECAUSE THE   =
+DCR01 *=--LIBRARY NAMING CONVENTION IS NO LONGER VALID.                =
+      *=---------------------------------------------------------------=
+      *= MAKE SURE FILE IS IN PRODUCTION LIBR (MCPRD?)                 =
+      *=---------------------------------------------------------------=
+           PERFORM 0010-INITIALIZE   THRU 0010-EXIT.
+           PERFORM 1000-MAIN-LOGIC   THRU 1000-EXIT.
+
+       0000-CLOSE-FILES.
+
+           CLOSE       DPORECD-FILE.
+
+       0000-PROGRAM-END.
+           GOBACK.
+
+      ***************************************************************  *
+      * PROGRAM INIT ROUTINE
+      ***************************************************************  *
+       0010-INITIALIZE.
+
+           INITIALIZE  BUF-DRCVITEM.
+
+       0010-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * MAIN LOGIC ROUTINE
+      ***************************************************************  **
+       1000-MAIN-LOGIC.
+
+           PERFORM 2000-GET-DATABASE-RECORDS  THRU 2000-EXIT.
+
+           PERFORM 9000-READK-DPORECD         THRU 9000-READK-EXIT.
+           IF FS-RECORD-NOT-FOUND
+              GO TO 1000-EXIT
+           END-IF.
+
+      *----------------------------------------------------------------
+      *- DETERMINE IF THE RECEIVED QTY HAS BEEN CHANGED
+      *----------------------------------------------------------------
+      *- IF BEFORE & AFTER QTYS ARE EQUAL
+      *-    SOME OTHER FLD CHANGE CAUSED TRIGGER TO FIRE - EXIT PGM
+      *- ELSE
+      *-    1) FIND THE DIFFERENCE BETWEEN BEFORE & AFTER QUANTITYS
+      *-    2) LOG QTY CHANGE (+ OR -) BY CALLING CRCVLOG
+      *----------------------------------------------------------------
+           IF WS-BEFORE-QTY = WS-AFTER-QTY
+              GO TO 1000-EXIT
+           END-IF.
+
+           COMPUTE  WS-DIFF-QTY = (WS-AFTER-QTY - WS-BEFORE-QTY).
+           PERFORM 3000-CALL-CRCVLOG          THRU 3000-EXIT.
+
+       1000-EXIT.
+           EXIT.
+
+      *************************************************************    ****
+      * GET BEFORE/AFTER RECORD IMAGES                                 D
+      *************************************************************    ****
+       2000-GET-DATABASE-RECORDS.
+
+      * GET BEFORE IMAGE IF UPDATING OR DELETING                       D
+           IF  BD-RECORD-UPDATE
+           OR  BD-RECORD-DELETE
+               COMPUTE WS-BEFORE-DBR-STR = (WS-BD-BEFORE-OS + 1)
+               COMPUTE WS-BEFORE-DBR-LEN =  WS-BD-BEFORE-LENGTH
+               MOVE LS-BUFFER-DATA(WS-BEFORE-DBR-STR:WS-BEFORE-DBR-LEN)
+                                       TO BUF-DRCVITEM
+               MOVE RCV-QTY-DLVR       TO WS-BEFORE-QTY
+               MOVE BUF-DRCVITEM       TO WS-BEFORE-IMAGE
+           END-IF.
+
+
+      * GET AFTER IMAGE IF UPDATING OR WRITING                         D
+           IF  BD-RECORD-UPDATE
+           OR  BD-RECORD-INSERT
+               COMPUTE WS-AFTER-DBR-STR = (WS-BD-AFTER-OS + 1)
+               COMPUTE WS-AFTER-DBR-LEN =  WS-BD-AFTER-LENGTH
+               MOVE LS-BUFFER-DATA(WS-AFTER-DBR-STR:WS-AFTER-DBR-LEN)
+                                       TO BUF-DRCVITEM
+               MOVE RCV-QTY-DLVR       TO WS-AFTER-QTY
+               MOVE BUF-DRCVITEM       TO WS-AFTER-IMAGE
+           END-IF.
+
+       2000-EXIT.
+           EXIT.
+
+      *************************************************************    ****
+      * BUILD PARM LIST AND CALL RECEIVING LOG PROGRAM - CRCVLOG       D
+      *************************************************************    ****
+       3000-CALL-CRCVLOG.
+
+           INITIALIZE  LS-CRCVLOG-PARMS.
+
+           MOVE  PO-CO     OF BUF-DPORECD  TO LS-CRCVLOG-PLANT-CODE.
+           MOVE  RCV-PO-RCV-NO OF BUF-DRCVITEM TO LS-CRCVLOG-PO-NUMBER.
+           MOVE  PO-PO-NO OF BUF-DPORECD TO LS-CRCVLOG-ARIBA-PO-NUMBER.
+           MOVE  RCV-ITEM-NUMBER OF BUF-DRCVITEM TO LS-CRCVLOG-PO-ITEM.
+           MOVE  WS-DIFF-QTY     TO LS-CRCVLOG-RCVQTY-PO-UM.
+           PERFORM 3100-GET-CALLING-PGM       THRU 3100-EXIT.
+           MOVE  WS-CALLING-PGM  TO LS-CRCVLOG-CALLING-PGM.
+           MOVE  SPACE           TO LS-CRCVLOG-FILE-STATUS-AREA.
+
+           CALL "CRCVLOG"  USING LS-CRCVLOG-PARMS.
+
+       3000-EXIT.
+           EXIT.
+
+      *************************************************************    ****
+      * GET CALLING PROGRAM                                            D
+      *************************************************************    ****
+       3100-GET-CALLING-PGM.
+
+      *--------------------------------------------------------------- D
+      * GET CALLING PROGRAM FROM 2ND LEVEL IN CALL STACK (DEFAULT)     D
+      *--------------------------------------------------------------- D
+      * NOTE - LOOKING FOR THE COBOL PROGRAM THAT ISSUED THE I-O       D
+      *        THAT CAUSED THE FILE TRIGGER TO EXECUTE                 D
+      *--------------------------------------------------------------- D
+           MOVE  +2             TO WS-LEVEL.
+           MOVE SPACE           TO WS-CALLING-PGM.
+           CALL "GETPGMCL"  USING WS-LEVEL  WS-CALLING-PGM.
+           CALL "GETOBJLIB" USING WS-CALLING-PGM
+                                  WS-LIBRARY-NAME
+                                  WS-OBJECT-TYPE.
+
+           IF  WS-LIBRARY-NAME(1:1) NOT = "Q"
+               GO TO 3100-EXIT
+           END-IF.
+
+           MOVE WS-CALLING-PGM  TO WS-SAVE-PGM.
+           MOVE SPACE           TO WS-CALLING-PGM.
+
+      *--------------------------------------------------------------- D
+      * GET CALLING PROGRAM FROM 3RD LEVEL IN CALL STACK               D
+      *                ----------------                                D
+      * ADDED THIS 3RD LEVEL RETRIEVAL TO COMPENSATE FOR WHEN THE 2ND  D
+      * LEVEL OBJECT NAME COMES BACK WITH A "NON PRODUCTION" LIBRARY   D
+      * NAME. THIS PROBABLY MEANS THE OBJECT NAME IS AN IBM DATABASE   D
+      * I-O MODULE(IE: QDBPUT).                                        D
+      *--------------------------------------------------------------- D
+           MOVE  +3               TO WS-LEVEL.
+           CALL "GETPGMCL"  USING WS-LEVEL  WS-CALLING-PGM.
+           CALL "GETOBJLIB" USING WS-CALLING-PGM
+                                  WS-LIBRARY-NAME
+                                  WS-OBJECT-TYPE.
+
+           IF  WS-LIBRARY-NAME(1:1) NOT = "Q"
+               GO TO 3100-EXIT
+           END-IF.
+
+      ***  DEFAULT TO PROGRAM NAME AT LEVEL 2
+           MOVE WS-SAVE-PGM    TO WS-CALLING-PGM.
+
+       3100-EXIT.
+           EXIT.
+
+       COPY ZMPLTSUBR   IN COPYLIB.
+
+      *----------------------------------------------------------------
+      *
+      *                ALL FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+
+      *****************************************************************
+      ***  READ BY KEY FILE MCFPCS0900  (DPORECD)
+      *****************************************************************
+       9000-READK-DPORECD.
+
+           INITIALIZE DPORECD-REC.
+           MOVE  RCV-PO-RCV-NO OF BUF-DRCVITEM
+                                    TO PO-RCV-NO  OF BUF-DPORECD.
+           MOVE  ZERO               TO PO-RCVR    OF BUF-DPORECD.
+
+           READ DPORECD-FILE
+           END-READ.
+
+           IF FS-RECORD-NOT-FOUND
+              GO TO 9000-READK-EXIT
+           END-IF.
+
+      **---------------------------------------------------------------
+      ***  IF THIS PO DOES NOT BELONG TO ARIBA BUYER
+      ***     THEN SET RECORD NOT FOUND TO TRUE
+      **---------------------------------------------------------------
+           IF PO-BUYER-CODE   OF BUF-DPORECD NOT = "ARBA"
+              SET FS-RECORD-NOT-FOUND  TO TRUE
+              GO TO 9000-READK-EXIT
+           END-IF.
+
+       9000-READK-EXIT.
+           EXIT.
+
+      **************************************************************   ***
+      *            E N D   O F   S O U R C E   C O D E
+      **************************************************************   ***

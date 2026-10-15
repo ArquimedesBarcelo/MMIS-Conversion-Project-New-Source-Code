@@ -1,0 +1,1064 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.         SRPTDIST.
+       AUTHOR.             CA YODER.
+       DATE-WRITTEN.       NOVEMBER 1997.
+       DATE-COMPILED.
+      *INSTALLATION.       GOODYEAR TIRE & RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D*   THIS PROGRAM ALLOWS RECORDS TO BE ADDED, CHANGED, AND
+      *D*   DELETED FROM FILE DRPTDIST (MCFPCS6800).  THE INFORMATION
+      *D*   SHOWS THE PRINTER ASSIGNED TO EACH KEY VALUE FOR REPORT
+      *D*   DISTRIBUTION.
+      *
+      *C* CHANGES
+      *C*
+
+       ENVIRONMENT DIVISION.
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.          IBM-AS400.
+       OBJECT-COMPUTER.          IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN         TO WORKSTATION-ZRPTDIST-SI
+               ORGANIZATION   IS TRANSACTION
+               ACCESS         IS DYNAMIC
+               RELATIVE KEY   IS REC-COUNT
+               FILE STATUS    IS DISPLAY-STATUS
+               CONTROL-AREA   IS WS-CONTROL.
+
+           SELECT DRPTMAST-IO
+               ASSIGN         TO DATABASE-MCFLCS6701
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DRPTDIST-IO
+               ASSIGN         TO DATABASE-MCFLCS6801
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT MVALIDPLTDATA-I
+               ASSIGN         TO DATABASE-MCFLCS1701
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS    IS FILE-STATUS.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC        PIC X(2000).
+
+       FD  DRPTMAST-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DRPTMAST-IO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS6701.
+
+       FD  DRPTDIST-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DRPTDIST-IO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS6801.
+
+       FD  MVALIDPLTDATA-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDPLTDATA-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1701.
+
+       WORKING-STORAGE SECTION.
+
+       77  SUB                      PIC 9(5).
+       77  SUB2                     PIC 9(5).
+       77  HOLD-PRINT-FILE          PIC X(10).
+       77  FILE-TYPE                PIC X(7)  VALUE "*FILE".
+       77  CHKOBJ-STATUS            PIC X(2).
+       77  DEFAULT-KEY              PIC X(7)  VALUE "DEFAULT".
+       77  MORE-RECORDS             PIC X     VALUE "Y".
+       77  RECS-ADDED-SW            PIC X     VALUE "N".
+       77  CHANGE-PENDING-SW        PIC X     VALUE "N".
+       77  DELETE-PENDING-SW        PIC X     VALUE "N".
+       77  DEFAULT-EXISTS-SW        PIC X     VALUE "N".
+       77  KEY-EXISTS-SW            PIC X     VALUE "N".
+       77  ERROR-FOUND-SW           PIC X     VALUE "N".
+
+      *-----------------------------------------------------------------
+      *                   B U F F E R S
+      *-----------------------------------------------------------------
+
+      *------- BUFFER FOR FIRST DISPLAY SCREEN.
+       01  DE-SCREEN1-BUF.
+           10  DE-SC1-HEADER        PIC X(40).
+           10  DE-SC1-KEY  OCCURS  4  TIMES
+                                    PIC X(10).
+           10  DE-SC1-MSGLINE       PIC X(78).
+
+       01  DE-ADD-SFLCNTL.
+           05  DE-RPT-HEADER        PIC X(40).
+           05  DE-KEY-HEADER  OCCURS  4  TIMES
+                                    PIC X(10).
+      *------- BUFFER FOR ADD SCREEN.
+       01  DE-ADD-BUF.
+           05  DE-ADD-INFO    OCCURS  3  TIMES.
+               10  DE-ADD-KEY       PIC X(10).
+               10  DE-ADD-PRINTER   PIC X(2).
+
+       01  DE-SCREEN3-BUF.
+           05  DE-SC3-MSGLINE     PIC X(79).
+
+       01  HOLD-SC3-MSGLINE.
+           05  FILLER             PIC X(12).
+           05  HOLD-SC3-TYPE      PIC X(10).
+
+       01  HOLD-04055-MSG.
+           05  FILLER             PIC X(6).
+           05  HOLD-04055-KEY     PIC X(10).
+           05  FILLER             PIC X(15).
+
+       01  HOLD-01041-MSG.
+           05  FILLER             PIC X(5).
+           05  HOLD-01041-KEY     PIC X(10).
+           05  FILLER             PIC X(29).
+
+       01  DE-CHANGE-BUF.
+           05  DE-CHG-HDR         PIC X(40).
+           05  DE-CHG-TYPE        PIC X(10).
+           05  DE-CHG-KEY         PIC X(10).
+           05  DE-CHG-PRT-OLD     PIC X(2).
+           05  DE-CHG-PRT-NEW     PIC X(2).
+           05  DE-CHG-MSGLINE     PIC X(78).
+
+       01  DE-DELETE-BUF.
+           05  DE-DEL-HDR         PIC X(40).
+           05  DE-DEL-TYPE        PIC X(10).
+           05  DE-DEL-KEY         PIC X(10).
+           05  DE-DEL-PRINTER     PIC X(2).
+           05  DE-DEL-ANSWER      PIC X.
+           05  DE-DEL-MSGLINE     PIC X(78).
+
+       01  DE-DEFAULT-BUF.
+           05  DE-DFT-HDR         PIC X(40).
+           05  DE-DFT-PRINTER     PIC X(2).
+           05  DE-DFT-MSGLINE     PIC X(78).
+
+       01  DE-INQUIRY-BUF.
+           05  DE-INQ-HEADER        PIC X(40).
+           05  DE-INQ-DFLT          PIC X(2).
+           05  DE-INQ-KEY     OCCURS  4  TIMES
+                                    PIC X(10).
+
+       01  DE-RPT-BUF.
+           10  DE-TDLYCHGS-SW     PIC X.
+           10  DE-TDTLCHGS-SW     PIC X.
+
+       COPY DRPTDIST      OF COPYLIB.
+
+       COPY DRPTMAST      OF COPYLIB.
+
+       01  SEARCH-DEPT.
+           05  SEARCH-IDENTIFIER       PIC X(2)  VALUE "DP".
+           05  DEPARTMENT.
+               10  DEPT-1-4            PIC X(4)  VALUE SPACES.
+               10  FILLER              PIC X(4)  VALUE SPACES.
+
+      *--------- THIS AREA TELLS WHAT KIND OF KEY THE REPORT IS
+      *--------- USING TO ASSIGN PRINTER NUMBERS.
+       01  TYPE-OF-KEY-USED            PIC X(4).
+           88  DEPARTMENT-KEY                    VALUE "CHGS"
+                                                       "SR6 ".
+
+      *-----------------------------------------------------------------
+      *         S W I T C H E S / C O U N T E R S
+      *-----------------------------------------------------------------
+
+       01  DRPTDIST-EOF-SW         PIC X  VALUE "N".
+
+       01  REC-COUNT               PIC 9(5) VALUE 0.
+
+      *-----------------------------------------------------------------
+      *          D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1        PIC X.
+           05  FILE-STATUS-2        PIC X.
+
+       COPY DATAB    OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *               U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY CATREAD OF COPYLIB.
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+       COPY TLSHIFT    IN COPYLIB.
+
+       COPY TRSHIFT    IN COPYLIB.
+
+       01  WS-CONTROL.
+           05  FUNCTION-KEY         PIC X(2).
+               88  ENTER-KEY-USED            VALUE "00".
+               88  F1-KEY-USED               VALUE "01".
+               88  F2-KEY-USED               VALUE "02".
+               88  F3-KEY-USED               VALUE "03".
+               88  F4-KEY-USED               VALUE "04".
+               88  F5-KEY-USED               VALUE "05".
+               88  F6-KEY-USED               VALUE "06".
+               88  F7-KEY-USED               VALUE "07".
+               88  F8-KEY-USED               VALUE "08".
+               88  F9-KEY-USED               VALUE "09".
+               88  F10-KEY-USED              VALUE "10".
+               88  F11-KEY-USED              VALUE "11".
+               88  F12-KEY-USED              VALUE "12".
+               88  ROLLUP-KEY-USED           VALUE "RU".
+           05  TERMINAL-ID          PIC X(10).
+           05  FORMAT-NAME          PIC X(10).
+
+       01  DISPLAY-STATUS           PIC X(2).
+
+       01  SRF-INDICATORS.
+           05  IND                  PIC 1
+                                    OCCURS 99 TIMES
+                                    INDICATOR 1.
+               88  IND-OFF          VALUE B"0".
+               88  IND-ON           VALUE B"1".
+
+       01  OFF-SWITCH               PIC 1  VALUE B"0".
+       01  ON-SWITCH                PIC 1  VALUE B"1".
+
+       LINKAGE SECTION.
+
+       01  PASSED-RPT-PROG          PIC X(8).
+
+      *-----------------------------------------------------------------
+      *          P R O C E D U R E   D I V I S I O N
+      *-----------------------------------------------------------------
+
+       PROCEDURE DIVISION  USING PASSED-RPT-PROG.
+
+       BEGIN SECTION.
+
+       0-BEGIN.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+           OPEN INPUT     MVALIDPLTDATA-I
+                I-O       DRPTDIST-IO
+                          DRPTMAST-IO
+                          DISPLAY-FILE.
+
+           MOVE PASSED-RPT-PROG TO RPTPROG OF DRPTMAST-IO-REC.
+           READ DRPTMAST-IO INTO BUF-DRPTMAST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE HIGH-VALUES     TO RPTPROG OF DRPTMAST-IO-REC.
+           START DRPTMAST-IO KEY > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***  XXXXXXXXXX DOES NOT EXIST
+           MOVE 04055 TO CATREAD-MSG-NUMBER.
+           PERFORM 9999-CATREAD.
+           MOVE CATREAD-MSG-TEXT TO HOLD-04055-MSG.
+           MOVE MST-KEY-DESC     TO HOLD-04055-KEY.
+
+      ***  XXXXXXXXXX ALREADY EXISTS
+           MOVE 01041 TO CATREAD-MSG-NUMBER.
+           PERFORM 9999-CATREAD.
+           MOVE CATREAD-MSG-TEXT TO HOLD-01041-MSG.
+           MOVE MST-KEY-DESC     TO HOLD-01041-KEY.
+
+       2-EOJ.
+           CLOSE          MVALIDPLTDATA-I
+                          DRPTDIST-IO
+                          DRPTMAST-IO
+                          DISPLAY-FILE.
+
+       6-MAIN SECTION.
+
+       6-BEGIN.
+           INITIALIZE DE-SCREEN1-BUF.
+           MOVE MST-RPT-DESC        TO DE-SC1-HEADER.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 4
+               MOVE MST-KEY-DESC    TO DE-SC1-KEY (SUB)
+           END-PERFORM.
+
+       6-DISPLAY-SCREEN.
+
+      *------ SHOW FIRST SCREEN TO SELECT FUNCTION.
+           WRITE DISPLAY-REC FROM DE-SCREEN1-BUF
+               FORMAT IS "SELECT"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SCREEN WRITE" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+           READ DISPLAY-FILE INTO DE-SCREEN1-BUF
+               FORMAT IS "SELECT"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SCREEN" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+      *---------- IF KEY VALUES WERE ENTERED, MAKE SURE THE USER ALSO
+      *---------- ENTERS A DEFAULT PRINTER BEFORE EXITING.
+           IF F3-KEY-USED
+               MOVE "N"         TO  DEFAULT-EXISTS-SW
+                                    KEY-EXISTS-SW
+                                    DRPTDIST-EOF-SW
+               MOVE MST-RPT-ID  TO  RPTIDENT OF DRPTDIST-IO-REC
+               MOVE SPACES      TO  RPTKEY OF DRPTDIST-IO-REC
+               START DRPTDIST-IO KEY >= EXTERNALLY-DESCRIBED-KEY
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-START
+               IF FILE-STATUS = "00"
+                   PERFORM 6-FIND-KEYS
+               END-IF
+               IF DEFAULT-EXISTS-SW = "N" AND KEY-EXISTS-SW = "Y"
+      ***          YOU MUST ENTER A DEFAULT PRINTER
+                   MOVE 25032 TO CATREAD-MSG-NUMBER
+                   PERFORM 9999-CATREAD
+                   MOVE CATREAD-MSG-TEXT TO DE-SC1-MSGLINE
+                   MOVE B"1"        TO  IND (99)
+                   GO TO 6-DISPLAY-SCREEN
+               ELSE
+                   GO TO 6-MAIN-X.
+
+           IF F1-KEY-USED
+               PERFORM 60-ADD-PROCEDURE  THRU  60-AP-X.
+
+           IF F2-KEY-USED
+               PERFORM 61-CHANGE-PROCEDURE  THRU  61-CP-X.
+
+           IF F4-KEY-USED
+               PERFORM 62-DELETE-PROCEDURE  THRU  62-DP-X.
+
+           IF F5-KEY-USED
+               PERFORM 63-DEFAULT-PROCEDURE  THRU  63-DF-X.
+
+           IF F6-KEY-USED
+               PERFORM 64-INQUIRY-PROCEDURE  THRU  64-IP-X.
+
+           GO TO 6-DISPLAY-SCREEN.
+
+       6-MAIN-X.
+           EXIT.
+
+       6-FIND-KEYS.
+           READ DRPTDIST-IO NEXT INTO BUF-DRPTDIST
+               AT END MOVE "Y" TO DRPTDIST-EOF-SW.
+           PERFORM UNTIL DRPTDIST-EOF-SW = "Y"
+               IF DST-REPORT-KEY = DEFAULT-KEY
+                   MOVE "Y"        TO DEFAULT-EXISTS-SW
+               END-IF
+               IF DST-REPORT-KEY NOT = DEFAULT-KEY
+                      AND DST-REPORT-ID = MST-RPT-ID
+                   MOVE "Y"        TO KEY-EXISTS-SW
+               END-IF
+               READ DRPTDIST-IO NEXT INTO BUF-DRPTDIST
+                   AT END MOVE "Y" TO DRPTDIST-EOF-SW
+               END-READ
+               IF DST-REPORT-ID NOT = MST-RPT-ID
+                   MOVE "Y"        TO DRPTDIST-EOF-SW
+               END-IF
+           END-PERFORM.
+
+      ******************************************************************
+      **                 A D D   P R O C E D U R E                    **
+      ******************************************************************
+
+       60-ADD-PROCEDURE.
+
+       60-LOAD-SCREEN.
+
+           INITIALIZE REC-COUNT
+                      DE-ADD-BUF.
+
+           MOVE MST-RPT-DESC        TO  DE-RPT-HEADER.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 4
+               MOVE MST-KEY-DESC    TO  DE-KEY-HEADER (SUB)
+           END-PERFORM.
+
+      *---- SHOW SFLCTL (71) AND CLEAR SFL (72), BUT DON'T SHOW IT (70).
+
+           MOVE ON-SWITCH    TO IND (71)  IND (72).
+           MOVE OFF-SWITCH   TO IND (70).
+
+           WRITE SUBFILE DISPLAY-REC FROM DE-ADD-SFLCNTL
+               FORMAT IS "ADDSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SFL WRITE*ADD" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+      *-------- TURN CLEAR SFL OFF.
+
+           MOVE OFF-SWITCH TO IND (72).
+
+       601-GET-LIST.
+
+      *---------- ONLY ALLOW 1 ENTRY SCREEN (12 LINES/SCREEN).
+           PERFORM VARYING SUB FROM 1 BY 1
+             UNTIL SUB > 12
+               MOVE DE-ADD-BUF            TO DISPLAY-REC
+               ADD 1                      TO REC-COUNT
+               WRITE SUBFILE DISPLAY-REC
+                   FORMAT IS "ADDSFL"
+                   INDICATORS ARE SRF-INDICATORS
+               END-WRITE
+               IF DISPLAY-STATUS NOT = "00"
+                   MOVE "SUBFILE WRITE ERROR*ADD" TO BU-DISPLAY-MSG
+                   MOVE REC-COUNT        TO BU-DISPLAY-FLD (1)
+                   MOVE DISPLAY-STATUS   TO BU-DISPLAY-FLD (2)
+               END-IF
+           END-PERFORM.
+
+       602-SHOW-SCREEN.
+
+      *--- SHOW FUNCTION KEYS.
+           WRITE DISPLAY-REC FROM DE-SCREEN3-BUF
+               FORMAT IS "ADDSFLREC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           MOVE ON-SWITCH TO IND (70)  IND (71)  IND (73).
+
+      *--- WRITE THE SUBFILE TO SCREEN.
+           WRITE SUBFILE DISPLAY-REC FROM DE-ADD-SFLCNTL
+               FORMAT IS "ADDSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON SHOW SFL WRITE*ADD" TO BU-DISPLAY-MSG
+               MOVE REC-COUNT TO BU-DISPLAY-FLD (1)
+               MOVE DISPLAY-STATUS TO BU-DISPLAY-FLD (2)
+               GO TO 9999-BLOWUP.
+
+      *--- WAIT FOR USER TO PRESS A KEY.
+           READ DISPLAY-FILE INTO DE-ADD-SFLCNTL
+               FORMAT IS "ADDSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SFL*ADD" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+
+       603-ACTION.
+
+           IF F3-KEY-USED
+               GO TO 60-AP-X.
+
+       604-VALIDATE-KEYS.
+           MOVE "Y" TO MORE-RECORDS.
+           MOVE "N" TO ERROR-FOUND-SW.
+           PERFORM VARYING REC-COUNT  FROM 1 BY 1 UNTIL REC-COUNT > 12
+               READ SUBFILE DISPLAY-FILE RECORD INTO DE-ADD-BUF
+                   FORMAT IS "ADDSFL"
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF DE-ADD-BUF > SPACES
+                   PERFORM 6040-READ-LINES THRU 6040-RL-X
+                       VARYING SUB2 FROM 1 BY 1 UNTIL SUB2 > 3
+                                           OR ERROR-FOUND-SW = "Y"
+                   PERFORM 9999-REWRITE-SUBFILE-ADD
+               END-IF
+           END-PERFORM.
+
+           IF ERROR-FOUND-SW = "Y"
+               GO TO 602-SHOW-SCREEN.
+
+       605-WRITE-KEYS.
+           MOVE "N"                    TO  RECS-ADDED-SW.
+           PERFORM VARYING REC-COUNT  FROM 1 BY 1 UNTIL REC-COUNT > 12
+               READ SUBFILE DISPLAY-FILE RECORD
+                   INTO DE-ADD-BUF
+                   FORMAT IS "ADDSFL"
+               END-READ
+               PERFORM VARYING SUB2 FROM 1 BY 1 UNTIL SUB2 > 3
+                 IF DE-ADD-KEY (SUB2) > SPACES
+                     MOVE MST-RPT-ID  TO RPTIDENT OF DRPTDIST-IO-REC
+                     MOVE DE-ADD-KEY (SUB2)
+                                      TO RPTKEY OF DRPTDIST-IO-REC
+                     PERFORM 9999-START-DRPTDIST-IO
+      *-------------------- IF FOR SOME REASON THE SAME KEY WAS ENTERED
+      *-------------------- TWICE ON THE SCREEN, ONLY THE FIRST ONE WILL
+      *-------------------- BE WRITTEN TO THE FILE.
+                     IF FILE-STATUS NOT = "00"
+                       MOVE MST-RPT-ID             TO  DST-REPORT-ID
+                       MOVE DE-ADD-KEY (SUB2)      TO  DST-REPORT-KEY
+                       MOVE DE-ADD-PRINTER (SUB2)  TO  DST-PRINTER-NUM
+                       WRITE DRPTDIST-IO-REC  FROM  BUF-DRPTDIST
+                       MOVE "Y"                    TO  RECS-ADDED-SW
+                     END-IF
+                 END-IF
+                 MOVE SPACES           TO  DE-ADD-KEY (SUB2)
+                                           DE-ADD-PRINTER (SUB2)
+               END-PERFORM
+               REWRITE SUBFILE DISPLAY-REC FROM DE-ADD-BUF
+                   FORMAT IS "ADDSFL"
+                   INDICATORS ARE SRF-INDICATORS
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+           END-PERFORM.
+           IF RECS-ADDED-SW = "Y"
+      ***      RECORDS ADDED
+               MOVE 04025 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-SC3-MSGLINE
+               MOVE B"1"        TO  IND (99).
+           GO TO 602-SHOW-SCREEN.
+
+       60-AP-X.
+           EXIT.
+
+       6040-READ-LINES.
+      *------------ MAKE SURE A PRINTER WAS ENTERED WITH KEY.
+           IF DE-ADD-KEY (SUB2) > SPACES
+                          AND DE-ADD-PRINTER (SUB2) = SPACES
+      ***      PRINTER MUST BE ENTERED
+               MOVE 25031 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-SC3-MSGLINE
+               MOVE B"1"        TO  IND (SUB2 + 4)
+                                    IND (99)
+               MOVE "Y"         TO  ERROR-FOUND-SW
+               GO TO 6040-RL-X.
+
+      *------------ MAKE SURE A KEY VALUE WAS ENTERED WITH A PRINTER.
+           IF DE-ADD-PRINTER (SUB2) > SPACES
+                             AND DE-ADD-KEY (SUB2) = SPACES
+      ***      ENTER XXXXXXXXXX
+               MOVE 05106 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT  TO  HOLD-SC3-MSGLINE
+               MOVE MST-KEY-DESC      TO  HOLD-SC3-TYPE
+               MOVE HOLD-SC3-MSGLINE  TO  DE-SC3-MSGLINE
+               MOVE B"1"              TO  IND (SUB2 + 1)
+                                          IND (99)
+               MOVE "Y"               TO  ERROR-FOUND-SW
+               GO TO 6040-RL-X.
+
+           MOVE MST-RPT-ID             TO  TYPE-OF-KEY-USED.
+
+           IF DEPARTMENT-KEY
+      *------------ MAKE SURE DEPARTMENT EXISTS.
+             IF DE-ADD-KEY (SUB2) > SPACES
+               MOVE DE-ADD-KEY (SUB2)    TO  DEPT-1-4
+               PERFORM 9999-START-MVALIDPLTDATA-I
+               IF FILE-STATUS NOT = "00"
+                   IF FILE-STATUS-1 = "2"
+      ***              KEY DOES NOT EXIST
+                       MOVE HOLD-04055-MSG  TO DE-SC3-MSGLINE
+                       MOVE B"1"        TO  IND (SUB2 + 1)
+                                            IND (99)
+                       MOVE "Y"         TO  ERROR-FOUND-SW
+                       GO TO 6040-RL-X
+                   ELSE
+                       MOVE "604-VALIDATE*START"  TO BU-DISPLAY-MSG
+                       MOVE SEARCH-DEPT         TO BU-DISPLAY-FLD (2)
+                       GO TO 9999-BLOWUP
+                   END-IF
+               END-IF
+             END-IF.
+
+      *------------ SEE IF KEY ALREADY EXISTS IN DRPTDIST.
+           IF DE-ADD-KEY (SUB2) > SPACES
+             MOVE MST-RPT-ID         TO RPTIDENT OF DRPTDIST-IO-REC
+             MOVE DE-ADD-KEY (SUB2) TO RPTKEY OF DRPTDIST-IO-REC
+             PERFORM 9999-START-DRPTDIST-IO
+             IF FILE-STATUS = "00"
+      ***        XXXXXXXXXX ALREADY EXISTS
+                 MOVE HOLD-01041-MSG TO DE-SC3-MSGLINE
+                 MOVE B"1"        TO  IND (SUB2 + 1)
+                                      IND (99)
+                 MOVE "Y"         TO  ERROR-FOUND-SW
+                 GO TO 6040-RL-X
+             ELSE
+             IF FILE-STATUS-1 NOT = "2"
+                 MOVE "604-VALIDATE*START DRPTDIST"
+                                          TO BU-DISPLAY-MSG
+                 MOVE DE-ADD-KEY (SUB2)  TO BU-DISPLAY-FLD (2)
+                 GO TO 9999-BLOWUP
+             END-IF
+           END-IF.
+
+      *------------ DOES MCPRTXX FILE EXIST?
+           IF DE-ADD-PRINTER (SUB2) > SPACES
+               MOVE DE-ADD-PRINTER (SUB2)    TO  LS-SHIFT-FLD
+               PERFORM 9999-CALL-CHKOBJ
+               IF CHKOBJ-STATUS NOT = "00"
+      ***          INVALID PRINTER
+                   MOVE 35052 TO CATREAD-MSG-NUMBER
+                   PERFORM 9999-CATREAD
+                   MOVE CATREAD-MSG-TEXT TO DE-SC3-MSGLINE
+                   MOVE B"1"        TO  IND (SUB2 + 4)
+                                        IND (99)
+                   MOVE "Y"         TO  ERROR-FOUND-SW
+                   GO TO 6040-RL-X
+               ELSE
+                   MOVE RS-SHIFT-FLD-7-8   TO  DE-ADD-PRINTER (SUB2).
+
+       6040-RL-X.
+           EXIT.
+
+      ******************************************************************
+      **           C H A N G E   P R O C E D U R E                    **
+      ******************************************************************
+
+       61-CHANGE-PROCEDURE.
+
+           INITIALIZE  DE-CHANGE-BUF.
+           MOVE "N"    TO  CHANGE-PENDING-SW.
+           MOVE MST-RPT-DESC   TO  DE-CHG-HDR.
+           MOVE MST-KEY-DESC   TO  DE-CHG-TYPE.
+
+       61-DISPLAY-SCREEN.
+
+           IF CHANGE-PENDING-SW = "Y"
+               MOVE B"1"   TO  IND(10).
+
+           WRITE DISPLAY-REC FROM DE-CHANGE-BUF
+               FORMAT IS "CHANGE"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SCREEN WRITE*61DS"
+                                            TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+           READ DISPLAY-FILE INTO DE-CHANGE-BUF
+               FORMAT IS "CHANGE"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SCREEN*61-DS" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+           IF F3-KEY-USED
+               GO TO 61-CP-X.
+
+           IF CHANGE-PENDING-SW = "Y"
+               GO TO 61-ENTER-PRINTER.
+
+           IF DE-CHG-KEY = SPACES
+               GO TO 61-DISPLAY-SCREEN.
+
+       61-VALIDATE-KEY.
+           MOVE MST-RPT-ID           TO RPTIDENT OF DRPTDIST-IO-REC.
+           MOVE DE-CHG-KEY           TO RPTKEY OF DRPTDIST-IO-REC.
+           PERFORM 9999-START-DRPTDIST-IO.
+           IF FILE-STATUS NOT = "00"
+      ***      XXXXXXXXXX CODE DOES NOT EXIST.
+               MOVE HOLD-04055-MSG   TO  DE-CHG-MSGLINE
+               MOVE B"1"             TO  IND (01)
+                                         IND (99)
+               GO TO 61-DISPLAY-SCREEN.
+
+           READ DRPTDIST-IO INTO BUF-DRPTDIST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE DST-PRINTER-NUM      TO  DE-CHG-PRT-OLD.
+           MOVE B"1"                 TO  IND(10).
+           MOVE "Y"                  TO  CHANGE-PENDING-SW.
+           GO TO 61-DISPLAY-SCREEN.
+
+       61-ENTER-PRINTER.
+      *------------ MAKE SURE A PRINTER WAS ENTERED.
+           IF DE-CHG-PRT-NEW = SPACES
+      ***      PRINTER MUST BE ENTERED
+               MOVE 25031 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-CHG-MSGLINE
+               MOVE B"1"        TO  IND (02)
+                                    IND (99)
+               GO TO 61-DISPLAY-SCREEN.
+
+      *------------ DOES MCPRTXX FILE EXIST?
+           MOVE DE-CHG-PRT-NEW       TO  LS-SHIFT-FLD.
+           PERFORM 9999-CALL-CHKOBJ.
+           IF CHKOBJ-STATUS NOT = "00"
+      ***      INVALID PRINTER
+               MOVE 35052 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT   TO  DE-CHG-MSGLINE
+               MOVE B"1"               TO  IND (02)
+                                           IND (99)
+               GO TO 61-DISPLAY-SCREEN
+           ELSE
+               MOVE RS-SHIFT-FLD-7-8   TO  DE-CHG-PRT-NEW.
+
+           MOVE DE-CHG-PRT-NEW  TO  DST-PRINTER-NUM.
+           REWRITE DRPTDIST-IO-REC  FROM  BUF-DRPTDIST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE "N"             TO  CHANGE-PENDING-SW.
+           INITIALIZE  DE-CHANGE-BUF.
+      ***      RECORDS CHANGED
+           MOVE 44008 TO CATREAD-MSG-NUMBER.
+           PERFORM 9999-CATREAD.
+           MOVE CATREAD-MSG-TEXT TO DE-CHG-MSGLINE.
+           MOVE B"1"        TO  IND (99).
+           GO TO 61-DISPLAY-SCREEN.
+
+       61-CP-X.
+           EXIT.
+
+      ******************************************************************
+      **           D E L E T E   P R O C E D U R E                    **
+      ******************************************************************
+
+       62-DELETE-PROCEDURE.
+           INITIALIZE  DE-DELETE-BUF.
+           MOVE "N"    TO  DELETE-PENDING-SW.
+           MOVE MST-RPT-DESC        TO  DE-DEL-HDR.
+           MOVE MST-KEY-DESC        TO  DE-DEL-TYPE.
+
+       62-DISPLAY-SCREEN.
+
+           IF DELETE-PENDING-SW = "Y"
+               MOVE B"1"   TO  IND(10).
+
+           WRITE DISPLAY-REC FROM DE-DELETE-BUF
+               FORMAT IS "DELETE"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SCREEN WRITE*62DP"
+                                            TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+           READ DISPLAY-FILE INTO DE-DELETE-BUF
+               FORMAT IS "DELETE"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SCREEN*62-DP" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+           IF F3-KEY-USED
+               GO TO 62-DP-X.
+
+           IF DELETE-PENDING-SW = "Y"
+               GO TO 62-ENTER-ANSWER.
+
+           IF DE-DEL-KEY = SPACES
+               GO TO 62-DISPLAY-SCREEN.
+
+       62-VALIDATE-KEY.
+           MOVE MST-RPT-ID           TO RPTIDENT OF DRPTDIST-IO-REC.
+           MOVE DE-DEL-KEY           TO RPTKEY OF DRPTDIST-IO-REC.
+           PERFORM 9999-START-DRPTDIST-IO.
+           IF FILE-STATUS NOT = "00"
+      ***      XXXXXXXXXX CODE DOES NOT EXIST.
+               MOVE HOLD-04055-MSG   TO  DE-DEL-MSGLINE
+               MOVE B"1"             TO  IND (01)
+                                         IND (99)
+               GO TO 62-DISPLAY-SCREEN.
+
+           READ DRPTDIST-IO INTO BUF-DRPTDIST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE DST-PRINTER-NUM      TO  DE-DEL-PRINTER.
+           MOVE B"1"                 TO  IND(10).
+           MOVE "Y"                  TO  DELETE-PENDING-SW.
+           GO TO 62-DISPLAY-SCREEN.
+
+       62-ENTER-ANSWER.
+           IF DE-DEL-ANSWER = SPACES
+      ***      ENTER A 'Y' OR 'N'
+               MOVE 05080 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-DEL-MSGLINE
+               MOVE B"1"        TO  IND (02)
+                                    IND (99)
+               GO TO 62-DISPLAY-SCREEN.
+
+           IF DE-DEL-ANSWER = "Y"
+               DELETE DRPTDIST-IO
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-DELETE
+      ***      DATA DELETED
+               INITIALIZE  DE-DELETE-BUF
+               MOVE 04026 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-DEL-MSGLINE
+               MOVE B"1"        TO  IND (99)
+           ELSE
+               INITIALIZE  DE-DELETE-BUF.
+           MOVE "N"             TO  DELETE-PENDING-SW.
+           GO TO 62-DISPLAY-SCREEN.
+
+       62-DP-X.
+           EXIT.
+
+      ******************************************************************
+      **         E N T E R   D E F A U L T   P R I N T E R            **
+      ******************************************************************
+
+       63-DEFAULT-PROCEDURE.
+           INITIALIZE  DE-DEFAULT-BUF.
+           MOVE MST-RPT-DESC        TO  DE-DFT-HDR.
+
+       63-DISPLAY-SCREEN.
+
+           WRITE DISPLAY-REC FROM DE-DEFAULT-BUF
+               FORMAT IS "DEFAULT"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SCREEN WRITE*63DF"
+                                            TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+           READ DISPLAY-FILE INTO DE-DEFAULT-BUF
+               FORMAT IS "DEFAULT"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SCREEN*63-DF" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+           IF F3-KEY-USED
+               GO TO 63-DF-X.
+
+       63-VALIDATE-PRINTER.
+           IF DE-DFT-PRINTER = SPACES
+      ***      PRINTER MUST BE ENTERED
+               MOVE 25031 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-DFT-MSGLINE
+               MOVE B"1"        TO  IND (01)
+                                    IND (99)
+               GO TO 63-DISPLAY-SCREEN.
+
+      *------------ DOES MCPRTXX FILE EXIST?
+           MOVE DE-DFT-PRINTER       TO  LS-SHIFT-FLD.
+           PERFORM 9999-CALL-CHKOBJ.
+           IF CHKOBJ-STATUS NOT = "00"
+      ***      INVALID PRINTER
+               MOVE 35052 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT   TO  DE-DFT-MSGLINE
+               MOVE B"1"               TO  IND (01)
+                                           IND (99)
+               GO TO 63-DISPLAY-SCREEN
+           ELSE
+               MOVE RS-SHIFT-FLD-7-8   TO  DE-DFT-PRINTER.
+
+           MOVE MST-RPT-ID           TO RPTIDENT OF DRPTDIST-IO-REC.
+           MOVE DEFAULT-KEY          TO RPTKEY OF DRPTDIST-IO-REC.
+           PERFORM 9999-START-DRPTDIST-IO.
+           IF FILE-STATUS = "00"
+               READ DRPTDIST-IO INTO BUF-DRPTDIST
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               MOVE DE-DFT-PRINTER   TO  DST-PRINTER-NUM
+               REWRITE DRPTDIST-IO-REC FROM BUF-DRPTDIST
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+           ELSE
+               MOVE MST-RPT-ID       TO  DST-REPORT-ID
+               MOVE DEFAULT-KEY      TO  DST-REPORT-KEY
+               MOVE DE-DFT-PRINTER   TO  DST-PRINTER-NUM
+               WRITE DRPTDIST-IO-REC FROM BUF-DRPTDIST
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***  DATA ADDED
+           INITIALIZE  DE-DEFAULT-BUF.
+           MOVE 04025                TO  CATREAD-MSG-NUMBER.
+           PERFORM 9999-CATREAD.
+           MOVE CATREAD-MSG-TEXT     TO  DE-DFT-MSGLINE.
+           MOVE B"1"                 TO  IND (99).
+
+           GO TO 63-DISPLAY-SCREEN.
+
+
+       63-DF-X.
+           EXIT.
+
+      ******************************************************************
+      **              I N Q U I R Y   P R O C E D U R E               **
+      ******************************************************************
+
+       64-INQUIRY-PROCEDURE.
+
+           MOVE MST-RPT-DESC        TO  DE-INQ-HEADER.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 4
+               MOVE MST-KEY-DESC    TO  DE-INQ-KEY (SUB)
+           END-PERFORM.
+
+       64-LOAD-SCREEN.
+
+           INITIALIZE REC-COUNT  SUB  SUB2.
+           PERFORM 9999-GET-DEFAULT.
+           IF FILE-STATUS = "00"
+               MOVE DST-PRINTER-NUM  TO  DE-INQ-DFLT
+           ELSE
+               MOVE SPACES           TO  DE-INQ-DFLT.
+
+      *---- SHOW SFLCTL (71) AND CLEAR SFL (72), BUT DON'T SHOW IT (70).
+
+           MOVE ON-SWITCH    TO IND (71)  IND (72).
+           MOVE OFF-SWITCH   TO IND (70).
+
+           WRITE SUBFILE DISPLAY-REC FROM DE-INQUIRY-BUF
+               FORMAT IS "INQSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SFL WRITE*INQ" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+      *-------- TURN CLEAR SFL OFF.
+
+           MOVE OFF-SWITCH TO IND (72).
+
+       641-GET-LIST.
+
+           MOVE "N"                  TO  DRPTDIST-EOF-SW.
+           MOVE MST-RPT-ID           TO  RPTIDENT OF DRPTDIST-IO-REC.
+           MOVE SPACES               TO  RPTKEY OF DRPTDIST-IO-REC.
+           START DRPTDIST-IO KEY >= EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           READ DRPTDIST-IO NEXT INTO BUF-DRPTDIST
+               AT END MOVE "Y" TO DRPTDIST-EOF-SW.
+           IF DST-REPORT-ID NOT = MST-RPT-ID
+               MOVE 40015            TO  CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO  DE-SC1-MSGLINE
+               MOVE B"1"             TO  IND(99)
+               MOVE "Y"              TO  DRPTDIST-EOF-SW
+               GO TO 64-IP-X.
+           IF  DRPTDIST-EOF-SW = "N"
+               PERFORM VARYING SUB FROM 1 BY 1
+                 UNTIL SUB > 9999 OR DRPTDIST-EOF-SW = "Y"
+                   PERFORM VARYING SUB2 FROM 1 BY 1 UNTIL SUB2 > 3
+      *------------------ DON'T SHOW THE DEFAULT PRINTER IN THE SUBFILE.
+                       IF DST-REPORT-KEY = DEFAULT-KEY
+                         READ DRPTDIST-IO NEXT INTO BUF-DRPTDIST
+                           AT END MOVE "Y"        TO DRPTDIST-EOF-SW
+                         END-READ
+                       END-IF
+                       IF DRPTDIST-EOF-SW = "N"
+                         MOVE DST-REPORT-KEY    TO DE-ADD-KEY (SUB2)
+                         MOVE DST-PRINTER-NUM   TO DE-ADD-PRINTER (SUB2)
+                       ELSE
+                         MOVE SPACES            TO DE-ADD-KEY (SUB2)
+                                                   DE-ADD-PRINTER (SUB2)
+                       END-IF
+                       READ DRPTDIST-IO NEXT INTO BUF-DRPTDIST
+                         AT END MOVE "Y"        TO DRPTDIST-EOF-SW
+                       END-READ
+                       IF DST-REPORT-ID NOT = MST-RPT-ID
+                         MOVE "Y"               TO DRPTDIST-EOF-SW
+                       END-IF
+                   END-PERFORM
+               ADD 1                      TO REC-COUNT
+               WRITE SUBFILE DISPLAY-REC FROM DE-ADD-BUF
+                   FORMAT IS "INQSFL"
+                   INDICATORS ARE SRF-INDICATORS
+               END-WRITE
+               IF DISPLAY-STATUS NOT = "00"
+                   MOVE "SUBFILE WRITE ERROR*INQ" TO BU-DISPLAY-MSG
+                   MOVE REC-COUNT        TO BU-DISPLAY-FLD (1)
+                   MOVE DISPLAY-STATUS   TO BU-DISPLAY-FLD (2)
+               END-IF
+           END-PERFORM.
+
+       642-SHOW-SCREEN.
+
+      *--- SHOW FUNCTION KEYS.
+           WRITE DISPLAY-REC FROM DE-SCREEN3-BUF
+               FORMAT IS "INQSFLREC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           MOVE ON-SWITCH TO IND (70)  IND (71)  IND (73).
+
+      *--- WRITE THE SUBFILE TO SCREEN.
+           WRITE SUBFILE DISPLAY-REC FROM DE-INQUIRY-BUF
+               FORMAT IS "INQSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON SHOW SFL WRITE*INQ" TO BU-DISPLAY-MSG
+               MOVE REC-COUNT TO BU-DISPLAY-FLD (1)
+               MOVE DISPLAY-STATUS TO BU-DISPLAY-FLD (2)
+               GO TO 9999-BLOWUP.
+
+      *--- WAIT FOR USER TO PRESS A KEY.
+           READ DISPLAY-FILE INTO DE-INQUIRY-BUF
+               FORMAT IS "INQSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SFL*INQ" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+
+       643-ACTION.
+
+           IF F3-KEY-USED
+               GO TO 64-IP-X.
+
+           GO TO 642-SHOW-SCREEN.
+
+       64-IP-X.
+           EXIT.
+
+      ******************************************************************
+      **             U T I L I T Y   S E C T I O N                    **
+      ******************************************************************
+
+       9999-UTILITY SECTION.
+
+       9999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+
+       9999-START-MVALIDPLTDATA-I.
+           MOVE SEARCH-DEPT TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY
+                                     OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-START-DRPTDIST-IO.
+           START DRPTDIST-IO KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-REWRITE-SUBFILE-ADD.
+           REWRITE SUBFILE DISPLAY-REC FROM DE-ADD-BUF
+               FORMAT IS "ADDSFL"
+               INDICATORS ARE SRF-INDICATORS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-CALL-CHKOBJ.
+           CALL "TLSHIFT" USING LS-RET-CODE, LS-SHIFT-FLD.
+           MOVE LS-SHIFT-FLD             TO  RS-SHIFT-FLD.
+           CALL "TRSHIFT" USING LS-RET-CODE, RS-SHIFT-FLD.
+           STRING "MCPRT" DELIMITED BY SIZE,
+                RS-SHIFT-FLD-7-8 DELIMITED BY SPACES,
+             INTO HOLD-PRINT-FILE.
+           CALL "CCHKOBJ3" USING HOLD-PRINT-FILE, FILE-TYPE,
+                CHKOBJ-STATUS.
+
+       9999-GET-DEFAULT.
+           MOVE MST-RPT-ID           TO  RPTIDENT OF DRPTDIST-IO-REC.
+           MOVE DEFAULT-KEY          TO  RPTKEY OF DRPTDIST-IO-REC.
+           START DRPTDIST-IO KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           READ DRPTDIST-IO INTO BUF-DRPTDIST
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-BLOWUP.
+           MOVE "SRPTDIST" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.

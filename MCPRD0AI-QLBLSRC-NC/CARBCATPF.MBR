@@ -1,0 +1,290 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     CARBCATPF.
+       AUTHOR.         EXLTECH, LLC - DAN RAUCH
+
+      ***************************************************************
+      **                 C A R B C A T P F
+      ***************************************************************
+      **         ARIBA CATALOG PREFERRED ITEM RETRIEVAL
+      **       -------------------------------------------
+      ** THIS SUBROUTINE GETS THE PREFERRED CATALOG ITEM PER PASSED
+      ** CORP CODE USING THREE DIFFERENT MODES OF OPERATION:
+      **
+      **   MODE = 1  RETRIEVES THE PREFERRED CATALOG ITEM - THIS
+      **             MAY BE THE PREFERRED ITEM BECAUSE IT HAS THE
+      **             LOWEST PRICE -OR- IT MAY BE AN OVERRIDE ITEM
+      **             IF ONE EXISTS.
+      **
+      **   NOTE => OVERRIDE ITEM 1ST -IF NFND- THEN LOWEST PRICE ITEM.
+      **   ------------------------------------------------------------
+      **   MODE = 2  RETRIEVES ONLY THE PREFERRED CATALOG ITEM - THIS
+      **             ITEM IS SIMPLY THE LOWEST PRICE CATALOG ITEM
+      **             FOR CORP CODE PASSED - REGARDLESS OF OVERRIDE
+      **   ------------------------------------------------------------
+      **   MODE = 3  RETRIEVES ONLY THE OVERRIDE CATALOG ITEM FOR THE
+      **             CORP CODE PASSED, IF ONE EXISTS OR RETURNS NFND.
+      **   ------------------------------------------------------------
+      **
+      **   ONLY FILE STATUS CODES "00" OR "23" ARE RETURNED
+      **       -------------------------------------------
+      **   USE COPY MEMBERS ZCATPWS AND ZCATPSUBR IN CALLER PROGRAMS
+      **
+      *****************************************************************
+      *** NOTE:  LOGICAL MCFLAB2003 IS KEYED BY CORPCODE AND PRICE,
+      *** THEREFORE THE LOWEST PRICE ITEM IS ALWAYS THE 1ST RECORD
+      *** WITHIN EACH CORP CODE GROUP
+      ***************************************************************
+      * Modification History:                                       *
+      ***************************************************************
+      *                                                             *
+      *    Date     Name             Description                    *
+      * ----------  ---------------  ------------------------------ *
+      * mm/dd/yyyy                                                  *
+      ***************************************************************
+
+
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *===============================================================
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT CATALOG-OVRD-FILE  ASSIGN TO DATABASE-MCFLAB2702
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT CATALOG-FILE  ASSIGN TO DATABASE-MCFLAB2003
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS IS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+      *================================================================
+       DATA DIVISION.
+      *================================================================
+       FILE SECTION.
+
+       FD  CATALOG-OVRD-FILE.
+       01  CATALOG-OVRD-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB2702.
+       COPY DARIBAOVR IN COPYLIB.
+
+       FD  CATALOG-FILE.
+       01  CATALOG-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB2003.
+       COPY DARIBACAT IN COPYLIB.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+       COPY FILESTATUS IN COPYLIB.
+
+      *****************************************************************
+      *  MISCELLANEOUS WORK FIELDS
+      *****************************************************************
+       01  WS-PROGRAM-MESSAGES.
+           03  WS-INVALID-MODE-MSG PIC  X(80)      VALUE
+               "INVALID MODE - MUST BE 1, 2 OR 3".
+
+           03  WS-INVALID-CC-MSG   PIC  X(80)      VALUE
+               "INVALID CORP CODE - NOT FOUND IN ARIBA BUYER CATALOG".
+
+           03  WS-INVALID-OVR-MSG  PIC  X(80)      VALUE
+               "INVALID CORP CODE - OVERRIDE ITEM NOT FOUND".
+
+       01  WS-MISCELLANEOUS-FIELDS.
+           03  WS-PROGRAM-NAME     PIC  X(10)      VALUE "CARBCATPF".
+           03  WS-MSSG             PIC  X(80)      VALUE SPACE.
+
+      *================================================================
+      *=             L I N K A G E   S E C T I O N
+      *================================================================
+       LINKAGE SECTION.
+       01  LS-CORP-CODE            PIC X(08).
+       01  LS-MODE                 PIC X(01).
+       01  LS-CATREC               PIC X(400).
+       01  LS-STATUS               PIC X(02).
+       01  LS-MSSG                 PIC X(80).
+
+      *================================================================
+      *=             P R O C E D U R E    D I V I S I O N
+      *================================================================
+       PROCEDURE DIVISION USING  LS-CORP-CODE  LS-MODE  LS-CATREC
+                                 LS-STATUS  LS-MSSG.
+       0000-PROGRAM-ENTRY.
+
+           OPEN  INPUT  CATALOG-OVRD-FILE
+                        CATALOG-FILE.
+
+           PERFORM 0010-INITIALIZE       THRU 0010-EXIT.
+
+           EVALUATE TRUE
+
+           WHEN LS-MODE = "1"
+               PERFORM 1000-MODE-1       THRU 1000-MODE-1-EXIT
+
+           WHEN LS-MODE = "2"
+               PERFORM 1000-MODE-2       THRU 1000-MODE-2-EXIT
+
+           WHEN LS-MODE = "3"
+               PERFORM 1000-MODE-3       THRU 1000-MODE-3-EXIT
+
+           END-EVALUATE.
+
+           MOVE WS-MSSG                TO LS-MSSG.
+           MOVE BUF-DARIBCAT           TO LS-CATREC.
+           MOVE WS-FILE-STATUS         TO LS-STATUS.
+
+           CLOSE        CATALOG-OVRD-FILE
+                        CATALOG-FILE.
+
+
+       0000-PROGRAM-END.
+           GOBACK.
+
+      *****************************************************************
+      ** 1ST TIME PROCESSING ROUTINE
+      *****************************************************************
+       0010-INITIALIZE.
+
+           INITIALIZE BUF-DARIBCAT.
+           MOVE WS-INVALID-MODE-MSG    TO WS-MSSG.
+           SET FS-RECORD-NOT-FOUND  TO TRUE.
+
+       0010-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  THIS ROUTINE GETS THE PREFERRED ITEM FOR A GIVEN CORP CODE
+      ***  THIS ITEM MAY BE PREFERRED BY OVERRIDE -OR- LOWEST PRICE
+      *****************************************************************
+       1000-MODE-1.
+
+           MOVE SPACE                  TO WS-MSSG.
+           PERFORM 9100-READK-CATALOG-OVRD  THRU 9100-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               PERFORM 9000-START-CATALOG   THRU 9000-START-EXIT
+               PERFORM 9000-READN-CATALOG   THRU 9000-READN-EXIT
+               IF  FS-RECORD-NOT-FOUND
+                   MOVE WS-INVALID-CC-MSG    TO WS-MSSG
+               END-IF
+           END-IF.
+
+       1000-MODE-1-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  THIS ROUTINE GETS THE PREFERRED ITEM FOR A GIVEN CORP CODE
+      ***  BASED SOLELY ON THE LOWEST CATALOG PRICE FOR THAT ITEM
+      ***  --  REGARDLESS OF WHETHER AN ITEM OVERRIDE EXISTS --
+      *****************************************************************
+       1000-MODE-2.
+
+           MOVE SPACE                  TO WS-MSSG.
+           PERFORM 9000-START-CATALOG   THRU 9000-START-EXIT.
+           PERFORM 9000-READN-CATALOG   THRU 9000-READN-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               MOVE WS-INVALID-CC-MSG    TO WS-MSSG
+           END-IF.
+
+       1000-MODE-2-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  THIS ROUTINE GETS THE OVERRIDE ITEM FOR A GIVEN CORP CODE
+      *****************************************************************
+       1000-MODE-3.
+
+           MOVE SPACE                  TO WS-MSSG.
+           PERFORM 9100-READK-CATALOG-OVRD  THRU 9100-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               MOVE WS-INVALID-OVR-MSG   TO WS-MSSG
+           END-IF.
+
+       1000-MODE-3-EXIT.
+            EXIT.
+
+      *----------------------------------------------------------------
+      *
+      *            ALL DATABASE FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      ***  START CATALOG  FILE
+      *****************************************************************
+       9000-START-CATALOG.
+
+           INITIALIZE BUF-DARIBCAT.
+
+           MOVE LS-CORP-CODE       TO ARIBACAT-CORP-CODE.
+           MOVE ZERO               TO ARIBACAT-CONVER-PRICE
+
+           START CATALOG-FILE
+                 KEY IS >= EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9000-START-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** READ CATALOG FILE SEQUENTIALLY
+      *** ------------------------------------------------------------
+      *** NOTE:  LOGICAL MCFLAB2003 IS KEYED BY CORPCODE AND PRICE,
+      *** THEREFORE THE LOWEST PRICE ITEM IS ALWAYS THE 1ST RECORD
+      *** WITHIN EACH CORP CODE GROUP
+      *****************************************************************
+       9000-READN-CATALOG.
+
+           READ CATALOG-FILE NEXT RECORD
+           END-READ.
+
+           IF  FS-END-OF-FILE
+               INITIALIZE BUF-DARIBCAT
+               SET FS-RECORD-NOT-FOUND  TO TRUE
+               GO TO 9000-READN-EXIT
+           END-IF.
+
+           IF  ARIBACAT-CORP-CODE NOT = LS-CORP-CODE
+               INITIALIZE BUF-DARIBCAT
+               SET FS-RECORD-NOT-FOUND  TO TRUE
+           END-IF.
+
+       9000-READN-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  READK CATALOG OVERRIDE
+      *****************************************************************
+       9100-READK-CATALOG-OVRD.
+
+           INITIALIZE BUF-DARIBOVR.
+           MOVE LS-CORP-CODE TO ARIBAOVR-CORP-CODE.
+
+           READ CATALOG-OVRD-FILE
+           END-READ.
+
+           IF  FS-GOOD-FILE-IO
+               IF  ARIBAOVR-ACTIVE-FLAG = "Y"
+                   MOVE BUF-DARIBOVR   TO  BUF-DARIBCAT
+               ELSE
+                   INITIALIZE BUF-DARIBOVR
+                   SET  FS-RECORD-NOT-FOUND  TO TRUE
+               END-IF
+           END-IF.
+
+       9100-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      **                  END  OF  SOURCE  MEMBER
+      *****************************************************************

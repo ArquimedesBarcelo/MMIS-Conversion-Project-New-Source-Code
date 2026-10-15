@@ -1,0 +1,902 @@
+       PROCESS OPTIONS NOFS21DUPKEY
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TMODSTAT.
+       AUTHOR.                 R L ENSMINGER.
+       INSTALLATION.           GTR.
+      *C   10/21/93   M. L. MITCHELL / JIM COFFMAN
+      *C  1) ADDED LOGIC TO EXCLUDE CHECKS OF WORK ORDER PARTS
+      *C     WHEN THE PRT-STATUS-1 FIELD WAS NOT EQUAL TO 'M'.
+      *C  2) ADDED GO TO STATEMENTS TO END THE CHECKING OF
+      *C     WORK ORDER PARTS WHEN THE NO-DW-SW SWITCH WAS SET.
+      *C  3) ADDED VARIABLE WONUM-KEY TO STORE THE VALID WORK
+      *C     ORDER NUMBER NEEDED WHEN CHECKING WO PARTS.
+      *C  4) ADDED PARAGRAPH NUMBERS FOR READABILITY.
+      *C {5)  TBLOWUP}
+      *C   11/11/93   M. L. MITCHELL / JIM COFFMAN
+      *C     IN PARAGRAPH 61-63-CP-CONT, ADDED A CHECK FOR FIELD
+      *C     PRT-ACT-QTY-9.  IF NOT NUMERIC, MOVE SPACES.
+      *C   09/17/96   WL  MCINTYRE
+      *C     MADE REVISIONS FOR YEAR 2000 COMPATABILITY
+      *C
+      *C   07/12/00   J E COFFMAN
+      *C     ADDED A CHANGE WHEN REQ INFORMATION IS RETRIEVED
+      *C     IN CMANINQ AND THE REQUISITION IS SITTING WITH
+      *C     'RETURNED  ' IN THE HOLD STATUS AND THE REQUISITION
+      *C     IS GREATER THAN 60 DAYS OLD. I FOUND NUMEROUS
+      *C     OCCURRENCES OF THIS IN DANVILLE. I.E WORK ORDERS
+      *C     WERE REMINING IN THE SYSTEM THAT COULD BE DELETED.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          C01              IS NEW-PAGE
+                               I-O-FEEDBACK     IS I-O-FEEDBACK-AREA
+                               REQUESTOR        IS WORK-STATION
+                               SYSTEM-CONSOLE   IS CONSOLE
+                               LOCAL-DATA       IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-BASIC
+                  ASSIGN TO DATABASE-MCFLMM1002
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-PARTS
+                  ASSIGN TO DATABASE-MCFLMM1201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-PLANNED
+                  ASSIGN TO DATABASE-MCFLMM1102
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE IS RANDOM
+                  RELATIVE KEY IS PFKEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT SAVE-FILE
+                  ASSIGN TO DISK-MCFPMMSAVE
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT PRINT-FILE
+                  ASSIGN TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  WOB-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1002.
+
+       FD  WO-PARTS
+           LABEL RECORDS ARE STANDARD.
+       01  WOM-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1201.
+
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  WOP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1102.
+
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD.
+       01  MAST-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  SAVE-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  SAVE-REC            PIC 9(3).
+
+       FD  PRINT-FILE RECORD CONTAINS 80 CHARACTERS
+           LABEL RECORDS ARE OMITTED
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC           PIC X(80).
+
+       WORKING-STORAGE SECTION.
+       77  FILE-STATUS         PIC XX.
+       77  C1                  PIC 9(5).
+       77  C2                  PIC 9(5).
+       77  C3                  PIC 9(5).
+       77  C4                  PIC 9(5).
+       77  NO-DW-SW            PIC 9.
+       77  PFKEY               PIC 9(9).
+       77  PLANT-IDENT-SAVE    PIC X(3).
+       77  RECORD-TYPE         PIC X.
+       77  STOP-READ           PIC X.
+       77  WO-DATA             PIC X(850).
+       77  GOBACK-SW           PIC X.
+       77  ERROR-DATA          PIC X(40).
+       77  BASE-STORES         PIC X(24).
+
+       01  CDATE-CN.
+           05 CDATE-CENT       PIC 99.
+           05 CDATE.
+              10 CDATE-YY      PIC 99.
+              10 CDATE-MM      PIC 99.
+              10 CDATE-DD      PIC 99.
+
+       01  DDATE.
+           05 DMM              PIC 99.
+           05 FILLER           PIC X      VALUE "/".
+           05 DDD              PIC 99.
+           05 FILLER           PIC X      VALUE "/".
+           05 DCC              PIC 99.
+           05 DYY              PIC 99.
+
+       01  CTIME.
+           05 HHMN.
+              10 HH            PIC 99.
+              10 MN            PIC 99.
+           05 FILLER           PIC X(4).
+
+      *--------- PARAMETERS FOR "JULGREG" ROUTINE.
+       01  JULGREG-PARMS.
+           05  GREG-DATE.
+               10  GREG-CC          PIC X(2).
+               10  GREG-YMD.
+                   15  GREG-YY      PIC X(2).
+                   15  GREG-MM      PIC X(2).
+                   15  GREG-DD      PIC X(2).
+           05  GREG-DATE-RD REDEFINES GREG-DATE.
+               10  GREG-CCYY        PIC X(4).
+               10  GREG-MMDD        PIC X(4).
+           05  JULIAN-DATE.
+               10  JUL-CCYY         PIC 9(4).
+               10  JUL-DDD          PIC 9(3).
+           05  DAY-DIGIT            PIC X.
+           05  LEAP-YEAR-FLAG       PIC X.
+
+       01  GDATE.
+           05 GYY              PIC 99.
+           05 GMM              PIC 99.
+           05 GDD              PIC 99.
+
+       01  JDATE.
+           05 JYY              PIC 99.
+           05 JDDD             PIC 999.
+
+       01  24HR-CHECK.
+           05  CC-24HR.
+               10  CC-24HR-9   PIC 99.
+           05  YY-24HR.
+               10  YY-24HR-9   PIC 99.
+           05  MM-24HR.
+               10  MM-24HR-9   PIC 99.
+           05  DD-24HR.
+               10  DD-24HR-9   PIC 99.
+           05  TIME-24HR.
+               10  TIME-24HR-9 PIC 9(4).
+
+       01  60DA-CHECK.
+           05  CC-60DA.
+               10  CC-60DA-9   PIC 99.
+           05  YY-60DA.
+               10  YY-60DA-9   PIC 99.
+           05  MM-60DA.
+               10  MM-60DA-9   PIC 99.
+           05  DD-60DA.
+               10  DD-60DA-9   PIC 99.
+           05  TIME-60DA.
+               10  TIME-60DA-9 PIC 9(4).
+
+       01  WO-CW-DATTIM.
+           05  WO-CW-DATE      PIC X(8).
+           05  WO-CW-TIME      PIC X(4).
+
+MLM    01 WONUM-KEY            PIC X(10).
+
+       COPY ESCNAM2            IN COPYLIB.
+
+       COPY CMANREQ            IN COPYLIB.
+
+       COPY OVRPFDATA          IN COPYLIB.
+
+       COPY TBLOWUP            IN COPYLIB.
+
+       COPY DBSTAT         IN COPYLIB.
+
+       01  WO-PARTS-DATA.
+           COPY DWOPARTS       IN COPYLIB.
+
+       01  WO-LAST-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       COPY LANGSUB        IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       1-OPEN-PAR.
+           OPEN INPUT          SAVE-FILE.
+           OPEN I-O            WO-BASIC.
+           OPEN I-O            WO-PARTS.
+           OPEN I-O            WO-PLANNED.
+           OPEN I-O            WO-LAST-NUM-USED.
+
+      *    MOVE 0              TO OVRPRTF-TOFILE-NUM.
+      *    PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT         PRINT-FILE.
+
+           MOVE SPACES         TO WONUM-KEY.
+           MOVE 0              TO C1 C2 C3 C4.
+           ACCEPT CDATE        FROM DATE.
+           MOVE CDATE-MM       TO DMM.
+           MOVE CDATE-DD       TO DDD.
+           MOVE CDATE-YY       TO DYY.
+           ACCEPT CTIME        FROM TIME.
+
+      *-----  FORMAT DATE WITH CENTURY
+
+           IF CDATE-YY > "70"
+              MOVE "19" TO CDATE-CENT DCC
+           ELSE
+              MOVE "20" TO CDATE-CENT DCC.
+
+           MOVE SPACES TO JULGREG-PARMS.
+           MOVE CDATE-CN       TO GREG-DATE.
+           CALL "JULGREG"      USING GREG-DATE, JULIAN-DATE,
+                                     DAY-DIGIT, LEAP-YEAR-FLAG.
+
+           IF JUL-DDD > 365
+              SUBTRACT 365     FROM JUL-DDD
+              ADD 1            TO   JUL-CCYY
+           ELSE
+              SUBTRACT 1       FROM JUL-DDD.
+
+PDR        IF JUL-DDD = 0
+PDR           MOVE 12          TO   GREG-MM
+PDR           MOVE 31          TO   GREG-DD
+              SUBTRACT 1       FROM JUL-CCYY
+              MOVE JUL-CCYY    TO   GREG-CCYY
+PDR        ELSE
+              MOVE SPACES TO GREG-DATE, DAY-DIGIT, LEAP-YEAR-FLAG
+              CALL "JULGREG"      USING GREG-DATE, JULIAN-DATE,
+                                        DAY-DIGIT, LEAP-YEAR-FLAG.
+
+           MOVE GREG-CC            TO CC-24HR.
+           MOVE GREG-YY            TO YY-24HR.
+           MOVE GREG-MM            TO MM-24HR.
+           MOVE GREG-DD            TO DD-24HR.
+           MOVE HHMN               TO TIME-24HR.
+
+           DISPLAY "24HR-CHECK = " 24HR-CHECK.
+
+           MOVE SPACES         TO PRINT-REC.
+           STRING "****************************************"
+                  "****************************************"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC     AFTER ADVANCING NEW-PAGE.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "****          PROGRAM:  TMODSTAT        "
+                 "       DATE:  " DDATE "              ****"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "****************************************"
+                  "****************************************"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+
+           ACCEPT CDATE        FROM DATE.
+           MOVE CDATE-MM       TO DMM.
+           MOVE CDATE-DD       TO DDD.
+           MOVE CDATE-YY       TO DYY.
+           ACCEPT CTIME        FROM TIME.
+
+      *-----  FORMAT DATE WITH CENTURY
+
+           IF CDATE-YY > "70"
+              MOVE "19" TO CDATE-CENT DCC
+           ELSE
+              MOVE "20" TO CDATE-CENT DCC.
+
+           MOVE SPACES TO JULGREG-PARMS.
+           MOVE CDATE-CN       TO GREG-DATE.
+
+           CALL "JULGREG"      USING GREG-DATE, JULIAN-DATE,
+                                     DAY-DIGIT, LEAP-YEAR-FLAG.
+
+           IF JUL-DDD > 365
+              SUBTRACT 365     FROM JUL-DDD
+              ADD 1            TO   JUL-CCYY
+           ELSE
+           IF JUL-DDD < 60
+               ADD 305         TO   JUL-DDD
+           ELSE
+           SUBTRACT 60         FROM JUL-DDD.
+
+           MOVE SPACES         TO GREG-DATE, DAY-DIGIT, LEAP-YEAR-FLAG.
+           CALL "JULGREG"      USING GREG-DATE, JULIAN-DATE,
+                                     DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE GREG-CC        TO CC-60DA.
+           MOVE GREG-YY        TO YY-60DA.
+           MOVE GREG-MM        TO MM-60DA.
+           MOVE GREG-DD        TO DD-60DA.
+           MOVE HHMN           TO TIME-60DA.
+
+           DISPLAY "60DA-CHECK = " 60DA-CHECK.
+
+           MOVE SPACES         TO PRINT-REC.
+           STRING "****************************************"
+                  "****************************************"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC     AFTER ADVANCING NEW-PAGE.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "****          PROGRAM:  TMODSTAT        "
+                 "       DATE:  " DDATE "              ****"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "****************************************"
+                  "****************************************"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+
+           READ SAVE-FILE      AT END
+             MOVE " ON READ OF SAVE-FILE" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           IF SAVE-REC NOT NUMERIC
+             MOVE 42           TO SAVE-REC
+           ELSE
+           IF SAVE-REC > 42
+             NEXT SENTENCE
+      *      MOVE 42           TO SAVE-REC
+           ELSE
+           IF SAVE-REC < 14
+             MOVE 14           TO SAVE-REC.
+
+           MOVE SPACES         TO JULGREG-PARMS.
+           MOVE CDATE-CN       TO GREG-DATE.
+
+           CALL "JULGREG"      USING GREG-DATE, JULIAN-DATE,
+                                     DAY-DIGIT, LEAP-YEAR-FLAG.
+
+           ADD SAVE-REC        TO   JUL-DDD.
+           IF JUL-DDD > 365
+              SUBTRACT 365     FROM JUL-DDD
+              ADD 1            TO   JUL-CCYY.
+
+           MOVE SPACES         TO GREG-DATE, DAY-DIGIT, LEAP-YEAR-FLAG.
+           CALL "JULGREG"      USING GREG-DATE, JULIAN-DATE,
+                                     DAY-DIGIT, LEAP-YEAR-FLAG.
+           PERFORM 6-MAIN    THRU 6-EXIT.
+           PERFORM 2-END-OF-JOB.
+
+       2-END-OF-JOB.
+           IF C1 = 0 AND C3 = 0
+             READ WO-LAST-NUM-USED INTO WO-LAST-USED-DATA
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS
+             END-READ
+             IF FILE-STATUS NOT = "00"
+               MOVE " ON READ OF WO-LAST-NUM-USED" TO ERROR-DATA
+               PERFORM 99-ERROR-ROUTINE
+             ELSE
+               IF LAST-HISTORY-SEQ NOT NUMERIC
+                 MOVE 9999     TO LAST-HISTORY-SEQ
+                 REWRITE MAST-REC FROM WO-LAST-USED-DATA
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                 END-REWRITE
+                 IF FILE-STATUS NOT = "00"
+                   MOVE " ON MODIFY OF WO-LAST-NUM-USED" TO ERROR-DATA
+                   PERFORM 99-ERROR-ROUTINE
+                 ELSE
+                   NEXT SENTENCE
+               ELSE
+               IF LAST-HISTORY-SEQ = 1
+                 MOVE 9999     TO LAST-HISTORY-SEQ
+                 REWRITE MAST-REC FROM WO-LAST-USED-DATA
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                 END-REWRITE
+                 IF FILE-STATUS NOT = "00"
+                   MOVE " ON MODIFY OF WO-LAST-NUM-USED" TO ERROR-DATA
+                   PERFORM 99-ERROR-ROUTINE
+                 ELSE
+                   NEXT SENTENCE
+               ELSE
+                 SUBTRACT 1    FROM LAST-HISTORY-SEQ
+                 REWRITE MAST-REC FROM WO-LAST-USED-DATA
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                 END-REWRITE
+                 IF FILE-STATUS NOT = "00"
+                   MOVE " ON MODIFY OF WO-LAST-NUM-USED" TO ERROR-DATA
+                   PERFORM 99-ERROR-ROUTINE.
+
+           CLOSE               WO-BASIC.
+           CLOSE               WO-PARTS.
+           CLOSE               WO-PLANNED.
+           CLOSE               WO-LAST-NUM-USED.
+           CLOSE               SAVE-FILE.
+
+           MOVE SPACES         TO PRINT-REC.
+           STRING "      VERBAL  WORK ORDERS UPDATED TO FF STATUS  " C1
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC     AFTER ADVANCING 4.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "      VERBAL  WORK ORDERS UPDATED TO DW STATUS  " C2
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "      PLANNED WORK ORDERS UPDATED TO FF STATUS  " C3
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "   PM PLANNED WORK ORDERS UPDATED TO DW STATUS  " C4
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE SPACES         TO PRINT-REC.
+           WRITE               PRINT-REC.
+           IF C1 = 0 AND C3 = 0
+             MOVE "      NO HISTORY WAS CREATED"
+                               TO PRINT-REC
+             WRITE PRINT-REC   AFTER ADVANCING 2
+           ELSE
+             MOVE SPACES       TO PRINT-REC
+             STRING "      HISTORY SEQUENCE NUMBER " LAST-HISTORY-SEQ
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC
+             WRITE PRINT-REC   AFTER ADVANCING 2
+             MOVE SPACES       TO PRINT-REC
+             STRING "      WORK ORDERS UPDATED TO FF WILL BE DELETED"
+                     " ON " GREG-DATE
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC
+             WRITE PRINT-REC.
+
+           CLOSE               PRINT-FILE.
+           GOBACK.
+
+       6-MAIN.
+           MOVE 1              TO PFKEY.
+           READ WO-LAST-NUM-USED INTO WO-LAST-USED-DATA
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE " ON READ OF WO-LAST-NUM-USED" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           MOVE PLANT-IDENT    TO PLANT-IDENT-SAVE.
+           IF PLANT-IDENT-SAVE NUMERIC
+             NEXT SENTENCE
+           ELSE
+             MOVE ">>"         TO FILE-STATUS
+             MOVE SPACES       TO ERROR-DATA
+             STRING " INVALID PLANT IDENTIFICATION "
+                               PLANT-IDENT-SAVE
+                               DELIMITED BY SIZE
+                               INTO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           IF LAST-HISTORY-SEQ NOT NUMERIC
+             MOVE 1            TO LAST-HISTORY-SEQ
+           ELSE
+           IF LAST-HISTORY-SEQ = 9999
+             MOVE 1            TO LAST-HISTORY-SEQ
+           ELSE
+             ADD  1            TO LAST-HISTORY-SEQ.
+
+           REWRITE MAST-REC    FROM WO-LAST-USED-DATA
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE " ON MODIFY OF WO-LAST-NUM-USED" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+      *** WRITE BAD INDEX RECORD TO HISTORY FILE ***
+
+           MOVE "F"            TO RECORD-TYPE.
+           CALL "THISTORY" USING RECORD-TYPE
+                                 WO-DATA
+                                 PLANT-IDENT
+                                 LAST-HISTORY-SEQ.
+
+      *** UPDATE VERBAL WORK ORDER STATUSES ***
+
+           MOVE "DW"           TO WOSTATUS OF WOB-REC.
+           START WO-BASIC      KEY IS = WOSTATUS OF WOB-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+             MOVE "N"          TO STOP-READ
+             PERFORM 60-MOD-VERBAL-DW THRU 60-EXIT
+                               UNTIL STOP-READ = "Y".
+
+           MOVE "CW"           TO WOSTATUS OF WOB-REC.
+           START WO-BASIC      KEY IS = WOSTATUS OF WOB-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+             MOVE "N"          TO STOP-READ
+             PERFORM 61-MOD-VERBAL-CW THRU 61-EXIT
+                               UNTIL STOP-READ = "Y".
+
+      *** UPDATE PLANNED WORK ORDER STATUS ***
+
+           MOVE "DW"           TO WOSTATUS OF WOP-REC.
+           START WO-PLANNED    KEY IS = WOSTATUS OF WOP-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+             MOVE "N"          TO STOP-READ
+             PERFORM 62-MOD-PLANNED-DW THRU 62-EXIT
+                               UNTIL STOP-READ = "Y".
+
+           MOVE "CW"           TO WOSTATUS OF WOP-REC.
+           START WO-PLANNED    KEY IS = WOSTATUS OF WOP-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+             MOVE "N"          TO STOP-READ
+             PERFORM 63-MOD-PLANNED-CW THRU 63-EXIT
+                               UNTIL STOP-READ = "Y".
+
+      *** REWRITE INDEX RECORD TO INDICATE THAT HISTORY IS COMPLETE ***
+
+           MOVE "L"            TO RECORD-TYPE.
+           CALL "THISTORY" USING RECORD-TYPE
+                                 WO-DATA
+                                 PLANT-IDENT
+                                 LAST-HISTORY-SEQ.
+
+       6-EXIT.
+           EXIT.
+
+       60-MOD-VERBAL-DW.
+           READ WO-BASIC       NEXT RECORD
+               AT END          MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE "Y"          TO STOP-READ
+             GO TO 60-EXIT.
+
+           IF WOSTATUS OF WOB-REC NOT = "DW"
+             REWRITE WOB-REC   INVALID KEY
+               MOVE FILE-STATUS TO FILE-STATUS
+             END-REWRITE
+             MOVE "Y"          TO STOP-READ
+             GO TO 60-EXIT.
+
+           MOVE DATECOMP OF WOB-REC TO WO-CW-DATE.
+           MOVE TIMECOMP OF WOB-REC TO WO-CW-TIME.
+           IF WO-CW-DATTIM < 24HR-CHECK
+               NEXT SENTENCE
+           ELSE
+           GO TO 60-MOD-VERBAL-DW.
+
+           MOVE "FF"           TO WOSTATUS   OF WOB-REC.
+           MOVE LAST-HISTORY-SEQ TO BASSEQNUM  OF WOB-REC.
+           MOVE GREG-DATE      TO BASDELDATE OF WOB-REC.
+           MOVE WOB-REC        TO WO-DATA.
+
+           REWRITE WOB-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE " ON MODIFY OF WO-BASIC" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           ADD 1               TO C1.
+
+      *** WRITE VERBAL HISTORY RECORDS ***
+
+           MOVE "V"            TO RECORD-TYPE.
+           CALL "THISTORY" USING RECORD-TYPE
+                                 WO-DATA
+                                 PLANT-IDENT
+                                 LAST-HISTORY-SEQ.
+
+           IF C1 > 5000
+             MOVE "Y"          TO STOP-READ.
+
+       60-EXIT.
+           EXIT.
+
+       61-MOD-VERBAL-CW.
+           READ WO-BASIC       NEXT RECORD
+               AT END          MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE "Y"          TO STOP-READ
+             GO TO 61-EXIT.
+
+           IF WOSTATUS OF WOB-REC NOT = "CW"
+             REWRITE WOB-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS
+             END-REWRITE
+             MOVE "Y"          TO STOP-READ
+             GO TO 61-EXIT.
+
+           MOVE DATECOMP OF WOB-REC TO WO-CW-DATE.
+           MOVE TIMECOMP OF WOB-REC TO WO-CW-TIME.
+           IF WO-CW-DATTIM < 24HR-CHECK
+               MOVE 0 TO NO-DW-SW
+MLM            MOVE WONUM OF WOB-REC TO WONUM-KEY
+               PERFORM 61-63-CHECK-PARTS THRU 61-63-EXIT
+               IF NO-DW-SW > 0
+                   MOVE SPACES TO PRINT-REC
+                   STRING WONUM OF WOB-REC
+                       " HAS PARTS/REQ ERRORS ON "  PRT-REQ-NO
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC
+                   WRITE PRINT-REC
+                   GO TO 61-MOD-VERBAL-CW
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           GO TO 61-MOD-VERBAL-CW.
+
+           MOVE "DW"           TO WOSTATUS OF WOB-REC.
+
+           REWRITE WOB-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE " ON MODIFY OF WO-BASIC" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           ADD 1               TO C2.
+
+       61-EXIT.
+           EXIT.
+
+       62-MOD-PLANNED-DW.
+           READ WO-PLANNED     NEXT RECORD
+               AT END          MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE "Y"          TO STOP-READ
+             GO TO 62-EXIT.
+
+           IF WOSTATUS OF WOP-REC NOT = "DW"
+             REWRITE WOP-REC   INVALID KEY
+                 MOVE FILE-STATUS TO FILE-STATUS
+             END-REWRITE
+             MOVE "Y"          TO STOP-READ
+             GO TO 62-EXIT.
+
+           MOVE DATECOMP OF WOP-REC TO WO-CW-DATE.
+           MOVE TIMECOMP OF WOP-REC TO WO-CW-TIME.
+           IF WO-CW-DATTIM < 24HR-CHECK
+               NEXT SENTENCE
+           ELSE
+           GO TO 62-MOD-PLANNED-DW.
+
+           MOVE "FF"           TO WOSTATUS OF WOP-REC.
+           MOVE LAST-HISTORY-SEQ TO PLDSEQNUM OF WOP-REC.
+           MOVE GREG-DATE      TO PLDDELDATE OF WOP-REC.
+           MOVE WOP-REC        TO WO-DATA.
+
+           REWRITE WOP-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE " ON MODIFY OF WO-PLANNED" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           ADD 1               TO C3.
+
+      *** WRITE PLANNED HISTORY RECORDS ***
+
+           MOVE "P"            TO RECORD-TYPE.
+           CALL "THISTORY" USING RECORD-TYPE
+                                 WO-DATA
+                                 PLANT-IDENT
+                                 LAST-HISTORY-SEQ.
+
+           IF C3 > 1000
+             MOVE "Y"          TO STOP-READ.
+
+       62-EXIT.
+           EXIT.
+
+       63-MOD-PLANNED-CW.
+           READ WO-PLANNED     NEXT RECORD
+               AT END          MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE "Y"          TO STOP-READ
+             GO TO 63-EXIT.
+
+           IF WOSTATUS OF WOP-REC NOT = "CW"
+             REWRITE WOP-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS
+             END-REWRITE
+             MOVE "Y"          TO STOP-READ
+             GO TO 63-EXIT.
+
+           IF STRTSTATUS OF WOP-REC = "AA" OR "AR"
+               NEXT SENTENCE
+           ELSE
+               GO TO 63-MOD-PLANNED-CW.
+
+           MOVE DATECOMP OF WOP-REC TO WO-CW-DATE.
+           MOVE TIMECOMP OF WOP-REC TO WO-CW-TIME.
+           IF WO-CW-DATTIM < 24HR-CHECK
+               MOVE 0 TO NO-DW-SW
+MLM            MOVE WONUM OF WOP-REC TO WONUM-KEY
+               PERFORM 61-63-CHECK-PARTS THRU 61-63-EXIT
+               IF NO-DW-SW > 0
+                   MOVE SPACES TO PRINT-REC
+                   STRING WONUM OF WOP-REC
+                       " HAS PARTS/REQ ERRORS ON "  PRT-REQ-NO
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC
+                   WRITE PRINT-REC
+                   GO TO 63-MOD-PLANNED-CW
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           GO TO 63-MOD-PLANNED-CW.
+
+           MOVE "DW"           TO WOSTATUS OF WOP-REC.
+
+           REWRITE WOP-REC
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+             MOVE " ON MODIFY OF WO-PLANNED" TO ERROR-DATA
+             PERFORM 99-ERROR-ROUTINE
+             GO TO 2-END-OF-JOB.
+
+           ADD 1               TO C4.
+
+       63-EXIT.
+           EXIT.
+
+       61-63-CHECK-PARTS.
+MLM        MOVE WONUM-KEY      TO  WONUM OF WOM-REC.
+           START WO-PARTS      KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     GO TO 61-63-EXIT.
+           IF FILE-STATUS NOT = "00" GO TO 61-63-EXIT.
+       61-63-CP-CONT.
+           READ WO-PARTS       NEXT INTO WO-PARTS-DATA
+               AT END          MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"    GO TO 61-63-EXIT.
+MLM        IF PRT-WO-NU NOT = WONUM-KEY GO TO 61-63-EXIT.
+           IF PRT-DELETE-FLAG = "D"     GO TO 61-63-CP-CONT.
+MLM        IF PRT-STATUS-1 NOT = "M"
+MLM          GO TO 61-63-CP-CONT.
+MLM   *    IF PRT-STATUS-1 = "R"
+MLM   *        IF PRT-ACT-QTY-9 > 0
+MLM   *            NEXT SENTENCE
+MLM   *        ELSE
+MLM   *        MOVE 1 TO NO-DW-SW
+MLM   *        GO TO 61-63-EXIT.
+           IF PRT-REQ-NO = SPACES OR "CANCEL" GO TO 61-63-CP-CONT.
+           MOVE SPACES TO CMR-DATA CMR-RETURNED-DATA CMR-DESC
+               CMR-REMARKS CMR-MISC-PARMS BU-DISPLAY-MSG.
+           MOVE "IN" TO CMR-CALL-MODE.
+           MOVE PRT-WO-NU        TO CMR-WO-NUMBER.
+           MOVE PRT-REQ-NO       TO CMR-REQ-NUMBER.
+           CALL "CMANINQ" USING BASE-STORES
+                                CMR-CALL-MODE
+                                CMR-DATA
+                                CMR-DESC
+                                CMR-REMARKS
+                                CMR-RETURNED-DATA
+                                CMR-MISC-PARMS
+                                LANGUAGE-PARMS
+                                ESC-NAME
+                                STATUS-AREA
+                                BU-DISPLAY-MSG.
+           IF CMR-RETURN-STATUS = "NE"
+            IF WO-CW-DATTIM < 60DA-CHECK
+             GO TO 61-63-EXIT
+            ELSE
+            MOVE 1 TO NO-DW-SW
+MLM         GO TO 61-63-EXIT.
+MLM   *    ELSE
+           IF CMR-RETURN-STATUS = "C1" OR "C2"
+            IF WO-CW-DATTIM < 60DA-CHECK
+             GO TO 61-63-EXIT
+            ELSE
+            MOVE 1 TO NO-DW-SW
+MLM         GO TO 61-63-EXIT.
+MLM   *     ELSE
+           IF CMR-RETURN-STATUS = "OK"
+            IF CMR-REQ-HOLD-STATUS = "RETURNED  "
+                IF CMR-REQ-DATE-CN < 60DA-CHECK
+      *             DISPLAY "REQ " CMR-REQ-NUMBER " DELETEABLE"
+                    GO TO 61-63-EXIT
+                ELSE
+                MOVE 1 TO NO-DW-SW
+                GO TO 61-63-EXIT
+            ELSE
+            IF CMR-REQ-RELEASE-STAT = "  "
+             MOVE 1 TO NO-DW-SW
+MLM          GO TO 61-63-EXIT.
+NLN   *       ELSE
+           IF CMR-REQ-RELEASE-STAT = "X "
+            MOVE 1 TO NO-DW-SW
+MLM         GO TO 61-63-EXIT.
+MLM   *        ELSE
+MLM        IF PRT-ACT-QTY-9 NOT NUMERIC
+MLM          MOVE ZEROS TO PRT-ACT-QTY-9.
+           IF CMR-REQ-RELEASE-STAT = "XX"
+            IF CMR-NON-RCV-INDIC = "X"
+             NEXT SENTENCE
+            ELSE
+             IF CMR-PO-QTY-DLVR NOT < CMR-PO-QTY-ORD
+              IF CMR-PO-TOTAL-PRICE > 0
+               MOVE CMR-PO-NO-AND-REL TO PRT-PO-NO
+               MULTIPLY CMR-PO-UNIT-PRICE BY PRT-ACT-QTY-9
+                   GIVING P-ACT-COST ROUNDED
+               REWRITE WOM-REC FROM WO-PARTS-DATA
+                  INVALID KEY
+                   MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+              ELSE
+               IF WO-CW-DATTIM < 60DA-CHECK
+                MOVE CMR-PO-NO-AND-REL TO PRT-PO-NO
+                MULTIPLY CMR-PO-UNIT-PRICE BY PRT-ACT-QTY-9
+                    GIVING P-ACT-COST ROUNDED
+                REWRITE WOM-REC FROM WO-PARTS-DATA
+                   INVALID KEY
+                    MOVE FILE-STATUS TO FILE-STATUS
+                END-REWRITE
+               ELSE
+                MOVE 1 TO NO-DW-SW
+MLM             GO TO 61-63-EXIT
+             ELSE
+               IF WO-CW-DATTIM < 60DA-CHECK
+                MOVE CMR-PO-NO-AND-REL TO PRT-PO-NO
+                MULTIPLY CMR-PO-UNIT-PRICE BY PRT-ACT-QTY-9
+                    GIVING P-ACT-COST ROUNDED
+                REWRITE WOM-REC FROM WO-PARTS-DATA
+                   INVALID KEY
+                    MOVE FILE-STATUS TO FILE-STATUS
+                END-REWRITE
+               ELSE
+                MOVE 1 TO NO-DW-SW
+MLM             GO TO 61-63-EXIT.
+
+           GO TO 61-63-CP-CONT.
+
+       61-63-EXIT.
+           EXIT.
+
+       99-ERROR-ROUTINE.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "########################################"
+                  "########################################"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC     AFTER ADVANCING NEW-PAGE.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "    TMODSTAT ERROR:  FILE STATUS = "
+                               FILE-STATUS ERROR-DATA
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+           MOVE SPACES         TO PRINT-REC.
+           STRING "########################################"
+                  "########################################"
+                               DELIMITED BY SIZE
+                               INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+       99-E-R-EXIT.
+           EXIT.
+
+       COPY OVRPFCALL OF COPYLIB.
+

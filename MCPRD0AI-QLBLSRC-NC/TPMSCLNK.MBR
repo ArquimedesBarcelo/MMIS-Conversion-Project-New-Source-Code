@@ -1,0 +1,531 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TPMSCLNK.
+       AUTHOR.                 M. L. MITCHELL.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.     THIS PROGRAM LINKS A USER INPUTTED WORK-ORDER
+      *             NUMBER TO A MASTER SCHEDULE NAME.
+      *C ADDED THE ABILITY OF THIS PROGRAM TO CREATE AND/OR LINK
+      *C   MASTER SCHEDULES TO SEVERAL MASTER WO BY EQUIPMENT.
+      *C   IF NO EQUIPMENT IS INPUTTED TO CONVERT TO A MASTER
+      *C   SCHEDULE, THE LINKING WILL ONLY BE DONE FOR THE EQUIPMENT
+      *C   NUMBERS ENTERED.
+      *C                       JEFF BUNGO.
+      *C
+      *C   03/11/1998   CA YODER   REQ #97-1125
+      *C     CHANGED PASSWORD FROM 6 TO 8 FOR CALL TO "TPERPASS."
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-PLANNED
+                  ASSIGN TO DATABASE-MCFLMM1103
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE IS RANDOM
+                  RELATIVE KEY IS ARG-NO
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT PM-MASTER-SCHED
+                  ASSIGN TO DATABASE-MCFLMM4301
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT PREV-MAINT
+                  ASSIGN TO DATABASE-MCFLMM1401
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES
+                  FILE STATUS IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPMMAINT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS SCREEN-STATUS
+                  MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  WO-PLANNED-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1103.
+
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD.
+       01  WO-LAST-NUM-USED-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  PM-MASTER-SCHED
+           LABEL RECORDS ARE STANDARD.
+       01  PMS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4301.
+
+       FD  PREV-MAINT
+           LABEL RECORDS ARE STANDARD.
+       01  PREV-MAINT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1401.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9(9).
+       77  CNUM-BUF            PIC X(04).
+       77  CNAM-BUF            PIC X(16).
+       77  PWORD-SWITCH        PIC X.
+       77  RTRN-CODE           PIC XX    VALUE "0 ".
+       77  TRUE-VAL            PIC 1     VALUE B"1".
+       77  LINK-EQP            PIC X(06) VALUE SPACES.
+       77  SUB                 PIC S9(4) VALUE 0.
+
+       01  DB-ERROR.
+           05  DB-TYPE   PIC X(08) VALUE SPACES.
+           05  FILLER    PIC X(21) VALUE " ERROR - COND-WORD = ".
+           05  CON-WORD  PIC -9999.
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X   VALUE "0".
+           05 FILE-STAT-2      PIC X   VALUE "0".
+
+       01  SCREEN-DATA.
+           05  SCREEN-ENTRY.
+             10  EQP-SCH         PIC X(06).
+             10  SC-NAME-BUF     PIC X(10).
+             10  EQUIPMENT-LINKS.
+                 15  EQP-LINK OCCURS 10 TIMES PIC X(06).
+           05  SCREEN-MSGS.
+               10  CMDMSG      PIC X(79).
+               10  ERRMSG      PIC X(79).
+
+       01  TRANS-COMPLETE-MSG.
+           05    FILLER        PIC X(11) VALUE SPACES.
+           05  TC-WO-NUM       PIC X(10) VALUE SPACES.
+           05    FILLER        PIC X(36) VALUE SPACES.
+           05  TC-SCHED        PIC X(10) VALUE SPACES.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY SCREENIO       IN COPYLIB.
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+           COPY LANGSUB        IN COPYLIB.
+
+       01  LAST-WO-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  MESSAGE-BUFFER-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TPMSCLNK".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "IN".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " G0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A     PIC X(60) VALUE
+           "LINKS EXISTING PM MASTER AND SUFFIXED WORKORDERS TO THE   ".
+               10  PROG-DESC-B     PIC X(60) VALUE
+           "NEW MASTER SCHEDULE.                                      ".
+               10  PROG-FUNCTION   PIC X(60) VALUE
+           "                                                          ".
+           05  PASSWORD-FLAG       PIC X.
+
+       01  PWORD-BUFFER.
+      *----------- EXPANDED PASSWORD FROM 6 TO 8 CHARACTERS.
+      **** 05  PWORD-BUF       PIC X(06).
+           05  PWORD-BUF       PIC X(08).
+           05  PWD-X           PIC XX.
+           05  DATE-BUFF       REDEFINES PWD-X
+                               PIC 9(2).
+
+       01  PM-MSCHED-DATA.
+           COPY DPMMSTSC       IN COPYLIB.
+
+           COPY VCOMAREA       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  PREV-MAINT-DATA.
+           COPY DPMTRANS       IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       BEGIN.
+           MOVE SPACES         TO CNUM-BUF  CNAM-BUF.
+
+           OPEN I-O            WO-PLANNED.
+           OPEN I-O            PM-MASTER-SCHED.
+           OPEN INPUT          PREV-MAINT.
+           OPEN I-O            DISPLAY-FILE.
+
+           OPEN INPUT          WO-LAST-NUM-USED.
+           MOVE SPACES TO LAST-WO-USED-DATA.
+           MOVE 1 TO ARG-NO.
+           READ  WO-LAST-NUM-USED INTO LAST-WO-USED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               DISPLAY "UNABLE TO GET LAST-WO-USED DATA."
+                       "    FILE-STAT = " FILE-STAT
+               CLOSE           WO-LAST-NUM-USED
+               GO TO END-OF-JOB.
+
+           CLOSE               WO-LAST-NUM-USED.
+
+           MOVE DATE-FLAG-SW   TO DATE-FLAG.
+           IF DB-VERSION = SPACES
+               MOVE "VERSION " TO DB-TYPE
+               MOVE 0 TO CON-WORD
+               DISPLAY "MMISA DATABASE HAS NO VERSION NUMBER"
+               DISPLAY DB-ERROR
+               GOBACK.
+
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               GO TO END-OF-JOB.
+
+           CALL "TPERPASS" USING CNUM-BUF
+                                 CNAM-BUF
+                                 PWORD-BUFFER
+                                 PWORD-SWITCH.
+           IF PWORD-SWITCH = "N"
+               GO TO END-OF-JOB.
+
+           MOVE "VSCHLINK"     TO SCREEN-NAME.
+           MOVE SPACES         TO SCREEN-DATA.
+
+       SHOWFORM.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           MOVE "00"           TO SCREEN-STATUS.
+           WRITE DISPLAY-REC  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+
+           IF KEY-HIT = 1
+               MOVE SPACES TO SCREEN-ENTRY
+               GO TO SHOWFORM.
+
+           IF KEY-HIT = 3 OR 8
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM.
+
+           IF SC-NAME-BUF = "          "
+      **********************************************************************
+      **    MESSAGE 039/057:
+      ** MASTER SCHEDULE NAME IS REQUIRED
+      **********************************************************************
+               MOVE  39        TO LANG-SETNUM
+               MOVE  57        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM.
+
+           IF EQP-SCH = SPACES AND EQUIPMENT-LINKS = SPACES
+               GO TO SHOWFORM.
+
+           IF EQP-SCH NOT = SPACES
+               MOVE EQP-SCH TO PMEQPNUM OF PREV-MAINT
+               START PREV-MAINT KEY = PMEQPNUM OF PREV-MAINT
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-START
+               IF FILE-STAT NOT = "00"
+      **********************************************************************
+      **    MESSAGE 031/106:
+      ** EQUIPMENT HAS NO SCHEDULE
+      **********************************************************************
+                 MOVE  31        TO LANG-SETNUM
+                 MOVE  106       TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE   6        TO FIELD-NUMBER
+                 PERFORM 65-ERROR
+                 GO TO SHOWFORM
+               END-IF
+               READ PREV-MAINT NEXT INTO PREV-MAINT-DATA
+                   AT END MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT NOT = "00"
+      **********************************************************************
+      **    MESSAGE 031/106:
+      ** EQUIPMENT HAS NO SCHEDULE
+      **********************************************************************
+                 MOVE  31        TO LANG-SETNUM
+                 MOVE  106       TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE   6        TO FIELD-NUMBER
+                 PERFORM 65-ERROR
+                 GO TO SHOWFORM
+               END-IF
+               IF PM-EQUIP-NUM NOT = EQP-SCH
+      **********************************************************************
+      **    MESSAGE 031/106:
+      ** EQUIPMENT HAS NO SCHEDULE
+      **********************************************************************
+                 MOVE  31        TO LANG-SETNUM
+                 MOVE  106       TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE   6        TO FIELD-NUMBER
+                 PERFORM 65-ERROR
+                 GO TO SHOWFORM
+               END-IF
+           END-IF.
+
+           MOVE SC-NAME-BUF TO PMSCHEDKEY OF PM-MASTER-SCHED.
+           MOVE "01" TO PMLEVEL OF PM-MASTER-SCHED.
+           START PM-MASTER-SCHED KEY = PMSCHEDKEY OF PM-MASTER-SCHED
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+             IF EQP-SCH = SPACES
+      *M********************************************************************
+      *M    MESSAGE 039/056:
+      *M MASTER SCHEDULE NAME DOES NOT EXIST
+      *M********************************************************************
+               MOVE  39        TO LANG-SETNUM
+               MOVE  56        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM
+             ELSE
+               GO TO CONVERT-CONTINUE.
+
+           READ PM-MASTER-SCHED NEXT INTO PM-MSCHED-DATA
+               AT END MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+             IF EQP-SCH = SPACES
+      *M********************************************************************
+      *M    MESSAGE 039/056:
+      *M MASTER SCHEDULE NAME DOES NOT EXIST
+      *M********************************************************************
+               MOVE  39        TO LANG-SETNUM
+               MOVE  56        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM
+             ELSE
+               GO TO CONVERT-CONTINUE.
+           IF FILE-STAT NOT = "00"
+               MOVE "DBGET   " TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM.
+           IF PMS-SCHED-KEY NOT = SC-NAME-BUF
+             IF EQP-SCH = SPACES
+      *M********************************************************************
+      *M    MESSAGE 039/056:
+      *M MASTER SCHEDULE NAME DOES NOT EXIST
+      *M********************************************************************
+               MOVE  39        TO LANG-SETNUM
+               MOVE  56        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM
+             ELSE
+               GO TO CONVERT-CONTINUE.
+           IF EQP-SCH NOT = SPACES
+      *M********************************************************************
+      *M    MESSAGE 039/058:
+      *M MASTER SCHEDULE NAME ALREADY EXISTS
+      *M********************************************************************
+               MOVE  39        TO LANG-SETNUM
+               MOVE  58        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM
+           END-IF.
+       CONVERT-CONTINUE.
+
+           IF EQP-SCH NOT = SPACES
+               PERFORM CREATE-MASTER-SCH THRU CREATE-MASTER-SCH-EXIT
+               MOVE EQP-SCH TO LINK-EQP
+               PERFORM LINK-EQUIP THRU LINK-EQUIP-EXIT.
+           MOVE 1 TO SUB.
+           PERFORM MAKE-LINKS THRU MAKE-LINKS-EXIT
+               10 TIMES.
+
+      **********************************************************************
+      **    MESSAGE 031/107:
+      ** ENTERED EQUIPMENT NUMBERS NOW LINKED TO MASTER SCHEDULE
+      **********************************************************************
+               MOVE      31            TO  LANG-SETNUM.
+               MOVE      107           TO  LANG-MSGNUM.
+               PERFORM 999-CATREAD    THRU 999-CATREAD-EXIT.
+               MOVE MSG-TEXT           TO  ERRMSG.
+               MOVE TRUE-VAL           TO  IND (99).
+               GO TO SHOWFORM.
+
+       LINK-EQUIP.
+           IF LINK-EQP = SPACES
+               GO TO LINK-EQUIP-EXIT.
+
+           MOVE LINK-EQP TO EQPNUM OF WO-PLANNED.
+           START WO-PLANNED KEY = EQPNUM OF WO-PLANNED
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO LINK-EQUIP-EXIT.
+
+       LINK-EQUIP-LOOP.
+           READ WO-PLANNED NEXT INTO WO-PLANNED-DATA
+               AT END MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO LINK-EQUIP-EXIT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DBGET   " TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE   7        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM.
+
+           IF EQUIP-NUM-P NOT = LINK-EQP
+      *----- UNLOCK RECORD OF WO-PLANNED
+              MOVE HIGH-VALUES TO EQPNUM OF WO-PLANNED
+              START WO-PLANNED KEY > EQPNUM OF WO-PLANNED
+                  INVALID KEY MOVE FILE-STAT TO FILE-STAT
+              END-START
+              GO TO LINK-EQUIP-EXIT.
+
+           IF PM-SCHEDULE-KEY = SC-NAME-BUF
+               GO TO LINK-EQUIP-LOOP.
+
+           IF WO-START-STATUS NOT = "AA"
+              GO TO LINK-EQUIP-LOOP.
+
+           DELETE WO-PLANNED
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DBDELETE" TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE   7        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM.
+
+           MOVE SC-NAME-BUF    TO PM-SCHEDULE-KEY.
+
+           WRITE WO-PLANNED-REC FROM WO-PLANNED-DATA
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DBPUT   " TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE   7        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM.
+
+           GO TO LINK-EQUIP.
+       LINK-EQUIP-EXIT.
+           EXIT.
+
+       MAKE-LINKS.
+           IF EQP-LINK (SUB) NOT = SPACES
+               MOVE EQP-LINK (SUB) TO LINK-EQP
+               PERFORM LINK-EQUIP THRU LINK-EQUIP-EXIT.
+           ADD 1 TO SUB.
+       MAKE-LINKS-EXIT.
+           EXIT.
+
+       CREATE-MASTER-SCH.
+           MOVE EQP-SCH TO PMEQPNUM OF PREV-MAINT.
+           START PREV-MAINT KEY = PMEQPNUM OF PREV-MAINT
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO CREATE-MASTER-SCH-EXIT.
+       CREATE-LOOP.
+           READ PREV-MAINT NEXT INTO PREV-MAINT-DATA
+               AT END MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO CREATE-MASTER-SCH-EXIT.
+           IF PM-EQUIP-NUM NOT = EQP-SCH
+               GO TO CREATE-MASTER-SCH-EXIT.
+           MOVE SC-NAME-BUF TO PMS-SCHED-KEY.
+           MOVE PM-LEVEL TO PMS-LEVEL.
+           MOVE PM-CYCLE TO PMS-CYCLE.
+           MOVE PM-CRITICAL TO PMS-CRITICAL.
+           MOVE PM-LOOK-AHEAD TO PMS-LOOK-AHEAD.
+           MOVE PM-PRE-REL TO PMS-PRE-REL.
+           MOVE PM-PRTY TO PMS-PRTY.
+           IF PM-FIX-FLAG = "Y"
+               MOVE "FX" TO PMS-REC-TYP
+           ELSE
+               MOVE "DN" TO PMS-REC-TYP.
+           MOVE "CONV" TO PMS-CREATOR.
+           MOVE SPACES TO PMS-CHANGED-BY.
+           MOVE SPACES TO PMS-CHANGED-DATE.
+           WRITE PMS-REC FROM PM-MSCHED-DATA
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DBPUT   " TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE   5        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO SHOWFORM.
+           GO TO CREATE-LOOP.
+       CREATE-MASTER-SCH-EXIT.
+           EXIT.
+
+       END-OF-JOB.
+           CLOSE               PM-MASTER-SCHED.
+           CLOSE               WO-PLANNED.
+           CLOSE               PREV-MAINT.
+           CLOSE               DISPLAY-FILE.
+           GOBACK.
+
+       65-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+
+       999-CATREAD.
+           MOVE LANG-SETNUM TO CATREAD-MSG-SET.
+           MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           IF CATREAD-MSG-NOT-FOUND
+               MOVE "***ERROR***" TO MESSAGE-BUFFER
+           ELSE
+               MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.    EXIT.
+
+      ****************  END OF FILE - TPMSCLNK  ****************************
+
+

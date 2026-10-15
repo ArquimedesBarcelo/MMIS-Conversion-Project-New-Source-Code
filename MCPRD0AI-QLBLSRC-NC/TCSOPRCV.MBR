@@ -1,0 +1,1188 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TCSOPRCV.
+       AUTHOR.               AM TREUDLER.
+       INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+       DATE-WRITTEN.         FEB 1, 1988.
+      *REMARKS.
+      ***************************************************************
+      **                                                           **
+      *D          T C S O P R C V                                  **
+      **                                                           **
+      *D   THIS PROGRAM READS THROUGH THE DETAIL DATASET - DTRANS  **
+      *D   AND FINDS ALL OPEN RECEIVERS (DCHG AND REC TRANSACTIONS **
+      *D   WHERE BALANCE QUANTITY IS GREATER THANT ZERO).          **
+      **                                                           **
+      ***************************************************************
+      *C
+      *C   07FEB1994    DAVE PLUM
+      *C     ADDED CALL TO THE COBOL ERROR HANDLER - MCXCBLERR.
+      *C
+      *C   31MAY1994    DAVE PLUM
+      *C     ADDED A MOVE STATEMENT TO CAUSE THE PROGRAM NAME TO BE PASSED
+      *C     TO TBLOWUP.
+      *C
+      *C   28AUG1995    CATHY YODER
+      *C     ADDED OPTION TO LIST AND SUBTOTAL BY DEPARTMENT AND ACCOUNT
+      *C     ON THE REPORT.  (REQUEST FROM NAPANEE.)  ALSO CHANGED THE
+      *C     WAY THE LINES ARE PRINTED ON THE REPORT.  INSTEAD OF USING
+      *C     ONE PRINT-LINE AND MANY REDEFINES LINES, WHERE POSSIBLE,
+      *C     VALUE STATEMENTS WERE USED INSTEAD OF MANY MOVE STATEMENTS.
+      *C     THIS MADE THE PRINTING OF 2 CONSECUTIVE BREAK TOTALS EASIER.
+      *C
+      *C   04OCT1995    DAVE PLUM
+      *C     REVISED THE CALL TO PROGRAM TBLOWUP TO PASS THE FILE-STATUS
+      *C     FIELD INSTEAD OF USING THE DUMMY-KSAM-STAT FIELD.
+      *C
+      *C   11SEP1996    DAVE PLUM
+      *C     REVISED FOR CENTURY DATABASE CHANGES.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      HP-3000.
+       OBJECT-COMPUTER.      HP-3000.
+       SPECIAL-NAMES.        C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE   ASSIGN TO PRINTER-MCPRT.
+
+           SELECT SORT-FILE    ASSIGN TO DISK-SORT.
+
+           SELECT MATLACUM-O
+                  ASSIGN TO DATABASE-MCFLCA0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MATLACUM-I
+                  ASSIGN TO DATABASE-MCFLCA0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MACCTINFO-I
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCHTACCTS-I
+                  ASSIGN TO DATABASE-MCFLCA0301
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-I
+                  ASSIGN TO DATABASE-MCFLCA0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  PRINT-FILE
+           DATA RECORD IS PRT-REC
+           RECORD CONTAINS 133 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  PRT-REC                       PIC X(133).
+
+       SD  SORT-FILE
+           DATA RECORD IS SORT-REC
+           RECORD CONTAINS  87 CHARACTERS.
+       01  SORT-REC.
+           05  SORT-CLASS                PIC X(4).
+           05  SORT-DEPT                 PIC X(6).
+           05  SORT-ACCT                 PIC X(6).
+           05  SORT-PO-NUM               PIC X(10).
+           05  SORT-RCVR-NUM             PIC X(4).
+           05  SORT-ITEM-NUM             PIC X(4).
+           05  SORT-TRAN-CODE            PIC X(4).
+           05  SORT-OP-RCV-AMT           PIC S9(12).
+           05  SORT-CORP-CODE            PIC X(7).
+           05  SORT-QTY                  PIC S9(10).
+           05  SORT-UM                   PIC XX.
+           05  SORT-BAL-QTY              PIC S9(10).
+      *******05  SORT-DATE                 PIC X(6).
+           05  SORT-DATE.
+               10  SORT-DATE-CC          PIC X(2).
+               10  SORT-DATE-YYMMDD      PIC X(6).
+
+       FD  MATLACUM-O
+           LABEL RECORDS ARE STANDARD.
+       01  MATLACUM-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCA0601.
+
+       FD  MATLACUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MATLACUM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0601.
+
+       FD  MACCTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MACCTINFO-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0101.
+
+       FD  MCHTACCTS-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCHTACCTS-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0301.
+
+       FD  DTRANS-I
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0701.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+
+       WORKING-STORAGE SECTION.
+      ***************************************************************
+      **            P R O G R A M   V A R I A B L E S              **
+      ***************************************************************
+       77  LINE-CTR                      PIC 99      VALUE 0 COMP-4.
+       77  PAGE-CTR                      PIC 9(4)    VALUE 0 COMP-4.
+       77  SUB                           PIC S9(4)   VALUE 0 COMP-4.
+       77  SAVE-OPNR-CTR                 PIC S9(4)   VALUE 0 COMP-4.
+       01  SORT-EOF                      PIC X(1)    VALUE "N".
+           88  NO-MORE-RECORDS                       VALUE "Y".
+       01  NO-RECORDS                    PIC X(133)  VALUE
+           " NO ITEMS QUALIFIED FOR THE REPORT".
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X       VALUE SPACES.
+           05  FILE-STATUS-2             PIC X       VALUE SPACES.
+       01  SAVE-PO                       PIC X(10)   VALUE SPACES.
+       01  SAVE-CLASS                    PIC X(4)    VALUE SPACES.
+       01  SAVE-DEPT                     PIC X(6)    VALUE SPACES.
+       01  SAVE-ACCT                     PIC X(6)    VALUE SPACES.
+       01  SAVE-PLT-CODE                 PIC X(4)    VALUE SPACES.
+       01  SAVE-ADDR                     PIC S9(9)   COMP-4.
+
+      ****01  COMPARE-DATE                  PIC 9(6).  *REPLACED*
+       01  COMPARE-DATE.
+           05  COMPARE-DATE-CC           PIC X(2).
+           05  COMPARE-DATE-YYMMDD.
+               10 COMPARE-DATE-YY        PIC X(2).
+               10 FILLER                 PIC X(4).
+
+       01  DATE-OPTION-SW                PIC X(1)    VALUE "N".
+           88  DATE-OPTION-ON                        VALUE "Y".
+       01  SAVE-HDR-TIME                 PIC X(8)    VALUE SPACES.
+       01  SAVE-HDR-DATE                 PIC X(8)    VALUE SPACES.
+
+       01  SAVE-OPNR-ENTRIES.
+           05  OPNR-ENTRY  OCCURS 300 TIMES  PIC X(4).
+
+       01  MCXCBLERR-SCOPE               PIC X(1)  VALUE "C".
+
+      ************************************************************
+      **                     ACCUMULATORS                       **
+      ************************************************************
+       01  UNIT-VALUE                PIC S9(13)V9(4) VALUE 0 COMP-3.
+       01  SUB-TOTAL-STORES          PIC S9(13)    VALUE 0 COMP-3.
+       01  SUB-TOTAL-DCHG            PIC S9(13)    VALUE 0 COMP-3.
+       01  SUB-TOTAL                 PIC S9(13)    VALUE 0 COMP-3.
+       01  SUB-TOTAL-QTY             PIC S9(11)    VALUE 0 COMP-3.
+       01  SUB-TOTAL-BAL-QTY         PIC S9(11)    VALUE 0 COMP-3.
+       01  GRAND-TOTAL-STORES        PIC S9(13)    VALUE 0 COMP-3.
+       01  GRAND-TOTAL-DCHG          PIC S9(13)    VALUE 0 COMP-3.
+       01  GRAND-TOTAL               PIC S9(13)    VALUE 0 COMP-3.
+       01  GRAND-TOTAL-QTY           PIC S9(11)    VALUE 0 COMP-3.
+       01  GRAND-TOTAL-BAL-QTY       PIC S9(11)    VALUE 0 COMP-3.
+       01  ACCT-SUB-TOTAL-STORES     PIC S9(13)    VALUE 0 COMP-3.
+       01  ACCT-SUB-TOTAL-DCHG       PIC S9(13)    VALUE 0 COMP-3.
+       01  ACCT-SUB-TOTAL            PIC S9(13)    VALUE 0 COMP-3.
+       01  ACCT-SUB-TOTAL-BAL-QTY    PIC S9(11)    VALUE 0 COMP-3.
+
+      ************************************************************
+      **           R E P O R T   P R I N T   L I N E S          **
+      ************************************************************
+       01  PRINT-LINE                    PIC X(132) VALUE SPACES.
+
+       01  HEADER-1.
+           05  FILLER             PIC X(8)  VALUE "TCSOPRCV".
+           05  FILLER             PIC X(42) VALUE SPACES.
+           05  H1-TITLE           PIC X(34)
+                            VALUE "CORPORATE STORES ACCOUNTING SYSTEM".
+           05  FILLER             PIC X(39) VALUE SPACES.
+           05  FILLER             PIC X(6)  VALUE "PLANT ".
+           05  H1-PLANT-OUT       PIC X(3).
+
+       01  HEADER-2.
+           05  H2-DATE            PIC X(8).
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  H2-TIME            PIC X(8).
+           05  FILLER             PIC X(29) VALUE SPACES.
+           05  FILLER             PIC X(20)
+                            VALUE "OPEN RECEIVER REPORT".
+           05  FILLER             PIC X(4)  VALUE " by ".
+           05  H2-OPTION          PIC X(10).
+           05  FILLER             PIC X(37) VALUE SPACES.
+           05  FILLER             PIC X(6)  VALUE "PAGE  ".
+           05  H2-PAGE-NO         PIC Z,ZZ9.
+
+       01  HEADER-3.
+           05  FILLER             PIC X(21) VALUE SPACES.
+           05  FILLER             PIC X(13) VALUE "SELECTED: 1) ".
+           05  H3-ENTRY1          PIC X(6).
+           05  FILLER             PIC X(6)  VALUE "   2) ".
+           05  H3-ENTRY2          PIC X(6).
+           05  FILLER             PIC X(6)  VALUE "   3) ".
+           05  H3-ENTRY3          PIC X(6).
+           05  FILLER             PIC X(6)  VALUE "   4) ".
+           05  H3-ENTRY4          PIC X(6).
+           05  FILLER             PIC X(6)  VALUE "   5) ".
+           05  H3-ENTRY5          PIC X(6).
+           05  H3-DATE-OPTION     PIC X(15).
+           05  H3-DATE-OUT        PIC X(8).
+           05  FILLER             PIC X(21) VALUE SPACES.
+
+       01  HEADER-4.
+           05  FILLER             PIC X(14) VALUE "PURCHASE ORDER".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "ITEM".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(9)  VALUE "CORP CODE".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(5)  VALUE "CLASS".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "DEPT".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(7)  VALUE "ACCOUNT".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(12) VALUE "     DATE   ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(12) VALUE "QTY NOT PAID".
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  FILLER             PIC X(2)  VALUE "UM".
+           05  FILLER             PIC X(9)  VALUE SPACES.
+           05  FILLER             PIC X(9)  VALUE "STOREROOM".
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  FILLER             PIC X(13) VALUE "DIRECT CHARGE".
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  FILLER             PIC X(13) VALUE "TOTAL DOLLARS".
+
+       01  LINE-1.
+           05  L1-PO              PIC X(10).
+           05  FILLER             PIC X(1).
+           05  L1-RCVR            PIC X(4).
+           05  L1-ITEM            PIC X(4).
+           05  FILLER             PIC X(1).
+           05  L1-CORP-CODE       PIC X(7).
+           05  FILLER             PIC X(3).
+           05  L1-CLASS           PIC X(4).
+           05  FILLER             PIC X(2).
+           05  L1-DEPT            PIC X(4).
+           05  FILLER             PIC X(1).
+           05  L1-ACCT            PIC X(6).
+           05  FILLER             PIC X(1).
+           05  FILLER             PIC X(4).
+           05  L1-DATE-OUT        PIC X(8).
+           05  FILLER             PIC X(2).
+           05  L1-QTY-NOT-PAID    PIC Z,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1).
+           05  L1-UM              PIC X(2).
+           05  FILLER             PIC X(1).
+           05  L1-STORES          PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1).
+           05  L1-DCHG            PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1).
+           05  L1-TOTAL           PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+
+       01  BREAK-1.
+           05  FILLER             PIC X(48) VALUE SPACES.
+           05  FILLER             PIC X(13) VALUE SPACES.
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  B1-DASH-2          PIC X(13) VALUE ALL "=".
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  B1-DASH-3          PIC X(16) VALUE ALL "=".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  B1-DASH-4          PIC X(16) VALUE ALL "=".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  B1-DASH-5          PIC X(16) VALUE ALL "=".
+
+       01  BREAK-2.
+           05  FILLER             PIC X(4)  VALUE SPACES.
+           05  FILLER             PIC X(6)  VALUE "TOTAL ".
+           05  FILLER             PIC X(4)  VALUE "for ".
+           05  B2-SELECTION       PIC X(14).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  B2-BREAK-CODE      PIC X(10).
+           05  FILLER             PIC X(8)  VALUE SPACES.
+           05  FILLER             PIC X(14) VALUE SPACES.
+           05  B2-QTY-NOT-PAID    PIC Z,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(4)  VALUE SPACES.
+           05  B2-STORES          PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  B2-DCHG            PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  B2-TOTAL           PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+
+       01  GRAND-1.
+           05  FILLER             PIC X(4)  VALUE SPACES.
+           05  G1-RPT-TOTAL       PIC X(13) VALUE "REPORT TOTAL ".
+           05  FILLER             PIC X(31) VALUE SPACES.
+           05  FILLER             PIC X(14).
+           05  G1-QTY-NOT-PAID    PIC Z,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(4)  VALUE SPACES.
+           05  G1-STORES          PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  G1-DCHG            PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  G1-TOTAL           PIC Z,ZZZ,ZZZ,ZZZ,ZZZ.
+
+      ***************************************************************
+      **         S U B P R O G R A M    A R E A S                  **
+      ***************************************************************
+       COPY THDPRT IN COPYLIB.
+       COPY CCRTFILE IN COPYLIB.
+       COPY CCHKOBJ  IN COPYLIB.
+       COPY OVRPFDATA IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+      *******************************************************
+      *   PARAMETERS USED IN 'TBLOWUP' ROUTINE (PRINTS      *
+      *   ERRORS AND ABORTS PROGRAM.  RUN XBLPRT.OBJECT TO  *
+      *   READ ERRORS).                                     *
+      *******************************************************
+       COPY TBLOWUP IN COPYLIB.
+
+      ************************************************************
+      **                                                        **
+      **           D A T A B A S E   B U F F E R S              **
+      **                                                        **
+      ************************************************************
+       COPY DTRANS     IN COPYLIB.
+
+       COPY MACTINFO   IN COPYLIB.
+
+       COPY MATLACUM   IN COPYLIB.
+
+       COPY MSTORERM   IN COPYLIB.
+
+       COPY DATAB      IN COPYLIB.
+
+       COPY DBCSACCT   IN COPYLIB.
+
+       01  ARG-VALUES.
+           05  MACCTINFO-ARG    PIC X(4)   VALUE "PLT ".
+           05  CODE-ARG         PIC X(8)   VALUE SPACES.
+
+       01  BUILD-CLASS-KEY.
+           05  FILLER           PIC X(4)   VALUE "OPNR".
+           05  BUILD-CLASS-NO   PIC X(3)   VALUE SPACES.
+
+      *******************************************************
+      **           TERMINAL I/O DATA AREA                  **
+      *******************************************************
+
+       01  ROUTE-LINE                    PIC X(80).
+       01  DATA-LINE                     PIC X(80).
+       01  DATA-SCREEN REDEFINES DATA-LINE.
+           05  DATA-CLASS                PIC X(1).
+           05  DATA-DEPT                 PIC X(1).
+           05  DATA-ACCT                 PIC X(1).
+           05  DATA-ENTRIES              PIC X(30).
+           05  DATA-DATE                 PIC X(6).
+           05  DATA-PO                   PIC X(1).
+           05  DATA-DEPT-ACCT            PIC X(1).
+           05  DATA-OPTION               PIC X(1).
+           05  FILLER                    PIC X(39).
+
+       01  ACCEPT-FIELDS.
+           05  ACCEPT-OPTION             PIC X(1) VALUE SPACE.
+               88  CLASS-OPTION                   VALUE "1".
+               88  DEPT-OPTION                    VALUE "2".
+               88  ACCT-OPTION                    VALUE "3".
+           05  ACCEPT-ALL-FLAG           PIC X(1) VALUE SPACE.
+               88  ALL-ITEMS-SELECT               VALUE "A".
+           05  ACCEPT-ENTRIES.
+               07  ACCEPT-CHOICE OCCURS 5 TIMES INDEXED BY C-I
+                                         PIC X(6).
+           05  ACCEPT-DATE               PIC X(8).
+           05  ACCEPT-SORT               PIC X(1)  VALUE SPACE.
+               88  PO-SORT                         VALUE "1".
+               88  DEPT-ACCT-SORT                  VALUE "3".
+               88  OPTION-SORT                     VALUE "2".
+
+      *******************************************************
+      **               ESCAPE SEQUENCE INFO                **
+      *******************************************************
+       COPY ESCNAM2 IN COPYLIB.
+
+       01  ESC-INFO.
+           05  COMPRESS-PRINT           PIC X(8).
+           05  NORMAL-PRINT             PIC X(8).
+           05  EXPAND-PRINT             PIC X(8).
+
+      ***************************************************************
+      **###########################################################**
+      ***************************************************************
+      **                                                           **
+      **            P R O C E D U R E   D I V I S I O N            **
+      **                                                           **
+      ***************************************************************
+      **###########################################################**
+      ***************************************************************
+       PROCEDURE DIVISION.
+
+       MAIN-PGM SECTION.
+
+       001-BEGIN-HERE.
+           PERFORM 100-HSK              THRU 100-HSK-X.
+           PERFORM 300-GET-PARMS        THRU 300-GP-X.
+
+           MOVE SPACES                  TO SAVE-OPNR-ENTRIES.
+           MOVE ZEROS                   TO SUB.
+           PERFORM 400-DELETE-OPNR-ENTRIES  THRU 400-DOE-X.
+           PERFORM 600-MAIN             THRU 600-MAIN-X.
+           PERFORM 200-EOJ              THRU 200-EOJ-X.
+           GOBACK.
+
+       100-HSK.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+           OPEN INPUT MACCTINFO-I, DTRANS-I, MSTORERM-I, MATLACUM-I.
+           OPEN I-O   MATLACUM-O.
+
+       100-HSK-X.
+           EXIT.
+
+       200-EOJ.
+           IF PAPER-IS-132-COLS
+               NEXT SENTENCE
+           ELSE
+           WRITE PRT-REC FROM NORMAL-PRINT AFTER ADVANCING 0 LINES.
+           CLOSE PRINT-FILE.
+
+           CLOSE MACCTINFO-I, DTRANS-I, MSTORERM-I, MATLACUM-I.
+           CLOSE MATLACUM-O.
+
+       200-EOJ-X.
+           EXIT.
+
+       300-GET-PARMS.
+      *------------- GET PARMS FOR REPORT
+           ACCEPT HD-ROUTE-DATA.
+           ACCEPT DATA-LINE.
+           DISPLAY HD-ROUTE-DATA.
+           DISPLAY DATA-LINE.
+
+           IF DATA-CLASS NOT = SPACES
+               MOVE "1"                  TO ACCEPT-OPTION
+           ELSE
+           IF DATA-DEPT NOT = SPACES
+               MOVE "2"                  TO ACCEPT-OPTION
+           ELSE
+               MOVE "3"                  TO ACCEPT-OPTION.
+
+           MOVE DATA-ENTRIES             TO ACCEPT-ENTRIES.
+           IF ACCEPT-CHOICE (1) = "ALL"
+               MOVE "A"                  TO ACCEPT-ALL-FLAG.
+           IF DATA-PO = "X"
+               MOVE "1"                  TO ACCEPT-SORT
+           ELSE
+      *----- ONLY SORT BY DEPARTMENT AND ACCOUNT IF DEPARTMENT
+      *----- OPTION IS CHOSEN.
+           IF DATA-DEPT-ACCT = "X" AND DEPT-OPTION
+               MOVE "3"                  TO ACCEPT-SORT
+           ELSE
+               MOVE "2"                  TO ACCEPT-SORT.
+
+      *----- DO NOT COMPARE FOR BLANK OPTIONS
+           IF ACCEPT-CHOICE (1) = SPACES
+               MOVE "??????"             TO ACCEPT-CHOICE (1).
+           IF ACCEPT-CHOICE (2) = SPACES
+               MOVE "??????"             TO ACCEPT-CHOICE (2).
+           IF ACCEPT-CHOICE (3) = SPACES
+               MOVE "??????"             TO ACCEPT-CHOICE (3).
+           IF ACCEPT-CHOICE (4) = SPACES
+               MOVE "??????"             TO ACCEPT-CHOICE (4).
+           IF ACCEPT-CHOICE (5) = SPACES
+               MOVE "??????"             TO ACCEPT-CHOICE (5).
+
+           IF DATA-DATE NOT = SPACES
+               MOVE 3                    TO DATE-MODE
+               MOVE DATA-DATE            TO DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+      ***********MOVE DATE-YMD-OUT         TO COMPARE-DATE  *REPLACED*
+               MOVE DATE-YMD-OUT         TO COMPARE-DATE-YYMMDD
+               IF COMPARE-DATE-YY > "70"
+                   MOVE "19" TO COMPARE-DATE-CC
+               ELSE
+                   MOVE "20" TO COMPARE-DATE-CC
+               END-IF
+               DISPLAY "COMPARE DATE = ", COMPARE-DATE
+               MOVE DATE-SLASH-OUT       TO ACCEPT-DATE
+               MOVE "Y"                  TO DATE-OPTION-SW.
+
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"            TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES   TO OVRPRTF-COPIES.
+           MOVE "MCPRT"           TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT PRINT-FILE.
+
+           MOVE "DHDRPT84.PUB"   TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM,
+               HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+               MOVE "THDPRT2 ERROR * CSOPRCV" TO BU-DISPLAY-MSG
+               MOVE "HD-RET-CODE = "         TO BU-DISPLAY-FLD (1)
+               MOVE HD-RET-CODE              TO BU-DISPLAY-FLD9 (1)
+               PERFORM 990-BLOWUP.
+
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI             TO COMPRESS-PRINT.
+           MOVE CHAR-10PI               TO NORMAL-PRINT.
+           MOVE CHAR-5PI                TO EXPAND-PRINT.
+
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-FORMATTED-TIME-OUT TO SAVE-HDR-TIME.
+           MOVE DATE-SLASH-OUT          TO SAVE-HDR-DATE.
+
+      *------------- GET RECORD FOR PLANT NUMBER
+           MOVE 0 TO COND-WORD.
+           MOVE MACCTINFO-ARG TO INFOKEY OF MACCTINFO-REC-I.
+           READ MACCTINFO-I INTO BUF-MACCT-INFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF NOT GOOD-CALL
+               MOVE "DBGET ERROR IN 300-GET-PARMS"
+                   TO BU-DISPLAY-MSG
+               MOVE "PLT" TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+           MOVE MACCT-PLT-CODE           TO  SAVE-PLT-CODE.
+
+       300-GP-X.
+           EXIT.
+
+      ***********************************************************
+      **   THIS PROCEDURE DELETES ALL OPEN RECEIVER ACCUMULATORS
+      **   USED BY THE MOVEMENT REPORT SINCE NEW TOTALS BY CLASS
+      **   WILL BE CALCULATED NOW.  AN OPEN RECEIVER ACCUMULATOR
+      **   IS A CODE WITH A VALUE "OPNRnnn" WHERE 'nnn' IS THE
+      **   ACCOUNTING CLASS
+      ***********************************************************
+
+       400-DELETE-OPNR-ENTRIES.
+           MOVE 0 TO COND-WORD.
+           READ MATLACUM-I NEXT INTO BUF-MATLACUM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 11 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 11
+                   GO TO 400-PROCESS-DELETE
+               ELSE
+                   MOVE "GET MMATL-ACCUM *400-DOE" TO BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+
+           IF MATL-STORES-CODE-1-4 = "OPNR"
+               ADD 1 TO SUB
+               MOVE MATL-STORES-CODE-5-8 TO OPNR-ENTRY (SUB).
+
+           GO TO 400-DELETE-OPNR-ENTRIES.
+
+       400-PROCESS-DELETE.
+           MOVE SUB                     TO SAVE-OPNR-CTR.
+           MOVE ZEROS                   TO SUB.
+
+       400-READ-NEXT-ENTRY.
+           ADD 1 TO SUB.
+           IF SUB > 200  OR SUB > SAVE-OPNR-CTR
+               GO TO 400-DOE-X.
+
+           MOVE OPNR-ENTRY (SUB)        TO BUILD-CLASS-NO.
+           MOVE BUILD-CLASS-KEY         TO CODE-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO MATLCODE OF MATLACUM-REC-O.
+           READ MATLACUM-O INTO BUF-MATLACUM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF NO-ENTRY
+                   GO TO 400-READ-NEXT-ENTRY
+               ELSE
+                   MOVE "GET MMATL-ACCUM *400-RNE" TO BU-DISPLAY-MSG
+                   MOVE CODE-ARG  TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP.
+
+           MOVE 0 TO COND-WORD.
+           DELETE MATLACUM-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               MOVE "DELETE MMATL-ACCUM *400-RNE" TO BU-DISPLAY-MSG
+               MOVE CODE-ARG TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           GO TO 400-READ-NEXT-ENTRY.
+
+       400-DOE-X.
+           EXIT.
+
+      ***************************************************************
+      **                                                           **
+      **                  6 0 0 - M A I N                          **
+      **                                                           **
+      ***************************************************************
+       600-MAIN.
+
+           IF DEPT-ACCT-SORT
+               SORT SORT-FILE ON ASCENDING KEY SORT-DEPT
+                                               SORT-ACCT
+                                               SORT-PO-NUM
+                                               SORT-RCVR-NUM
+                                               SORT-ITEM-NUM
+               INPUT PROCEDURE  IS 700-PROCESS-TRANS
+               OUTPUT PROCEDURE IS 800-CREATE-REPORT
+           ELSE
+           IF PO-SORT
+               SORT SORT-FILE ON ASCENDING KEY SORT-PO-NUM
+                                               SORT-RCVR-NUM
+                                               SORT-ITEM-NUM
+                                               SORT-CLASS
+                                               SORT-DEPT
+                                               SORT-ACCT
+               INPUT PROCEDURE  IS 700-PROCESS-TRANS
+               OUTPUT PROCEDURE IS 800-CREATE-REPORT
+           ELSE
+           IF CLASS-OPTION
+               SORT SORT-FILE ON ASCENDING KEY SORT-CLASS
+                                               SORT-PO-NUM
+                                               SORT-RCVR-NUM
+                                               SORT-ITEM-NUM
+               INPUT PROCEDURE  IS 700-PROCESS-TRANS
+               OUTPUT PROCEDURE IS 800-CREATE-REPORT
+           ELSE
+           IF DEPT-OPTION
+               SORT SORT-FILE ON ASCENDING KEY SORT-DEPT
+                                               SORT-PO-NUM
+                                               SORT-RCVR-NUM
+                                               SORT-ITEM-NUM
+               INPUT PROCEDURE  IS 700-PROCESS-TRANS
+               OUTPUT PROCEDURE IS 800-CREATE-REPORT
+           ELSE
+           IF ACCT-OPTION
+               SORT SORT-FILE ON ASCENDING KEY SORT-ACCT
+                                               SORT-PO-NUM
+                                               SORT-RCVR-NUM
+                                               SORT-ITEM-NUM
+               INPUT PROCEDURE  IS 700-PROCESS-TRANS
+               OUTPUT PROCEDURE IS 800-CREATE-REPORT.
+
+       600-MAIN-X.
+           EXIT.
+
+      ***************************************************************
+      **              I N P U T   P R O C E D U R E                **
+      ***************************************************************
+       700-PROCESS-TRANS SECTION.
+       700-PROCESS-TRANS-PARA.
+           MOVE 0 TO COND-WORD.
+           READ DTRANS-I FIRST RECORD INTO BUF-DTRANS
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 11 TO COND-WORD.
+           PERFORM 710-PROCESS-DETAIL THRU 720-GET-DTRANS
+               UNTIL END-OF-FILE.
+
+      **********************************************************
+      *  TRANSFER CONTROL TO LAST STATEMENT IN INPUT PROCEDURE *
+      *  FOR SORTING OF RECORDS.                               *
+      **********************************************************
+
+           GO TO 799-PROCESS-EXIT.
+
+       710-PROCESS-DETAIL.
+           IF TRANS-BALANCE-QTY = 0
+               GO TO 720-GET-DTRANS
+           ELSE
+               IF TRANS-CODE = "REC " OR "DCHG"
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 720-GET-DTRANS.
+
+           IF DATE-OPTION-ON
+      ***********IF COMPARE-DATE  >  TRANS-DATE           *REPLACED*
+      *********** "COMPARE-DATE" WAS INCREASED FROM 6 TO 8 BYTES.
+               IF COMPARE-DATE  >  TRANS-DATE-CN
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 720-GET-DTRANS.
+
+           IF ALL-ITEMS-SELECT
+               GO TO 715-RELEASE-SORT.
+
+           IF CLASS-OPTION
+               IF TRANS-CLASS = ACCEPT-CHOICE (1) OR
+                                ACCEPT-CHOICE (2) OR
+                                ACCEPT-CHOICE (3) OR
+                                ACCEPT-CHOICE (4) OR
+                                ACCEPT-CHOICE (5)
+                   GO TO 715-RELEASE-SORT
+               ELSE
+                   GO TO 720-GET-DTRANS.
+
+           IF DEPT-OPTION
+               IF TRANS-DEPT  = ACCEPT-CHOICE (1) OR
+                                ACCEPT-CHOICE (2) OR
+                                ACCEPT-CHOICE (3) OR
+                                ACCEPT-CHOICE (4) OR
+                                ACCEPT-CHOICE (5)
+                   GO TO 715-RELEASE-SORT
+               ELSE
+                   GO TO 720-GET-DTRANS.
+
+           IF ACCT-OPTION
+               IF TRANS-ACCT  = ACCEPT-CHOICE (1) OR
+                                ACCEPT-CHOICE (2) OR
+                                ACCEPT-CHOICE (3) OR
+                                ACCEPT-CHOICE (4) OR
+                                ACCEPT-CHOICE (5)
+                   GO TO 715-RELEASE-SORT
+               ELSE
+                   GO TO 720-GET-DTRANS.
+
+       715-RELEASE-SORT.
+           MOVE TRANS-CLASS              TO  SORT-CLASS.
+           MOVE TRANS-DEPT               TO  SORT-DEPT.
+           MOVE TRANS-ACCT               TO  SORT-ACCT.
+           MOVE TRANS-PO-NUM             TO  SORT-PO-NUM.
+           MOVE TRANS-RCVR-NUM           TO  SORT-RCVR-NUM.
+           MOVE TRANS-ITEM-NUM           TO  SORT-ITEM-NUM.
+           MOVE TRANS-CODE               TO  SORT-TRAN-CODE.
+           MOVE TRANS-STORES-CODE        TO  SORT-CORP-CODE.
+           MOVE TRANS-QTY                TO  SORT-QTY.
+           MOVE TRANS-UNIT-MEASURE       TO  SORT-UM.
+           MOVE TRANS-BALANCE-QTY        TO  SORT-BAL-QTY.
+     ********MOVE TRANS-DATE               TO  SORT-DATE.  *REPLACED*
+           MOVE TRANS-DATE-CN            TO  SORT-DATE.
+           PERFORM 730-GET-MSTORERM.
+           RELEASE SORT-REC.
+
+       720-GET-DTRANS.
+           MOVE 0 TO COND-WORD.
+           READ DTRANS-I NEXT INTO BUF-DTRANS
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 11 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF END-OF-FILE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET DTRANS * 720-GET" TO
+                        BU-DISPLAY-MSG
+                   MOVE COND-WORD TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP.
+
+       730-GET-MSTORERM.
+           MOVE TRANS-STORES-CODE TO CODE-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+           IF NO-ENTRY
+               MOVE " "                  TO  STR-CONS-IND
+           ELSE
+               MOVE "DBGET MSTORERM * 730-GET" TO
+                    BU-DISPLAY-MSG
+               MOVE COND-WORD TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+           IF STR-CONS-IND = "X"
+               MOVE ZERO                 TO SORT-OP-RCV-AMT
+           ELSE
+               DIVIDE   TRANS-VALUE BY TRANS-QTY
+                       GIVING UNIT-VALUE ROUNDED
+               MULTIPLY UNIT-VALUE  BY TRANS-BALANCE-QTY
+                       GIVING SORT-OP-RCV-AMT ROUNDED.
+
+       799-PROCESS-EXIT.
+           EXIT.
+
+      ***************************************************************
+      **              O U T P U T   P R O C E D U R E              **
+      ***************************************************************
+       800-CREATE-REPORT SECTION.
+       800-CREATE-REPORT-PARA.
+           PERFORM 840-READ-SORT-FILE.
+           IF PAPER-IS-132-COLS
+               NEXT SENTENCE
+           ELSE
+            WRITE PRT-REC FROM COMPRESS-PRINT AFTER ADVANCING 0 LINES.
+           PERFORM 890-NEW-PAGE.
+           IF NO-MORE-RECORDS
+               WRITE PRT-REC FROM NO-RECORDS AFTER ADVANCING 2 LINES
+               GO TO 899-EXIT.
+      *---------- SET COMPARE VARIABLES
+           MOVE SORT-CLASS               TO SAVE-CLASS.
+           MOVE SORT-DEPT                TO SAVE-DEPT.
+           MOVE SORT-ACCT                TO SAVE-ACCT.
+           MOVE SORT-PO-NUM                  TO SAVE-PO.
+           PERFORM 810-WRITE-RPT THRU 840-READ-SORT-FILE
+               UNTIL NO-MORE-RECORDS.
+           PERFORM 815-BREAK-TOTALS.
+           PERFORM 850-REPORT-TOTALS.
+           GO TO 899-EXIT.
+
+       810-WRITE-RPT.
+           IF PO-SORT
+              GO TO 820-COMPARE-PO.
+           IF DEPT-ACCT-SORT
+              GO TO 825-COMPARE-DEPT.
+           IF CLASS-OPTION AND SORT-CLASS = SAVE-CLASS
+              GO TO 830-MOVE-FIELDS.
+           IF DEPT-OPTION AND  SORT-DEPT  = SAVE-DEPT
+              GO TO 830-MOVE-FIELDS.
+           IF ACCT-OPTION AND  SORT-ACCT  = SAVE-ACCT
+              GO TO 830-MOVE-FIELDS.
+
+       815-BREAK-TOTALS.
+      *************************************************************
+      *      PRINT TOTALS FOR EACH GROUP BREAK                    *
+      *************************************************************
+           WRITE PRT-REC FROM BREAK-1    AFTER ADVANCING 1 LINE.
+           ADD 1                         TO LINE-CTR.
+
+           IF DEPT-ACCT-SORT
+               PERFORM 845-WRITE-ACCT-TOTAL
+               IF SORT-DEPT NOT = SAVE-DEPT OR NO-MORE-RECORDS
+                   MOVE "DEPARTMENT    "     TO B2-SELECTION
+                   MOVE SAVE-DEPT            TO B2-BREAK-CODE
+               ELSE
+                   GO TO 830-MOVE-FIELDS
+               END-IF
+           ELSE
+           IF PO-SORT
+               MOVE "PURCHASE ORDER"     TO B2-SELECTION
+               MOVE SAVE-PO              TO B2-BREAK-CODE
+           ELSE
+           IF CLASS-OPTION
+               MOVE "CLASS         "     TO B2-SELECTION
+               MOVE SAVE-CLASS           TO B2-BREAK-CODE
+           ELSE
+           IF DEPT-OPTION
+               MOVE "DEPARTMENT    "     TO B2-SELECTION
+               MOVE SAVE-DEPT            TO B2-BREAK-CODE
+           ELSE
+           IF ACCT-OPTION
+               MOVE "ACCOUNT       "     TO B2-SELECTION
+               MOVE SAVE-ACCT            TO B2-BREAK-CODE.
+
+           MOVE SUB-TOTAL-BAL-QTY        TO B2-QTY-NOT-PAID.
+           MOVE SUB-TOTAL-STORES         TO B2-STORES.
+           MOVE SUB-TOTAL-DCHG           TO B2-DCHG.
+           MOVE SUB-TOTAL                TO B2-TOTAL.
+           WRITE PRT-REC FROM BREAK-2 AFTER ADVANCING 1 LINES.
+           WRITE PRT-REC FROM PRINT-LINE AFTER ADVANCING 1 LINES.
+           ADD 2                         TO LINE-CTR.
+           ADD  SUB-TOTAL-BAL-QTY        TO GRAND-TOTAL-BAL-QTY.
+           ADD  SUB-TOTAL-STORES         TO GRAND-TOTAL-STORES.
+           ADD  SUB-TOTAL-DCHG           TO GRAND-TOTAL-DCHG.
+           ADD  SUB-TOTAL                TO GRAND-TOTAL.
+      *******************************************************
+      **   ONLY WHEN NO DATE OPTION IS CHOSEN AND
+      **   IF THE SORT OPTION IS BY CLASS THEN UPDATE THE
+      **   THE MASTER ENTRY 'OPNRnnn' WHERE 'nnn' IS THE CLASS
+      **   THE OPEN RECEIVER DOLLARS ON STORED IN THE MASTER
+      **   SO THIS CAN BE DISPLAYED ON THE MOVEMENT REPORT.
+      ********************************************************
+           IF CLASS-OPTION AND NOT DATE-OPTION-ON
+               PERFORM 855-UPDATE-OPEN-RCVR.
+
+           MOVE ZEROES                   TO SUB-TOTAL-STORES,
+                                            SUB-TOTAL-DCHG,
+                                            SUB-TOTAL-QTY,
+                                            SUB-TOTAL-BAL-QTY,
+                                            SUB-TOTAL.
+
+       816-RESET-COMPARE-VARIABLES.
+      *----------  RESET COMPARE VARIABLES
+           MOVE SORT-CLASS               TO SAVE-CLASS.
+           MOVE SORT-DEPT                TO SAVE-DEPT.
+           MOVE SORT-ACCT                TO SAVE-ACCT.
+           MOVE SORT-PO-NUM              TO SAVE-PO.
+
+           GO TO 830-MOVE-FIELDS.
+
+       820-COMPARE-PO.
+           IF SORT-PO-NUM NOT = SAVE-PO
+              GO TO 815-BREAK-TOTALS
+           ELSE
+              GO TO 830-MOVE-FIELDS.
+
+       825-COMPARE-DEPT.
+           IF SORT-DEPT NOT = SAVE-DEPT OR
+              SORT-ACCT NOT = SAVE-ACCT
+              GO TO 815-BREAK-TOTALS.
+
+      *************************************************************
+      *       PRINT THE DETAIL LINE FOR EACH RECORD.              *
+      *************************************************************
+       830-MOVE-FIELDS.
+           IF LINE-CTR > 58
+              PERFORM 890-NEW-PAGE
+
+           MOVE SPACES                   TO LINE-1.
+           MOVE ZEROS                    TO L1-STORES,
+                                            L1-DCHG,
+                                            L1-TOTAL.
+
+           MOVE SORT-ITEM-NUM            TO L1-ITEM.
+           MOVE SORT-CLASS               TO L1-CLASS.
+           MOVE SORT-PO-NUM              TO L1-PO.
+           MOVE SORT-RCVR-NUM            TO L1-RCVR.
+           MOVE SORT-DEPT                TO L1-DEPT.
+           MOVE SORT-ACCT                TO L1-ACCT.
+           MOVE SORT-CORP-CODE           TO L1-CORP-CODE.
+           MOVE SORT-UM                  TO L1-UM.
+           MOVE SORT-BAL-QTY             TO L1-QTY-NOT-PAID.
+           MOVE 4                        TO DATE-MODE.
+      *******MOVE SORT-DATE                TO DATE-VALIDATE-IN.
+           MOVE SORT-DATE-YYMMDD         TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO L1-DATE-OUT.
+
+           IF SORT-TRAN-CODE = "REC "
+               MOVE SORT-OP-RCV-AMT      TO L1-STORES,
+                                            L1-TOTAL
+               ADD SORT-OP-RCV-AMT       TO SUB-TOTAL-STORES
+               IF DEPT-ACCT-SORT
+                   ADD SORT-OP-RCV-AMT   TO ACCT-SUB-TOTAL-STORES
+               END-IF
+           ELSE
+               MOVE SORT-OP-RCV-AMT      TO L1-DCHG,
+                                            L1-TOTAL
+               ADD SORT-OP-RCV-AMT       TO SUB-TOTAL-DCHG
+               IF DEPT-ACCT-SORT
+                   ADD SORT-OP-RCV-AMT   TO ACCT-SUB-TOTAL-DCHG
+               END-IF.
+           ADD SORT-OP-RCV-AMT           TO SUB-TOTAL.
+           ADD SORT-BAL-QTY              TO SUB-TOTAL-BAL-QTY.
+           IF DEPT-ACCT-SORT
+               ADD SORT-OP-RCV-AMT       TO ACCT-SUB-TOTAL
+               ADD SORT-BAL-QTY          TO ACCT-SUB-TOTAL-BAL-QTY
+           END-IF.
+
+           WRITE PRT-REC FROM LINE-1 AFTER ADVANCING 1 LINES.
+           ADD 1                         TO LINE-CTR.
+
+       840-READ-SORT-FILE.
+           RETURN SORT-FILE AT END
+               MOVE "Y" TO SORT-EOF.
+
+       845-WRITE-ACCT-TOTAL.
+           MOVE "ACCOUNT       "         TO B2-SELECTION.
+           MOVE SAVE-ACCT                TO B2-BREAK-CODE.
+           MOVE ACCT-SUB-TOTAL-BAL-QTY   TO B2-QTY-NOT-PAID.
+           MOVE ACCT-SUB-TOTAL-STORES    TO B2-STORES.
+           MOVE ACCT-SUB-TOTAL-DCHG      TO B2-DCHG.
+           MOVE ACCT-SUB-TOTAL           TO B2-TOTAL.
+           WRITE PRT-REC FROM BREAK-2 AFTER ADVANCING 1 LINES.
+           MOVE ZEROES                   TO ACCT-SUB-TOTAL-STORES,
+                                            ACCT-SUB-TOTAL-DCHG,
+                                            ACCT-SUB-TOTAL-BAL-QTY,
+                                            ACCT-SUB-TOTAL.
+           ADD 1                         TO LINE-CTR.
+
+      *------ WRITE BLANK LINE IF THERE IS NO DEPARTMENT BREAK.
+           IF SORT-DEPT = SAVE-DEPT AND NOT NO-MORE-RECORDS
+               WRITE PRT-REC FROM PRINT-LINE AFTER ADVANCING 1 LINE
+               ADD 1                     TO LINE-CTR.
+
+           MOVE SORT-ACCT                TO SAVE-ACCT.
+
+      *************************************************************
+      *      PRINT FINAL REPORT TOTALS FOR ALL GROUPS             *
+      *************************************************************
+       850-REPORT-TOTALS.
+           MOVE GRAND-TOTAL-BAL-QTY      TO G1-QTY-NOT-PAID.
+           MOVE GRAND-TOTAL-STORES       TO G1-STORES.
+           MOVE GRAND-TOTAL-DCHG         TO G1-DCHG.
+           MOVE GRAND-TOTAL              TO G1-TOTAL.
+           WRITE PRT-REC FROM GRAND-1    AFTER ADVANCING 3 LINES.
+
+       855-UPDATE-OPEN-RCVR.
+           MOVE SAVE-CLASS              TO BUILD-CLASS-NO.
+           MOVE BUILD-CLASS-KEY         TO CODE-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO MATLCODE OF MATLACUM-REC-O.
+           READ MATLACUM-O INTO BUF-MATLACUM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF GOOD-CALL
+               PERFORM 860-UPDATE-MMATL-ACCUM
+           ELSE
+               IF NO-ENTRY
+                   PERFORM 865-PUT-MMATL-ACCUM
+               ELSE
+                   MOVE "GET MMATL-ACCUM *855-UOR" TO BU-DISPLAY-MSG
+                   MOVE CODE-ARG  TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP.
+
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES TO MATLCODE OF MATLACUM-REC-O.
+           START MATLACUM-O KEY > MATLCODE OF MATLACUM-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       860-UPDATE-MMATL-ACCUM.
+           MOVE SUB-TOTAL               TO MATL-RCPT-DOLLARS.
+           MOVE 0 TO COND-WORD.
+           REWRITE MATLACUM-REC-O FROM BUF-MATLACUM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               MOVE "UPDATE MMATL-ACCUM*860-UMA" TO BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP.
+
+       865-PUT-MMATL-ACCUM.
+           MOVE SPACES                  TO BUF-MATLACUM.
+           MOVE CODE-ARG                TO MATL-STORES-CODE.
+           MOVE SAVE-CLASS              TO MATL-CLASS.
+           MOVE ZERO                    TO MATL-BEG-BAL-DOLLARS
+                                           MATL-BEG-BAL-UNITS
+                                           MATL-INV-DOLLARS
+                                           MATL-RCPT-UNITS
+                                           MATL-ISSUE-UNITS
+                                           MATL-RTN-UNITS
+                                           MATL-ADJ-UNITS
+                                           MATL-RTN-DOLLARS
+                                           MATL-UNITS-RCVD-NOT-INV
+                                           MATL-INV-DOL-NOT-RCVD
+                                           MATL-UNITS-INV-NOT-RCVD
+                                           MATL-INTRANSIT-DOLLARS
+                                           MATL-ACCTG-UNIT-CORR
+                                           MATL-ACCTG-DOLLAR-CORR
+                                           MATL-INTRANSIT-UNITS
+                                           MATL-WDOWN-PERC
+                                           MATL-TOT-ISS-DOLLARS
+                                           MATL-TOT-ADJ-DOLLARS
+                                           MATL-RTNVAL-UNITS
+                                           MATL-RTNVAL-DOLLARS.
+           MOVE SUB-TOTAL               TO MATL-RCPT-DOLLARS.
+           MOVE 0 TO COND-WORD.
+           WRITE MATLACUM-REC-O FROM BUF-MATLACUM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               MOVE "DBPUT MMATL * 865-PMA" TO BU-DISPLAY-MSG
+               MOVE CODE-ARG      TO BU-DISPLAY-FLD (1)
+               PERFORM 990-BLOWUP.
+
+      ***************************************************************
+      **            P E R F O R M E D    R O U T I N E S           **
+      ***************************************************************
+       890-NEW-PAGE.
+           MOVE SAVE-PLT-CODE            TO H1-PLANT-OUT.
+           WRITE PRT-REC FROM HEADER-1   AFTER ADVANCING NEW-PAGE.
+
+           MOVE SAVE-HDR-TIME            TO H2-TIME.
+           MOVE SAVE-HDR-DATE            TO H2-DATE.
+           IF CLASS-OPTION
+              MOVE "CLASS     "          TO H2-OPTION
+           ELSE
+           IF DEPT-OPTION
+              MOVE "DEPARTMENT"          TO H2-OPTION
+           ELSE
+           IF ACCT-OPTION
+              MOVE "ACCOUNT   "          TO H2-OPTION.
+
+           ADD  1                        TO PAGE-CTR.
+           MOVE PAGE-CTR                 TO H2-PAGE-NO.
+           WRITE PRT-REC FROM HEADER-2   AFTER ADVANCING 1 LINES.
+
+           IF ACCEPT-CHOICE (1) NOT = "??????"
+              MOVE ACCEPT-CHOICE (1)     TO H3-ENTRY1.
+           IF ACCEPT-CHOICE (2) NOT = "??????"
+              MOVE ACCEPT-CHOICE (2)     TO H3-ENTRY2.
+           IF ACCEPT-CHOICE (3) NOT = "??????"
+              MOVE ACCEPT-CHOICE (3)     TO H3-ENTRY3.
+           IF ACCEPT-CHOICE (4) NOT = "??????"
+              MOVE ACCEPT-CHOICE (4)     TO H3-ENTRY4.
+           IF ACCEPT-CHOICE (5) NOT = "??????"
+              MOVE ACCEPT-CHOICE (5)     TO H3-ENTRY5.
+           IF DATE-OPTION-ON
+              MOVE " OLDER THAN :  "     TO H3-DATE-OPTION
+              MOVE ACCEPT-DATE           TO H3-DATE-OUT.
+           WRITE PRT-REC FROM HEADER-3   AFTER ADVANCING 1 LINES.
+           WRITE PRT-REC FROM HEADER-4   AFTER ADVANCING 1 LINES.
+           WRITE PRT-REC FROM PRINT-LINE AFTER ADVANCING 1 LINES.
+           MOVE 5                        TO LINE-CTR.
+
+       899-EXIT.
+           EXIT.
+
+       COPY OVRPFCALL IN COPYLIB.
+
+       900-ERROR SECTION.
+
+      ***************************************************************
+      **                     BLOWUP ROUTINE                        **
+      ***************************************************************
+       990-BLOWUP.
+           WRITE PRT-REC FROM NORMAL-PRINT AFTER ADVANCING 0 LINES.
+
+           MOVE "TCSOPRCV"               TO  BU-PGM-NAME.
+           MOVE CODE-ARG                 TO  BU-DISPLAY-FLD (2).
+           CALL "TBLOWUP" USING ACCTG-BASE, BU-PGM-NAME, STATUS-AREA,
+                 DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-FLDS.

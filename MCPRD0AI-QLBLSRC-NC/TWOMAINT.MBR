@@ -1,0 +1,741 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TWOMAINT.
+       AUTHOR.         CA YODER.
+       INSTALLATION.   THE GOODYEAR TIRE AND RUBBER COMPANY - AKRON.
+       DATE-WRITTEN.   NOVEMBER 1995.
+       DATE-COMPILED.
+      *****************************************************************
+      *
+      *     VERBAL WORKORDER FILE MAINTENANCE
+      *
+      *****************************************************************
+      *     THIS PROGRAM IS USED TO ADD, MODIFY, AND DELETE
+      *     RECORDS IN THE "VERBWOFL" FILE WHICH IS USED TO
+      *     AUTOMATICALLY GENERATE VERBAL WORKORDERS.
+      *****************************************************************
+      **                   MODIFICATION   HISTORY
+      *****************************************************************
+      *    12/1/00     JE COFFMAN
+      *     ADDED A FREQUENCY INDICATOR TO THE SCREEN AT NAPANEE'S
+      *     REQUEST SO THAT THEY COULD GENERATE WORK ORDERS ON A
+      *     WEEKLY OR MONTHLY BASIS AS WELL AS A DAILY BASIS.
+      *----------------------------------------------------------------
+      *    JAN 19 2005  D. RAUCH     DCR01      REQUEST# 2004-25457
+      *       1)  ADDED FREQUENCY VALUE OF "Q" FOR QUARTERLY
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZWOMAINT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT WO-CRAFTS-REQD
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT VERBWOFL-SEQ
+                  ASSIGN       TO DISK-VERBWOFL
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT VERBWOFL-FLAT-FILE
+                  ASSIGN       TO DISK-VERBWOFL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC             PIC X(2000).
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  WO-CRAFTS-REQD
+           LABEL RECORDS ARE STANDARD.
+       01  CFT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  VERBWOFL-SEQ
+           DATA RECORD IS VERBWOFL-SEQ-REC
+           RECORD CONTAINS 200 CHARACTERS
+           LABEL RECORDS ARE STANDARD.
+       01  VERBWOFL-SEQ-REC        PIC X(200).
+
+       FD  VERBWOFL-FLAT-FILE
+           DATA RECORD IS VERBWOFL-FF-REC
+           RECORD CONTAINS 200 CHARACTERS
+           LABEL RECORDS ARE STANDARD.
+       01  VERBWOFL-FF-REC            PIC X(200).
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1        PIC X VALUE SPACE.
+           05  FILE-STATUS-2        PIC X VALUE SPACE.
+
+       01  SUB                           PIC 99     VALUE 0.
+
+       01  BASE                          PIC X(10)  VALUE "  STORES;".
+
+       01  PROG-SWITCHES.
+           05  ERROR-FOUND               PIC X(1)   VALUE "N".
+           05  VERBWOFL-EOF-SW           PIC X(1)   VALUE "N".
+
+DCR01  01  WS-PGM-MSSG.
+DCR01      03  WS-FREQ-MSG               PIC X(80)   VALUE
+DCR01           "FIELD MUST CONTAIN 'D' OR 'W' OR 'M' OR 'Q'".
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT                  PIC X(64)  VALUE SPACES.
+           05  MSG-FLD                   PIC X(12)  VALUE SPACES.
+
+       01  EQUIPMENT-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-CRAFT-DATA.
+           COPY MWOCRAFT       IN COPYLIB.
+
+       COPY VERBWOFL           IN COPYLIB.
+
+       COPY DBSTAT IN COPYLIB.
+
+      *----------------------------------------------------------------*
+      *                     I N P U T   S C R E E N                    *
+      *----------------------------------------------------------------*
+
+       01  OPT-SCREEN.
+           05  OPT-OPTION                PIC X.
+           05  OPT-INFO-LINE             PIC X(74).
+           05  OPT-MSGLINE               PIC X(80).
+
+       01  WO-SCREEN.
+           05  SC-FUNCTION               PIC X(23).
+           05  SC-FIELDS.
+               10  SC-EQUIP-NUM          PIC X(6).
+               10  SC-REQUESTOR          PIC X(16).
+               10  SC-SKILL-REQ    OCCURS 3 TIMES
+                                         PIC X(2).
+               10  SC-WO-DESCRIP         PIC X(30).
+               10  SC-ADDL-INFO.
+                   15  SC-ADDL-INFO-1    PIC X(66).
+                   15  SC-ADDL-INFO-2    PIC X(66).
+           05  SC-FREQ-IND               PIC X.
+           05  SC-INFO-LINE              PIC X(74).
+           05  SC-MSGLINE                PIC X(80).
+
+       COPY TBLOWUP      IN COPYLIB.
+       COPY CATREAD      IN COPYLIB.
+       COPY DISPDATA     IN COPYLIB.
+       COPY IOFEEDBACK   IN COPYLIB.
+       COPY VCOMAREA     IN COPYLIB.
+       COPY LANGUAGE     IN COPYLIB.
+
+      *-----------------------------------------------------------*
+      *           P R O C E D U R E    D I V I S I O N            *
+      *-----------------------------------------------------------*
+
+       PROCEDURE DIVISION.
+
+       0-BEGIN-HERE.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           PERFORM 2-EOJ.
+
+       1-HSK.
+           MOVE "TWOMAINT" TO BU-PGM-NAME.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          EQP-EQUIPMENT
+                               WO-CRAFTS-REQD.
+
+
+       2-EOJ.
+           CLOSE               DISPLAY-FILE
+                               EQP-EQUIPMENT
+                               WO-CRAFTS-REQD.
+           GOBACK.
+
+      *-----------------------------------------------------------*
+      *               B L O W U P   R O U T I N E                 *
+      *-----------------------------------------------------------*
+
+       2-BLOWUP.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-AREA.
+
+      *-----------------------------------------------------------*
+      *                 M A I N   P A R A G R A P H               *
+      *-----------------------------------------------------------*
+
+       6-MAIN.
+           MOVE "OPTION"       TO VIEW-NFNAME.
+           MOVE SPACE          TO OPT-OPTION.
+
+       6-PUT-BUFFER.
+           MOVE "TYPE IN THE APPROPRIATE OPTION AND PRESS THE ENTER KEY"
+                               TO OPT-INFO-LINE.
+
+       6-SHOW-FORM.
+           MOVE OPT-SCREEN     TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO OPT-SCREEN.
+
+           IF VIEW-LASTKEY = 3
+               GO TO 6-MAIN-X.
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *****    INVALID FUNCTION KEY    *****
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO OPT-MSGLINE
+               MOVE B"1" TO IND(99)
+               GO TO 6-SHOW-FORM.
+
+       6-CONT.
+           IF OPT-OPTION = "A"
+               OPEN EXTEND     VERBWOFL-FLAT-FILE
+               PERFORM 60-ADD-RECORD THRU 60-EXIT
+               CLOSE           VERBWOFL-FLAT-FILE
+           ELSE
+           IF OPT-OPTION = "C"
+               OPEN I-O        VERBWOFL-SEQ
+               PERFORM 61-CHANGE-RECORD THRU 61-EXIT
+               CLOSE           VERBWOFL-SEQ
+           ELSE
+           IF OPT-OPTION = "D"
+               OPEN I-O        VERBWOFL-SEQ
+               PERFORM 62-DELETE-RECORD THRU 62-EXIT
+               CLOSE           VERBWOFL-SEQ.
+           GO TO 6-MAIN.
+
+       6-MAIN-X.
+           EXIT.
+
+      *-----------------------------------------------------------*
+      *               A D D   A   R E C O R D                     *
+      *-----------------------------------------------------------*
+
+       60-ADD-RECORD.
+           MOVE "MAIN"         TO VIEW-NFNAME.
+           MOVE SPACES         TO WO-SCREEN.
+           MOVE " ADD VERBAL WORKORDER  "  TO SC-FUNCTION.
+           MOVE "D"            TO SC-FREQ-IND.
+      *------ UN-PROTECT FIELDS.
+           MOVE B"0"           TO IND(40).
+
+       60-PUT-BUFFER.
+           MOVE "ENTER THE DATA ABOVE AND PRESS <ENTER> TO ADD W/O"
+      -                        TO SC-INFO-LINE.
+
+       60-SHOW-FORM.
+           MOVE WO-SCREEN      TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO WO-SCREEN.
+           IF VIEW-LASTKEY = 3
+               GO TO 60-EXIT.
+
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *****    INVALID FUNCTION KEY    *****
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-MSGLINE
+               MOVE B"1"       TO IND(99)
+               GO TO 60-SHOW-FORM.
+
+       60-CHECK-FIELDS.
+           IF SC-EQUIP-NUM = SPACES
+               MOVE B"1"       TO IND(21)
+                                  IND(99)
+               MOVE "MUST ENTER EQUIPMENT NUMBER"  TO  SC-MSGLINE
+               GO TO 60-SHOW-FORM.
+
+           IF SC-REQUESTOR = SPACES
+               MOVE B"1"       TO IND(22)
+                                  IND(99)
+               MOVE "MUST ENTER REQUESTOR"         TO  SC-MSGLINE
+               GO TO 60-SHOW-FORM.
+
+           IF SC-SKILL-REQ (1) = SPACES AND SC-SKILL-REQ (2) = SPACES
+                                        AND SC-SKILL-REQ (3) = SPACES
+               MOVE B"1"       TO IND(23)
+                                  IND(99)
+               MOVE "MUST ENTER AT LEAST ONE SKILL" TO  SC-MSGLINE
+               GO TO 60-SHOW-FORM.
+
+           IF SC-WO-DESCRIP = SPACES
+               MOVE B"1"       TO IND(26)
+                                  IND(99)
+               MOVE "MUST ENTER DESCRIPTION"       TO  SC-MSGLINE
+               GO TO 60-SHOW-FORM
+           END-IF.
+
+      *------ MAKE SURE IT'S A VALID EQUIPMENT NUMBER.
+           MOVE "N"            TO ERROR-FOUND.
+           PERFORM 630-VALIDATE-EQUIP.
+           IF ERROR-FOUND = "Y"
+               MOVE B"1"       TO IND(99)  IND(21)
+               GO TO 60-SHOW-FORM
+           END-IF.
+
+           MOVE "N"            TO ERROR-FOUND.
+
+      *------ MAKE SURE THEY ARE VALID SKILLS.
+           PERFORM 630-VALIDATE-SKILL VARYING SUB FROM 1 BY 1
+                          UNTIL SUB > 3 OR ERROR-FOUND = "Y".
+
+           IF ERROR-FOUND = "Y"
+               MOVE B"1"       TO IND(99)
+               IF SUB = 2
+                   MOVE B"1"   TO IND(23)
+               END-IF
+               IF SUB = 3
+                   MOVE B"1"   TO IND(24)
+               END-IF
+               IF SUB = 4
+                   MOVE B"1"   TO IND(25)
+               END-IF
+               GO TO 60-SHOW-FORM
+           END-IF.
+
+      **** IF SC-FREQ-IND = "D" OR "W" OR "M" OR "Q"
+DCR01      IF  SC-FREQ-IND NOT = "D"
+DCR01      AND SC-FREQ-IND NOT = "W"
+DCR01      AND SC-FREQ-IND NOT = "M"
+DCR01      AND SC-FREQ-IND NOT = "Q"
+DCR01          MOVE WS-FREQ-MSG TO SC-MSGLINE
+DCR01          MOVE B"1"           TO IND(29)  IND(99)
+DCR01          GO TO 60-SHOW-FORM
+DCR01      END-IF.
+
+       60-WRITE-RECORD.
+           MOVE SC-EQUIP-NUM       TO  V-EQUIP-NUM.
+           MOVE SC-REQUESTOR       TO  V-REQUESTOR.
+           MOVE "1"                TO  V-PRIORITY.
+           MOVE SC-WO-DESCRIP      TO  V-WO-DESCRIP.
+           MOVE SC-SKILL-REQ (1)   TO  V-SKILL-REQ (1).
+           MOVE SC-SKILL-REQ (2)   TO  V-SKILL-REQ (2).
+           MOVE SC-SKILL-REQ (3)   TO  V-SKILL-REQ (3).
+           MOVE SC-ADDL-INFO       TO  V-ADDL-INFO.
+           MOVE SC-FREQ-IND        TO  V-FREQ-IND.
+           PERFORM 630-SHIFT-SKILLS
+           WRITE VERBWOFL-FF-REC FROM BUF-VERBWOFL.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PROBLEM WITH ADDING WORKORDER--CONTACT PROGRAMMING
+      -             "STAFF"        TO  OPT-MSGLINE
+           ELSE
+               MOVE "** WORKORDER ADDED **"  TO  OPT-MSGLINE
+               MOVE SPACES         TO  SC-FIELDS.
+
+           MOVE B"1"               TO  IND(99).
+           GO TO 60-EXIT.
+
+       60-EXIT.
+           EXIT.
+
+      *-----------------------------------------------------------*
+      *              C H A N G E   A   R E C O R D                *
+      *-----------------------------------------------------------*
+
+       61-CHANGE-RECORD.
+           MOVE "MAIN"         TO VIEW-NFNAME.
+           MOVE SPACES         TO WO-SCREEN.
+           MOVE "CHANGE VERBAL WORKORDER"  TO SC-FUNCTION.
+      *------ SEE IF ANY RECORDS EXIST IN THE FILE.
+           MOVE "N"             TO VERBWOFL-EOF-SW.
+           PERFORM 61-READ-FILE.
+           IF VERBWOFL-EOF-SW = "Y"
+               MOVE "NO WORKORDERS TO DISPLAY OR CHANGE"
+                                TO  OPT-MSGLINE
+               MOVE B"1"        TO  IND(99)
+               GO TO 61-EXIT.
+
+       61-PUT-BUFFER.
+           MOVE "PRESS F4 TO SEE THE NEXT WORKORDER OR MAKE CHANGES AND
+      -        "PRESS F7"  TO  SC-INFO-LINE.
+
+       61-SHOW-FORM.
+      *------ SHOW FUNCTION KEYS.
+           MOVE B"1"           TO IND(30)   IND(33).
+      *------ UN-PROTECT FIELDS.
+           MOVE B"0"           TO IND(40).
+
+           MOVE WO-SCREEN      TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO WO-SCREEN.
+           IF VIEW-LASTKEY = 3
+               GO TO 61-EXIT.
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 8
+      *****    INVALID FUNCTION KEY    *****
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-MSGLINE
+               MOVE B"1"       TO IND(99)
+               GO TO 61-SHOW-FORM.
+
+      *------ CANNOT PRESS ENTER KEY.
+           IF VIEW-LASTKEY = 0
+               GO TO 61-SHOW-FORM.
+
+       61-CONTINUE.
+      *------ DISPLAY NEXT RECORD.
+           IF VIEW-LASTKEY = 4
+               IF VERBWOFL-EOF-SW NOT = "Y"
+                   PERFORM 61-READ-FILE
+                   MOVE "PRESS F4 TO SEE THE NEXT WORKORDER OR MAKE CHAN
+      -                     "GES AND PRESS F7"  TO  SC-INFO-LINE
+               END-IF
+      *---------- IF END OF FILE, RESTART LIST
+               IF VERBWOFL-EOF-SW = "Y"
+                   CLOSE             VERBWOFL-SEQ
+                   OPEN I-O          VERBWOFL-SEQ
+                   MOVE "N"         TO  VERBWOFL-EOF-SW
+                   PERFORM 61-READ-FILE
+                   IF VERBWOFL-EOF-SW = "Y"
+                       MOVE "NO RECORDS TO DISPLAY OR CHANGE--PRESS F3 T
+      -                     "O EXIT"    TO  SC-INFO-LINE
+                   END-IF
+                   GO TO 61-PUT-BUFFER
+               END-IF
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+      *------ CHANGE RECORD.
+           IF VIEW-LASTKEY = 7
+               PERFORM 61-CHECK-FIELDS
+               PERFORM 61-MOVE-SCREEN-FIELDS
+               PERFORM 630-SHIFT-SKILLS
+               REWRITE VERBWOFL-SEQ-REC FROM BUF-VERBWOFL
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "++ PROBLEM WITH WRITE--CONTACT PROGRAMMER ++"
+                                TO OPT-MSGLINE
+               ELSE
+                   MOVE SPACES  TO SC-FIELDS
+                                   BUF-VERBWOFL
+                   MOVE "** WORKORDER CHANGED **" TO OPT-MSGLINE
+               END-IF
+               MOVE B"1"    TO IND(99)
+               GO TO 61-EXIT
+           END-IF.
+
+       61-READ-FILE.
+           READ VERBWOFL-SEQ INTO BUF-VERBWOFL
+               AT END MOVE "Y" TO VERBWOFL-EOF-SW.
+
+           IF VERBWOFL-EOF-SW = "N"
+               PERFORM 61-MOVE-WO-FIELDS.
+
+           IF V-FREQ-IND = " " MOVE "D" TO V-FREQ-IND.
+
+       61-MOVE-WO-FIELDS.
+           MOVE V-EQUIP-NUM        TO  SC-EQUIP-NUM.
+           MOVE V-REQUESTOR        TO  SC-REQUESTOR.
+           MOVE V-WO-DESCRIP       TO  SC-WO-DESCRIP.
+           MOVE V-SKILL-REQ (1)    TO  SC-SKILL-REQ (1).
+           MOVE V-SKILL-REQ (2)    TO  SC-SKILL-REQ (2).
+           MOVE V-SKILL-REQ (3)    TO  SC-SKILL-REQ (3).
+           MOVE V-ADDL-INFO        TO  SC-ADDL-INFO.
+           MOVE V-FREQ-IND         TO  SC-FREQ-IND.
+
+       61-MOVE-SCREEN-FIELDS.
+           MOVE SC-EQUIP-NUM       TO  V-EQUIP-NUM.
+           MOVE SC-REQUESTOR       TO  V-REQUESTOR.
+           MOVE SC-WO-DESCRIP      TO  V-WO-DESCRIP.
+           MOVE SC-SKILL-REQ (1)   TO  V-SKILL-REQ (1).
+           MOVE SC-SKILL-REQ (2)   TO  V-SKILL-REQ (2).
+           MOVE SC-SKILL-REQ (3)   TO  V-SKILL-REQ (3).
+           MOVE SC-ADDL-INFO       TO  V-ADDL-INFO.
+           MOVE SC-FREQ-IND        TO  V-FREQ-IND.
+
+       61-CHECK-FIELDS.
+           IF SC-EQUIP-NUM = SPACES
+               MOVE B"1"       TO IND(21)  IND(99)
+               MOVE "MUST ENTER EQUIPMENT NUMBER"  TO  SC-MSGLINE
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+
+           IF SC-REQUESTOR = SPACES
+               MOVE B"1"       TO IND(22)  IND(99)
+               MOVE "MUST ENTER REQUESTOR"         TO  SC-MSGLINE
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+
+           IF SC-SKILL-REQ (1) = SPACES AND SC-SKILL-REQ (2) = SPACES
+                                        AND SC-SKILL-REQ (3) = SPACES
+               MOVE B"1"       TO IND(23)   IND(99)
+               MOVE "MUST ENTER AT LEAST ONE SKILL" TO  SC-MSGLINE
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+
+           IF SC-WO-DESCRIP = SPACES
+               MOVE B"1"       TO IND(26)   IND(99)
+               MOVE "MUST ENTER DESCRIPTION"       TO  SC-MSGLINE
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+
+      *------ MAKE SURE IT'S A VALID EQUIPMENT NUMBER.
+           MOVE "N"            TO ERROR-FOUND.
+           PERFORM 630-VALIDATE-EQUIP.
+           IF ERROR-FOUND = "Y"
+               MOVE B"1"       TO IND(21)  IND(99)
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+           MOVE "N"            TO ERROR-FOUND.
+
+      *------ MAKE SURE THEY ARE VALID SKILLS.
+           PERFORM 630-VALIDATE-SKILL VARYING SUB FROM 1 BY 1
+                          UNTIL SUB > 3 OR ERROR-FOUND = "Y".
+
+           IF ERROR-FOUND = "Y"
+               MOVE B"1"       TO IND(99)
+               IF SUB = 2
+                   MOVE B"1"   TO IND(23)
+               END-IF
+               IF SUB = 3
+                   MOVE B"1"   TO IND(24)
+               END-IF
+               IF SUB = 4
+                   MOVE B"1"   TO IND(25)
+               END-IF
+               GO TO 61-SHOW-FORM
+           END-IF.
+
+
+      **** IF SC-FREQ-IND = "D" OR "W" OR "M" OR "Q"
+DCR01      IF  SC-FREQ-IND NOT = "D"
+DCR01      AND SC-FREQ-IND NOT = "W"
+DCR01      AND SC-FREQ-IND NOT = "M"
+DCR01      AND SC-FREQ-IND NOT = "Q"
+DCR01          MOVE WS-FREQ-MSG TO SC-MSGLINE
+DCR01          MOVE B"1"           TO IND(29)  IND(99)
+DCR01          GO TO 61-SHOW-FORM
+DCR01      END-IF.
+
+       61-EXIT.
+           EXIT.
+
+      *-----------------------------------------------------------*
+      *              D E L E T E   A   R E C O R D                *
+      *-----------------------------------------------------------*
+
+       62-DELETE-RECORD.
+           MOVE "MAIN"         TO VIEW-NFNAME.
+           MOVE SPACES         TO WO-SCREEN.
+           MOVE "DELETE VERBAL WORKORDER"  TO SC-FUNCTION.
+      *------ SEE IF ANY RECORDS EXIST IN THE FILE.
+           MOVE "N"             TO VERBWOFL-EOF-SW.
+           PERFORM 62-READ-FILE.
+           IF VERBWOFL-EOF-SW = "Y"
+               MOVE "NO WORKORDERS TO DISPLAY OR DELETE"
+                                TO  OPT-MSGLINE
+               MOVE B"1"        TO  IND(99)
+               GO TO 62-EXIT.
+
+       62-PUT-BUFFER.
+           MOVE "PRESS F4 TO SEE THE NEXT WORKORDER OR PRESS F6 TO DELET
+      -         "E"             TO SC-INFO-LINE.
+
+       62-SHOW-FORM.
+      *------ PROTECT ALL FIELDS & SHOW FUNCTION KEYS.
+           MOVE B"1"            TO IND(30)   IND(32)   IND(40).
+      *------ GET RID OF UNDERLINE ON FIELDS.
+           MOVE B"1"            TO IND(41).
+
+           MOVE WO-SCREEN       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC     TO WO-SCREEN.
+           IF VIEW-LASTKEY = 3
+               GO TO 62-EXIT.
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *****    INVALID FUNCTION KEY    *****
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO SC-MSGLINE
+               MOVE B"1" TO IND(99)
+               GO TO 62-SHOW-FORM.
+
+      *------ CANNOT PRESS ENTER KEY.
+           IF VIEW-LASTKEY = 0
+               GO TO 62-SHOW-FORM.
+
+       62-CONTINUE.
+      *------ DISPLAY NEXT RECORD.
+           IF VIEW-LASTKEY = 4
+               IF VERBWOFL-EOF-SW NOT = "Y"
+                   PERFORM 62-READ-FILE
+                   MOVE "PRESS F4 TO SEE THE NEXT WORKORDER OR PRESS F6
+      -                     "TO DELETE"  TO  SC-INFO-LINE
+               END-IF
+      *------ IF END OF FILE, OFFER OPTION TO RESTART LIST.
+               IF VERBWOFL-EOF-SW = "Y"
+                   CLOSE             VERBWOFL-SEQ
+                   OPEN I-O          VERBWOFL-SEQ
+                   MOVE "N"         TO  VERBWOFL-EOF-SW
+                   PERFORM 62-READ-FILE
+                   IF VERBWOFL-EOF-SW = "Y"
+                       MOVE "NO RECORDS TO DISPLAY OR DELETE--PRESS F3 T
+      -                     "O EXIT"    TO  SC-INFO-LINE
+                   END-IF
+                   GO TO 62-PUT-BUFFER
+               END-IF
+               GO TO 62-SHOW-FORM
+           END-IF.
+
+      *------ DELETE RECORD.
+           IF VIEW-LASTKEY = 6
+               DELETE VERBWOFL-SEQ
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-DELETE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "++ PROBLEM WITH DELETE--CONTACT PROGRAMMER ++"
+                                TO OPT-MSGLINE
+               ELSE
+                   MOVE SPACES  TO SC-FIELDS
+                                   BUF-VERBWOFL
+                   MOVE "** WORKORDER DELETED **" TO OPT-MSGLINE
+               END-IF
+               MOVE B"1"    TO IND(99)
+               GO TO 62-EXIT
+           END-IF.
+
+       62-READ-FILE.
+           READ VERBWOFL-SEQ INTO BUF-VERBWOFL
+               AT END MOVE "Y" TO VERBWOFL-EOF-SW.
+           IF VERBWOFL-EOF-SW = "N"
+               PERFORM 62-MOVE-FIELDS.
+
+       62-MOVE-FIELDS.
+           MOVE V-EQUIP-NUM        TO  SC-EQUIP-NUM.
+           MOVE V-REQUESTOR        TO  SC-REQUESTOR.
+           MOVE V-WO-DESCRIP       TO  SC-WO-DESCRIP.
+           MOVE V-SKILL-REQ (1)    TO  SC-SKILL-REQ (1).
+           MOVE V-SKILL-REQ (2)    TO  SC-SKILL-REQ (2).
+           MOVE V-SKILL-REQ (3)    TO  SC-SKILL-REQ (3).
+           MOVE V-ADDL-INFO        TO  SC-ADDL-INFO.
+           MOVE V-FREQ-IND         TO  SC-FREQ-IND.
+
+       62-EXIT.
+           EXIT.
+
+       630-VALIDATE-EQUIP.
+           MOVE SC-EQUIP-NUM       TO  EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO EQUIPMENT-DATA
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "EQUIPMENT NUMBER DOES NOT EXIST"
+                                  TO  SC-MSGLINE
+               MOVE "Y"           TO  ERROR-FOUND
+           ELSE
+           IF EQP-SAFETY-FLG = "X"
+               MOVE "CANNOT CREATE WORKORDER AGAINST SAFETY EQUIPMENT"
+                                  TO  SC-MSGLINE
+               MOVE "Y"           TO  ERROR-FOUND
+           ELSE
+               MOVE "N"           TO  ERROR-FOUND.
+
+       630-VALIDATE-SKILL.
+           MOVE SC-SKILL-REQ (SUB) TO  CRAFTREQD OF WO-CRAFTS-REQD.
+           READ WO-CRAFTS-REQD INTO WO-CRAFT-DATA
+               INVALID KEY     MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "INVALID SKILL ENTERED"  TO  SC-MSGLINE
+               MOVE "Y"           TO  ERROR-FOUND
+           END-IF.
+
+       630-SHIFT-SKILLS.
+           IF V-SKILL-REQ (1) = SPACES
+               MOVE V-SKILL-REQ (2)  TO V-SKILL-REQ (1)
+               MOVE V-SKILL-REQ (3)  TO V-SKILL-REQ (2)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+           IF V-SKILL-REQ (1) = SPACES
+               MOVE V-SKILL-REQ (2)  TO V-SKILL-REQ (1)
+               MOVE V-SKILL-REQ (3)  TO V-SKILL-REQ (2)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+           IF V-SKILL-REQ (2) = SPACES
+               MOVE V-SKILL-REQ (3)  TO V-SKILL-REQ (2)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+           IF V-SKILL-REQ (1) = V-SKILL-REQ (3)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+           IF V-SKILL-REQ (1) = V-SKILL-REQ (2)
+               MOVE V-SKILL-REQ (3)  TO V-SKILL-REQ (2)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+           IF V-SKILL-REQ (1) = V-SKILL-REQ (2)
+               MOVE V-SKILL-REQ (3)  TO V-SKILL-REQ (2)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+           IF V-SKILL-REQ (2) = V-SKILL-REQ (3)
+               MOVE SPACES           TO V-SKILL-REQ (3).
+
+
+       COPY DISPCALL IN COPYLIB.
+
+      *----------------------------------------------------------------*
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.
+           EXIT.

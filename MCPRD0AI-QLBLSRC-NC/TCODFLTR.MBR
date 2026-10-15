@@ -1,0 +1,251 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     TCODFLTR.
+       AUTHOR.         EXLTECH, INC - DAN RAUCH
+
+      ***************************************************************
+      **          LOAD COMMODITY CODE FILTER TABLE
+      ***************************************************************
+
+      *****************************************************************
+      **                MODIFICATION   HISTORY
+      *****************************************************************
+      ** --------- ----------  ----------------------------------------
+      **    WHO       WHEN     WHAT (DESCRIPTION)
+      ** --------- ----------  ----------------------------------------
+      ** D.RAUCH   11/14/2003  MOVED "SETUP FILE" LOGIC TO TARIBASUP
+      ** XXXXXXXXX XXXXXXXXXX  XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *===============================================================
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+      *** INPUT - FTP'D COMMODITY CODE FILTER FILE
+           SELECT FTP-INPUT-FILE   ASSIGN TO DATABASE-MCFLAB0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+      *** OUTPUT -  COMMODITY CODE FILTER FILE
+           SELECT MCODE-FILTER-FILE ASSIGN TO DATABASE-MCFLAB1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT PLANT-INFO-FILE   ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+      *================================================================
+       DATA DIVISION.
+      *================================================================
+       FILE SECTION.
+
+       FD  FTP-INPUT-FILE.
+       01  FTP-INPUT-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB0601.
+       COPY COMCDF  IN COPYLIB.
+
+       FD  MCODE-FILTER-FILE.
+       01  MCODE-FILTER-REC.
+       COPY DDS-ALL-FORMATS OF MCFLAB1001.
+
+       FD  PLANT-INFO-FILE.
+       01  PLANT-INFO-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0501.
+
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+       COPY FILESTATUS  IN COPYLIB.
+
+      *****************************************************************
+      *  MISCELLANEOUS PROGRAM WORK FIELDS
+      *****************************************************************
+       01  WS-MISC-PROGRAM-FIELDS.
+
+      *  MISCELLANEOUS FILE KEYS
+           03  WS-ARIBA-KEY             PIC X(04)  VALUE "ARIB".
+
+      *  PLANT INFO BREAKDOWN
+           03  WS-PLTINFODTA.
+               05  WS-PLTINFODTA-1      PIC X(01)      VALUE SPACE.
+               05  FILLER               PIC X(99)      VALUE SPACE.
+
+      *================================================================
+      *===        P R O C E D U R E    D I V I S I O N              ===
+      *================================================================
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           OPEN  INPUT  FTP-INPUT-FILE
+                 I-O    MCODE-FILTER-FILE
+                        PLANT-INFO-FILE.
+
+
+           PERFORM 0010-INITIALIZE  THRU 0010-EXIT.
+
+           IF FS-GOOD-FILE-IO
+              PERFORM 1000-MAIN-LOGIC-RTN  THRU 1000-EXIT
+           END-IF.
+
+
+           CLOSE        FTP-INPUT-FILE
+                        PLANT-INFO-FILE
+                        MCODE-FILTER-FILE.
+
+       0000-PROGRAM-END.
+           GOBACK.
+
+      *****************************************************************
+      ** 1ST TIME PROCESSING ROUTINE
+      *****************************************************************
+       0010-INITIALIZE.
+
+           PERFORM 9000-READN-FTP-INPUT    THRU 9000-READN-EXIT.
+           IF FS-END-OF-FILE
+              GO TO 0010-EXIT
+           END-IF.
+
+           INITIALIZE PLANT-INFO-REC.
+           MOVE  WS-ARIBA-KEY  TO PLTINFOKEY OF PLANT-INFO-REC.
+           PERFORM 9100-READK-PLANT-INFO   THRU 9100-READK-EXIT.
+           IF FS-GOOD-FILE-IO
+              INITIALIZE WS-PLTINFODTA
+      ** 1ST BYTE OF PLTINFODTA = FILTER LENGTH - VALUE 2 THRU 7
+              MOVE  PLTINFODTA  OF PLANT-INFO-REC  TO WS-PLTINFODTA
+              MOVE  CCF-FILTER-LENGTH  TO WS-PLTINFODTA-1
+              MOVE  WS-PLTINFODTA   TO PLTINFODTA OF PLANT-INFO-REC
+              PERFORM 9100-REWRITE-PLANT-INFO THRU 9100-REWRITE-EXIT
+           ELSE
+              IF FS-RECORD-NOT-FOUND
+                 INITIALIZE PLANT-INFO-REC
+                 MOVE  WS-ARIBA-KEY TO PLTINFOKEY OF PLANT-INFO-REC
+                 MOVE  CCF-FILTER-LENGTH
+                                    TO PLTINFODTA  OF PLANT-INFO-REC
+                 PERFORM 9100-WRITE-PLANT-INFO THRU 9100-WRITE-EXIT
+              END-IF
+           END-IF.
+
+       0010-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  MAIN PROCESSING LOOP ROUTINE
+      *****************************************************************
+       1000-MAIN-LOGIC-RTN.
+
+           PERFORM 1100-LOAD-CODE-FILTER THRU 1100-EXIT
+                   UNTIL FS-END-OF-FILE.
+
+       1000-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  LOAD CODE FILTER FILE
+      *****************************************************************
+       1100-LOAD-CODE-FILTER.
+
+      ***  NO DUPE RECORDS
+           INITIALIZE PLANT-INFO-REC.
+           MOVE  WS-ARIBA-KEY       TO PLTINFOKEY OF PLANT-INFO-REC.
+           PERFORM 9200-READK-MCODE-FILTER THRU 9200-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               PERFORM 9200-WRITE-MCODE-FILTER THRU 9200-WRITE-EXIT
+           END-IF.
+
+           PERFORM 9000-READN-FTP-INPUT    THRU 9000-READN-EXIT.
+
+       1100-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ NEXT FTP INPUT FILE RECORD
+      *****************************************************************
+       9000-READN-FTP-INPUT.
+
+           READ FTP-INPUT-FILE  NEXT RECORD
+           END-READ.
+
+           IF FS-END-OF-FILE
+              GO TO 9000-READN-EXIT
+           END-IF.
+
+      ***  SKIP HP CTRL RECORDS
+           IF CCF-PLTINFO-KEY NOT  = "ARIB"
+              GO TO 9000-READN-FTP-INPUT
+           END-IF.
+
+       9000-READN-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  READ BY KEY PLANT INFO FILE
+      *****************************************************************
+       9100-READK-PLANT-INFO.
+
+           READ PLANT-INFO-FILE
+           END-READ.
+
+       9100-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      *** WRITE A PLANT INFO RECORD
+      *****************************************************************
+       9100-WRITE-PLANT-INFO.
+
+           WRITE PLANT-INFO-REC
+           END-WRITE.
+
+       9100-WRITE-EXIT.
+            EXIT.
+      *****************************************************************
+      *** REWRITE PLANT INFO RECORD
+      *****************************************************************
+       9100-REWRITE-PLANT-INFO.
+
+           REWRITE PLANT-INFO-REC
+           END-REWRITE.
+
+       9100-REWRITE-EXIT.
+            EXIT.
+      *****************************************************************
+      *** READK COMMODITY CODE RECORD
+      *****************************************************************
+       9200-READK-MCODE-FILTER.
+
+           INITIALIZE MCODE-FILTER-REC.
+           MOVE  CCF-FILTER        TO CORPCDE  OF MCODE-FILTER-REC.
+
+           READ MCODE-FILTER-FILE
+           END-READ.
+
+       9200-READK-EXIT.
+            EXIT.
+      *****************************************************************
+      *** WRITE COMMODITY CODE RECORD
+      *****************************************************************
+       9200-WRITE-MCODE-FILTER.
+
+           INITIALIZE MCODE-FILTER-REC.
+
+           MOVE  CCF-FILTER       TO CORPCDE   OF MCODE-FILTER-REC.
+
+           WRITE MCODE-FILTER-REC
+           END-WRITE.
+
+       9200-WRITE-EXIT.
+            EXIT.
+      *****************************************************************
+      ***              END  OF  SOURCE  MEMBER
+      *****************************************************************

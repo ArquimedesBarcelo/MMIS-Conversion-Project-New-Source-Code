@@ -1,0 +1,592 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             SPMNEWWO.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS. **** PREVENTIVE MAINTENANCE WORKORDER UPDATE PROGRAM:
+      *                  A - FOR CREATION OF SUFFIXED WORKORDERS
+      *                  B - FOR CREATION OF THE PM-QUEUE RECORDS
+      *
+      *                USER-CODE INDICATORS:
+      *                 'MAN-RLSE' - MANUAL RELEASE
+      *                 'CAL-RLSE' - CALENDAR RELEASE
+      *                 'PRE-RLSE' - PLANNER PRE-RELEASE
+      *                 'AUTO-REL' - AUTOMATIC SCHEDULER RELEASE
+      *                      ****.
+      *----------------------------------------------------------------
+      * CHANGES:
+      * 02/25/93  JEFF BUNGO, REQ #6306.
+      *      CREATE ALL PRE-RELEASED WORKORDERS IN 'PR' STATUS.
+      *----------------------------------------------------------------
+      * 06/01/93  JEFF BUNGO, REQ #6033.
+      *      CHANGE TO WORK WITH MASTER SCHEDULE RECORDS.
+      *----------------------------------------------------------------
+      * 04/22/98  JIM COFFMAN
+      *      ADDED A PM-QUEUE-DATA-SAVE WORKING STORAGE AREA AND
+      *      A SAVE OF THE READ PM-QUEUE-DATA RECORD IN PARAGRAPH
+      *      FIND-PRE-REL-NEXT WHEN A TRACE OF A TYLER BLOWUP OF
+      *      THE AUTOMATIC SCHEDULER (TPMSCHED) REVEALED THAT WE
+      *      WERE TRYING TO CHANGE THE NEXT SEQUENTIALLY READ RECORD
+      *      FROM PM-QUEUE-DATA INSTEAD OF THE CORRECT SUFFIX OF THE
+      *      MASTER THAT WE STARTED WITH.
+      *
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PMOQ
+                  ASSIGN       TO DATABASE-MCFLMM3902
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  PMOQ
+           LABEL RECORDS ARE STANDARD.
+       01  PMOQ-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM3902.
+
+       WORKING-STORAGE SECTION.
+       77  COND-CODE           PIC X.
+       77  ERROR-DISP          PIC -9999.
+       77  ERROR-SW            PIC X.
+       77  ERROR-SWITCH        PIC S9(4) BINARY VALUE ZEROS.
+       77  FIND-SW             PIC S9(4) BINARY VALUE 0.
+       77  RIME-CALC           PIC 99           VALUE ZEROS.
+       77  LEVEL-CODE          PIC 99           VALUE ZEROS.
+       77  TERM-DEV            PIC 9(4)         VALUE ZEROS.
+       77  SEQ-NO              PIC 9999         VALUE ZEROS.
+       77  SEQ-NO-TEMP         PIC 999          VALUE ZEROS.
+       77  MSG-SW              PIC X.
+       77  ACD-SW              PIC X.
+       77  BASE                PIC X(24) VALUE "  MMISA;".
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X   VALUE "0".
+           05 FILE-STAT-2      PIC X   VALUE "0".
+
+       01  PM-QUEUE-DATA-SAVE  PIC X(92).
+
+       01  WO-NUM-MASTER.
+           05  MASTER-WO       PIC X(07).
+           05  MASTER-SUFFIX   PIC XXX.
+
+       01  WO-LINK-DATA.
+           05  LINK-WO         PIC X(10).
+           05  LINK-EQUIP      PIC X(06).
+           05  LINK-DESC       PIC X(30).
+
+       01  ERROR-MESSAGE.
+           05  ERROR-TEXT      PIC X(70).
+           05  ERROR-FILL      PIC X(06) VALUE "000000".
+           05  ERROR-CODE      REDEFINES ERROR-FILL PIC 9(06).
+
+       01  PRINT-LINE.
+           05  PL-1            PIC X(20).
+           05  PL-2            PIC X(10).
+           05  PL-3.
+               10  PL-3-1      PIC X(20).
+               10  PL-3-2      PIC X(30).
+
+       01  PRTY.
+           05  P-1             PIC X.
+           05  P-2             PIC X.
+
+       01  DATE-BUFF.
+           05 Y-BUFF           PIC XX.
+           05 M-BUFF           PIC XX.
+           05 D-BUFF           PIC XX.
+
+       01  TODAYS-DATE.
+           05  TODAY-CT        PIC 9(02).
+           05  TODAY-YYMMDD.
+               10  TODAY-YY    PIC 9(02).
+               10  TODAY-MM    PIC 9(02).
+               10  TODAY-DD    PIC 9(02).
+
+       01  TIME-BUFF.
+           05 TIME-HHMM        PIC XXXX.
+           05 TIME-SECS        PIC XX.
+           05 TIME-TNTHS       PIC XX.
+
+       01  LEVEL-MSG.
+           05  FILLER          PIC X(06) VALUE "LEVEL ".
+           05  LEVEL           PIC Z9.
+           05  FILLER          PIC X(12) VALUE " PM RELEASE ".
+           05  MANREL          PIC X(10) VALUE "          ".
+
+       01  DESC-MSG.
+           05  FILLER          PIC X(16) VALUE "  DESCRIPTION:  ".
+           05  DESCN           PIC X(64).
+
+       01  DESC-REDEFINE.
+           05  FILLER          PIC X(36) VALUE SPACES.
+           05  SAVE-DESC       PIC X(30) VALUE SPACES.
+
+       01  CRAFT-LABOR-X.
+           05 CRAFT-LABOR-RATE PIC 999999V99 VALUE ZEROS.
+
+       01  SAVE-SUFFIX.
+           05 SAVE-SUFFIX-NUM  PIC 9(3) VALUE ZEROS.
+           05 FILLER           PIC X.
+
+       01  OUT-MESSAGE.
+           05  OM1             PIC X(44).
+           05  OM2             PIC X(10).
+           05  FILLER          PIC X(10) VALUE "  LEVEL:  ".
+           05  OM3             PIC 9(02).
+           05  FILLER          PIC X(14) VALUE SPACES.
+
+       01  DB-ERROR.
+           05  DB-FUNC         PIC X(10) VALUE SPACES.
+           05  DB-FILE         PIC X(18) VALUE SPACES.
+           05  FILLER          PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+           COPY TBLOWUP        IN COPYLIB.
+
+           COPY DBSTAT         IN COPYLIB.
+
+           COPY VCOMLINK       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       01  PM-QUEUE-DATA.
+           COPY DPMOPENQ       IN COPYLIB.
+
+       01  PM-AUDIT-DATA.
+           COPY DPMAUDIT       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  PM-SCHED-DATA.
+           COPY DPMSCHED       IN COPYLIB.
+
+       01  CRAFT-TABLE.
+           05 C-R-ENTRY OCCURS 200 TIMES INDEXED BY CRAFT-INDEX.
+              10 CRAFT         PIC X(2).
+              10 RATE          PIC 999999V99.
+
+       01  USER-CODE           PIC X(08).
+
+       01  PRINT-DATA.
+           05  PRINT-1         PIC X(80).
+           05  PRINT-2         PIC X(80).
+           05  PRINT-3         PIC X(80).
+           05  PRINT-4         PIC X(80).
+           05  PRINT-5         PIC X(80).
+           05  PRINT-6         PIC X(80).
+           05  PRINT-7         PIC X(80).
+           05  PRINT-8         PIC X(80).
+           05  PRINT-9         PIC X(80).
+           05  PRINT-0         PIC X(80).
+           05  PRINT-ERR       PIC X(02).
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               PM-SCHED-DATA
+                               CRAFT-TABLE
+                               USER-CODE
+                               PRINT-DATA.
+       OPEN-FILES.
+           OPEN I-O            WO-PLANNED.
+           OPEN INPUT          PMOQ.
+
+       START-PROGRAM.
+           ACCEPT DATE-BUFF    FROM DATE.
+           MOVE DATE-BUFF      TO TODAY-YYMMDD.
+
+           IF TODAY-YY > 60
+               MOVE 19         TO TODAY-CT
+           ELSE
+               MOVE 20         TO TODAY-CT.
+
+           ACCEPT TIME-BUFF    FROM TIME.
+
+           MOVE SPACES         TO WO-TRACK-DATA PRINT-DATA PRINT-LINE.
+           MOVE "SPMNEWWO"     TO PROGRAM-NAME.
+           MOVE TODAYS-DATE    TO DATE-STAMP-CN.
+           MOVE TIME-HHMM      TO TIME-STAMP.
+           MOVE SPACES         TO USER-ID CLOCK-CARD.
+           MOVE SPACES         TO TRANS-STATUS.
+           MOVE "AA"           TO WO-TYPE-STATUS.
+           MOVE USER-CODE      TO USER-NAME.
+           MOVE "AUTO"         TO USER-TERM.
+
+       CHECK-FOR-PRE-RELEASED-WO.
+           IF USER-CODE = "AUTO-REL" OR "CAL-RLSE"
+               IF SCH-PREREL-DATE NOT = SPACES
+                   PERFORM FIND-PRE-REL-RECORD THRU FPRR-EXIT
+                   MOVE PMQ-WO-NUM TO SCH-WO-NUM
+                   PERFORM UPDATE-PR-WO-RECORD THRU UPWR-EXIT
+                   GO TO END-OF-JOB.
+
+       UPDATE-MASTER-PM.
+           MOVE SCH-WO-NUM     TO WO-NUM-MASTER.
+           MOVE "000"          TO MASTER-SUFFIX.
+           MOVE WO-NUM-MASTER  TO WONUM OF WO-PLANNED.
+
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "  PROGRAM ERROR:  SPMNEWWO  -  "
+                               TO PRINT-LINE
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               MOVE DB-ERROR   TO PRINT-LINE
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+           IF WO-STATUS-P NOT = "OO"
+               MOVE "MASTER WORK ORDER:  " TO PL-1
+               MOVE WO-NUM-MASTER          TO PL-2
+               MOVE " NOT 'OO' STATUS."    TO PL-3
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+           MOVE LAST-SUFFIX-INIT TO SAVE-SUFFIX.
+           IF SAVE-SUFFIX-NUM IS NUMERIC
+               IF SAVE-SUFFIX-NUM > 998
+                   MOVE "MASTER WORK ORDER:  " TO PL-1
+                   MOVE WO-NUM-MASTER          TO PL-2
+                   MOVE " HAS 999 SUFFIXES"    TO PL-3
+                   MOVE "XX"   TO PRINT-ERR
+                   PERFORM DISPLAY-PRINT
+                   GO TO END-OF-JOB.
+
+           IF SAVE-SUFFIX-NUM IS NUMERIC
+               ADD  1          TO SAVE-SUFFIX-NUM
+           ELSE
+               MOVE 1          TO SAVE-SUFFIX-NUM.
+
+           MOVE SAVE-SUFFIX    TO LAST-SUFFIX-INIT.
+           MOVE SAVE-SUFFIX-NUM TO SCH-WO-SUFF.
+
+           REWRITE PWO-REC     FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "REWRITE " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "  PROGRAM ERROR:  SPMNEWWO  -  "
+                               TO PRINT-LINE
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               MOVE DB-ERROR   TO PRINT-LINE
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+           MOVE "MASTER WORK ORDER:  " TO PL-1.
+           MOVE WO-NUM-MASTER          TO PL-2.
+           MOVE " HAS BEEN UPDATED."   TO PL-3.
+           PERFORM DISPLAY-PRINT.
+
+           MOVE SAVE-SUFFIX    TO    WO-NUM-SUFF-P.
+           MOVE TODAYS-DATE    TO    DATE-RECD-P-CN.
+           MOVE TIME-STAMP     TO    TIME-RECD-P.
+           MOVE SCH-PRIORITY   TO    PRTY.
+           MOVE P-2            TO    PRIORITY-P.
+           MOVE SPACES         TO    TIME-SCHD.
+
+      **************************************************************
+           IF USER-CODE = "PRE-RLSE"
+      **************************************************************
+               MOVE SPACES     TO   DATE-SCHD-CN TIME-SCHD TIME-REQD
+               MOVE SCH-PREREL-DATE TO DATE-REQD-CN
+               MOVE "PR"       TO   WO-STATUS-P WO-STATUS-TRACK
+               MOVE "2"        TO MSG-SW
+           ELSE
+      **************************************************************
+      **>> IF USER-CODE = "AUTO-REL", "MAN-RLSE", OR "CAL-RLSE"
+      **************************************************************
+               MOVE TODAYS-DATE TO  DATE-SCHD-CN DATE-REQD-CN
+               MOVE TIME-STAMP TO   TIME-SCHD TIME-REQD
+               MOVE "SD"       TO   WO-STATUS-P WO-STATUS-TRACK
+               MOVE "1"        TO MSG-SW.
+
+           PERFORM CALCULATE-RIME-FACTOR.
+
+           MOVE RIME-CALC      TO    RIME-P.
+           MOVE SPACES         TO    MANREL.
+           IF USER-CODE = "MAN-RLSE"
+               MOVE "- MANUAL" TO    MANREL.
+           IF SCH-REC-TYP = "CL"
+               MOVE "- CALENDAR" TO  MANREL.
+           MOVE SPACES           TO  SPECL-INSTR-2.
+           MOVE DESCRIPTION-1-P  TO  SPECL-INSTR-2.
+           MOVE SCH-LEVEL      TO    LEVEL.
+           MOVE LEVEL-MSG      TO    DESCRIPTION-1-P.
+           MOVE 0              TO    ERROR-SWITCH.
+           MOVE "0"            TO    COND-CODE.
+           MOVE LOW-VALUES     TO    STATUS-AREA.
+
+           CALL "TADDWOII"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WO-PLANNED-DATA
+                               COND-CODE
+                               ERROR-SWITCH.
+
+           IF ERROR-SWITCH NOT = 0
+               MOVE ERROR-SWITCH TO ERROR-DISP
+               MOVE "ERROR IN PROGRAM TADDWOII"
+                               TO PRINT-LINE
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               MOVE "SUFFIXED WORKORDER: " TO PL-1
+               MOVE WO-NUM-PLANNED         TO PL-2
+               MOVE " CAN NOT BE ADDED TO DATA BASE."
+                                           TO PL-3
+               PERFORM DISPLAY-PRINT
+               MOVE "       ERROR-CODE = " TO PL-1
+               MOVE ERROR-DISP             TO PL-2
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+           MOVE WO-NUM-PLANNED TO LINK-WO.
+           MOVE EQUIP-NUM-P    TO LINK-EQUIP.
+           MOVE DESCRIPTION-1-P TO LINK-DESC.
+           PERFORM WRITE-MSG-PROG.
+
+           MOVE "SUFFIXED WORKORDER: " TO PL-1.
+           MOVE WO-NUM-PLANNED         TO PL-2.
+           MOVE " HAS BEEN CREATED."   TO PL-3-1.
+           MOVE LEVEL-MSG              TO PL-3-2.
+           PERFORM DISPLAY-PRINT.
+           MOVE SPACES                 TO DESCN.
+           MOVE SPECL-INSTR-2          TO DESCN.
+           MOVE DESC-MSG               TO PRINT-LINE.
+           PERFORM DISPLAY-PRINT.
+
+       WRITE-PM-QUEUE-DATA.
+           MOVE SPACES         TO  PM-QUEUE-DATA ERROR-MESSAGE.
+           MOVE WO-NUM-PLANNED TO  PMQ-WO-NUM.
+           MOVE DESCRIPTION-1-P TO  PMQ-DESCRIPTION.
+           MOVE EQUIP-NUM-P    TO  PMQ-EQUIP-NUM.
+           MOVE ZONE-PRIORITY-P TO  PMQ-ZONE-PRI.
+           MOVE SCH-REC-TYPE   TO  PMQ-REC-TYPE.
+           MOVE SCH-RELEASE-DATE TO  PMQ-DATE.
+           IF SCH-REC-TYP NOT = "CL"
+               MOVE SCH-CRITICAL     TO  PMQ-CRITICAL
+               MOVE SCH-CYCLE        TO  PMQ-CYCLE
+               MOVE SCH-LOOK-AHEAD   TO  PMQ-LOOK-AHEAD
+               MOVE SCH-PRE-REL      TO  PMQ-PRE-REL.
+           IF USER-CODE = "MAN-RLSE"
+               MOVE TODAYS-DATE TO  PMQ-DATE
+               MOVE "MR"       TO  PMQ-REC-TYPE.
+           IF USER-CODE = "PRE-RLSE"
+               MOVE SCH-PREREL-DATE TO PMQ-DATE
+               MOVE SCH-PR-ID  TO  PMQ-PR-ID.
+           MOVE RIME-CALC      TO  PM-QUEUE-FACTOR.
+           MOVE "A"            TO  ACD-SW.
+
+           CALL "TPMQUEUE"     USING DBPARAMETERS
+                               PM-QUEUE-DATA
+                               ACD-SW
+                               ERROR-MESSAGE.
+
+           IF ERROR-MESSAGE NOT = SPACES
+               MOVE "  PROGRAM ERROR:  SPMNEWWO  - "
+                               TO PRINT-LINE
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               MOVE ERROR-MESSAGE TO PRINT-LINE
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+       WRITE-CREATE-AUDIT.
+           MOVE SPACES         TO PM-AUDIT-DATA  ERROR-MESSAGE.
+           MOVE TODAYS-DATE    TO AUDIT-DATE  AUDIT-YRMO.
+           MOVE TIME-HHMM      TO AUDIT-TIME.
+           MOVE "CR"           TO AUDIT-TRANS.
+           MOVE EQUIP-NUM-P    TO AUDIT-EQUIP-NUM.
+           MOVE WO-NUM-PLANNED TO AUDIT-WO-NUM.
+           MOVE WO-STATUS-P    TO AUDIT-WO-STATUS.
+           MOVE SCH-LEVEL      TO AUDIT-PM-LEVEL.
+           MOVE "WORKORDER CREATED " TO AUDIT-DESC.
+           IF USER-CODE = "MAN-RLSE"
+               MOVE "WORKORDER CREATED, MANUAL RLSE" TO AUDIT-DESC.
+           IF WO-STATUS-P = "PR"
+               MOVE "PRE-RELEASE WORKORDER CREATED " TO AUDIT-DESC.
+           PERFORM WRITE-AUDIT-RECORD.
+
+       WRITE-WO-TRACKING-DATA.
+           MOVE WO-NUM-PLANNED TO WO-NUM-TRACK.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+       END-OF-JOB.
+           CLOSE               WO-PLANNED.
+           GOBACK.
+
+       FIND-PRE-REL-RECORD.
+           MOVE SCH-EQUIP-NUM  TO EQPNUM OF PMOQ.
+           START PMOQ KEY = EQPNUM OF PMOQ
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO FPRR-EXIT.
+
+       FIND-PRE-REL-NEXT.
+           READ PMOQ NEXT      INTO PM-QUEUE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO FPRR-EXIT
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE "READ NEXT PMOQ ERROR" TO BU-DISPLAY-MSG
+               MOVE SCH-EQUIP-NUM TO BU-DISPLAY-FLD (2)
+               PERFORM 999-BLOWUP.
+
+           IF PMQ-EQUIP-NUM NOT = SCH-EQUIP-NUM
+               MOVE PM-QUEUE-DATA-SAVE TO PM-QUEUE-DATA
+               GO TO FPRR-EXIT.
+
+           MOVE PM-QUEUE-DATA TO PM-QUEUE-DATA-SAVE.
+
+           IF SCH-RELEASE-DATE = PMQ-DATE AND
+              SCH-PR-ID = PMQ-PR-ID
+               PERFORM UPDATE-QUEUE-RECORD
+               PERFORM WRITE-PREREL-AUDIT
+               GO TO FPRR-EXIT.
+
+           GO TO FIND-PRE-REL-NEXT.
+
+       FPRR-EXIT.              EXIT.
+
+       UPDATE-PR-WO-RECORD.
+           MOVE PMQ-WO-NUM     TO WONUM OF WO-PLANNED.
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "  PROGRAM ERROR:  SPMNEWWO  -  "
+                               TO PRINT-LINE
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               MOVE DB-ERROR   TO PRINT-LINE
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+           MOVE TODAYS-DATE    TO   DATE-SCHD-CN.
+           MOVE TIME-STAMP     TO   TIME-SCHD.
+           MOVE "SD"           TO   WO-STATUS-P.
+
+           REWRITE PWO-REC     FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "REWRITE " TO DB-FUNC
+               MOVE "WO-PLANNED" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "  PROGRAM ERROR:  SPMNEWWO  -  "
+                               TO PRINT-LINE
+               MOVE "XX"       TO PRINT-ERR
+               PERFORM DISPLAY-PRINT
+               MOVE DB-ERROR   TO PRINT-LINE
+               PERFORM DISPLAY-PRINT
+               GO TO END-OF-JOB.
+
+           MOVE "1"            TO MSG-SW.
+           MOVE WO-NUM-PLANNED TO LINK-WO.
+           MOVE EQUIP-NUM-P    TO LINK-EQUIP.
+           MOVE DESCRIPTION-1-P TO LINK-DESC.
+           PERFORM WRITE-MSG-PROG.
+
+       UPWR-EXIT.              EXIT.
+
+       CALCULATE-RIME-FACTOR.
+           MOVE 5              TO RIME-CALC.
+           IF RIME-P NUMERIC
+             IF RIME-P > 0 AND < 10
+               MOVE RIME-P     TO RIME-CALC.
+
+           IF SCH-PRIORITY = 1 COMPUTE RIME-CALC = RIME-CALC * 5.
+           IF SCH-PRIORITY = 2 COMPUTE RIME-CALC = RIME-CALC * 4.
+           IF SCH-PRIORITY = 3 COMPUTE RIME-CALC = RIME-CALC * 3.
+           IF SCH-PRIORITY = 4 COMPUTE RIME-CALC = RIME-CALC * 2.
+           IF SCH-PRIORITY = 5 COMPUTE RIME-CALC = RIME-CALC * 1.
+
+       UPDATE-QUEUE-RECORD.
+           MOVE SPACES         TO ERROR-MESSAGE.
+           MOVE SCH-REC-TYPE   TO PMQ-REC-TYPE.
+           MOVE TODAYS-DATE    TO PMQ-DATE.
+           MOVE "C"            TO ACD-SW.
+           CALL "TPMQUEUE"     USING DBPARAMETERS
+                               PM-QUEUE-DATA
+                               ACD-SW
+                               ERROR-MESSAGE.
+           IF ERROR-MESSAGE NOT = SPACES
+               MOVE ERROR-MESSAGE TO BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+       WRITE-PREREL-AUDIT.
+           MOVE SPACES         TO PM-AUDIT-DATA ERROR-MESSAGE.
+           MOVE TODAYS-DATE    TO AUDIT-DATE AUDIT-YRMO.
+           MOVE TIME-HHMM      TO AUDIT-TIME.
+           MOVE "QR"           TO AUDIT-TRANS.
+           MOVE SCH-EQUIP-NUM  TO AUDIT-EQUIP-NUM.
+           MOVE PMQ-WO-NUM     TO AUDIT-WO-NUM.
+           MOVE "SD"           TO AUDIT-WO-STATUS.
+           MOVE SCH-LEVEL      TO AUDIT-PM-LEVEL.
+           MOVE "PR RECORD ACTIVATED IN QUEUE" TO AUDIT-DESC.
+           PERFORM WRITE-AUDIT-RECORD.
+
+       WRITE-AUDIT-RECORD.
+           CALL "SPMAUDIT"     USING PM-AUDIT-DATA
+                               DBPARAMETERS
+                               ERROR-MESSAGE.
+           IF ERROR-MESSAGE NOT = SPACES
+               MOVE ERROR-MESSAGE TO BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+       WRITE-MSG-PROG.
+           CALL "SPMWRTMS"     USING MSG-SW
+                               WO-LINK-DATA
+                               ERROR-MESSAGE.
+           IF ERROR-MESSAGE NOT = SPACES
+               MOVE ERROR-MESSAGE TO BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+       DISPLAY-PRINT.
+           IF PRINT-1 = SPACES MOVE PRINT-LINE TO PRINT-1 ELSE
+           IF PRINT-2 = SPACES MOVE PRINT-LINE TO PRINT-2 ELSE
+           IF PRINT-3 = SPACES MOVE PRINT-LINE TO PRINT-3 ELSE
+           IF PRINT-4 = SPACES MOVE PRINT-LINE TO PRINT-4 ELSE
+           IF PRINT-5 = SPACES MOVE PRINT-LINE TO PRINT-5 ELSE
+           IF PRINT-6 = SPACES MOVE PRINT-LINE TO PRINT-6 ELSE
+           IF PRINT-7 = SPACES MOVE PRINT-LINE TO PRINT-7 ELSE
+           IF PRINT-8 = SPACES MOVE PRINT-LINE TO PRINT-8 ELSE
+           IF PRINT-9 = SPACES MOVE PRINT-LINE TO PRINT-9 ELSE
+           IF PRINT-0 = SPACES MOVE PRINT-LINE TO PRINT-0.
+
+       999-BLOWUP.
+           MOVE "SPMNEWWO"     TO BU-PGM-NAME.
+           CALL "TBLOWUP"      USING BASE BU-PGM-NAME STATUS-AREA
+                               VIEW-COMAREA FILE-STAT
+                               BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+

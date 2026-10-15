@@ -1,0 +1,1928 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TR3PURCH.
+       AUTHOR.         CA YODER.
+       DATE-WRITTEN.   OCTOBER 1998.
+       DATE-COMPILED.
+
+      ************************************************************
+      **                                                        **
+      ** TR3PURCH                                               **
+      ** ========                                               **
+      **   THIS PROGRAM EXTRACTS CSIS PURCHASING DATA FOR R/3.  **
+      **                                                        **
+      ** FILES CREATED:                                         **
+      ** ==============                                         **
+      **   R3BLANKET   --  BLANKET ORDER HEADER/ITEM INFO       **
+      **   R3CONTRACT  --  LOCAL CONTRACT (REQMT ORDER)  INFO   **
+      **   R3PURCH     --  PURCHASE ORDERS & RELEASES           **
+      **   R3UNCLASS   --  UNCLASSIFIED PURCHASE ORDERS         **
+      **                                                        **
+      ************************************************************
+      ** 12/18/2003   BRUCE GEISER     (JEAN CHASE REQUEST)     **
+      **  FORCED FRAMEWORK ORDERS TO TYPE FO, FORCED STANDARD   **
+      **  ORDERS TO TYPE NB, MADE ALL FO ORDERS CATEGORY B.     **
+      **  CHANGED PO CUTOFF DATES FROM 1998 TO 2003.            **
+      **                                                        **
+      ** 01/19/2004   BRUCE GEISER     (JEAN CHASE REQUEST)     **
+      **  SKIP PO'S FROM CORPORATE, THESE ALREADY EXIST IN SAP  **
+      **  IF PO HEADER COMPANY DOES NOT MATCH PLANT CODE - SKIP **
+      **                                                        **
+      ** 02/09/2004   BRUCE GEISER     (JEAN CHASE REQUEST)     **
+      **  ADD TRAILING ZERO TO ITEM NUM. USE 20040101 FOR EXPIRE**
+      **  DATE CHECK ON REQUIREMENT ORDERS. CHANGE CATAGORY OF  **
+      **  CONSIGNMENT ITEMS TO "K".                             **
+      **                                                        **
+      ** 02/17/2004   BRUCE GEISER     (ALL PLANTS REQUEST)     **
+      **  SKIP REPAIR ORDER ITEMS WITH ZERO QUANTITY AND PRICE. **
+      **                                                        **
+      ** 02/2004      HARRY PROCTOR                             **
+      **    Added byte to Plant ID Table for Ariba PO           **
+      **  indicator.  Populated field and added logic to        **
+      **  identify Ariba originated orders.                     **
+      **    Created 01 STATUS-FLAGS to hold 88 level switches.  **
+      **  Made one switch name OPEN-PO-SW and commented out     **
+      **  the 77 level variable OPEN-PO-SW so all existing      **
+      **  logic continues to function the same.  New logic uses **
+      **  88 level switch OPEN-ORDER.                           **
+      **    Added logic to skip PO's if they are a Repair PO    **
+      **  and the Qty and Price are Zero and skip POs if they   **
+      **  originated in Ariba and the Qty is Zero. (Ref para    **
+      **  922-CHECK-OPEN-PO) Also added 2 accumulators so all   **
+      **  items are checked on the PO.                          **
+      **    Added logic to para 830-Write-Items to not write    **
+      **  Item records if the item is closed.                   **
+      **                                                        **
+      ** 04/07/2004   BRUCE GEISER                              **
+      **  UPDATE REPAIR AND ARIBA OPEN ORDER SELECTION LOGIC.   **
+      **  SKIP ALL ITEM OUTPUT LOGIC IF ITEM CLOSED.            **
+      **  REMOVED BUDGET CHECKS, USER CAN MODIFY TO ANY AMOUNT. **
+      **                                                        **
+      ** 04/15/2004   Harry Proctor                             **
+      **  Modified logic for Purchase Order processing to       **
+      **  inhibit the writing of Header records unless or       **
+      **  until a detail item record is to be written.          **
+      **                                                        **
+      ** 05/03/2004   Harry Proctor                             **
+      **  Ariba is sending display control characters as part   **
+      **  of the Text fields on PO Records.  Added Para 999-    **
+      **  to scan Text fields and replace these control chars   **
+      **  with an asterisk (*) before sending to SAP.           **
+      **                                                        **
+      ** 05/13/2004   Harry Proctor                             **
+      **  Modified 902- to pass the last 3 characters of the    **
+      **  PO record Accounting Information field as characters  **
+      **  7 thru 9 of the Accounting Number field being passed  **
+      **  to SAP.  They could not convert the Expense Class     **
+      **  that was being passed to an Expense Code and found    **
+      **  these 3 characters in the PO record are the Expense   **
+      **  Code.                                                 **
+      **       Also modified the New Work logic to move a       **
+      **  constant of "250" to the Class field if the order is  **
+      **  a New Work order.                                     **
+      **                                                        **
+      ** 05/19/2004   Harry Proctor                             **
+      **  Added Initialize to reset out bound records before    **
+      **  processing a new PO.                                  **
+      **      Changed calculation of OVERALL-LIMIT to use QTY   **
+      **  * PRICE if both are > zero, otherwise use BUDGET      **
+      **  from PO Header but adjust for multiple items and those *
+      **  that have valid QTY and PRICE.                        **
+      **      Added INSPECT logic to find Contract and Purchase **
+      **  orders that have incomplete accounting information    **
+      **  by looking for spaces in the records being passed to  **
+      **  SAP.                                                  **
+      **                                                        **
+      ** 05/26/2004   BRUCE GEISER                              **
+      **  TWEAKED THE ACCOUNT NUMBER FIELD FOR SALLY.           **
+      **                                                        **
+      ** 06/28/2004   BRUCE GEISER                              **
+      **  INCLUDED INTERNAL TRANSFER ORDERS IN LOAD FOR SALLY.  **
+      **  FORCED BUYER TO BE 'STO' ON IT'S.                     **
+      **                                                        **
+      ************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.          IBM-AS400.
+       OBJECT-COMPUTER.          IBM-AS400.
+         SPECIAL-NAMES.   LOCAL-DATA IS LDA
+                          C01 IS PAGE-EJECT.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MSTORERM-I
+               ASSIGN         TO DATABASE-MCFLCS0201
+               ORGANIZATION   IS INDEXED
+                 ACCESS MODE  IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+               ASSIGN         TO DATABASE-MCFLCS0501
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS    IS FILE-STATUS.
+
+      *--------- CHANGED LOGICAL FILE SO THAT PURCHASE ORDERS ARE
+      *--------- IN ORDER BY BUYER CODE.
+           SELECT DPORECD-I
+               ASSIGN         TO DATABASE-MCFLCS0905
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+               ASSIGN         TO DATABASE-MCFLCS1002
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DPODATAITM-I
+               ASSIGN         TO DATABASE-MCFLCS1101
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DCOMMENT-I
+               ASSIGN         TO DATABASE-MCFLCS1901
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+               ASSIGN         TO DATABASE-MCFLCS2502
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DINVITM-I
+               ASSIGN TO DATABASE-MCFLCS2601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MVALIDPLTDATA-I
+               ASSIGN TO DATABASE-MCFLCS1701
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT BLANKET-FILE
+               ASSIGN TO DISK-R3BLANKET.
+
+           SELECT CONTRACT-FILE
+               ASSIGN TO DISK-R3CONTRACT.
+
+           SELECT PURCH-FILE
+               ASSIGN TO DISK-R3PURCH.
+
+           SELECT INSTR-FILE
+               ASSIGN TO DATABASE-R3STDINST.
+
+           SELECT UNCLASS-FILE
+               ASSIGN TO DATABASE-R3UNCLASS.
+
+           SELECT PRINT-FILE  ASSIGN TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS0905.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-MCRPCS1000  OF MCFLCS1002.
+
+       FD  DPODATAITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+       FD  DCOMMENT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DCOMMENT-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1901.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS2502.
+
+       FD  DINVITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-REC-I.
+           COPY DDS-MCRPCS2600  OF MCFLCS2601.
+
+       FD  MVALIDPLTDATA-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDPLTDATA-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS1701.
+
+       FD  BLANKET-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 266 CHARACTERS
+           DATA RECORD IS BLANKET-REC.
+       01  BLANKET-REC               PIC X(266).
+
+       FD  CONTRACT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 266 CHARACTERS
+           DATA RECORD IS CONTRACT-REC.
+       01  CONTRACT-REC              PIC X(266).
+
+       FD  PURCH-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 266 CHARACTERS
+           DATA RECORD IS PURCH-REC.
+       01  PURCH-REC                 PIC X(266).
+
+       FD  INSTR-FILE
+           DATA RECORD IS INSTR-REC
+           RECORD CONTAINS 3 CHARACTERS
+           LABEL RECORDS ARE STANDARD.
+       01  INSTR-REC                  PIC X(3).
+
+       FD  UNCLASS-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 266 CHARACTERS
+           DATA RECORD IS UNCLASS-REC.
+       01  UNCLASS-REC                 PIC X(266).
+
+       FD  PRINT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC                     PIC X(132).
+
+       WORKING-STORAGE SECTION.
+       77  ITMS-RECD-SW                  PIC 9(5).
+       77  LINE-CTR                      PIC 99.
+       77  BLK-RECS-CTR                  PIC 9(5).
+       77  CNT-RECS-CTR                  PIC 9(5).
+       77  PUR-RECS-CTR                  PIC 9(5).
+       77  TOT-RECS-CTR                  PIC 9(5).
+       77  DPORECD-EOF-SW                PIC X     VALUE "N".
+       77  SUB                           PIC 9(2)  VALUE ZEROS.
+       77  HOLD-PLT-ID                   PIC X.
+       77  HOLD-LEGACY-ID                PIC X(2).
+       77  HOLD-TEXT                     PIC X(72).
+       77  HOLD-UNIT-PRICE               PIC 9(11)V9(4).
+       77  HOLD-PLANT-CODE               PIC X(4).
+       77  HOLD-COMPANY                  PIC X(3).
+       77  HOLD-HOME-CUR                 PIC X(2).
+       77  HOLD-DEPT-STR                 PIC X(4).
+      *77  PO-TYPE-ANS                   PIC X.
+       77  SUB2                          PIC 9(2).
+       77  SUB3                          PIC 9(2).
+       77  SUBT                          PIC 9.
+       77  HOLD-SHORT-TEXT               PIC X(80).
+       77  HOLD-DLV-VAL                  PIC 9(13)V9(4).
+       77  HOLD-DLV-TOT-VAL              PIC 9(13)V9(4).
+       77  HOLD-INV-TOT-VAL              PIC S9(13)V9(4).
+       77  HOLD-INV-ITM-TOT              PIC S9(13)V9(4).
+       77  ACCUM-ORD-QTY                 PIC S9(13)V9(4).
+       77  ACCUM-PRICE                   PIC S9(13)V9(4).
+      *77  OPEN-PO-SW                    PIC X.
+       77  INSTR-EOF-SW                  PIC X     VALUE "N".
+       77  EXCLUDE-INSTR-SW              PIC X     VALUE "N".
+       77  TM-RR-PO-SW                   PIC X     VALUE "N".
+      *DEFAULT TAX CODE OF I0 (EYE,ZERO)
+       77  DFT-TAX-CODE                  PIC X(2)  VALUE "I0".
+       77  NUM-ITEMS                     PIC 9(3).
+       77  BLANKET-ITEMS                 PIC 9(3).
+       77  STND-BUDGET-AMT               PIC S9(11).
+       77  UNCLASS-PO-SW                 PIC X.
+       77  ARIBA-FLAG                    PIC X.
+
+       01  STATUS-FLAGS.
+           05  ARIBA-STATUS         PIC X   VALUE " ".
+               88  ARIBA-ORDER              VALUE "Y".
+               88  NON-ARIBA-ORDER          VALUE "N".
+           05  ORDER-STATUS         PIC X   VALUE " ".
+               88  PLANT-ORDER              VALUE "Y".
+               88  NON-PLANT-ORDER          VALUE "N".
+           05  REPAIR-ORDER-STATUS  PIC X   VALUE " ".
+               88  REPAIR-ORDER             VALUE "Y".
+               88  NON-REPAIR-ORDER         VALUE "N".
+           05  T-AND-M-ORDER-STATUS PIC X   VALUE " ".
+               88  T-AND-M-ORDER            VALUE "Y".
+               88  NON-T-AND-M-ORDER        VALUE "N".
+           05  OPEN-PO-SW           PIC X   VALUE " ".
+               88  OPEN-PO                  VALUE "Y".
+               88  CLOSED-PO                VALUE "N".
+           05  OPEN-ITEM-SW         PIC X   VALUE " ".
+               88  OPEN-ITEM                VALUE "Y".
+               88  CLOSED-ITEM              VALUE "N".
+           05  RAW-MAT-DEPT-SW      PIC X   VALUE " ".
+               88  RM-DEPT                  VALUE "Y".
+               88  NON-RM-DEPT              VALUE "N".
+           05  CONSIGNMENT-SW       PIC X   VALUE " ".
+               88  ON-CONSIGNMENT           VALUE "Y".
+               88  NON-CONSIGNMENT          VALUE "N".
+           05  RAW-MATERIAL-SW      PIC X   VALUE " ".
+               88  RAW-MATERIAL             VALUE "Y".
+               88  NOT-RAW-MATERIAL         VALUE "N".
+           05  PO-TYPE-ANS          PIC X.
+               88  BLANKET-ORDER            VALUE "B".
+               88  LOCAL-ORDER              VALUE "L".
+               88  PURCHASE-ORDER           VALUE "P".
+           05  HEADER-SW            PIC X   VALUE " ".
+               88  H1-WRITTEN               VALUE "Y".
+               88  HEADER-NEEDED            VALUE "N".
+           05  CHAR-FLAG            PIC X   VALUE " ".
+               88  GOOD-CHAR                VALUE "Y".
+               88  BAD-CHAR                 VALUE "N".
+
+       01  FULL-TEXT.
+           05  TEXT-40                   PIC X(40).
+           05  TEXT-32                   PIC X(32).
+
+       01  HOLD-PO-NUM.
+           05  HOLD-PO                   PIC X(7).
+           05  HOLD-RLS                  PIC X(3).
+
+       01  STD-INST-SAVED.
+           05  SAVE-STD-INST-LIST.
+               10  STD-INST-NO  OCCURS 12 TIMES  PIC X(3).
+           05  SAVE-CONFIRM-FLAG         PIC X.
+           05  SAVE-CONFIRM-VERBAGE      PIC X(34).
+
+       01  BUILD-COMMENT-NO.
+           05  BUILD-COM-PREFIX          PIC X     VALUE "C".
+           05  BUILD-COM-NO              PIC X(3)  VALUE SPACES.
+
+       01  BUILD-NEW-WORK.
+           05  FILLER                  PIC X(2) VALUE "NW".
+           05  NEW-WORK                PIC X(6) VALUE SPACES.
+
+      ***********************************************************
+      *    Plant Names table
+      ***********************************************************
+       01  HEADER-REC-1.
+           05    FILLER  PIC X(27) VALUE "Load file error report for ".
+           05  PLANT-HDR   PIC X(20).
+       01  HEADER-REC-2.
+           05    FILLER  PIC X(12) VALUE "Created on: ".
+           05  HDR-DATE  PIC X(6).
+           05    FILLER  PIC X(6)  VALUE "  at: ".
+           05  HDR-TIME  PIC X(6).
+       01  HEADER-REC-3.
+           05    FILLER  PIC X(6) VALUE "Page: ".
+           05  HDR-PAGE  PIC X(6).
+       01  PRINT-LINE    PIC X(75).
+
+       01  PRINT-CONTROL-VARIABLES.
+           05  PAGE-NUM  PIC 9(3)  VALUE 0.
+           05  LINE-NUM  PIC 9(2)  VALUE 67.
+           05  MAX-LINES PIC 9(2)  VALUE 66.
+
+      ***********************************************************
+      *    Plant Names table
+      ***********************************************************
+       01  PLANT-NAMES.
+           05  FILLER  PIC X(20) VALUE "Danville            ".
+           05  FILLER  PIC X(20) VALUE "Gadsden             ".
+           05  FILLER  PIC X(20) VALUE "Topeka              ".
+           05  FILLER  PIC X(20) VALUE "Union City          ".
+           05  FILLER  PIC X(20) VALUE "Lawton              ".
+           05  FILLER  PIC X(20) VALUE "Medicine Hat        ".
+           05  FILLER  PIC X(20) VALUE "Napanee             ".
+           05  FILLER  PIC X(20) VALUE "Valleyfield         ".
+           05  FILLER  PIC X(20) VALUE "Akron Tech Center   ".
+
+       01  PLANT-NAME-TBL  REDEFINES PLANT-NAMES.
+           05  PLANT-NAME PIC X(20) OCCURS 9 TIMES.
+
+      ***********************************************************
+      *    Department identifiers by plant that store Raw Material
+      ***********************************************************
+       01  RAW-MATERIAL-DEPARTMENTS.
+      *    Danville
+           05  FILLER  PIC X(25) VALUE "D710471147124            ".
+      *    Gadsden
+           05  FILLER  PIC X(25) VALUE "G1320613261376150        ".
+      *    Topeka
+           05  FILLER  PIC X(25) VALUE "P71047114712471347164    ".
+      *    Union City
+           05  FILLER  PIC X(25) VALUE "U9910                    ".
+      *    Lawton
+           05  FILLER  PIC X(25) VALUE "L6000                    ".
+      *    Medicine Hat
+           05  FILLER  PIC X(25) VALUE "H                        ".
+      *    Napanee
+           05  FILLER  PIC X(25) VALUE "E121070207125            ".
+      *    Valley Field
+           05  FILLER  PIC X(25) VALUE "V                        ".
+      *    Tech Center
+           05  FILLER  PIC X(25) VALUE "                         ".
+
+       01  PLANT-DEPT-TBL  REDEFINES RAW-MATERIAL-DEPARTMENTS.
+           05  PLANT-DEPT       OCCURS 9 TIMES.
+               10  DEPT-PLT-ID    PIC X(1).
+               10  DEPT-ID-TBL OCCURS 6 TIMES.
+                   15 DEPT-ID     PIC X(4).
+
+       01  PLANT-DEPT-PTRS.
+           05  PLT-PTR            PIC 9.
+           05  DEPT-PTR           PIC 9.
+
+      ***********************************************************
+      *    Plant identification values
+      ***********************************************************
+       01  PLANT-ENTRIES.
+           05  FILLER      PIC X(11) VALUE "111N515 AK ".
+           05  FILLER      PIC X(11) VALUE "284N514CAK ".
+           05  FILLER      PIC X(11) VALUE "126N501DAKQ".
+           05  FILLER      PIC X(11) VALUE "631N510ECAT".
+           05  FILLER      PIC X(11) VALUE "281N506FAK ".
+           05  FILLER      PIC X(11) VALUE "131N502GAKF".
+           05  FILLER      PIC X(11) VALUE "637N509HCA ".
+           05  FILLER      PIC X(11) VALUE "211N505KAK ".
+           05  FILLER      PIC X(11) VALUE "153N508LAKS".
+           05  FILLER      PIC X(11) VALUE "133N503PAKW".
+           05  FILLER      PIC X(11) VALUE "285N507TAK ".
+           05  FILLER      PIC X(11) VALUE "129N504UAKX".
+           05  FILLER      PIC X(11) VALUE "629N511VCAY".
+
+       01  PLANT-TABLE REDEFINES PLANT-ENTRIES.
+           05  PLANT-DATA-LINE  OCCURS 13 TIMES  INDEXED BY I.
+               10  CSIS-PLT-NO    PIC X(3).
+               10  SAP-PLT-NO     PIC X(4).
+               10  SAP-PO-PREFIX  PIC X.
+               10  SAP-LEGACY-ID  PIC X(2).
+               10  ARIBA-ID       PIC X.
+
+       01  INSTR-TABLE.
+           05  INSTR-ENTRY        PIC X(3)  OCCURS 20 TIMES
+                                            INDEXED BY J.
+
+      *****************************************************************
+      **  S U B P R O G R A M   A R E A                              **
+      *****************************************************************
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+
+      *****************************************************************
+      **  D A T A B A S E   W O R K                                  **
+      *****************************************************************
+
+       COPY FILESTAT   OF COPYLIB.
+
+       COPY OVRPFDATA  OF COPYLIB.
+
+       COPY DBPOARG1   OF COPYLIB.
+
+       COPY DATAB      OF COPYLIB.
+
+       COPY VCOMAREA   OF COPYLIB.
+
+       01  PO-ARG                        PIC X(14).
+       01  REG-ARG                       PIC X(6)  VALUE SPACES.
+       01  COMMENT-ARG                   PIC X(4)  VALUE SPACES.
+       01  CODE-ARG                      PIC X(8)  VALUE SPACES.
+       01  MVALIDPLT-ARG                 PIC X(10) VALUE SPACES.
+
+      *****************************************************************
+      **  D A T A B A S E   B U F F E R S                            **
+      *****************************************************************
+
+       COPY DPORECD  IN COPYLIB.
+
+       COPY DPOITEM  IN COPYLIB.
+
+       COPY DPODATA  IN COPYLIB.
+
+       COPY DINVRCD  IN COPYLIB.
+
+       COPY DINVITM  IN COPYLIB.
+
+       COPY DCOMMENT IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY MVALDPLT IN COPYLIB.
+
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTP01  IN COPYLIB.
+       COPY MPLTCCHM IN COPYLIB.
+       COPY MPLTDSTR IN COPYLIB.
+
+      *****************************************************************
+      **  R / 3   R E C O R D   L A Y O U T S                        **
+      *****************************************************************
+
+       01  H1-REC.
+           05  H1-PO-NUM             PIC X(10).
+           05  H1-REC-ID             PIC X(2)   VALUE "H1".
+           05  FILLER                PIC X(5)   VALUE SPACES.
+      *------------ NEW FIELD ADDED WITH NEW FORMAT.    1/06/99
+           05  H1-DEL-IND            PIC X      VALUE SPACE.
+      *------------ NEW FIELD ADDED WITH NEW FORMAT.   12/18/98
+           05  H1-LEGACY-ID          PIC X(2).
+           05  H1-ORDER-TYPE         PIC X(4).
+           05  H1-VENDOR             PIC X(12).
+           05  H1-PO-DATE            PIC X(8).
+           05  H1-PO-ORG             PIC X(4)   VALUE "N701".
+           05  H1-PO-BUYER           PIC X(4).
+           05  H1-PLANT              PIC X(4).
+      *------------ CHANGED TO 2 BYTES FROM 1.   12/18/98
+           05  H1-LANG               PIC X(2)   VALUE "EN".
+           05  H1-START-DATE         PIC X(8).
+           05  H1-END-DATE           PIC X(8).
+           05  H1-TERMS              PIC X(4).
+           05  H1-CURRENCY           PIC X(5).
+           05  H1-FREIGHT            PIC X(3).
+           05  H1-FOB                PIC X(28).
+           05  H1-PO-VALUE           PIC 9(11)V99.
+           05  H1-DLV-VALUE          PIC 9(11)V99.
+           05  H1-INV-VALUE          PIC 9(11)V99.
+           05  H1-BUDGET-NUM         PIC X(12).
+           05  FILLER                PIC X(101) VALUE SPACES.
+
+       01  H2-REC.
+           05  H2-PO-NUM             PIC X(10).
+           05  H2-REC-ID             PIC X(2)   VALUE "H2".
+           05  FILLER                PIC X(5)   VALUE SPACES.
+           05  H2-TEXT               PIC X(72).
+           05  FILLER                PIC X(177) VALUE SPACES.
+
+       01  I1-REC.
+           05  I1-PO-NUM             PIC X(10).
+           05  I1-REC-ID             PIC X(2)   VALUE "I1".
+           05  I1-ITEM-NO            PIC 9(5).
+           05  I1-ITEM-NO-R  REDEFINES  I1-ITEM-NO
+                                     PIC X(5).
+      *------------ NEW FIELD ADDED WITH NEW FORMAT.    1/06/99
+           05  I1-DEL-IND            PIC X      VALUE SPACE.
+           05  I1-CATEGORY           PIC X.
+           05  I1-ACCT-ASSIGN        PIC X.
+           05  I1-MATL-NUM           PIC X(18).
+           05  I1-MATL-GRP           PIC X(9).
+           05  I1-SHORT-TEXT         PIC X(40).
+           05  I1-PO-QTY             PIC 9(10)V999.
+           05  I1-PO-QTY-R  REDEFINES  I1-PO-QTY
+                                     PIC X(13).
+           05  I1-UM                 PIC X(6).
+           05  I1-PRICE              PIC 9(9)V99.
+           05  I1-PRICE-R  REDEFINES  I1-PRICE
+                                     PIC X(11).
+           05  I1-PRICE-UNIT         PIC 9(5).
+           05  I1-PRICE-UNIT-R  REDEFINES  I1-PRICE-UNIT
+                                     PIC X(5).
+           05  I1-PRICE-UM           PIC X(6).
+      *----------- LENGTH CHANGED FROM 23 TO 18.  12/18/98
+           05  I1-ACCOUNT-NUM.
+               10  I1-CO             PIC X(3).
+               10  I1-PRIME          PIC X(3).
+               10  I1-CLASS          PIC X(3).
+               10  I1-DEPT           PIC X(4).
+               10  I1-ADDL-DATA      PIC X(5).
+      *---------- FIELD ELIMINATED.   1/6/99
+      **** 05  I1-COST-CENTER        PIC X(18).
+           05  I1-REC-IND            PIC X      VALUE SPACE.
+           05  I1-TAX-CODE           PIC X(2).
+           05  I1-INV-IND1           PIC X.
+           05  I1-INV-IND2           PIC X.
+           05  I1-OVERALL-LIMIT      PIC 9(11)V99.
+           05  I1-OVERALL-LIMIT-R  REDEFINES  I1-OVERALL-LIMIT
+                                     PIC X(13).
+           05  I1-EXP-VALUE          PIC 9(11)V99.
+           05  I1-EXP-VALUE-R  REDEFINES  I1-EXP-VALUE
+                                     PIC X(13).
+           05  I1-DLV-QTY            PIC 9(10)V999.
+           05  I1-DLV-QTY-R  REDEFINES  I1-DLV-QTY
+                                     PIC X(13).
+           05  I1-INV-QTY            PIC 9(10)V999.
+           05  I1-INV-QTY-R  REDEFINES  I1-INV-QTY
+                                     PIC X(13).
+           05  I1-DLV-VALUE          PIC 9(11)V99.
+           05  I1-INV-VALUE          PIC 9(11)V99.
+           05  I1-MAN-ADDR           PIC X(10)  VALUE SPACES.
+           05  FILLER                PIC X(21)  VALUE SPACES.
+           05  I1-NEW-WORK           PIC X(06)  VALUE SPACES.
+
+      *-------- NEW I2 RECORD FORMAT INTRODUCED 12/98; HOWEVER, CSIS
+      *-------- WILL NOT PROVIDE THIS INFO.  THIS I2 REC IS REALLY THE
+      *-------- NEW FORMAT I3, BUT THE REC-ID ONLY WAS CHANGED.  THE
+      *-------- REFERENCES TO "I2" WERE ALL RETAINED IN THE PROGRAM.
+       01  I2-REC.
+           05  I2-PO-NUM             PIC X(10).
+           05  I2-REC-ID             PIC X(2)   VALUE "I3".
+           05  I2-ITEM-NO            PIC 9(5).
+           05  I2-ITEM-NO-R  REDEFINES  I2-ITEM-NO
+                                     PIC X(5).
+           05  I2-TEXT               PIC X(72).
+           05  FILLER                PIC X(177) VALUE SPACES.
+
+      /****************************************************************
+      **  P R O C E D U R E   D I V I S I O N                        **
+      *****************************************************************
+
+       PROCEDURE DIVISION.
+
+       START-PGM.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+
+           OPEN INPUT  DPORECD-I
+                       DPOITEM-I
+                       DPODATAITM-I
+                       DINVRCD-I
+                       DINVITM-I
+                       DCOMMENT-I
+                       MPLTINFO-I
+                       MSTORERM-I
+                       MVALIDPLTDATA-I
+                       INSTR-FILE.
+           OPEN OUTPUT PRINT-FILE
+                       BLANKET-FILE
+                       CONTRACT-FILE
+                       PURCH-FILE
+                       UNCLASS-FILE.
+
+           MOVE 61     TO LINE-CTR.
+           MOVE 0      TO BLK-RECS-CTR, TOT-RECS-CTR,
+                          CNT-RECS-CTR, PUR-RECS-CTR.
+      *--------- GET HOME CURRENCY CODE.
+           MOVE "N"    TO DPORECD-EOF-SW.
+           MOVE "CCHM" TO PLTINFOKEY  OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES                  TO  HOLD-HOME-CUR
+           ELSE
+               MOVE MPLTINFO-HOME-CUR-CODE  TO  HOLD-HOME-CUR.
+
+      *--------- GET STOREROOM DEPARTMENT.
+           MOVE "DSTR" TO PLTINFOKEY  OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES                  TO  HOLD-DEPT-STR
+           ELSE
+               MOVE MPLTINFO-DEPT-STR (1)   TO  HOLD-DEPT-STR.
+
+      *--------- GET PLANT NUMBER.
+           MOVE "P 01" TO PLTINFOKEY  OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      *--------- REPLACE CSIS PLANT CODE WITH SAP PLANT CODE.
+           SET I TO 1.
+           SEARCH PLANT-DATA-LINE
+               AT END
+                   MOVE "MPLTINFO PLANT NUMBER NOT VALID (P 01)"
+                                           TO  BU-DISPLAY-MSG
+                   MOVE MPLTINFO-COMPANY   TO  BU-DISPLAY-FLD (1)
+                   PERFORM 200-BLOWUP
+               WHEN CSIS-PLT-NO (I) = MPLTINFO-COMPANY
+                   MOVE MPLTINFO-COMPANY   TO  HOLD-COMPANY
+                   MOVE SAP-PLT-NO (I)     TO  HOLD-PLANT-CODE
+                   MOVE SAP-PO-PREFIX (I)  TO  HOLD-PLT-ID
+                   MOVE SAP-LEGACY-ID (I)  TO  HOLD-LEGACY-ID
+                   MOVE ARIBA-ID (I)       TO  ARIBA-FLAG.
+      *-------------------------------------------------------
+      * Set plant pointer for Raw Material storage Departments
+           MOVE 1 TO PLT-PTR.
+           PERFORM UNTIL
+               DEPT-PLT-ID (PLT-PTR) = HOLD-PLT-ID OR
+               DEPT-PLT-ID (PLT-PTR) = SPACES OR
+               PLT-PTR = 9
+                   ADD 1 TO PLT-PTR
+           END-PERFORM.
+
+      *--------- LOAD STANDARD INSTRUCTIONS TO EXCLUDE FROM
+      *--------- PURCHASE ORDER FILE.
+           MOVE "N"                TO  INSTR-EOF-SW.
+           SET J TO 1.
+           INITIALIZE INSTR-TABLE.
+           READ INSTR-FILE
+               AT END MOVE "Y"     TO  INSTR-EOF-SW.
+           PERFORM VARYING J FROM 1 BY 1 UNTIL INSTR-EOF-SW = "Y"
+               MOVE INSTR-REC      TO  INSTR-ENTRY (J)
+               READ INSTR-FILE
+                   AT END MOVE "Y" TO  INSTR-EOF-SW
+               END-READ
+           END-PERFORM.
+           ACCEPT HDR-DATE FROM DATE.
+           ACCEPT HDR-TIME FROM TIME.
+           MOVE PLANT-NAME (PLT-PTR) TO PLANT-HDR.
+      *    DISPLAY INSTR-TABLE.
+
+       2-EOJ.
+           MOVE SPACES TO PRINT-LINE.
+           STRING "BLANKET ORDERS        = " BLK-RECS-CTR
+                   DELIMITED BY SIZE INTO PRINT-LINE.
+           PERFORM 980-PRINT-DATA.
+           STRING "LOCAL CONTRACTS       = " CNT-RECS-CTR
+                   DELIMITED BY SIZE INTO PRINT-LINE.
+           PERFORM 980-PRINT-DATA.
+           STRING "PURCHASE ORD/RELEASES = " PUR-RECS-CTR
+                   DELIMITED BY SIZE INTO PRINT-LINE.
+           PERFORM 980-PRINT-DATA.
+           STRING "TOTAL RECORDS ON FILE = " TOT-RECS-CTR
+                   DELIMITED BY SIZE INTO PRINT-LINE.
+           PERFORM 980-PRINT-DATA.
+
+           CLOSE DPORECD-I
+                 DPOITEM-I
+                 DPODATAITM-I
+                 DINVRCD-I
+                 DINVITM-I
+                 DCOMMENT-I
+                 MVALIDPLTDATA-I
+                 INSTR-FILE
+                 PRINT-FILE
+                 BLANKET-FILE
+                 CONTRACT-FILE
+                 PURCH-FILE
+                 UNCLASS-FILE.
+
+       200-BLOWUP.
+           PERFORM 2-EOJ.
+           MOVE "TR3PURCH" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+           GOBACK.
+
+       6-MAIN.
+           PERFORM 9999-START-DPORECD-I.
+
+       6-READ.
+           PERFORM 9999-GETNEXT-DPORECD-I.
+           IF DPORECD-EOF-SW = "Y"
+               GO TO 6-MAIN-X.
+           ADD 1 TO TOT-RECS-CTR.
+           INITIALIZE H1-REC.
+           INITIALIZE I1-REC.
+           INITIALIZE H2-REC.
+           INITIALIZE I2-REC.
+           MOVE "I3" TO I2-REC-ID.
+           MOVE "I1" TO I1-REC-ID.
+           MOVE "H2" TO H2-REC-ID.
+           MOVE "H1" TO H1-REC-ID.
+           MOVE "N701" TO H1-PO-ORG.
+           MOVE "EN" TO H1-LANG.
+
+           SET NON-ARIBA-ORDER
+               NON-PLANT-ORDER
+               NON-T-AND-M-ORDER
+               NON-REPAIR-ORDER TO TRUE.
+      *------- SEE IF THIS IS A TIME & MATERIAL PO (SUFFIXED
+      *------- WITH A "T"), A REPAIR & RETURN PO (SUFFIXED
+      *------- WITH AN "M") OR AN ARIBA ORDER (2nd char of
+      *------- PO = this plants Ariba assigned character)
+           MOVE " "                 TO  TM-RR-PO-SW.
+           PERFORM VARYING SUBT FROM 8 BY -1 UNTIL SUBT = 3
+                                             OR    TM-RR-PO-SW > " "
+               IF PO-RCV-NO (SUBT:1) = "T"
+                   MOVE "T"         TO  TM-RR-PO-SW
+                   SET T-AND-M-ORDER TO TRUE
+               END-IF
+               IF PO-RCV-NO (SUBT:1) = "M"
+                   MOVE "R"         TO  TM-RR-PO-SW
+                   SET REPAIR-ORDER TO TRUE
+               END-IF
+           END-PERFORM.
+      *---------------------------------------------------------
+      *  Is this an Ariba order or has the plant changed their
+      *  PO numbering to use plant ID as first character.
+      *---------------------------------------------------------
+           IF PO-RCV-NO (2:1) = ARIBA-FLAG
+               SET ARIBA-ORDER TO TRUE
+           ELSE IF PO-RCV-NO (2:1) = HOLD-PLT-ID
+               SET PLANT-ORDER TO TRUE.
+
+      *------ SKIP "IT" REQUIREMENTS ORDERS.
+           IF PO-RCV-NO (2:2) = "IT" AND PO-RLS-NO = "999"
+               GO TO 6-READ.
+
+      *------ SKIP "IT" ORDERS. NOW THEY WANT THEM!
+      *-- TESTING IT LOAD FOR SALLY (6/28/2004)
+      *    IF PO-RCV-NO (2:2) = "IT"
+      *        NEXT SENTENCE
+      *    ELSE
+      *        GO TO 6-READ.
+
+      *------ SKIP ORDERS FROM CORPORATE PURCHASING.
+           IF PO-CO NOT = HOLD-COMPANY
+               GO TO 6-READ.
+
+      *------ DETERMINE IF BLANKET, LOCAL CONTRACT OR PURCHASE ORDER.
+           IF PO-NON-RCV-INDIC = "X" OR TM-RR-PO-SW = "T"
+               SET BLANKET-ORDER TO TRUE
+      * Next three lines are for debugging only
+      *        IF PO-RCV-NO (2:5) = "77017"
+      *            MOVE 1 TO SUB
+      *        END-IF
+               PERFORM 60-BLANKET-ORDERS
+           ELSE IF PO-RLS-NO = "999"
+               SET LOCAL-ORDER TO TRUE
+               PERFORM 70-LOCAL-ORDERS
+           ELSE
+               SET PURCHASE-ORDER TO TRUE
+               PERFORM 80-PURCHASE-ORDERS.
+
+      *    MOVE SPACES TO PRINT-REC.
+      *    STRING "PURCHASE ORDER ", PO-RCV-NO
+      *        " IS NON-RECEIVABLE"
+      *        DELIMITED BY SIZE INTO PRINT-REC.
+      *    WRITE PRINT-REC AFTER ADVANCING 1.
+           GO TO 6-READ.
+
+       6-MAIN-X.
+           EXIT.
+      /
+      ****************************************************************
+      ******           B L A N K E T   P O S                    ******
+      ****************************************************************
+
+      *------ ELIMINATE BLANKETS & LOCAL CONTRACTS WITH EXPECT DATE
+      *------ PRIOR TO 2003.
+      *--------- BLANKET POS (NON-RECEIVABLE).
+       60-BLANKET-ORDERS.
+           IF PO-DATE-CN > "20030000"
+               PERFORM 923-CHECK-FOR-ITEMS
+               IF OPEN-PO
+                   SET HEADER-NEEDED TO TRUE
+                   PERFORM 61-SET-H1-REC
+                   PERFORM 63-WRITE-I1-REC
+                   ADD 1 TO BLK-RECS-CTR.
+
+       61-SET-H1-REC.
+           PERFORM 901-SET-H1-COMMON.
+           MOVE "FO  "              TO  H1-ORDER-TYPE.
+           STRING PO-DATE-CC PO-DATE-YY "0101"
+               DELIMITED BY SIZE  INTO  H1-START-DATE.
+           MOVE 0                   TO  H1-DLV-VALUE.
+           PERFORM 930-COMPUTE-DLV-VAL.
+           COMPUTE H1-DLV-VALUE ROUNDED = HOLD-DLV-TOT-VAL.
+           PERFORM 931-COMPUTE-INV-VAL.
+           COMPUTE H1-INV-VALUE ROUNDED = HOLD-INV-TOT-VAL.
+           MOVE PO-BUDGET-NUMBER    TO  H1-BUDGET-NUM.
+
+           IF NUM-ITEMS > 1 AND BLANKET-ITEMS > 0
+               MOVE SPACES TO PRINT-LINE
+               STRING "* FO" PO-RCV-NO (2:13) " BUDGET AMOUNT SPLIT"
+                   DELIMITED BY SIZE INTO PRINT-LINE
+               PERFORM 980-PRINT-DATA
+           END-IF.
+
+
+       63-WRITE-I1-REC.
+           PERFORM 9999-START-DPOITEM-I.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+           PERFORM 630-WRITE-ITEMS UNTIL ITM-PO-RCV-NO NOT = PO-ARG
+                                   OR    FILE-STATUS NOT = "00".
+
+       630-WRITE-ITEMS.
+           IF ITM-QTY-ORD > ITM-QTY-PAID OR
+              ITM-QTY-ORD = ZERO
+               IF HEADER-NEEDED
+                   WRITE BLANKET-REC  FROM  H1-REC
+                   SET H1-WRITTEN TO TRUE
+                   PERFORM 64-WRITE-H2-REC
+               END-IF
+               PERFORM 631-WRITE-I1.
+
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+
+       631-WRITE-I1.
+           MOVE "B"                   TO  I1-CATEGORY.
+           IF ITM-CORP-CODE NOT = "NON-STR"
+               MOVE ITM-CORP-CODE     TO  CODE-ARG
+               PERFORM 9999-READ-MSTORERM-I.
+      * Moved Perform 902-SET-I1-COMMON down below where the
+      * account assignment flag is set as it needs to be set
+      * before execution 902-.               H. Proctor  5/3/04
+      *    IF ITM-QTY-ORD = 0 AND ITM-UNIT-PRICE = 0
+      *        MOVE SPACES            TO  I1-PO-QTY-R
+      *                                   I1-PRICE-R
+      *                                   I1-PRICE-UNIT-R.
+      * ALWAYS SEND ZEROS FOR BLANKET PRICE AND QUANTITY.
+           MOVE ZEROS                 TO  I1-PO-QTY
+                                          I1-PRICE-UNIT.
+           MOVE ITM-UM                TO  I1-UM.
+           MOVE ITM-PRICE-UM          TO  I1-PRICE-UM.
+      *---------- ALWAYS MAKE ACCOUNT ASSIGNMENT = K FOR BLANKETS.
+           MOVE "K"                   TO  I1-ACCT-ASSIGN.
+           MOVE SPACES                TO  I1-MATL-NUM.
+           PERFORM 902-SET-I1-COMMON.
+      **** MOVE I1-ACCOUNT-NUM        TO  I1-COST-CENTER.
+
+      *-----Peference Qty * Price but if 0 then use Budget amount
+      *    IF PO-BUDGET-AMT > 0
+      *        IF NUM-ITEMS = 1
+      *            MOVE PO-BUDGET-AMT      TO  I1-OVERALL-LIMIT
+      *                                        I1-EXP-VALUE
+      *        ELSE
+                   IF ITM-QTY-ORD = 0 OR ITM-UNIT-PRICE = 0
+                       COMPUTE I1-OVERALL-LIMIT ROUNDED =
+                                      (PO-BUDGET-AMT - STND-BUDGET-AMT)
+                                                     / BLANKET-ITEMS
+                       MOVE I1-OVERALL-LIMIT   TO  I1-EXP-VALUE
+                   ELSE
+                       COMPUTE I1-OVERALL-LIMIT ROUNDED = ITM-QTY-ORD
+                                                    * ITM-UNIT-PRICE
+                       MOVE I1-OVERALL-LIMIT   TO  I1-EXP-VALUE.
+      *    ELSE
+      *        COMPUTE I1-OVERALL-LIMIT ROUNDED = ITM-UNIT-PRICE
+      *                                         * ITM-QTY-ORD
+      *        MOVE I1-OVERALL-LIMIT           TO I1-EXP-VALUE.
+
+
+           MOVE SPACES                TO  I1-DLV-QTY-R
+                                          I1-INV-QTY-R.
+           PERFORM 932-COMPUTE-INV-ITM-VAL.
+           COMPUTE I1-INV-VALUE ROUNDED = HOLD-INV-ITM-TOT.
+           WRITE BLANKET-REC FROM I1-REC.
+      * Print error messages if these condition exists
+           MOVE SPACES TO PRINT-LINE.
+           IF I1-OVERALL-LIMIT = ZERO
+               STRING "* FO " PO-RCV-NO (2:13)
+                      " ITEM " ITM-NUMBER " HAS ZERO VALUE"
+                   DELIMITED BY SIZE INTO PRINT-LINE
+               PERFORM 980-PRINT-DATA
+           ELSE IF I1-OVERALL-LIMIT < I1-INV-VALUE
+               STRING "* FO " PO-RCV-NO (2:13)
+                      " ITEM " ITM-NUMBER " LIMIT IS < INV-VALUE."
+                   DELIMITED BY SIZE INTO PRINT-LINE
+               PERFORM 980-PRINT-DATA.
+           PERFORM 910-WRITE-I2-REC.
+           MOVE "00"                  TO  FILE-STATUS.
+
+       64-WRITE-H2-REC.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE HOLD-PO-NUM         TO  H2-PO-NUM.
+           PERFORM 9999-GET-DPODATAITM.
+           PERFORM 640-WRITE-INSTR
+               VARYING SUB FROM 1 BY 1 UNTIL SUB > 12.
+
+       640-WRITE-INSTR.
+           IF STD-INST-NO (SUB) > SPACES
+             PERFORM 991-SEARCH-INSTR-TABLE
+             IF EXCLUDE-INSTR-SW = "N"
+               MOVE STD-INST-NO (SUB)   TO  BUILD-COM-NO
+               MOVE BUILD-COMMENT-NO    TO  COMMENT-ARG
+               MOVE COMMENT-ARG TO MCOMCOMMNT OF DCOMMENT-REC-I
+               PERFORM 9999-START-DCOMMENT
+               IF FILE-STATUS = "00"
+                   PERFORM 9999-READ-NEXT-DCOMMENT
+                   PERFORM UNTIL DCOM-COMMENT-NO NOT = COMMENT-ARG
+                           OR    FILE-STATUS NOT = "00"
+                       PERFORM 924-CHECK-TYPE
+                       MOVE HOLD-TEXT   TO  H2-TEXT
+                       WRITE BLANKET-REC FROM H2-REC
+                       PERFORM 9999-READ-NEXT-DCOMMENT
+                   END-PERFORM
+               END-IF.
+
+      /***************************************************************
+      ******           L O C A L   C O N T R A C T S            ******
+      ****************************************************************
+
+      *------ ELIMINATE BLANKETS & LOCAL CONTRACTS WITH EXPECT DATE
+      *------ PRIOR TO 2003.
+      *--------- LOCAL CONTRACTS (REQUIREMENT ORDERS).
+       70-LOCAL-ORDERS.
+           IF PO-EXPECT-DATE-CN > "20040000"
+               PERFORM 923-CHECK-FOR-ITEMS
+               IF OPEN-PO
+                   PERFORM 71-WRITE-H1-REC
+                   PERFORM 72-WRITE-H2-REC
+                   PERFORM 73-WRITE-I1-REC
+                   ADD 1 TO CNT-RECS-CTR.
+
+       71-WRITE-H1-REC.
+           PERFORM 901-SET-H1-COMMON.
+      *-------------- Don't include "999" in PO Num in local contracts.
+      *    MOVE SPACES TO HOLD-RLS.
+           MOVE HOLD-PO-NUM         TO  H1-PO-NUM.
+           MOVE "LC  "              TO  H1-ORDER-TYPE.
+           STRING PO-DATE-CC PO-DATE-YY "0101"
+               DELIMITED BY SIZE  INTO  H1-START-DATE.
+           MOVE 0                   TO  H1-DLV-VALUE
+                                        H1-INV-VALUE.
+           MOVE PO-BUDGET-NUMBER    TO  H1-BUDGET-NUM.
+           WRITE CONTRACT-REC FROM H1-REC.
+
+       72-WRITE-H2-REC.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE HOLD-PO-NUM         TO  H2-PO-NUM.
+           PERFORM 9999-GET-DPODATAITM.
+           PERFORM 720-WRITE-INSTR
+               VARYING SUB FROM 1 BY 1 UNTIL SUB > 12.
+
+       720-WRITE-INSTR.
+           IF STD-INST-NO (SUB) > SPACES
+             PERFORM 991-SEARCH-INSTR-TABLE
+             IF EXCLUDE-INSTR-SW = "N"
+               MOVE STD-INST-NO (SUB)   TO  BUILD-COM-NO
+               MOVE BUILD-COMMENT-NO    TO  COMMENT-ARG
+               MOVE COMMENT-ARG TO MCOMCOMMNT OF DCOMMENT-REC-I
+               PERFORM 9999-START-DCOMMENT
+               IF FILE-STATUS = "00"
+                   PERFORM 9999-READ-NEXT-DCOMMENT
+                   PERFORM UNTIL DCOM-COMMENT-NO NOT = COMMENT-ARG
+                           OR    FILE-STATUS NOT = "00"
+                       PERFORM 924-CHECK-TYPE
+                       MOVE HOLD-TEXT   TO  H2-TEXT
+                       WRITE CONTRACT-REC FROM H2-REC
+                       PERFORM 9999-READ-NEXT-DCOMMENT
+                   END-PERFORM
+               END-IF.
+
+       73-WRITE-I1-REC.
+           PERFORM 9999-START-DPOITEM-I.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+           PERFORM 730-WRITE-ITEMS UNTIL ITM-PO-RCV-NO NOT = PO-ARG
+                                   OR    FILE-STATUS NOT = "00".
+
+       730-WRITE-ITEMS.
+      *----SET CATEGORY TO "K" FOR CONSIGNMENT CODES
+      *    IF ITM-CORP-CODE = "NON-STR"
+      *        MOVE SPACES            TO  I1-MATL-NUM
+      *                                   I1-CATEGORY
+      *    ELSE
+      *        MOVE ITM-CORP-CODE     TO  I1-MATL-NUM
+      *        PERFORM 9999-READ-MSTORERM-I
+      *        IF ON-CONSIGNMENT
+      *            MOVE "K"           TO  I1-CATEGORY
+      *        ELSE
+      *            MOVE SPACES        TO  I1-CATEGORY.
+      *---------- LEAVE ACCOUNT CATEGORY BLANK FOR CONTRACTS.
+      *    MOVE " "                   TO  I1-ACCT-ASSIGN.
+      * Next three lines are for debugging only
+      *        IF PO-RCV-NO (2:5) = "77461"
+      *            MOVE 1 TO SUB
+      *        END-IF
+           PERFORM 900-SET-CATEGORY-ACCT-ASSIGN.
+           PERFORM 902-SET-I1-COMMON.
+           PERFORM 903-CONVERT-PRICE.
+           IF I1-PRICE = ZERO
+               MOVE .01 TO I1-PRICE.
+      **** MOVE I1-ACCOUNT-NUM        TO  I1-COST-CENTER.
+
+           MOVE SPACES                TO  I1-OVERALL-LIMIT-R
+                                          I1-EXP-VALUE-R.
+           MOVE ITM-QTY-DLVR          TO  I1-DLV-QTY.
+           MOVE ITM-QTY-PAID          TO  I1-INV-QTY.
+           WRITE CONTRACT-REC FROM I1-REC.
+      * Print error report if embeded spaces in accounting info
+           IF I1-ACCT-ASSIGN NOT = " "
+               MOVE SPACES TO PRINT-LINE
+               MOVE 0 TO SUB
+               INSPECT I1-ACCOUNT-NUM TALLYING SUB FOR ALL SPACES
+               IF SUB > 0
+                   STRING "* LC " PO-RCV-NO (2:13)
+                          " ITEM " ITM-NUMBER
+                          " ACCT# " I1-ACCOUNT-NUM " HAS EMBEDED SPACES"
+                       DELIMITED BY SIZE INTO PRINT-LINE
+                   PERFORM 980-PRINT-DATA.
+           PERFORM 910-WRITE-I2-REC.
+           MOVE "00"                  TO  FILE-STATUS.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+
+      /***************************************************************
+      ******  P U R C H A S E   O R D E R S / R E L E A S E S   ******
+      ****************************************************************
+
+      *--------- PURCHASE ORDERS & RELEASES.
+       80-PURCHASE-ORDERS.
+           SET HEADER-NEEDED TO TRUE.
+           PERFORM 922-CHECK-OPEN-PO.
+           IF OPEN-PO
+               PERFORM 81-SET-H1-REC
+               IF OPEN-PO
+                   PERFORM 83-WRITE-I1-REC
+                   ADD 1 TO PUR-RECS-CTR.
+
+       81-SET-H1-REC.
+           PERFORM 901-SET-H1-COMMON.
+      *    IF TM-RR-PO-SW = "R"
+      *        MOVE "RR  "          TO  H1-ORDER-TYPE
+      *    ELSE
+               MOVE "NB  "          TO  H1-ORDER-TYPE.
+           MOVE PO-DATE-CN          TO  H1-START-DATE.
+           PERFORM 930-COMPUTE-DLV-VAL.
+           COMPUTE H1-DLV-VALUE ROUNDED = HOLD-DLV-TOT-VAL.
+           PERFORM 931-COMPUTE-INV-VAL.
+           COMPUTE H1-INV-VALUE ROUNDED = HOLD-INV-TOT-VAL.
+           MOVE PO-BUDGET-NUMBER    TO  H1-BUDGET-NUM.
+      *---REMOVED BUDGET CHECKS, USER CAN MODIFY TO ANY AMOUNT.
+      *    IF HOLD-INV-TOT-VAL >= (PO-BUDGET-AMT - 1)
+      *        MOVE "N"            TO  OPEN-PO-SW
+      *    ELSE
+           IF PO-DATE-CN < "20030000"
+               MOVE "N"            TO  OPEN-PO-SW
+           ELSE
+           IF HOLD-INV-TOT-VAL = 0 AND PO-DATE-CN < "20030000"
+               MOVE "N"            TO  OPEN-PO-SW
+           ELSE
+           IF HOLD-INV-TOT-VAL > 0 AND PO-LAST-PAYMENT-CN < "200200"
+               MOVE "N"            TO  OPEN-PO-SW.
+
+       83-WRITE-I1-REC.
+           PERFORM 9999-START-DPOITEM-I.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+           PERFORM 830-WRITE-ITEMS UNTIL ITM-PO-RCV-NO NOT = PO-ARG
+                                   OR    FILE-STATUS NOT = "00".
+
+       830-WRITE-ITEMS.
+      * New code to test for Open Item.
+      * BYPASS ARIBA AND REPAIR ITEMS WITH ZERO QTY (OR PRICE)
+           IF ARIBA-ORDER AND
+              ITM-QTY-ORD = ZERO
+               NEXT SENTENCE
+           ELSE
+               IF REPAIR-ORDER AND
+                  ITM-QTY-ORD = ZERO AND
+                  ITM-UNIT-PRICE = ZERO
+                   NEXT SENTENCE
+               ELSE
+                   IF ITM-QTY-ORD > ITM-QTY-DLVR OR
+                      ITM-QTY-DLVR > ITM-QTY-PAID OR
+                      ITM-QTY-ORD < .001
+                       PERFORM 831-WRITE-ITEMS.
+
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+
+       831-WRITE-ITEMS.
+           IF HEADER-NEEDED
+               PERFORM 840-WRITE-H1-REC.
+           PERFORM 900-SET-CATEGORY-ACCT-ASSIGN.
+           PERFORM 902-SET-I1-COMMON.
+      * INSERT TEST OF I1-SHORT-TEXT TEST HERE
+           IF ARIBA-ORDER
+               MOVE I1-SHORT-TEXT TO TEXT-40
+               PERFORM 925-CHECK-TEXT
+                       VARYING SUB FROM 1 BY 1 UNTIL SUB > 40
+               MOVE TEXT-40 TO I1-SHORT-TEXT.
+           PERFORM 903-CONVERT-PRICE.
+      **** MOVE I1-ACCOUNT-NUM        TO  I1-COST-CENTER.
+
+           IF PO-INVOICELESS-IND = "X" OR PO-INVOICELESS-IND = "Y"
+               MOVE "X"               TO  I1-INV-IND1
+                                          I1-INV-IND2
+           MOVE SPACES                TO  I1-OVERALL-LIMIT-R
+                                          I1-EXP-VALUE-R.
+           MOVE ITM-QTY-DLVR          TO  I1-DLV-QTY.
+           MOVE ITM-QTY-PAID          TO  I1-INV-QTY.
+           COMPUTE I1-DLV-VALUE ROUNDED = ITM-QTY-DLVR
+                                        * ITM-UNIT-PRICE.
+           PERFORM 932-COMPUTE-INV-ITM-VAL.
+           COMPUTE I1-INV-VALUE ROUNDED = HOLD-INV-ITM-TOT.
+           IF UNCLASS-PO-SW = "Y"
+               WRITE UNCLASS-REC FROM I1-REC
+           ELSE
+               WRITE PURCH-REC   FROM I1-REC.
+      * Print error report if incomplete accounting info
+           IF I1-ACCT-ASSIGN NOT = " "
+               MOVE SPACES TO PRINT-LINE
+               MOVE 0 TO SUB
+               INSPECT I1-ACCOUNT-NUM TALLYING SUB FOR ALL SPACES
+               IF SUB > 0
+                   STRING "* PO " PO-RCV-NO (2:13)
+                          " ITEM " ITM-NUMBER
+                          " ACCT# " I1-ACCOUNT-NUM " HAS EMBEDED SPACES"
+                       DELIMITED BY SIZE INTO PRINT-LINE
+                   PERFORM 980-PRINT-DATA.
+           PERFORM 910-WRITE-I2-REC.
+           MOVE "00"                  TO  FILE-STATUS.
+
+       840-WRITE-H1-REC.
+           IF OPEN-PO
+               IF UNCLASS-PO-SW = "Y"
+                   WRITE UNCLASS-REC   FROM H1-REC
+               ELSE
+                   WRITE PURCH-REC     FROM H1-REC.
+           SET H1-WRITTEN TO TRUE.
+           PERFORM 841-WRITE-H2-REC.
+
+       841-WRITE-H2-REC.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE HOLD-PO-NUM         TO  H2-PO-NUM.
+           PERFORM 9999-GET-DPODATAITM.
+           PERFORM 842-WRITE-INSTR
+               VARYING SUB FROM 1 BY 1 UNTIL SUB > 12.
+
+       842-WRITE-INSTR.
+           IF STD-INST-NO (SUB) > SPACES
+             PERFORM 991-SEARCH-INSTR-TABLE
+             IF EXCLUDE-INSTR-SW = "N"
+               MOVE STD-INST-NO (SUB)   TO  BUILD-COM-NO
+               MOVE BUILD-COMMENT-NO    TO  COMMENT-ARG
+               MOVE COMMENT-ARG TO MCOMCOMMNT OF DCOMMENT-REC-I
+               PERFORM 9999-START-DCOMMENT
+               IF FILE-STATUS = "00"
+                   PERFORM 9999-READ-NEXT-DCOMMENT
+                   PERFORM UNTIL DCOM-COMMENT-NO NOT = COMMENT-ARG
+                           OR    FILE-STATUS NOT = "00"
+                       PERFORM 924-CHECK-TYPE
+                       MOVE HOLD-TEXT   TO  H2-TEXT
+                       IF UNCLASS-PO-SW = "Y"
+                           WRITE UNCLASS-REC FROM H2-REC
+                       ELSE
+                           WRITE PURCH-REC   FROM H2-REC
+                       END-IF
+                       PERFORM 9999-READ-NEXT-DCOMMENT
+                   END-PERFORM
+               END-IF.
+
+      /**************************************************************
+      ** C O M M O N   P A R A G R A P H S                         **
+      ***************************************************************
+
+       900-SET-CATEGORY-ACCT-ASSIGN.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE SPACES            TO  I1-MATL-NUM
+           ELSE
+               MOVE ITM-CORP-CODE     TO  I1-MATL-NUM
+                                          CODE-ARG.
+           SET NOT-RAW-MATERIAL TO TRUE.
+           IF ITM-CORP-CODE-1-2 = "26" OR
+              ITM-CORP-CODE-1-2 = "27" OR
+              ITM-CORP-CODE-1-2 = "28" OR
+              ITM-CORP-CODE-1-2 = "29"
+                  SET RAW-MATERIAL TO TRUE.
+      *---------------------------------------------------------
+      *  Does the Department on this PO store Raw Material?
+      *---------------------------------------------------------
+           SET NON-RM-DEPT TO TRUE.
+           IF DEPT-PLT-ID (PLT-PTR) NOT = SPACES
+               MOVE 1 TO DEPT-PTR
+               PERFORM UNTIL ITM-SUB-DETL = DEPT-ID (PLT-PTR, DEPT-PTR)
+                          OR DEPT-ID (PLT-PTR, DEPT-PTR) = SPACES
+                          OR DEPT-PTR = 6
+                              ADD 1 TO DEPT-PTR
+               END-PERFORM
+               IF DEPT-ID (PLT-PTR, DEPT-PTR) = ITM-SUB-DETL
+                   SET RM-DEPT TO TRUE.
+      *----------- IF ITEM FOR STOREROOM DEPARTMENT, MOVE SPACE
+      *----------- TO ACCOUNT ASSIGNMENT; OTHERWISE, MOVE "K".
+           PERFORM 9999-READ-MSTORERM-I.
+           MOVE " "           TO  I1-ACCT-ASSIGN
+                                  I1-CATEGORY.
+           IF ITM-SUB-DETL = HOLD-DEPT-STR
+               IF ON-CONSIGNMENT
+                   MOVE "K"           TO  I1-CATEGORY
+               END-IF
+      *    -- If department this order is for stores Raw Material
+      *    -- and this is a Raw Material order.
+           ELSE IF RM-DEPT AND RAW-MATERIAL
+               IF ON-CONSIGNMENT
+                   MOVE "K"           TO  I1-CATEGORY
+               END-IF
+           ELSE
+               MOVE "K"               TO  I1-ACCT-ASSIGN
+           END-IF.
+
+      **********************************************************
+      *  If Ariba order pass assigned PO number to SAP else
+      *  put Plant ID on front of PO number.  If number is
+      *  7 characters, truncate first character.
+      *    Note that the String statement for Purchase Orders
+      *  was delimited by SPACE instead of SIZE before the
+      *  change made 2/26/04.
+      **********************************************************
+       901-SET-H1-COMMON.
+           PERFORM 904-CONVERT-PO-NUM.
+           MOVE HOLD-PO-NUM         TO  H1-PO-NUM.
+           MOVE HOLD-LEGACY-ID      TO  H1-LEGACY-ID.
+
+           MOVE PO-VEN-CODE         TO  H1-VENDOR.
+           MOVE PO-DATE-CN          TO  H1-PO-DATE.
+           IF PO-RCV-NO (2:2) = "IT"
+              MOVE "STO "           TO  H1-PO-BUYER
+           ELSE
+              MOVE PO-BUYER-CODE    TO  H1-PO-BUYER.
+           MOVE HOLD-PLANT-CODE     TO  H1-PLANT.
+
+           MOVE PO-EXPECT-DATE-CN   TO  H1-END-DATE.
+           MOVE PO-TERMS            TO  H1-TERMS.
+           PERFORM 941-FIND-CURRENCY.
+           IF PO-FREIGHT-TERMS = SPACES
+               MOVE "P"             TO  H1-FREIGHT
+           ELSE
+               MOVE PO-FREIGHT-TERMS TO H1-FREIGHT.
+
+           IF PO-FOB = SPACES
+               MOVE "DESTINATION"   TO  H1-FOB
+           ELSE
+               MOVE PO-FOB          TO  H1-FOB.
+           MOVE PO-BUDGET-AMT       TO  H1-PO-VALUE.
+
+       902-SET-I1-COMMON.
+           MOVE SPACES TO FULL-TEXT.
+           MOVE HOLD-PO-NUM           TO  I1-PO-NUM.
+           STRING ITM-NUMBER "0"
+               DELIMITED BY SIZE    INTO  I1-ITEM-NO-R.
+           PERFORM 905-MOVE-MATL-GRP.
+           MOVE SPACES                TO  I1-NEW-WORK.
+      *---ONLY SEND ACCOUNT NUMBER IF ACCOUNT ASSIGNMENT IS "K".
+           IF I1-ACCT-ASSIGN = "K"
+      * CONVERTED STRING TO MOVES FOR MORE CONTROL AND CLARITY
+      *        STRING PO-CO PO-PRIME ITM-ADDL-DATA (4:3) ITM-SUB-DETL
+      *               ITM-ADDL-DATA (2:5)
+      *            DELIMITED BY SIZE
+      *            INTO  I1-ACCOUNT-NUM
+               MOVE PO-CO                    TO I1-CO
+               MOVE PO-PRIME                 TO I1-PRIME
+               IF ITM-ADDL-DATA < "000100"
+                   MOVE "250"                TO I1-CLASS
+               ELSE
+                   MOVE ITM-ADDL-DATA (4:3)  TO I1-CLASS
+               END-IF
+               MOVE ITM-SUB-DETL             TO I1-DEPT
+
+               PERFORM 921-CHECK-NEW-WORK
+           ELSE
+               MOVE SPACES            TO  I1-ACCOUNT-NUM.
+
+           MOVE SPACES                TO  I1-SHORT-TEXT.
+           IF ITM-CORP-CODE = "NON-STR"
+               STRING ITM-NUMBER "01"
+                   DELIMITED BY SIZE  INTO ITEMSEQNO OF DPODATAITM-REC-I
+               PERFORM 9999-GET-FIRST-DPODATAITM
+               IF FILE-STATUS = "00"
+                   PERFORM 920-CHECK-SHORT-TEXT
+               ELSE
+                    MOVE SPACES       TO  HOLD-SHORT-TEXT.
+
+           IF PO-RLS-NO = "999" OR PO-NON-RCV-INDIC = "X"
+               MOVE SPACES            TO  I1-REC-IND
+           ELSE
+               MOVE "X"               TO  I1-REC-IND.
+
+           IF ITM-TAX-CODE = SPACES
+               IF ITM-CORP-CODE = "NON-STR"  OR
+                  STR-TAX-CODE = SPACES
+                   MOVE DFT-TAX-CODE  TO  I1-TAX-CODE
+               ELSE
+                   MOVE STR-TAX-CODE  TO  I1-TAX-CODE
+           ELSE
+               MOVE ITM-TAX-CODE      TO  I1-TAX-CODE.
+
+           MOVE SPACES                TO  I1-INV-IND1
+                                          I1-INV-IND2.
+
+       903-CONVERT-PRICE.
+           COMPUTE I1-PO-QTY ROUNDED = ITM-QTY-ORD.
+           MOVE ITM-UM                TO  I1-UM.
+           MOVE ITM-UNIT-PRICE        TO  HOLD-UNIT-PRICE.
+           IF HOLD-UNIT-PRICE (14:2) = "00"
+               COMPUTE I1-PRICE  ROUNDED = ITM-UNIT-PRICE
+               MOVE 1                 TO  I1-PRICE-UNIT
+           ELSE
+               COMPUTE I1-PRICE = ITM-UNIT-PRICE * 100
+               MOVE 100               TO  I1-PRICE-UNIT.
+           MOVE ITM-PRICE-UM          TO  I1-PRICE-UM.
+
+       904-CONVERT-PO-NUM.
+           MOVE SPACES TO HOLD-PO-NUM.
+           IF ARIBA-ORDER OR PLANT-ORDER
+               STRING PO-RCV-NO (2:7) PO-RLS-NO
+                                    DELIMITED BY SIZE
+                                    INTO  HOLD-PO-NUM
+           ELSE IF PO-RCV-NO (8:1) = SPACE
+               STRING HOLD-PLT-ID PO-RCV-NO (2:6) PO-RLS-NO
+                                    DELIMITED BY SIZE
+                                    INTO  HOLD-PO-NUM
+           ELSE
+               IF PO-RLS-NO = "000"
+      *           PO-RLS-NO = "999"
+                   STRING HOLD-PLT-ID PO-RCV-NO (2:7)
+                                        DELIMITED BY SIZE
+                                        INTO  HOLD-PO-NUM
+               ELSE
+      * Insert VF logic here
+                   STRING HOLD-PLT-ID PO-RCV-NO (3:6) PO-RLS-NO
+                                        DELIMITED BY SIZE
+                                        INTO  HOLD-PO-NUM.
+           IF HOLD-RLS = "000" OR
+              HOLD-RLS = "999"
+               MOVE SPACES          TO  HOLD-RLS.
+
+       905-MOVE-MATL-GRP.
+           MOVE SPACES                TO  I1-MATL-GRP.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE "ZMMIS   "        TO  I1-MATL-GRP
+           ELSE
+               STRING "C" ITM-CORP-CODE (1:2) DELIMITED BY SIZE
+                                    INTO  I1-MATL-GRP.
+
+       910-WRITE-I2-REC.
+           MOVE SPACES TO FULL-TEXT.
+           MOVE HOLD-PO-NUM           TO  I2-PO-NUM.
+           STRING ITM-NUMBER "0"
+               DELIMITED BY SIZE    INTO  I2-ITEM-NO-R.
+           IF HOLD-SHORT-TEXT > SPACES
+               MOVE HOLD-SHORT-TEXT      TO  I2-TEXT
+               PERFORM 913-WRITE-REC
+               MOVE SPACES               TO  HOLD-SHORT-TEXT.
+           PERFORM 9999-START-DPODATAITM.
+           PERFORM 9999-READ-NEXT-DPODATAITM.
+           PERFORM 911-WRITE-ITEM-DESC
+               UNTIL PORCVNO OF DPODATAITM-REC-I NOT = PO-ARG
+               OR    DATAITM-ITEM-NO > ITM-NUMBER
+               OR    FILE-STATUS NOT = "00".
+           IF ITM-STD-INST > SPACES
+               MOVE ITM-STD-INST         TO  SAVE-STD-INST-LIST
+               PERFORM 912-WRITE-INSTR
+                   VARYING SUB FROM 1 BY 1 UNTIL SUB > 4.
+
+       911-WRITE-ITEM-DESC.
+           MOVE SPACES                           TO I2-TEXT.
+           IF DATAITM-ITEM-NO = ITM-NUMBER AND DATAITM-LINE-NO > "01"
+      *------------- BREAK ITEM DESCRIPTION LINES INTO 40-CHARACTER
+      *------------- SEGMENTS.
+               IF DATAITM-INFO (41:40) = SPACES
+                   MOVE DATAITM-INFO             TO  I2-TEXT
+                   PERFORM 913-WRITE-REC
+               ELSE
+                   PERFORM 990-DO-NOTHING VARYING SUB2 FROM 40 BY -1
+                               UNTIL DATAITM-INFO (SUB2:1) = " "
+                               OR    SUB2 = 1
+                   IF SUB2 = 1
+                       MOVE 40                   TO  SUB2
+                   END-IF
+                   MOVE DATAITM-INFO (1:SUB2)    TO  I2-TEXT
+                   PERFORM 913-WRITE-REC
+                   MOVE SPACES                   TO  I2-TEXT
+                   ADD 1                         TO  SUB2
+                   COMPUTE SUB3 = 80 - SUB2 + 1
+                   MOVE DATAITM-INFO (SUB2:SUB3) TO  I2-TEXT
+                   PERFORM 913-WRITE-REC.
+           PERFORM 9999-READ-NEXT-DPODATAITM.
+
+       912-WRITE-INSTR.
+           IF STD-INST-NO (SUB) > SPACES
+             PERFORM 991-SEARCH-INSTR-TABLE
+             IF EXCLUDE-INSTR-SW = "N"
+               MOVE STD-INST-NO (SUB)   TO  BUILD-COM-NO
+               MOVE BUILD-COMMENT-NO    TO  COMMENT-ARG
+               MOVE COMMENT-ARG TO MCOMCOMMNT OF DCOMMENT-REC-I
+               PERFORM 9999-START-DCOMMENT
+               IF FILE-STATUS = "00"
+                   PERFORM 9999-READ-NEXT-DCOMMENT
+                   PERFORM UNTIL DCOM-COMMENT-NO NOT = COMMENT-ARG
+                           OR    FILE-STATUS NOT = "00"
+                       PERFORM 924-CHECK-TYPE
+                       MOVE HOLD-TEXT   TO  I2-TEXT
+                       EVALUATE PO-TYPE-ANS
+                           WHEN "B"  WRITE BLANKET-REC FROM I2-REC
+                           WHEN "L"  WRITE CONTRACT-REC FROM I2-REC
+                           WHEN "P"
+                               IF UNCLASS-PO-SW = "Y"
+                                   WRITE UNCLASS-REC FROM I2-REC
+                               ELSE
+                                   WRITE PURCH-REC   FROM I2-REC
+                               END-IF
+                       END-EVALUATE
+                       PERFORM 9999-READ-NEXT-DCOMMENT
+                   END-PERFORM
+               END-IF.
+
+      * Inserted code to replace bad text if Ariba order
+       913-WRITE-REC.
+           IF ARIBA-ORDER
+               MOVE I2-TEXT TO FULL-TEXT
+               PERFORM 925-CHECK-TEXT
+                       VARYING SUB FROM 1 BY 1 UNTIL SUB > 72
+               MOVE FULL-TEXT TO I2-TEXT.
+           EVALUATE PO-TYPE-ANS
+               WHEN "B"    WRITE BLANKET-REC FROM I2-REC
+               WHEN "L"    WRITE CONTRACT-REC FROM I2-REC
+               WHEN "P"
+                   IF UNCLASS-PO-SW = "Y"
+                       WRITE UNCLASS-REC FROM I2-REC
+                   ELSE
+                       WRITE PURCH-REC   FROM I2-REC
+                   END-IF.
+
+       920-CHECK-SHORT-TEXT.
+           IF DATAITM-INFO (41:40) = SPACES
+               MOVE DATAITM-INFO             TO  I1-SHORT-TEXT
+               MOVE SPACES                   TO  HOLD-SHORT-TEXT
+           ELSE
+               PERFORM 990-DO-NOTHING VARYING SUB2 FROM 40 BY -1
+                               UNTIL DATAITM-INFO (SUB2:1) = " "
+                               OR    SUB2 = 1
+               IF SUB2 = 1
+                   MOVE 40                   TO  SUB2
+               END-IF
+               MOVE DATAITM-INFO (1:SUB2)    TO  I1-SHORT-TEXT
+               ADD 1                         TO  SUB2
+               COMPUTE SUB3 = 80 - SUB2 + 1
+               MOVE DATAITM-INFO (SUB2:SUB3) TO  HOLD-SHORT-TEXT.
+
+       921-CHECK-NEW-WORK.
+           MOVE ITM-ADDL-DATA         TO  NEW-WORK.
+           MOVE BUILD-NEW-WORK        TO  MVALIDPLT-ARG.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE "250"               TO I1-CLASS
+               MOVE ITM-ADDL-DATA       TO I1-NEW-WORK
+               MOVE "F"                 TO I1-ACCT-ASSIGN
+               MOVE ZEROS               TO I1-ADDL-DATA
+           ELSE
+               MOVE ITM-ADDL-DATA (2:5) TO I1-ADDL-DATA.
+
+       922-CHECK-OPEN-PO.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE "N"                 TO  OPEN-PO-SW
+                                        UNCLASS-PO-SW.
+           MOVE 0                   TO  ACCUM-PRICE
+                                        ACCUM-ORD-QTY.
+           PERFORM 9999-START-DPOITEM-I.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+           PERFORM UNTIL FILE-STATUS NOT = "00"
+                      OR ITM-PO-RCV-NO > PO-ARG
+               IF ITM-QTY-ORD > ITM-QTY-DLVR OR
+                  ITM-QTY-DLVR > ITM-QTY-PAID OR
+                  ITM-QTY-ORD < .001
+                   MOVE "Y"         TO OPEN-PO-SW
+               END-IF
+      *------------- INSTEAD OF CHECKING FOR 0, CHECK TO SEE IF THE
+      *------------- QUANTITY IS < .001.  THE SYNERGY CONVERSION FILE
+      *------------- ONLY HAS 3 DECIMAL PLACES FOR THIS FIELD, SO THE
+      *------------- PO NEEDS TO BE MOVED TO THE UNCLASSIFIED FILE.
+               IF ITM-QTY-ORD < .001
+                   IF ARIBA-ORDER
+                       NEXT SENTENCE
+                   ELSE
+                       IF ITM-UNIT-PRICE = ZERO
+                           IF REPAIR-ORDER
+                                CONTINUE
+      *                         NEXT SENTENCE
+                           ELSE
+                               MOVE "Y" TO UNCLASS-PO-SW
+                           END-IF
+                       ELSE
+                           MOVE "Y"     TO UNCLASS-PO-SW
+                       END-IF
+                   END-IF
+               ELSE
+                   IF ITM-UNIT-PRICE = ZERO
+                       MOVE "Y"         TO UNCLASS-PO-SW
+                   END-IF
+               END-IF
+               ADD ITM-QTY-ORD      TO  ACCUM-ORD-QTY
+               ADD ITM-UNIT-PRICE   TO  ACCUM-PRICE
+               PERFORM 9999-GETNEXT-DPOITEM-I
+           END-PERFORM.
+           IF REPAIR-ORDER AND
+              ACCUM-ORD-QTY = 0 AND
+              ACCUM-PRICE = 0
+                 MOVE "N" TO OPEN-PO-SW.
+           IF ARIBA-ORDER AND
+              ACCUM-ORD-QTY = 0
+                 MOVE "N" TO OPEN-PO-SW.
+
+      *---------- ELIMINATE PURCH ORDERS WITH NO ITEMS.
+       923-CHECK-FOR-ITEMS.
+           MOVE 0                   TO  NUM-ITEMS
+                                        BLANKET-ITEMS
+                                        STND-BUDGET-AMT.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE "N"                 TO  OPEN-PO-SW.
+           PERFORM 9999-START-DPOITEM-I.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+           PERFORM UNTIL ITM-PO-RCV-NO NOT = PO-ARG OR
+                                             FILE-STATUS > "00"
+               ADD 1                TO  NUM-ITEMS
+               IF ITM-QTY-ORD = 0 OR ITM-UNIT-PRICE = 0
+                   ADD 1            TO  BLANKET-ITEMS
+               ELSE
+                   COMPUTE STND-BUDGET-AMT = STND-BUDGET-AMT
+                             + (ITM-QTY-ORD * ITM-UNIT-PRICE)
+               END-IF
+               IF PO-RLS-NO = "999"
+                   MOVE "Y" TO OPEN-PO-SW
+               ELSE
+                   IF ITM-QTY-ORD > ITM-QTY-PAID
+                      MOVE "Y" TO OPEN-PO-SW
+                   END-IF
+               END-IF
+               PERFORM 9999-GETNEXT-DPOITEM-I
+           END-PERFORM.
+
+       924-CHECK-TYPE.
+           IF EXP-PRT-START = "*EXP*"
+               MOVE EXP-DATA-COMMENT   TO  HOLD-TEXT
+           ELSE
+           IF EXP-PRT-START = "*CMP*"
+               MOVE COMP-DATA-COMMENT  TO  HOLD-TEXT
+           ELSE
+               MOVE DCOM-DATA-LINE     TO  HOLD-TEXT.
+
+       925-CHECK-TEXT.
+           SET BAD-CHAR TO TRUE.
+           IF FULL-TEXT (SUB:1) = " "
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "0"
+                AND FULL-TEXT (SUB:1) <= "9"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "S"
+                AND FULL-TEXT (SUB:1) <= "Z"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "J"
+                AND FULL-TEXT (SUB:1) <= "R"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "A"
+                AND FULL-TEXT (SUB:1) <= "I"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "s"
+                AND FULL-TEXT (SUB:1) <= "z"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "j"
+                AND FULL-TEXT (SUB:1) <= "r"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "a"
+                AND FULL-TEXT (SUB:1) <= "i"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= ":"
+                AND FULL-TEXT (SUB:1) <= "="
+      * Need to modify prev line to look for " instead of =
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= QUOTES
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= ","
+                AND FULL-TEXT (SUB:1) <= "?"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "!"
+                AND FULL-TEXT (SUB:1) <= "/"
+               SET GOOD-CHAR TO TRUE
+           ELSE IF FULL-TEXT (SUB:1) >= "."
+                AND FULL-TEXT (SUB:1) <= "&"
+               SET GOOD-CHAR TO TRUE
+           END-IF.
+           IF BAD-CHAR
+               MOVE "*" TO FULL-TEXT (SUB:1)
+           END-IF.
+
+       930-COMPUTE-DLV-VAL.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE 0                   TO  HOLD-DLV-VAL
+                                        HOLD-DLV-TOT-VAL.
+           PERFORM 9999-START-DPOITEM-I.
+           PERFORM 9999-GETNEXT-DPOITEM-I.
+           PERFORM UNTIL FILE-STATUS NOT = "00"
+                      OR ITM-PO-RCV-NO > PO-ARG
+               COMPUTE HOLD-DLV-VAL = ITM-QTY-DLVR * ITM-UNIT-PRICE
+               ADD HOLD-DLV-VAL     TO HOLD-DLV-TOT-VAL
+               PERFORM 9999-GETNEXT-DPOITEM-I
+           END-PERFORM.
+
+       931-COMPUTE-INV-VAL.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE 0                   TO  HOLD-INV-TOT-VAL.
+           PERFORM 9999-START-DINVRCD-I.
+           PERFORM 9999-READ-NEXT-DINVRCD-I.
+           PERFORM UNTIL FILE-STATUS NOT = "00"
+                      OR PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               IF INV-STATUS = "I" OR "H"
+                   CONTINUE
+      *            NEXT SENTENCE
+               ELSE
+                   ADD INV-NET-DUE-VENDOR  TO
+                       HOLD-INV-TOT-VAL
+               END-IF
+               PERFORM 9999-READ-NEXT-DINVRCD-I
+           END-PERFORM.
+
+       932-COMPUTE-INV-ITM-VAL.
+           MOVE PO-RCV-NO           TO  PO-ARG.
+           MOVE 0                   TO  HOLD-INV-ITM-TOT.
+           PERFORM 9999-START-DINVRCD-I.
+           PERFORM 9999-READ-NEXT-DINVRCD-I.
+           PERFORM UNTIL FILE-STATUS NOT = "00"
+                      OR PORCVNO OF DINVRCD-REC-I NOT = PO-ARG
+               IF INV-STATUS = "I" OR "H"
+                   CONTINUE
+      *             NEXT SENTENCE
+               ELSE
+                   PERFORM 940-FIND-INV-ITEMS
+               END-IF
+               PERFORM 9999-READ-NEXT-DINVRCD-I
+           END-PERFORM.
+
+       940-FIND-INV-ITEMS.
+           MOVE INV-REG-NO TO REG-ARG.
+           PERFORM 9999-START-DINVITM-I.
+           PERFORM 9999-READ-NEXT-DINVITM-I.
+           PERFORM UNTIL REGISTERNO OF DINVITM-REC-I NOT = REG-ARG
+                                    OR   FILE-STATUS NOT = "00"
+               IF INVITM-ITEM-NO = ITM-NUMBER
+                   IF INV-PAYMENT-IND = "I"
+                       IF INVITM-INV-QTY-PD = ZEROES
+                           ADD INVITM-INV-UPRICE TO HOLD-INV-ITM-TOT
+                       ELSE
+                           COMPUTE HOLD-INV-ITM-TOT = HOLD-INV-ITM-TOT
+                                                    + (INVITM-INV-UPRICE
+                                                    * INVITM-INV-QTY-PD)
+                       END-IF
+                   ELSE
+                       IF INVITM-PO-QTY-PD = ZEROES
+                           ADD INVITM-PO-UPRICE TO HOLD-INV-ITM-TOT
+                       ELSE
+                           COMPUTE HOLD-INV-ITM-TOT = HOLD-INV-ITM-TOT
+                                                    + (INVITM-PO-UPRICE
+                                                    * INVITM-PO-QTY-PD)
+                       END-IF
+                   END-IF
+               END-IF
+               PERFORM 9999-READ-NEXT-DINVITM-I
+           END-PERFORM.
+
+       941-FIND-CURRENCY.
+           MOVE SPACES                         TO  H1-CURRENCY.
+           IF PO-CURRENCY-CODE > SPACES
+               EVALUATE PO-CURRENCY-CODE
+                   WHEN "01"    MOVE "USD  "   TO  H1-CURRENCY
+                   WHEN "08"    MOVE "CAD  "   TO  H1-CURRENCY
+               END-EVALUATE
+           ELSE
+               EVALUATE HOLD-HOME-CUR
+                   WHEN "01"    MOVE "USD  "   TO  H1-CURRENCY
+                   WHEN "08"    MOVE "CAD  "   TO  H1-CURRENCY
+               END-EVALUATE.
+           IF H1-CURRENCY = SPACES
+               MOVE "*****"                    TO  H1-CURRENCY.
+
+       980-PRINT-DATA.
+           IF LINE-NUM > MAX-LINES
+               PERFORM 981-NEW-PAGE.
+           WRITE PRINT-REC FROM PRINT-LINE
+               AFTER ADVANCING 2.
+           ADD 2 TO LINE-NUM.
+
+       981-NEW-PAGE.
+           ADD 1 TO PAGE-NUM.
+           MOVE PAGE-NUM TO HDR-PAGE.
+           IF PAGE-NUM > 1
+               WRITE PRINT-REC FROM HEADER-REC-1
+                     AFTER PAGE-EJECT
+           ELSE
+               WRITE PRINT-REC FROM HEADER-REC-1.
+           WRITE PRINT-REC FROM HEADER-REC-2.
+           WRITE PRINT-REC FROM HEADER-REC-3.
+           MOVE 3 TO LINE-NUM.
+
+       990-DO-NOTHING.
+
+      *---------- SEE IF STANDARD INSTRUCTION SHOULD BE EXCLUDED.
+       991-SEARCH-INSTR-TABLE.
+           MOVE "N"                        TO  EXCLUDE-INSTR-SW.
+           SET J TO 1.
+           SEARCH INSTR-ENTRY
+               AT END
+                   MOVE "N"                TO  EXCLUDE-INSTR-SW
+               WHEN INSTR-ENTRY (J) = STD-INST-NO (SUB)
+                   MOVE "Y"                TO  EXCLUDE-INSTR-SW.
+
+      /**************************************************************
+      ** U T I L I T Y   P A R A G R A P H S                       **
+      ***************************************************************
+
+      ***************************************************************
+      ** D P O R E C D                                             **
+      ***************************************************************
+
+       9999-START-DPORECD-I.
+           MOVE LOW-VALUES TO BUYERCDE OF DPORECD-REC-I.
+           START DPORECD-I KEY > BUYERCDE OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-GETNEXT-DPORECD-I.
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE "Y" TO DPORECD-EOF-SW.
+
+      ***************************************************************
+      ** D P O I T E M                                             **
+      ***************************************************************
+
+       9999-START-DPOITEM-I.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY >= PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-GETNEXT-DPOITEM-I.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***************************************************************
+      ** D P O D A T A I T M                                       **
+      ***************************************************************
+
+       9999-GET-DPODATAITM.
+           MOVE SPACES  TO  STD-INST-SAVED.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-I.
+           MOVE "000001" TO ITEMSEQNO OF DPODATAITM-REC-I.
+           READ DPODATAITM-I INTO BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES        TO STD-INST-SAVED
+           ELSE
+               MOVE DATAITM-INFO  TO STD-INST-SAVED.
+
+       9999-GET-FIRST-DPODATAITM.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-I.
+           READ DPODATAITM-I INTO BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-START-DPODATAITM.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-I.
+           START DPODATAITM-I KEY = PORCVNO OF DPODATAITM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-NEXT-DPODATAITM.
+           READ DPODATAITM-I NEXT INTO BUF-DPODATAITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***************************************************************
+      ** D C O M M E N T                                           **
+      ***************************************************************
+
+       9999-START-DCOMMENT.
+           START DCOMMENT-I KEY = MCOMCOMMNT OF DCOMMENT-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-NEXT-DCOMMENT.
+           READ DCOMMENT-I NEXT INTO BUF-DCOMMENT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***************************************************************
+      ** D I N V R C D                                             **
+      ***************************************************************
+
+       9999-START-DINVRCD-I.
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-NEXT-DINVRCD-I.
+           READ DINVRCD-I NEXT INTO BUF-DINVRCD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***************************************************************
+      ** D I N V I T M                                             **
+      ***************************************************************
+
+       9999-START-DINVITM-I.
+           MOVE REG-ARG TO REGISTERNO OF DINVITM-REC-I.
+           START DINVITM-I KEY = REGISTERNO OF DINVITM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-NEXT-DINVITM-I.
+           READ DINVITM-I NEXT INTO BUF-DINVITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+      ***************************************************************
+      ** M S T O R E R M                                           **
+      ***************************************************************
+
+       9999-READ-MSTORERM-I.
+           SET NON-CONSIGNMENT TO TRUE.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF STR-CONS-IND NOT = SPACES
+               SET ON-CONSIGNMENT TO TRUE.
+

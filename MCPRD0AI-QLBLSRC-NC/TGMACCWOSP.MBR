@@ -1,0 +1,531 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TGMACCWOSP.
+       AUTHOR.                 JEFF BUNGO.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.                THIS PROGRAM CREATES A WORK ORDER FROM
+      *                        DATA GENERATED IN A GMACC OR PICOMACC BOX.
+      *                        SUBROUTINES CALLED:  TADDWO
+      *                                             TNEWWONU
+      *                                             TPRINTWO
+      *                                             TWOTRACK
+      *                                             TQUPDATE
+      *                                             UTX6034
+      *                                             CMC0010
+      *
+      *C 07/18/97 JEFF BUNGO
+      *C   COPIED FROM TGMACCWO (XCS VERSION) AND CHANGED TO USED
+      *C   AS A STORED PROCEDURE.  THE RESPONSE-DATA VARIABLE IS
+      *C   MOVED TO THE LINKAGE SECTION TO PASS THE RESPONSE BACK
+      *C   AS A PARAMETER.  A CALL TO CMC0010 THAT PASSED THE
+      *C   RESPONSE DATA BACK VIA XCS IS NO LONGER NECESSARY.
+      *C   ALL VARIABLES RELATED TO THE XCS CALL HAVE BEEN REMOVED.
+      ***************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-CRAFTS-REQD
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN       TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS ARG-NO
+                  FILE STATUS  IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS       ARE STANDARD.
+       01  PER-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  WO-CRAFTS-REQD
+           LABEL RECORDS       ARE STANDARD.
+       01  WOR-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS       ARE STANDARD.
+       01  WOLNU-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9999  VALUE 1.
+       77  D-PARM              PIC X.
+       77  L-PARM              PIC X.
+       77  CFT-BUF             PIC XX.
+       77  ERROR-SW            PIC 9     VALUE 0.
+       77  CRAFT-SW            PIC 9     VALUE 0.
+       77  CONDIT-CODE         PIC X     VALUE SPACE.
+       77  QUEUE-PRTY          PIC 9     VALUE ZEROS.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  ERROR-SWITCH        PIC S9(4) VALUE ZEROS  BINARY.
+       77  WORK-ORDER-NUMBER   PIC X(10).
+       77  COM-TEXT            PIC X(22)
+                               VALUE " CRAFT REQUIRED ON WO.".
+
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X     VALUE "0".
+           05 FILE-STAT-2      PIC X     VALUE "0".
+
+
+       01  PRIORITY-BUF.
+           05  PRI-9           PIC 9.
+           05  FILLER          PIC X.
+
+       01  COM-BUFF.
+           05  CFT-SW          PIC X(02)  VALUE SPACES.
+           05  COM-MSG         PIC X(22)  VALUE SPACES.
+           05  FILLER          PIC X(326) VALUE SPACES.
+
+       01  DB-ADD-MESSAGE.
+           10  FILLER          PIC X(10).
+           10  WO-ADD          PIC X(10).
+           10  FILLER          PIC X(48).
+
+       01  TIME-BUFFER.
+           05  TIME-6.
+               10  CUR-TIME.
+                   15  CUR-HRS PIC XX.
+                   15  CUR-MIN PIC XX.
+               10  CUR-SECS.
+                   15  FILLER  PIC XX.
+           05  FILLER          PIC XX.
+
+       01  DATE-BUF-CN.
+           05  DBUF-CC         PIC XX.
+           05  DATE-BUF.
+               10  DBUF-YY     PIC XX.
+               10  DBUF-MM     PIC XX.
+               10  DBUF-DD     PIC XX.
+
+       01  GREG-DATE.
+           05  G-YEAR          PIC XXXX.
+           05  G-MONTH         PIC XX.
+           05  G-DAY           PIC XX.
+
+       01  JUL-SIGN            PIC S9(06).
+       01  JUL-DATE            PIC  X(07).
+       01  JULIAN-DATE         REDEFINES JUL-DATE
+                               PIC  9(07).
+       01  FILLER              REDEFINES JUL-DATE.
+           05  J-CENT          PIC 99.
+           05  J-DATE          PIC 99999.
+
+
+
+       01  DB-ERROR.
+           05  DB-FUNC         PIC X(10)  VALUE SPACES.
+           05  DB-FILE         PIC X(18)  VALUE SPACES.
+           05  FILLER          PIC X(20)  VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+           COPY DBSTAT         IN COPYLIB.
+
+       01  WO-EQUIP-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  CRAFT-DATA.
+           COPY MWOCRAFT       IN COPYLIB.
+
+       01  LAST-WO-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  REQR-CC         PIC X(0004).
+       01  EQP-NUM-BUF     PIC X(0006).
+       01  PRTY-BUF        PIC S9(0001) DISPLAY SIGN LEADING SEPARATE.
+       01  EQP-D-BUF       PIC S9(0001) DISPLAY SIGN LEADING SEPARATE.
+       01  WO-DESC-BUF     PIC X(0030).
+       01  CRAFT-1-BUF     PIC X(0002).
+       01  CRAFT-2-BUF     PIC X(0002).
+       01  CRAFT-3-BUF     PIC X(0002).
+       01  DESC-2-BUF      PIC X(132).
+
+      *----MOVED FROM WORKING STORAGE FOR STORED PROCEDURE
+       01  EQP-NUM-RES     PIC X(006).
+       01  WO-NUMBER       PIC X(010).
+       01  MESSAGE-BUF.
+               10  MSG-BUF     PIC X(068).
+               10  EXEC-FLAG   PIC X(002).
+
+       PROCEDURE DIVISION      USING REQR-CC  EQP-NUM-BUF PRTY-BUF
+                               EQP-D-BUF WO-DESC-BUF
+                               CRAFT-1-BUF CRAFT-2-BUF CRAFT-3-BUF
+                               DESC-2-BUF
+                               EQP-NUM-RES
+                               WO-NUMBER
+                               MESSAGE-BUF.
+       BEGIN.
+           OPEN INPUT          EQP-EQUIPMENT.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          WO-CRAFTS-REQD.
+           OPEN INPUT          WO-LAST-NUM-USED.
+
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUF     FROM DATE.
+           MOVE "20"           TO DBUF-CC.
+           IF DBUF-YY > 70
+               MOVE "19"       TO DBUF-CC.
+
+           MOVE DATE-BUF-CN    TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE SPACES         TO MESSAGE-BUF
+                                  WORK-ORDER-NUMBER
+                                  EXEC-FLAG
+                                  LAST-WO-USED-DATA.
+
+           READ  WO-LAST-NUM-USED INTO LAST-WO-USED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO EXEC-FLAG
+               MOVE "UNABLE TO GET LAST-WO-USED DATA."
+                               TO MSG-BUF
+               GO TO END-OF-JOB.
+
+           MOVE DATE-FLAG-SW   TO DATE-FLAG.
+           IF PLANT-IDENT = "153 "
+               MOVE "MT"       TO CRAFT-1-BUF.
+
+           IF REQR-CC = SPACES
+               MOVE "VALID CLOCK CARD NUMBER FOR REQUESTER IS REQUIRED"
+                               TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           MOVE REQR-CC        TO PERCCNUM OF PER-PERSONNEL.
+           READ PER-PERSONNEL  INTO WO-PERS-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = ZEROS
+               MOVE "INVALID CLOCK CARD NUMBER"
+                               TO MSG-BUF
+               MOVE FILE-STAT  TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           IF EQP-NUM-BUF = SPACES
+               MOVE "EQUIPMENT NUMBER IS REQUIRED"
+                               TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           MOVE EQP-NUM-BUF    TO EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO WO-EQUIP-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+               MOVE "INVALID EQUIPMENT NUMBER"
+                               TO MSG-BUF
+               MOVE FILE-STAT  TO EXEC-FLAG
+               GO TO END-OF-JOB
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO EXEC-FLAG
+                                  CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "EQP-EQUIPMENT" TO DB-FILE
+               MOVE DB-ERROR   TO MSG-BUF
+               GO TO END-OF-JOB.
+
+           IF PRTY-BUF < 1 OR > 6
+               MOVE "VALID PRIORITY REQUIRED - 1,2,3,4,OR 5"
+                               TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           IF EQP-D-BUF = 0 OR 1
+               NEXT SENTENCE
+           ELSE
+               MOVE "ENTER '1' FOR EQUIPMENT DOWN - '0' FOR NOT DOWN"
+                               TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           IF EQP-D-BUF = 1
+               MOVE 1          TO PRTY-BUF.
+
+           IF PRTY-BUF = 1 AND EQP-D-BUF = 0
+               MOVE 2          TO PRTY-BUF.
+
+           IF WO-DESC-BUF = SPACES
+               MOVE "DESCRIPTION OF WORK NEEDED IS REQUIRED"
+                               TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           IF CRAFT-1-BUF = SPACES
+               MOVE "AT LEAST ONE CRAFT CODE IS REQUIRED"
+                               TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           IF CRAFT-1-BUF = SPACES
+               MOVE CRAFT-2-BUF TO CRAFT-1-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-1-BUF = SPACES
+               MOVE CRAFT-2-BUF TO CRAFT-1-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-2-BUF = SPACES
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-1-BUF = CRAFT-2-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-1-BUF = CRAFT-2-BUF
+               MOVE CRAFT-3-BUF TO CRAFT-2-BUF
+               MOVE SPACES      TO CRAFT-3-BUF.
+
+           IF CRAFT-2-BUF = CRAFT-3-BUF
+               MOVE SPACES     TO CRAFT-3-BUF.
+
+           MOVE 0              TO ERROR-SW CRAFT-SW.
+           MOVE CRAFT-1-BUF    TO CFT-BUF.
+           PERFORM CRAFT-VALIDATION.
+           IF CRAFT-FLAG = "1"
+               MOVE 1          TO CRAFT-SW.
+
+           IF ERROR-SW = 1
+               MOVE "INVALID CRAFT CODE ENTERED:  PLEASE RE-ENTER"
+                               TO MSG-BUF
+               MOVE FILE-STAT  TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+           IF CRAFT-2-BUF NOT = SPACES
+               MOVE CRAFT-2-BUF TO CFT-BUF
+               PERFORM CRAFT-VALIDATION
+               IF ERROR-SW = 1
+                   MOVE "INVALID CRAFT CODE ENTERED:  PLEASE RE-ENTER"
+                               TO MSG-BUF
+                   MOVE FILE-STAT TO EXEC-FLAG
+                   GO TO END-OF-JOB.
+
+           IF CRAFT-3-BUF NOT = SPACES
+               MOVE CRAFT-3-BUF TO CFT-BUF
+               PERFORM CRAFT-VALIDATION
+               IF ERROR-SW = 1
+                   MOVE "INVALID CRAFT CODE ENTERED:  PLEASE RE-ENTER"
+                               TO MSG-BUF
+                   MOVE FILE-STAT TO EXEC-FLAG
+                   GO TO END-OF-JOB.
+
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUF     FROM DATE.
+           MOVE "20"           TO DBUF-CC.
+           IF DBUF-YY > 70
+               MOVE "19"       TO DBUF-CC.
+
+           MOVE 0              TO ERROR-SWITCH.
+           CALL "TNEWWONU"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WORK-ORDER-NUMBER
+                               ERROR-SWITCH.
+
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TNEWWONU" TO DB-FUNC
+               MOVE SPACES     TO DB-FILE
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MSG-BUF
+               DISPLAY "    "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TGMACCWO"
+               DISPLAY "  SUBROUTINE:    TNEWWONU"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY "    "
+               GO TO END-OF-JOB.
+
+           MOVE SPACES         TO WO-BASIC-DATA.
+           MOVE WORK-ORDER-NUMBER TO WO-NUM.
+           IF EQP-D-BUF = 1
+               MOVE "Y"        TO EQUIP-DOWN
+           ELSE
+               MOVE "N"        TO EQUIP-DOWN.
+           MOVE "OO"           TO WO-STATUS.
+
+           IF PLANT-IDENT = "126 "
+               IF PRTY-BUF = 4 OR 5 OR 6
+                   MOVE "HL"   TO WO-STATUS.
+
+           MOVE DATE-BUF-CN    TO DATE-RECD-CN.
+           MOVE CUR-TIME       TO TIME-RECD.
+           MOVE "A"            TO APPROVAL-CODE.
+           MOVE REQR-CC        TO REQUESTER-B.
+           MOVE EQP-NUM-BUF    TO EQUIP-NUM.
+           MOVE EQP-EQUIP-NAME TO EQUIP-NAME.
+           MOVE EQP-TYPE       TO TYPE-NUM.
+           MOVE EQP-DEPT       TO DEPT.
+           MOVE EQP-EXP-CLASS  TO EXP-CLASS.
+           MOVE EQP-MAINT-ZONE TO ZONE.
+           MOVE PRTY-BUF       TO PRI-9.
+           MOVE PRIORITY-BUF   TO PRIORITY.
+           MOVE EQP-LOCATION   TO LOCATION.
+           MOVE WO-DESC-BUF    TO DESCRIPTION-1.
+           MOVE DESC-2-BUF     TO DESCRIPTION-2.
+           MOVE CRAFT-1-BUF    TO CRAFTS-REQD-1.
+           MOVE CRAFT-2-BUF    TO CRAFTS-REQD-2.
+           MOVE CRAFT-3-BUF    TO CRAFTS-REQD-3.
+           MOVE "VV"           TO WO-STRT-STATUS.
+           MOVE 0              TO ERROR-SWITCH.
+
+           CALL "TADDWO"       USING DBPARAMETERS
+                               WO-BASIC-DATA
+                               CONDIT-CODE
+                               ERROR-SWITCH.
+
+           IF ERROR-SWITCH NOT = 0
+               MOVE "TADDWO  " TO DB-FUNC
+               MOVE SPACES     TO DB-FILE
+               MOVE ERROR-SWITCH TO CON-WORD
+               MOVE DB-ERROR   TO MSG-BUF
+               DISPLAY "    "
+               DISPLAY "    "
+               DISPLAY "  PLEASE NOTIFY MMIS SYSTEM MANAGER OR"
+               DISPLAY "  SYSTEM OPERATOR OF THE FOLLOWING:"
+               DISPLAY "  PROGRAM NAME:  TGMACCWO"
+               DISPLAY "  SUBROUTINE:    TADDWOVP"
+               DISPLAY "  " DB-ERROR
+               DISPLAY "    "
+               DISPLAY "    "
+               GO TO END-OF-JOB.
+
+           MOVE SPACES         TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TGMACCWO"     TO PROGRAM-NAME.
+           MOVE WO-NUM         TO WO-NUM-TRACK.
+           MOVE DATE-RECD-CN   TO DATE-STAMP-CN.
+           MOVE TIME-RECD      TO TIME-STAMP.
+           MOVE WO-STRT-STATUS TO WO-TYPE-STATUS.
+           MOVE "GMAC"         TO USER-ID.
+           MOVE SPACES         TO CLOCK-CARD.
+           MOVE WO-STATUS      TO WO-STATUS-TRACK.
+           MOVE "OO"           TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+           IF CRAFT-SW = 1
+               MOVE "1"        TO RETURN-BYTE
+               MOVE CRAFTS-REQD-1 TO ZONE CFT-SW
+               MOVE COM-TEXT   TO COM-MSG
+               CALL "TPRINTWO" USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               COM-BUFF
+               MOVE EQP-MAINT-ZONE TO ZONE.
+
+           MOVE SPACES         TO QUEUE-ERROR WO-QUEUE-DATA.
+           MOVE ZONE           TO Q-ZONE.
+           MOVE PRIORITY       TO Q-PRTY.
+           MOVE WO-NUM         TO Q-WO-NUM.
+           MOVE EQUIP-DOWN     TO Q-EQP-DOWN.
+           MOVE "9999"         TO Q-CC-NUM.
+           MOVE EQUIP-NUM      TO Q-EQUIP-NUM.
+           MOVE DESCRIPTION-1  TO Q-DESCRIPTION.
+           MOVE CRAFTS-REQD-1  TO Q-SKILL-1.
+           MOVE CRAFTS-REQD-2  TO Q-SKILL-2.
+           MOVE CRAFTS-REQD-3  TO Q-SKILL-3.
+           IF PRIORITY = "1 "  MOVE 9 TO QUEUE-PRTY.
+           IF PRIORITY = "2 "  MOVE 6 TO QUEUE-PRTY.
+           IF PRIORITY = "3 "  MOVE 4 TO QUEUE-PRTY.
+           IF PRIORITY = "4 "  MOVE 2 TO QUEUE-PRTY.
+           IF PRIORITY = "5 "  MOVE 1 TO QUEUE-PRTY.
+
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+
+           MOVE "A"            TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+
+           IF QUEUE-ERROR NOT = SPACES
+               MOVE QUEUE-ERROR TO MSG-BUF
+               MOVE "XX"       TO EXEC-FLAG
+               GO TO END-OF-JOB.
+
+      *------LEAVE MESSAGE BLANK FOR SUCCESSFUL ADD,
+      *------HP THINKS IT IS AN ERROR IF MESSAGE RECEIVED.
+           MOVE SPACES         TO MSG-BUF DB-ADD-MESSAGE.
+
+       END-OF-JOB.
+
+           MOVE EQP-NUM-BUF    TO EQP-NUM-RES.
+           MOVE WORK-ORDER-NUMBER TO WO-NUMBER.
+
+
+           CLOSE               EQP-EQUIPMENT.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               WO-CRAFTS-REQD.
+           CLOSE               WO-LAST-NUM-USED.
+           GOBACK.
+
+
+       CRAFT-VALIDATION.
+           MOVE CFT-BUF        TO CRAFTREQD OF WO-CRAFTS-REQD.
+           READ WO-CRAFTS-REQD INTO CRAFT-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+               MOVE 1          TO ERROR-SW
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO EXEC-FLAG
+                                  CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-CRAFTS-REQD" TO DB-FILE
+               MOVE DB-ERROR   TO MSG-BUF
+               GO TO END-OF-JOB.
+

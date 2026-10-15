@@ -1,0 +1,477 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.      TPARMINQ.
+       AUTHOR.          JEFF BUNGO.
+       DATE-WRITTEN.    JULY 15, 1997.
+       DATE-COMPILED.
+      ***************************************************************
+      ************ THIS PROGRAM CONTAINS SQL STATEMENTS   ***********
+      ************ USE CRTCBLSQL COMMIT(*NONE) RDB(*NONE) ***********
+      ************ TO CREATE THE PGM OBJECT.              ***********
+      ***************************************************************
+
+      ***************************************************************
+      *  PROGRAM TO ALLOW CODE PARAMETER INQUIRIES                  *
+      *                                                             *
+      *  AN SQL STATEMENT IS BUILT TO RETRIVE CODES THAT HAVE A     *
+      *  MATCH ANYWHERE IN ITS DESCRIPTION TO A GIVEN VALUE.        *
+      *  THESE CODES WILL BE LISTED WITH KEYWORD/MODIFIER AND       *
+      *  AND 1ST LINE OF DESCRIPTION.  A CODE MAY THEN BE SELECTED  *
+      *  FOR MATERIAL STATUS INQUIRY.                               *
+      ***************************************************************
+DP9802*C  27FEB1998      DAVE PLUM                                  *
+DP9802*C    ADDED LOGIC TO INITIALIZE THE BU-PGM-NAME FIELD.        *
+DP9806*C                                                            *
+DP9806*C  08JUN1998      DAVE PLUM                                  *
+DP9806*C    REVISED TO CORRECT AN ERROR INVOLVING THE WRITE OF THE  *
+DP9806*C    SUBFILE ("ERROR ON SHOW SPL WRITE").  IF AFTER          *
+DP9806*C    WRITING THE SUBFILE TO THE SCREEN, THE USER PRESSED     *
+DP9806*C    ENTER WITHOUT MODIFYING ANY OF THE RECORDS (DID NOT     *
+DP9806*C    SELECT ANY CODE FOR Q1) THEN THE "READ NEXT MODIFIED"   *
+DP9806*C    STATEMENT RESULTED IN AN INVALID RELATIVE RECORD NUMBER.*
+DP9806*C    THIS LED TO AN ERROR WHEN CONTROL TRANSFERRED BACK TO   *
+DP9806*C    THE 63-PROCESS-SUBFILE PARAGRAPH.                       *
+DP0003*C                                                            *
+DP0003*C  23MAR2000      DAVE PLUM                                  *
+DP0003*C    REVISED TO IMPROVE THE TBLOWUP INFORMATION PROVIDED     *
+DP0003*C    WHEN AN ERROR OCCURS WRITING THE SFL RECORD.  ALSO      *
+DP0003*C    ATTEMPTED TO ELIMINATE THESE ERRORS BY LIMITING THE     *
+DP0003*C    NUMBER OF CODES RETRIEVED TO 9,998.  (THE SUBFILE       *
+DP0003*C    SEEMS TO ONLY BE ABLE TO HANDLE 9,999 RECORDS.  UPON    *
+DP0003*C    WRITING THE 9,999TH RECORD TO THE SUBFILE A STATUS OF   *
+DP0003*C    "9M" IS RETURNED.)                                      *
+      ***************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       COPY SPECIALN IN COPYLIB.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPARMINQ-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS RELATIVE-RECNO
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC        PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+      *
+      * SQL COMMUNICATIONS AREA
+      *
+       77  CODE-EDIT                     PIC ---99.
+       77  SQL-FUNCTION                  PIC X(20).
+       77  NUM-CODES-PER-SCREEN          PIC 9(1) VALUE 9.
+       01  STRING-STATUS                 PIC X(1) VALUE "N".
+           88  END-OF-STRING                      VALUE "Y".
+           88  NOT-END-OF-STRING                  VALUE "N".
+       01  SQL-STATUS-CODES  COMP-4.
+           05 GOOD-CALL    VALUE 0    PIC S9(4).
+           05 NOT-FOUND    VALUE 100  PIC S9(4).
+           05 CONV-ERROR   VALUE 304  PIC S9(4).
+           05 MAP-ERROR    VALUE 802  PIC S9(4).
+           EXEC SQL   INCLUDE SQLCA   END-EXEC.
+       01  FILE-STATUS                   PIC X(2).
+       01  LANG-FLAG                     PIC X(1) VALUE "P".
+           88  PRIMARY                            VALUE "P".
+           88  SECONDARY                          VALUE "S".
+
+      *
+      * MISC. DATA DECLARATIONS.
+      *
+       01  SUB                           PIC 99.
+       01  SEARCH-VALUE-CHARACTER.
+           05  SEARCH-VALUE-CHAR OCCURS 80 TIMES PIC X(1).
+       01  CODES-RETRIEVED               PIC 9(5).
+       01  DIVIDEND                      PIC 9(5).
+       01  REMAIN                        PIC 9(5).
+
+      *
+      * INCLUDE TABLE DEFINITIONS
+      *
+           EXEC SQL   BEGIN DECLARE SECTION   END-EXEC.
+
+       01  DDESC-STRUCTURE.
+           COPY DDS-ALL-FORMATS OF MCFLCS1401.
+
+       01  SEARCH-STRING                    PIC X(82).
+       01  SEARCH-VALUE.
+           49  SEARCH-VALUE-SIZE            PIC S9(2) COMP-4.
+           49  SEARCH-VALUE-PARM            PIC X(80).
+
+           EXEC SQL   END DECLARE SECTION   END-EXEC.
+
+      *
+      * SCREEN DATA
+      *
+
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY DISPDATA IN COPYLIB.
+       01  RELATIVE-RECNO               PIC 9(9).
+
+       01  ENTRY-SCREEN.
+           05  SEARCH-CRITERIA           PIC X(80).
+           05  DE-COMMAND-LINE-1         PIC X(79).
+           05  DE-MESSAGE                PIC X(79).
+
+       01  SUBFILE-RECORD.
+           05  SFC-RCDNBR                PIC 9(4).
+           05  SFC-SEARCH                PIC X(79).
+           05  SFL-RECORD.
+               10  SEL                   PIC X(1).
+               10  V-CODE                PIC X(7).
+               10  V-KWM                 PIC X(50).
+               10  V-DESC                PIC X(80).
+
+       01  BUF-LINES.
+           05  BUF-LINE-1                PIC X(79).
+           05  BUF-LINE-2                PIC X(79).
+
+DP0003 01  ERROR-MSG-TOO-MANY.
+DP0003     05  FILLER  PIC X(22) VALUE "MORE THAN 9,998 CODES ".
+DP0003     05  FILLER  PIC X(28) VALUE "MEET THIS SEARCH CRITERIA.  ".
+DP0003     05  FILLER  PIC X(26) VALUE "PLEASE ENTER NEW CRITERIA.".
+DP0003     05  FILLER  PIC X(3)  VALUE SPACES.
+      *
+      * SUBPROGRAM AREA
+      *
+       01  BASE                          PIC X(10).
+       01  CODE-ARG                      PIC X(8).
+       01  TMTLSTAT-PARAMETERS.
+           05  TMTLSTAT-COMPANY          PIC X(4) VALUE SPACES.
+           05  TMTLSTAT-CODE             PIC X(7) VALUE SPACES.
+       01  PASSED-SPOOL-PRT              PIC S9(2) COMP-4 VALUE 0.
+       COPY CDESC IN COPYLIB.
+       COPY CATREAD IN COPYLIB.
+       COPY VCOMAREA IN COPYLIB.
+       COPY LANGUAGE IN COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       COPY DBSTAT IN COPYLIB.
+
+
+       PROCEDURE DIVISION.
+       MAIN-LINE-LOGIC.
+
+           PERFORM 1-HOUSEKEEP THRU 1-EXIT.
+           PERFORM 6-MAIN THRU 6-EXIT.
+           GOBACK.
+
+       1-HOUSEKEEP.
+DP9802     MOVE "TPARMINQ" TO BU-PGM-NAME.
+           OPEN I-O DISPLAY-FILE.
+           INITIALIZE ENTRY-SCREEN.
+           INITIALIZE SUBFILE-RECORD.
+           INITIALIZE BUF-LINES.
+       1-EXIT.
+           EXIT.
+
+       6-MAIN.
+           PERFORM 61-ENTER-SEARCH THRU 61-EXIT.
+           IF FUNCTION-NUM = "03"
+               GO TO 6-EXIT.
+           PERFORM 62-RETRIEVE-CODES THRU 62-EXIT.
+           IF CODES-RETRIEVED = 0
+               MOVE "NO CODES MEET SEARCH CRITERIA" TO DE-MESSAGE
+               MOVE B"1" TO IND(99)
+               GO TO 6-MAIN.
+DP0003
+DP0003******* SINCE THE SUBFILE CAN ONLY HANDLE 9,998 RECORDS, IF THIS
+DP0003******* MANY CODES HAVE BEEN RETRIEVED WE WILL DISPLAY AN ERROR
+DP0003******* MESSAGE.   ---DAVE PLUM 23MAR2000
+DP0003     IF CODES-RETRIEVED = 9998
+DP0003         MOVE ERROR-MSG-TOO-MANY TO DE-MESSAGE
+DP0003         MOVE B"1" TO IND(99)
+DP0003         GO TO 6-MAIN.
+DP0003
+           MOVE 1 TO SFC-RCDNBR.
+           PERFORM 63-PROCESS-SUBFILE THRU 63-EXIT.
+           GO TO 6-MAIN.
+       6-EXIT.
+           EXIT.
+
+       61-ENTER-SEARCH.
+           MOVE ENTRY-SCREEN TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS "PARMINQ"
+              INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           READ DISPLAY-FILE FORMAT IS "PARMINQ"
+              INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE DISPLAY-REC TO ENTRY-SCREEN.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "03" TO FUNCTION-NUM.
+           IF FUNCTION-NUM NOT = "00" AND NOT = "03"
+              AND NOT = "01"
+              MOVE 9 TO LANG-SETNUM
+              MOVE 10 TO LANG-MSGNUM
+              MOVE 09010 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE B"1" TO IND(99)
+              GO TO 61-ENTER-SEARCH
+           ELSE
+              IF FUNCTION-NUM NOT = "03"
+                IF SEARCH-CRITERIA = SPACES
+                  MOVE 20 TO LANG-SETNUM
+                  MOVE 62 TO LANG-MSGNUM
+                  MOVE 20062 TO CATREAD-MSG-NUMBER
+                  PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                  MOVE B"1" TO IND(99)
+                  GO TO 61-ENTER-SEARCH.
+           IF FUNCTION-NUM = "01"
+              SET SECONDARY TO TRUE
+           ELSE
+              SET PRIMARY TO TRUE.
+       61-EXIT.
+           EXIT.
+
+       62-RETRIEVE-CODES.
+      *-------CLEAR SUBFILE
+           PERFORM 622-CLEAR-SUBFILE THRU 622-EXIT.
+      *-------PARSE ENTERED STRING, DELIMITING WITH 2 SPACES
+      *-------  WILD CARD SYMBOLS ARE ADDED TO STRING BEGINING AND END
+           MOVE SPACES TO SEARCH-VALUE-PARM.
+           STRING "%" DELIMITED BY SIZE
+                  SEARCH-CRITERIA DELIMITED BY "   "
+                  "%" DELIMITED BY SIZE
+              INTO SEARCH-VALUE-PARM.
+
+      *------COMPUTE THE SEARCH SIZE FOR VARIABLE LENGTH FIELD
+           MOVE SPACES TO SEARCH-VALUE-CHARACTER.
+           MOVE SEARCH-VALUE-PARM TO SEARCH-VALUE-CHARACTER.
+           MOVE 0 TO SEARCH-VALUE-SIZE.
+           SET NOT-END-OF-STRING TO TRUE.
+           PERFORM VARYING SUB FROM 1 BY 1
+              UNTIL END-OF-STRING
+                IF SUB > 2
+                  IF SEARCH-VALUE-CHAR(SUB - 1) = "%"
+                      SET END-OF-STRING TO TRUE
+                  ELSE
+                      ADD 1 TO SEARCH-VALUE-SIZE
+                  END-IF
+                ELSE
+                  ADD 1 TO SEARCH-VALUE-SIZE
+                END-IF
+           END-PERFORM.
+      *    DISPLAY "SEARCHING FOR "
+      *            SEARCH-VALUE-PARM(2:SEARCH-VALUE-SIZE - 2).
+
+      *------BUILD SQL STATEMENT
+           MOVE SPACES TO SEARCH-STRING.
+           IF PRIMARY
+               STRING "SELECT DISTINCT CORPCDE FROM MCFLCS1401 WHERE "
+                      "DESCDTA LIKE ?" DELIMITED BY SIZE
+                  INTO SEARCH-STRING
+           ELSE
+               STRING "SELECT DISTINCT CORPCDE FROM MCFLCS3101 WHERE "
+                      "DESCDTA LIKE ?" DELIMITED BY SIZE
+                  INTO SEARCH-STRING
+           END-IF.
+           EXEC SQL   PREPARE S1 FROM :SEARCH-STRING
+           END-EXEC.
+           IF SQLCODE < 0
+              MOVE "PREPARE" TO SQL-FUNCTION
+              PERFORM 20-BLOWUP.
+
+      *------DECLARE SQL CURSOR
+           EXEC SQL   DECLARE C1 CURSOR FOR S1
+           END-EXEC.
+           IF SQLCODE < 0
+              MOVE "DECLARE CURSOR" TO SQL-FUNCTION
+              PERFORM 20-BLOWUP.
+           EXEC SQL   OPEN C1 USING :SEARCH-VALUE  END-EXEC.
+           IF SQLCODE < 0
+              MOVE "OPEN CURSOR" TO SQL-FUNCTION
+              PERFORM 20-BLOWUP.
+
+      *---------GET FIRST CODE BY FETCHING CURSOR
+           EXEC SQL   FETCH C1 INTO :MCRPCS1400.CORPCDE
+           END-EXEC.
+           IF SQLCODE < 0
+              MOVE "FIRST FETCH" TO SQL-FUNCTION
+              PERFORM 20-BLOWUP.
+
+      *---------FETCH REST OF CODES UNTIL END
+           MOVE 0 TO CODES-RETRIEVED
+                     RELATIVE-RECNO.
+           PERFORM UNTIL SQLCODE NOT EQUAL ZERO
+DP0003       OR CODES-RETRIEVED IS EQUAL TO 9998
+               ADD 1 TO CODES-RETRIEVED
+      *        DISPLAY CORPCDE OF MCRPCS1400
+      *----------GET KWRD/MOD AND 1ST LINE OF DESCRIPTION FOR CODE
+               PERFORM 621-GET-CODE THRU 621-EXIT
+      *----------WRITE TO SUBFILE
+               MOVE SPACES TO SEL
+               ADD 1 TO RELATIVE-RECNO
+               WRITE SUBFILE DISPLAY-REC FROM SFL-RECORD
+                  FORMAT IS "PARMSF"
+                  INDICATORS SRF-INDICATORS
+               END-WRITE
+               IF DISPLAY-STATUS NOT = "00"
+                   MOVE "ERROR WRITING SFL RECORD" TO BU-DISPLAY-MSG
+                   MOVE DISPLAY-STATUS TO FILE-STATUS
+DP0003             MOVE CODES-RETRIEVED TO BU-DISPLAY-FLD9 (1)
+DP0003             MOVE RELATIVE-RECNO  TO BU-DISPLAY-FLD9 (2)
+                   PERFORM 2100-BLOWUP
+               END-IF
+
+      *----------GET NEXT CODE
+               EXEC SQL   FETCH C1 INTO :MCRPCS1400.CORPCDE
+               END-EXEC
+               IF SQLCODE < 0
+                  MOVE "FETCH" TO SQL-FUNCTION
+                  PERFORM 20-BLOWUP
+               END-IF
+           END-PERFORM.
+
+      *-------CLOSE CURSOR
+           EXEC SQL   CLOSE C1   END-EXEC.
+       62-EXIT.
+           EXIT.
+
+       621-GET-CODE.
+           MOVE 2                        TO   CDESC-LINES-TO-GET.
+           MOVE LANG-FLAG                TO   CDESC-LANGUAGE-OPTION.
+
+           MOVE "D"                      TO   CDESC-DESC-OPTION.
+           MOVE "N"                      TO   CDESC-LOCAL-DESC-OPTION.
+           MOVE CORPCDE OF MCRPCS1400    TO   V-CODE
+                                              CODE-ARG.
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+             BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               MOVE CDESC-RET-CODE TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+           MOVE CDESC (1) TO   V-KWM.
+           MOVE CDESC (2) TO   V-DESC.
+       621-EXIT.
+           EXIT.
+
+       622-CLEAR-SUBFILE.
+           MOVE B"1" TO IND(71)
+                        IND(72)
+                        IND(73).
+           WRITE SUBFILE DISPLAY-REC FROM SUBFILE-RECORD
+              FORMAT IS "PARMSFC"
+              INDICATORS ARE SRF-INDICATORS.
+           MOVE B"0" TO IND(72).
+       622-EXIT.
+           EXIT.
+
+       63-PROCESS-SUBFILE.
+           WRITE DISPLAY-REC FROM BUF-LINES
+             FORMAT IS "PARMFUNC"
+             INDICATORS ARE SRF-INDICATORS.
+           MOVE SEARCH-CRITERIA TO SFC-SEARCH.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           MOVE B"1" TO IND(70)
+                        IND(71)
+                        IND(73).
+
+DP9806*------ 08JUN1998 ADDED LOGIC TO INSURE THAT THE SUBFILE
+DP9806*------  RECORD NUMBER IS NOT LESS THAN 1.
+DP9806     IF SFC-RCDNBR < 1
+DP9806         MOVE 1 TO SFC-RCDNBR.
+
+           WRITE SUBFILE DISPLAY-REC FROM SUBFILE-RECORD
+              FORMAT IS "PARMSFC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "ERROR ON SHOW SFL WRITE" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           MOVE B"1" TO IND(70)
+                        IND(71)
+                        IND(73).
+           READ DISPLAY-FILE
+              FORMAT IS "PARMSFC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "ERROR ON SFL READ" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+           IF FUNCTION-NUM = "03"
+              GO TO 63-EXIT.
+
+           READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+              FORMAT "PARMSF"
+              INDICATORS ARE SRF-INDICATORS
+DP9806        AT END
+DP9806            MOVE 1 TO SFC-RCDNBR
+DP9806            GO TO 63-PROCESS-SUBFILE.
+
+           IF DISPLAY-STATUS = "12"
+              COMPUTE SFC-RCDNBR =
+                 RELATIVE-RECNO / (NUM-CODES-PER-SCREEN + 1)
+              COMPUTE SFC-RCDNBR =
+                 SFC-RCDNBR * NUM-CODES-PER-SCREEN
+              DIVIDE NUM-CODES-PER-SCREEN INTO SFC-RCDNBR
+                 GIVING DIVIDEND REMAINDER REMAIN
+              IF REMAIN = 0
+                 ADD 10 TO SFC-RCDNBR
+              ELSE
+                 ADD 1 TO SFC-RCDNBR
+              END-IF
+              GO TO 63-PROCESS-SUBFILE.
+           MOVE DISPLAY-REC TO SFL-RECORD.
+           IF SEL NOT = SPACES
+              MOVE SPACES TO SEL
+              MOVE SFL-RECORD TO DISPLAY-REC
+              REWRITE SUBFILE DISPLAY-REC
+                FORMAT IS "PARMSF"
+                INDICATORS ARE SRF-INDICATORS
+              END-REWRITE
+              MOVE V-CODE TO TMTLSTAT-CODE
+              CALL "TMTLSTAT" USING BASE
+                                    VIEW-COMAREA
+                                    TMTLSTAT-COMPANY
+                                    PASSED-SPOOL-PRT
+                                    TMTLSTAT-CODE
+                                    LANGUAGE-PARMS
+              DIVIDE NUM-CODES-PER-SCREEN INTO RELATIVE-RECNO
+                 GIVING DIVIDEND REMAINDER REMAIN
+              IF REMAIN > 0
+                  COMPUTE SFC-RCDNBR =
+                    NUM-CODES-PER-SCREEN * DIVIDEND + 1
+              ELSE
+                  COMPUTE SFC-RCDNBR =
+                    NUM-CODES-PER-SCREEN * DIVIDEND
+                     - (NUM-CODES-PER-SCREEN - 1)
+              END-IF
+              GO TO 63-PROCESS-SUBFILE.
+
+       63-EXIT.
+           EXIT.
+
+
+      ***************************************************************
+      * PARAGRAPH : 20-BLOWUP                                       *
+      * PURPOSE   : TO ABORT THE PROGRAM AND DISPLAY ERROR MESSAGE  *
+      ***************************************************************
+       20-BLOWUP.
+           MOVE SQLCODE TO CODE-EDIT.
+           DISPLAY "PROGRAM = TPARMINQ".
+           DISPLAY "AN SQL ERROR HAS OCCURRED SQLCODE = "
+                   CODE-EDIT ":" SQL-FUNCTION.
+           DISPLAY SQLERRMC.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE V-CODE TO BU-DISPLAY-FLD(1).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-AREA.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO DE-MESSAGE.
+       999-CATREAD-EXIT.
+           EXIT.

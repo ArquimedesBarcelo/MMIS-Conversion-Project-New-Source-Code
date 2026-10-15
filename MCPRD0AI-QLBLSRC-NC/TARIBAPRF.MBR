@@ -1,0 +1,614 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     TARIBAPRF.
+       AUTHOR.         EXLTECH, LLC - DAN RAUCH
+
+      *****************************************************************
+      **                    T A R I B A P R F                        **
+      *****************************************************************
+      **              SET VENDOR PREFERENCE FLAG
+      **          ---------------------------------
+      **   READ CATALOG FILE BY CORPCODE\PRICE - 1ST RECORD IN EACH
+      **   CORPCODE GROUP = LOWEST PRICE - SET PREF FLAG = "Y"
+      ***************************************************************
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      ***------------------------------------------------------------***
+      *   SEPT  15 2003      DAN RAUCH
+      *   INITIAL AUTHOR   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      *   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      ***------------------------------------------------------------***
+                                                                       *
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *================================================================
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT CATALOG-FILE-1     ASSIGN TO DATABASE-MCFLAB2005
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT CATALOG-FILE-2     ASSIGN TO DATABASE-MCFLAB2003
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  WITH DUPLICATES.
+
+           SELECT STOREROOM-FILE     ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS WS-FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY.
+
+           SELECT REPORT-FILE     ASSIGN TO FORMATFILE-XARIBAPRF.
+      *============================================================    ====
+       DATA DIVISION.
+      *============================================================    ====
+       FILE SECTION.
+
+       FD  CATALOG-FILE-1.
+       01  CATALOG-REC-1.
+       COPY DDS-ALL-FORMATS OF MCFLAB2005.
+
+       FD  CATALOG-FILE-2.
+       01  CATALOG-REC-2.
+       COPY DDS-ALL-FORMATS OF MCFLAB2003.
+
+       FD  STOREROOM-FILE.
+       01  STOREROOM-REC.
+       COPY DDS-ALL-FORMATS OF MCFLCS0201.
+       COPY MSTORERM    IN COPYLIB.
+
+       FD  REPORT-FILE.
+       01  REPORT-REC.
+       COPY DDS-ALL-FORMATS OF XARIBAPRF.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      * FILE STATUS AREA
+      *****************************************************************
+       COPY FILESTATUS  IN COPYLIB.
+       COPY DTSPARMS2   IN COPYLIB.
+       COPY ZMPLTWS     IN COPYLIB.
+
+       01  WS-PROGRAM-NAME       PIC  X(10)         VALUE "TARIBAPRF".
+
+       01  WS-PRINT-LINE-FLDS.
+
+           03  WS-HDG00-FLDS.
+               05  HDRDAT            PIC X(10)          VALUE SPACE.
+               05  HDPLNT            PIC X(20)          VALUE SPACE.
+               05  HDRTIM            PIC X(08)          VALUE SPACE.
+               05  HDPAGE            PIC 9(05)          VALUE ZERO.
+               05  HDPROG            PIC X(10)          VALUE SPACE.
+
+            03  WS-DTL00-FLDS.
+                05  DLCC              PIC X(08)          VALUE SPACE.
+                05  DLNAME            PIC X(30)          VALUE SPACE.
+                05  DLPART            PIC X(20)          VALUE SPACE.
+                05  DLMSG             PIC X(50)          VALUE SPACE.
+
+      *************************************************************    ****
+      *  JUST WORK FIELDS
+      *************************************************************    ****
+       01  WS-MISCELLANEOUS-FIELDS.
+
+           03  WS-PRINT-HEADINGS-SW   PIC X         VALUE  SPACE.
+               88  PRINT-HEADINGS-NO                VALUE  "N".
+               88  PRINT-HEADINGS-YES               VALUE  "Y".
+
+           03  WS-PREV-CORPCODE   PIC X(08)         VALUE SPACE.
+           03  WS-SAVE-CATREC     PIC X(400)        VALUE SPACE.
+
+           03  WS-VEN-PRICE       PIC S9(11)V9999 COMP-3 VALUE +0.
+           03  WS-NEW-PRICE       PIC S9(11)V9999 COMP-3 VALUE +0.
+           03  WS-BAD-PRICE       PIC S9(11)V9999 COMP-3 VALUE +0.
+
+           03  WS-RUN-DATE.
+               05  WS-RUN-MM     PIC XX             VALUE SPACE.
+               05  FILLER        PIC X              VALUE "-".
+               05  WS-RUN-DD     PIC XX             VALUE SPACE.
+               05  FILLER        PIC X              VALUE "-".
+               05  WS-RUN-CC     PIC XX             VALUE SPACE.
+               05  WS-RUN-YY     PIC XX             VALUE SPACE.
+
+           03  WS-RUN-TIME.
+               05  WS-RUN-HH     PIC XX             VALUE SPACE.
+               05  FILLER        PIC X              VALUE ":".
+               05  WS-RUN-MN     PIC XX             VALUE SPACE.
+               05  FILLER        PIC X              VALUE ":".
+               05  WS-RUN-SS     PIC XX             VALUE SPACE.
+
+           03  WS-PLTNUM-KEY.
+               05  FILLER        PIC X(4)           VALUE "P 01".
+
+           03  WS-PLTNAME-KEY.
+               05  FILLER        PIC X              VALUE "Z".
+               05  WS-PLTNUM     PIC X(3)           VALUE SPACE.
+
+           03  WS-ERR-CNT        PIC  9(07)         VALUE ZERO.
+           03  WS-ERR-MSSG       PIC  X(50)         VALUE SPACE.
+           03  WS-PLANT-NAME     PIC  X(30)         VALUE SPACE.
+           03  WS-PAGE-NBR       PIC  9(05)         VALUE ZERO.
+           03  WS-CURR-KEY        PIC X(04)       VALUE "CCHM".
+           03  WS-SAVE-CORPCODE   PIC X(08)       VALUE HIGH-VALUES.
+           03  WS-HOME-CURR-CODE  PIC X(02)       VALUE SPACE.
+
+
+           03  WS-PRC-ERR-MSG     PIC X(50)       VALUE
+               "UoM/PRICE CNV ERROR -  NEW PRICE SET = ALL 9'S".
+
+           03  WS-STR-ERR-MSG     PIC X(50)       VALUE
+               "ITEM NFND IN STORERM - NEW PRICE SET = ALL 9'S".
+
+           03  WS-CUR-ERR-MSG     PIC X(50)       VALUE
+               "CURRENCY CNV ERROR - NEW PRICE SET = ALL 9'S".
+
+
+      * FIELDS TO CALL CURRENCY CONV PGM
+       01  BASE                          PIC X(10).
+       COPY SCURCONV   IN COPYLIB.
+       COPY DBSTAT     IN COPYLIB.
+       01  BU-DISPLAY-MSG.
+           05  BU-DISPLAY-MSG-1         PIC X(1).
+           05  FILLER                   PIC X(59).
+
+       01  BU-DISPLAY-FLDS.
+           05  BU-DISPLAY-LINE  OCCURS 5 TIMES.
+               10  BU-DISPLAY-FLD       PIC X(14).
+               10  BU-DISPLAY-FLD9      PIC S9(8).
+
+       COPY DARIBACAT   IN COPYLIB.
+      *=============================================================== ==
+      *===        P R O C E D U R E    D I V I S I O N              == =
+      *=============================================================== =
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           OPEN     I-O   CATALOG-FILE-1
+                  INPUT   STOREROOM-FILE
+                 OUTPUT   REPORT-FILE.
+
+           PERFORM 0010-INITIALIZE   THRU 0010-EXIT.
+
+           CLOSE          CATALOG-FILE-1
+                          STOREROOM-FILE.
+                          REPORT-FILE.
+
+
+      *--------------------------------------------------------------- =
+      *=MCFLAB2003 - LF ==> CATALOG FILE BY CORPCODE\CNVPRICE          =
+      *--------------------------------------------------------------- =
+           OPEN   I-O     CATALOG-FILE-2.
+           PERFORM 9000-START-CATALOG-2  THRU 9000-START2-EXIT.
+           PERFORM 9000-READN-CATALOG-2  THRU 9000-READN2-EXIT.
+
+           PERFORM 1000-MAIN-LOGIC   THRU 1000-EXIT
+                        UNTIL FS-END-OF-FILE.
+
+           CLOSE          CATALOG-FILE-2.
+
+         0000-PROGRAM-END.
+             GOBACK.
+
+      ***************************************************************  *
+      * PROGRAM INIT ROUTINE
+      ***************************************************************  *
+       0010-INITIALIZE.
+
+           MOVE 99999999999.9999   TO WS-BAD-PRICE.
+
+      ** GET THE HOME CURRENCY CODE
+           MOVE WS-CURR-KEY        TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-FILE-STATUS  TO WS-FILE-STATUS.
+           IF  FS-GOOD-FILE-IO
+               MOVE WS-ZMPLT-PLTINFODTA(1:2) TO WS-HOME-CURR-CODE
+           END-IF.
+
+           SET  PRINT-HEADINGS-YES  TO TRUE.
+
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+           MOVE WS-SYSTEM-DATE2-MON   TO  WS-RUN-MM.
+      ** EDIT THE LEADING ZERO
+           IF   WS-RUN-MM(1:1) = "0"
+                MOVE SPACE            TO  WS-RUN-MM(1:1)
+           END-IF.
+           MOVE WS-SYSTEM-DATE2-DAY   TO  WS-RUN-DD.
+           MOVE WS-SYSTEM-DATE2-CEN   TO  WS-RUN-CC.
+           MOVE WS-SYSTEM-DATE2-YEAR  TO  WS-RUN-YY.
+
+           MOVE WS-SYSTEM-TIME2-HRS   TO  WS-RUN-HH.
+           MOVE WS-SYSTEM-TIME2-MIN   TO  WS-RUN-MN.
+           MOVE WS-SYSTEM-TIME2-SEC   TO  WS-RUN-SS.
+      ** EDIT THE LEADING ZERO
+           IF   WS-RUN-HH(1:1) = "0"
+                MOVE SPACE            TO  WS-RUN-HH(1:1)
+           END-IF.
+
+      ** GET THE PLANT NBR
+           MOVE WS-PLTNUM-KEY      TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-PLTINFODTA(1:3)  TO WS-PLTNUM.
+
+      ** CONCATENATE PLT NBR WITH "Z" TO BUILD PLANT NAME KEY FOR HDG
+           MOVE WS-PLTNAME-KEY     TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO  THRU ZMPLT-EXIT.
+           MOVE WS-ZMPLT-PLTINFODTA(1:30)  TO WS-PLANT-NAME.
+
+           PERFORM 9000-START-CATALOG-1  THRU 9000-START1-EXIT.
+           PERFORM 9000-READN-CATALOG-1  THRU 9000-READN1-EXIT.
+
+      *================================================================
+      * 1ST RESET ALL PREF FLAGS TO BLANKS
+      *     RESET ALL OVRD FLAGS TO BLANKS
+      *     RESET ALL REASON CDE TO BLANKS
+      *     RECALC NEW PRICE IN STORERM UOM
+      *================================================================
+           PERFORM UNTIL FS-END-OF-FILE
+
+               MOVE SPACE        TO ARIBACAT-PREF-FLAG
+               MOVE SPACE        TO ARIBACAT-REASON-CODE
+               MOVE SPACE        TO ARIBACAT-OVRD-FLAG
+               MOVE ZERO         TO WS-NEW-PRICE
+               COMPUTE WS-VEN-PRICE = (ARIBACAT-VENDOR-PRICE)
+               PERFORM 2000-RECALC-STOREROOM THRU 2000-EXIT
+               COMPUTE ARIBACAT-CONVER-PRICE = WS-NEW-PRICE
+               PERFORM 9000-REWRT-CATALOG-1  THRU 9000-REWRT1-EXIT
+               PERFORM 9000-READN-CATALOG-1  THRU 9000-READN1-EXIT
+
+           END-PERFORM.
+
+           IF   WS-ERR-CNT = ZERO
+                PERFORM 6999-PRINT-HEADINGS   THRU 6999-EXIT
+                WRITE REPORT-REC FORMAT "NOERRS"
+      ********  INDICATORS ARE WS-ALL-INDICATORS
+                      AT EOP
+                      SET PRINT-HEADINGS-YES  TO TRUE
+                END-WRITE
+           END-IF.
+
+           WRITE REPORT-REC FORMAT "EOR"
+      ********   INDICATORS ARE WS-ALL-INDICATORS
+                 AT EOP
+                 SET PRINT-HEADINGS-YES  TO TRUE
+           END-WRITE.
+
+       0010-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * MAIN LOGIC  --  SET THE PREFERENCE FLAG
+      ***************************************************************  **
+       1000-MAIN-LOGIC.
+
+           IF  ARIBACAT-CORP-CODE  NOT = WS-SAVE-CORPCODE
+               MOVE ARIBACAT-CORP-CODE   TO WS-SAVE-CORPCODE
+               MOVE "Y"          TO ARIBACAT-PREF-FLAG
+               PERFORM 9000-REWRT-CATALOG-2    THRU 9000-REWRT2-EXIT
+           END-IF.
+
+           PERFORM 9000-READN-CATALOG-2    THRU 9000-READN2-EXIT.
+
+       1000-EXIT.
+           EXIT.
+
+      ***************************************************************  *
+      * RECALC UM CURRENCY
+      ***************************************************************  *
+       2000-RECALC-STOREROOM.
+
+      **===============================================================
+      * USE CORPCODE TO RETRIEVE STOREROOM REC
+      **===============================================================
+           PERFORM 9001-READK-STOREROOM  THRU 9001-READK-EXIT.
+           IF  FS-RECORD-NOT-FOUND
+               PERFORM 2999-CALC-BAD-PRICE   THRU 2999-EXIT
+               MOVE WS-STR-ERR-MSG       TO WS-ERR-MSSG
+               PERFORM 6000-PRINT-ERROR-RPT  THRU 6000-EXIT
+               GO TO 2000-EXIT
+           END-IF.
+
+
+
+      **===============================================================
+      * UOM CONVERSION - Re-Calc New Price
+      **===============================================================
+           EVALUATE TRUE
+
+
+           WHEN  ARIBACAT-VENDOR-UM  = STR-UM
+                 PERFORM 2010-CONVERT-UM0  THRU 2010-EXIT
+
+           WHEN  ARIBACAT-VENDOR-UM  = STR-UM1
+                 PERFORM 2011-CONVERT-UM1  THRU 2011-EXIT
+
+           WHEN  ARIBACAT-VENDOR-UM  = STR-UM2
+                 PERFORM 2012-CONVERT-UM2  THRU 2012-EXIT
+
+           END-EVALUATE.
+
+
+      **===============================================================
+      * If NEW PRICE Re-Calcs to Zero
+      *    THEN  Print UoM/Price Cnv Error Msg
+      **===============================================================
+           IF  WS-NEW-PRICE  =  ZERO
+               PERFORM 2999-CALC-BAD-PRICE   THRU 2999-EXIT
+               MOVE WS-PRC-ERR-MSG       TO WS-ERR-MSSG
+               PERFORM 6000-PRINT-ERROR-RPT  THRU 6000-EXIT
+               GO TO 2000-EXIT
+           END-IF.
+
+
+      **===============================================================
+      * If Input CurrencyCode NOT = HomeCurrency Code
+      *    THEN convert Price to Input CurrencyCode
+      **===============================================================
+           IF  ARIBACAT-CURR-CODE  NOT = WS-HOME-CURR-CODE
+               PERFORM 2100-CONVERT-CURRENCY   THRU 2100-EXIT
+               IF  BU-DISPLAY-MSG-1 NOT = SPACES
+                   GO TO 2000-EXIT
+               END-IF
+           END-IF.
+
+       2000-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * CONVERT STR UOM0
+      ***************************************************************  **
+       2010-CONVERT-UM0.
+
+           COMPUTE WS-NEW-PRICE = (ARIBACAT-VENDOR-PRICE).
+
+       2010-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT STR UOM1
+      ***************************************************************  **
+       2011-CONVERT-UM1.
+
+           IF  STR-UM1-CF > ZERO
+               COMPUTE WS-NEW-PRICE = (WS-VEN-PRICE / STR-UM1-CF)
+           END-IF.
+
+       2011-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT STR UOM2
+      ***************************************************************  **
+       2012-CONVERT-UM2.
+
+           IF  STR-UM2-CF > ZERO
+               COMPUTE WS-NEW-PRICE = (WS-VEN-PRICE / STR-UM2-CF)
+           END-IF.
+
+       2012-EXIT.
+            EXIT.
+
+      ***************************************************************  **
+      * CONVERT TO HOME CURRENCY
+      ***************************************************************  **
+       2100-CONVERT-CURRENCY.
+
+           MOVE ARIBACAT-CURR-CODE   TO  SCURCONV-CUR-CODE.
+           MOVE WS-NEW-PRICE         TO  SCURCONV-PRICE-DEC.
+           MOVE ZERO                 TO  SCURCONV-PRICE-WHL
+           MOVE "Y"                  TO  SCURCONV-OVERRIDE-CONV-SW
+
+           CALL "SCURCONV" USING BASE  SCURCONV-PARMS  STATUS-AREA
+                 BU-DISPLAY-MSG  BU-DISPLAY-FLDS.
+
+           IF BU-DISPLAY-MSG-1 = SPACES
+              MOVE SCURCONV-PRICE-DEC TO WS-NEW-PRICE
+           ELSE
+              PERFORM 2999-CALC-BAD-PRICE   THRU 2999-EXIT
+              MOVE WS-CUR-ERR-MSG     TO WS-ERR-MSSG
+              PERFORM 6000-PRINT-ERROR-RPT  THRU 6000-EXIT
+           END-IF.
+
+       2100-EXIT.
+           EXIT.
+
+      ***************************************************************  **
+      * SET NEW PRICE = ALL 9'S
+      ***************************************************************  **
+       2999-CALC-BAD-PRICE.
+
+           COMPUTE WS-NEW-PRICE = (WS-BAD-PRICE).
+
+       2999-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  PRINT REPORT DATA
+      *****************************************************************
+       6000-PRINT-ERROR-RPT.
+
+           IF  PRINT-HEADINGS-YES
+               PERFORM 6999-PRINT-HEADINGS   THRU 6999-EXIT
+           END-IF.
+
+           MOVE ARIBACAT-CORP-CODE       TO DLCC    OF  WS-DTL00-FLDS.
+           MOVE ARIBACAT-MANUFACT-NAME   TO DLNAME  OF  WS-DTL00-FLDS.
+           MOVE ARIBACAT-MANUFACT-PARTNO TO DLPART  OF  WS-DTL00-FLDS.
+           MOVE WS-ERR-MSSG              TO DLMSG   OF  WS-DTL00-FLDS.
+
+           ADD  1    TO WS-ERR-CNT.
+           MOVE CORR WS-DTL00-FLDS   TO  DETAIL1-O.
+
+           WRITE REPORT-REC FORMAT "DETAIL1"
+      ********   INDICATORS ARE WS-ALL-INDICATORS
+                 AT EOP
+                 SET PRINT-HEADINGS-YES  TO TRUE
+           END-WRITE.
+
+       6000-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ** PRINT REPORT HEADINGS
+      *****************************************************************
+       6999-PRINT-HEADINGS.
+
+           INITIALIZE  WS-HDG00-FLDS.
+
+           ADD  1    TO WS-PAGE-NBR.
+           MOVE WS-PAGE-NBR      TO HDPAGE   OF WS-HDG00-FLDS
+           MOVE WS-RUN-DATE      TO HDRDAT   OF WS-HDG00-FLDS.
+           MOVE WS-RUN-TIME      TO HDRTIM   OF WS-HDG00-FLDS.
+           MOVE WS-PLANT-NAME    TO HDPLNT   OF WS-HDG00-FLDS.
+           MOVE WS-PROGRAM-NAME  TO HDPROG   OF WS-HDG00-FLDS.
+
+           MOVE CORR WS-HDG00-FLDS  TO HEAD01-O.
+           WRITE REPORT-REC FORMAT "HEAD01"
+      ********   INDICATORS ARE WS-ALL-INDICATORS
+           END-WRITE.
+
+           MOVE CORR WS-HDG00-FLDS  TO HEAD02-O.
+           WRITE REPORT-REC FORMAT "HEAD02"
+      ********   INDICATORS ARE WS-ALL-INDICATORS
+           END-WRITE.
+
+           WRITE REPORT-REC FORMAT "HEAD03"
+      ********   INDICATORS ARE WS-ALL-INDICATORS
+           END-WRITE.
+
+           SET  PRINT-HEADINGS-NO   TO TRUE.
+
+       6999-EXIT.
+           EXIT.
+
+       COPY ZMPLTSUBR  IN COPYLIB.
+
+
+      *----------------------------------------------------------------
+      *
+      *          ALL DATABASE FILE I-O'S BELOW THIS POINT
+      *
+      *----------------------------------------------------------------
+
+      *****************************************************************
+      **  START CATALOG FILE  BY LONG KEY (UNIQUE)
+      *****************************************************************
+       9000-START-CATALOG-1.
+
+           INITIALIZE BUF-DARIBCAT.
+           MOVE  BUF-DARIBCAT         TO CATALOG-REC-1.
+
+           START CATALOG-FILE-1
+                 KEY IS NOT < EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9000-START1-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  START CATALOG FILE  BY CORPCODE\PRICE
+      *****************************************************************
+       9000-START-CATALOG-2.
+
+           INITIALIZE BUF-DARIBCAT.
+
+           MOVE  LOW-VALUES           TO ARIBACAT-CORP-CODE.
+           MOVE  ZERO                 TO ARIBACAT-VENDOR-PRICE.
+
+           MOVE  BUF-DARIBCAT         TO CATALOG-REC-2.
+
+           START CATALOG-FILE-2
+                 KEY IS NOT < EXTERNALLY-DESCRIBED-KEY
+           END-START.
+
+       9000-START2-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ CATALOG FILE OUT NEXT RECORD
+      *****************************************************************
+       9000-READN-CATALOG-1.
+
+           READ CATALOG-FILE-1  NEXT RECORD INTO BUF-DARIBCAT
+           END-READ.
+
+           IF FS-END-OF-FILE
+              GO TO 9000-READN1-EXIT
+           END-IF.
+
+       9000-READN1-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ CATALOG FILE OUT NEXT RECORD
+      *****************************************************************
+       9000-READN-CATALOG-2.
+
+           READ CATALOG-FILE-2  NEXT RECORD INTO BUF-DARIBCAT
+           END-READ.
+
+       9000-READN2-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  REWRITE CATALOG FILE 1
+      *****************************************************************
+       9000-REWRT-CATALOG-1.
+
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+           MOVE WS-SYSTEM-DATE-TIME2  TO  ARIBACAT-DATE-TIME-STMP.
+
+           REWRITE  CATALOG-REC-1 FROM BUF-DARIBCAT
+           END-REWRITE.
+
+       9000-REWRT1-EXIT.
+           EXIT.
+
+      *****************************************************************
+      ***  REWRITE CATALOG FILE 2
+      *****************************************************************
+       9000-REWRT-CATALOG-2.
+
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+           MOVE WS-SYSTEM-DATE-TIME2  TO  ARIBACAT-DATE-TIME-STMP.
+
+           REWRITE  CATALOG-REC-2  FROM BUF-DARIBCAT
+           END-REWRITE.
+
+       9000-REWRT2-EXIT.
+           EXIT.
+
+      *****************************************************************
+      **  READ STOREROOM BY CORPCDE
+      *****************************************************************
+       9001-READK-STOREROOM.
+
+           INITIALIZE STOREROOM-REC.
+
+           MOVE  ARIBACAT-CORP-CODE TO CORP-CODE.
+
+           READ STOREROOM-FILE
+           END-READ.
+
+       9001-READK-EXIT.
+           EXIT.
+
+      **************************************************************   ***
+      *            E N D   O F   S O U R C E   C O D E
+      **************************************************************   ***

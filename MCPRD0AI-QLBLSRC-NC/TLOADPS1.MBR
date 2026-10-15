@@ -1,0 +1,524 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TLOADPS1.
+       AUTHOR.              CA YODER.
+       DATE-WRITTEN.        MAY 2000.
+       DATE-COMPILED.
+       INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+
+      *D*************************************************************
+      *D  THIS PROGRAM LOADS ENTRIES INTO THE PS1 (DSHIPREL) FILE   *
+      *D  FROM A FILE PROVIDED BY FASTENAL FOR LAWTON.              *
+      *D*************************************************************
+      *C
+      *C  CHANGES:
+      *C
+      *C  08/01/2002    CA YODER     LAWTON REQUEST
+      *C  ADDED LOGIC TO ACCEPT AN OVERRIDE TO THE PO NUMBER IF THE
+      *C  97000 OR 97000B SERIES IS NOT TO BE USED.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  AS400.
+       OBJECT-COMPUTER.  AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT REC-INPUT
+               ASSIGN        TO DATABASE-PS1FILE
+               FILE STATUS   IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+               ASSIGN        TO DATABASE-MCFLCS1003
+               ORGANIZATION  IS INDEXED
+               ACCESS MODE   IS DYNAMIC
+               RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS   IS FILE-STATUS.
+
+           SELECT DPODATAITM-I
+               ASSIGN        TO DATABASE-MCFLCS1101
+               ORGANIZATION  IS INDEXED
+               ACCESS MODE   IS DYNAMIC
+               RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS   IS FILE-STATUS.
+
+           SELECT DSHIPREL-O
+               ASSIGN        TO DATABASE-MCFLCS2901
+               ORGANIZATION  IS INDEXED
+               ACCESS MODE   IS DYNAMIC
+               RECORD KEY    IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS   IS FILE-STATUS.
+
+           SELECT REPORT-O
+               ASSIGN TO DISK-PS1ERRFL.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  REC-INPUT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS DATA-RECORD.
+       01  DATA-RECORD.
+           05  IN-CODE          PIC X(7).
+           05  FILLER           PIC X(9).
+           05  IN-DESC          PIC X(24).
+           05  IN-QTY           PIC X(8).
+           05  FILLER           PIC X(84).
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1003.
+
+       FD  DPODATAITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+       FD  DSHIPREL-O
+           LABEL RECORDS ARE STANDARD.
+       01  DSHIPREL-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2901.
+
+       FD  REPORT-O
+           DATA RECORD IS REPORT-REC
+           RECORD CONTAINS 133 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  REPORT-REC.
+           05  RPT-CTL          PIC X.
+           05  RPT-LINE         PIC X(132).
+
+       WORKING-STORAGE SECTION.
+
+       77  REC-INPUT-EOF-SW     PIC X      VALUE "N".
+       77  CODE-FOUND-SW        PIC X      VALUE "N".
+       77  SUB                  PIC 9(2)   VALUE 0.
+       77  PAGE-COUNT           PIC 9(3)   VALUE 0.
+       77  LINE-COUNT           PIC 9(2)   VALUE 61.
+       77  ERR-SW               PIC X      VALUE "N".
+       77  RECS-PROCESSED       PIC X      VALUE "N".
+
+       01  SCOPE                PIC X.
+
+      *--------- FIELD FOR OVERRIDE PO.
+       01  BUILD-PO.
+           05  FILLER           PIC X      VALUE "P".
+           05  BUILD-PO-NUM     PIC X(7).
+           05  FILLER           PIC X(6)   VALUE "999000".
+
+      *--------- PURCHASE ORDERS TO SEARCH FOR ITEMS IN QUOTE FILE.
+       01  REQMT-ORD-DATA.
+           05  FILLER           PIC X(14)  VALUE "P97000  999000".
+           05  FILLER           PIC X(14)  VALUE "P97000A 999000".
+
+       01  REQMT-ORD-TABLE  REDEFINES  REQMT-ORD-DATA.
+           05  REQMT-ORD                   OCCURS 2 TIMES.
+               10  FILLER       PIC X.
+               10  ORD-NUM      PIC X(7).
+               10  FILLER       PIC X(6).
+
+      *--------- NUMBER OF PURCHASE ORDERS THERE ARE TO SEARCH (SAME
+      *--------- AS OCCURS CLAUSE ABOVE).
+       01  NUM-POS              PIC 9(2)   VALUE 2.
+
+       01  NUM-QTY              PIC X(8).
+       01  NUM-QTY-R   REDEFINES   NUM-QTY
+                                PIC 9(8).
+
+       01  CUR-DATE.
+           05  CUR-DATE-CC      PIC X(2)   VALUE "20".
+           05  CUR-DATE-YMD     PIC X(6).
+
+       01  CURRENT-TIME                    VALUE SPACES.
+           05  CURRENT-HR            PIC X(2).
+           05  CURRENT-MIN           PIC X(2).
+           05  CURRENT-SEC           PIC X(2).
+
+      ******************************************************************
+      **         S U B P R O G R A M   A R E A S                      **
+      ******************************************************************
+
+       COPY DATAB      IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY TRSHIFT    IN COPYLIB.
+
+      *--------- PARAMETERS FOR "JULGREG" ROUTINE.
+       01  JULGREG-PARMS.
+           05  GREG-DATE.
+               10  GREG-CC          PIC X(2).
+               10  GREG-YMD.
+                   15  GREG-YY      PIC X(2).
+                   15  GREG-MM      PIC X(2).
+                   15  GREG-DD      PIC X(2).
+           05  JULIAN-DATE.
+               10  JUL-CC           PIC X(2).
+               10  JUL-YY           PIC X(2).
+               10  JUL-DDD          PIC X(3).
+           05  JULIAN-DATE-9  REDEFINES  JULIAN-DATE.
+               10  JUL-YEAR-9       PIC 9(4).
+               10  JUL-DDD-9        PIC 9(3).
+           05  DAY-DIGIT            PIC X.
+           05  LEAP-YEAR-FLAG       PIC X.
+
+      ******************************************************************
+      **         R E P O R T   L I N E S                              **
+      ******************************************************************
+
+       01  PRT-HDG-1.
+           05                    PIC X(6).
+           05  PRT-HDG-DATE      PIC X(8).
+           05                    PIC X(26).
+           05                    PIC X(27)
+            VALUE "P S 1   B A T C H   F I L E".
+           05                    PIC X(26)
+            VALUE "   E R R O R   R E P O R T".
+           05                    PIC X(26).
+           05                    PIC X(8)    VALUE "TLOADPS1".
+           05                    PIC X(6).
+
+       01  PRT-HDG-2.
+           05                    PIC X(6).
+           05  PRT-HDG-2-HR      PIC X(2).
+           05                    PIC X(1)    VALUE ":".
+           05  PRT-HDG-2-MIN     PIC X(2).
+           05                    PIC X(1)    VALUE ":".
+           05  PRT-HDG-2-SEC     PIC X(2).
+           05                    PIC X(43).
+           05  PRT-OVR-PO        PIC X(19).
+           05                    PIC X(43).
+           05                    PIC X(6)    VALUE "PAGE: ".
+           05  PRT-HDG-2-PG      PIC Z9.
+           05                    PIC X(6).
+
+       01  PRT-HDG-3.
+           05                    PIC X(6).
+           05  DASH-LINE         PIC X(121)  VALUE ALL "-".
+           05                    PIC X(6).
+
+       01  PRT-HDG-4.
+           05                    PIC X(6).
+           05                    PIC X(7)    VALUE "CODE   ".
+           05                    PIC X(6).
+           05                    PIC X(11)   VALUE "DESCRIPTION".
+           05                    PIC X(19).
+           05                    PIC X(8)    VALUE "QTY     ".
+           05                    PIC X(4).
+           05                    PIC X(13)   VALUE "ERROR MESSAGE".
+           05                    PIC X(59).
+
+       01  PRT-DTL-1.
+           05                    PIC X(6).
+           05  PRT-DTL-CODE      PIC X(7).
+           05                    PIC X(6).
+           05  PRT-DTL-DESC      PIC X(24).
+           05                    PIC X(6).
+           05  PRT-DTL-QTY       PIC X(8).
+           05                    PIC X(4).
+           05  PRT-DTL-ERR       PIC X(50).
+           05                    PIC X(21).
+
+      ******************************************************************
+      **         D A T A B A S E   W O R K                            **
+      ******************************************************************
+
+       01  CODE-ARG             PIC X(8)  VALUE SPACES.
+       01  FILE-STATUS.
+           05 FILE-STATUS-1     PIC X     VALUE "0".
+           05 FILE-STATUS-2     PIC X     VALUE "0".
+
+      ******************************************************************
+      **         D A T A B A S E   B U F F E R S                      **
+      ******************************************************************
+
+       COPY DPOITEM    IN COPYLIB.
+
+       COPY DSHIPREL   IN COPYLIB.
+
+       COPY DPODATA    IN COPYLIB.
+
+       01  STD-INST-SAVED.
+           05  SAVE-STD-INST.
+               10  SAVE-STD-INST-BEFORE  PIC X(18).
+               10  SAVE-STD-INST-AFTER   PIC X(18).
+           05  SAVE-CONFIRM-FLAG         PIC X.
+           05  SAVE-CONFIRM-VERBAGE      PIC X(34).
+
+      ******************************************************************
+      **         L I N K A G E   S E C T I O N                        **
+      ******************************************************************
+
+       LINKAGE SECTION.
+       01  PASSED-PARAMETERS.
+           05  PASS-OVR-PO-NUM           PIC X(7).
+
+      ******************************************************************
+      **         P R O C E D U R E   D I V I S I O N                  **
+      ******************************************************************
+
+       PROCEDURE DIVISION       USING PASSED-PARAMETERS.
+
+       BEGIN-HERE.
+           PERFORM 1-INIT.
+           PERFORM 6-MAIN.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-INIT.
+           MOVE "C" TO SCOPE.
+           CALL "MCXCBLERR" USING SCOPE.
+
+           OPEN I-O    DSHIPREL-O
+                EXTEND REPORT-O
+                INPUT  DPOITEM-I
+                       DPODATAITM-I
+                       REC-INPUT.
+
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT     TO  CUR-DATE-YMD.
+           MOVE DATE-SLASH-OUT   TO  PRT-HDG-DATE.
+
+           ACCEPT CURRENT-TIME FROM TIME.
+           MOVE CURRENT-HR       TO  PRT-HDG-2-HR.
+           MOVE CURRENT-MIN      TO  PRT-HDG-2-MIN.
+           MOVE CURRENT-SEC      TO  PRT-HDG-2-SEC.
+
+           IF PASS-OVR-PO-NUM > SPACES
+               STRING "(USING "          DELIMITED BY SIZE
+                      PASS-OVR-PO-NUM    DELIMITED BY SIZE
+                      "-999)"            DELIMITED BY SIZE
+               INTO PRT-OVR-PO
+           ELSE
+               MOVE SPACES       TO  PRT-OVR-PO.
+
+           MOVE "*"              TO  RPT-CTL.
+           STRING CUR-DATE-YMD " " CUR-DATE DELIMITED BY SIZE
+                                 INTO RPT-LINE.
+           WRITE REPORT-REC.
+
+           IF LINE-COUNT > 59
+              MOVE 0 TO LINE-COUNT
+              PERFORM 66-WRITE-HDGS.
+
+       2-EOJ.
+           IF RECS-PROCESSED = "N"
+               MOVE "2"              TO  RPT-CTL
+               MOVE "      * NO DATA IN FILE"
+                                     TO  RPT-LINE
+               WRITE REPORT-REC
+           ELSE
+           IF ERR-SW = "N"
+               MOVE "2"              TO  RPT-CTL
+               MOVE "      * NO ERRORS IN PROCESSING BATCH *"
+                                     TO  RPT-LINE
+               WRITE REPORT-REC.
+
+           CLOSE       DSHIPREL-O
+                       DPOITEM-I
+                       DPODATAITM-I
+                       REPORT-O
+                       REC-INPUT.
+
+      ******************************************************************
+      **         6 - M A I N                                          **
+      ******************************************************************
+
+       6-MAIN.
+           PERFORM 999-READ-REC-INPUT.
+           MOVE "N" TO RECS-PROCESSED.
+           PERFORM 61-PROCESS-RECS UNTIL REC-INPUT-EOF-SW = "Y".
+
+       61-PROCESS-RECS.
+           MOVE "Y"                  TO  RECS-PROCESSED.
+           MOVE "N"                  TO  CODE-FOUND-SW.
+           MOVE IN-QTY               TO  RS-SHIFT-FLD.
+           CALL "TRSHIFT" USING RS-RET-CODE RS-SHIFT-FLD.
+           MOVE RS-SHIFT-FLD         TO  NUM-QTY.
+      *---------- CHECK TO SEE IF CODE IS FILLED IN.
+           IF IN-CODE = SPACES
+               MOVE "CODE IS EQUAL TO SPACES"
+                                     TO  PRT-DTL-ERR
+               PERFORM 67-WRITE-ERROR
+           ELSE
+      *---------- CHECK TO SEE IF QUANTITY IS > 0.
+           IF NUM-QTY-R = 0
+               MOVE "QUANTITY IS EQUAL TO ZERO"
+                                     TO  PRT-DTL-ERR
+               PERFORM 67-WRITE-ERROR
+           ELSE
+           MOVE "N"                  TO CODE-FOUND-SW
+      *----------- IF OVERRIDING TO OTHER PO NUM, DON'T SEARCH TABLE.
+           IF PASS-OVR-PO-NUM > SPACES
+               MOVE PASS-OVR-PO-NUM  TO  BUILD-PO-NUM
+               MOVE BUILD-PO         TO  PORCVNO OF DPOITEM-REC-I
+               MOVE IN-CODE          TO  CORPCDE OF DPOITEM-REC-I
+               PERFORM 999-READ-DPOITEM
+               IF FILE-STATUS = "00"
+                   MOVE "Y"          TO  CODE-FOUND-SW
+                   PERFORM 62-WRITE-DSHIPREL
+               END-IF
+               IF CODE-FOUND-SW = "N"
+                   MOVE "CODE NOT FOUND ON REQUIREMENT ORDER"
+                                     TO  PRT-DTL-ERR
+                   PERFORM 67-WRITE-ERROR
+               END-IF
+           ELSE
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > NUM-POS
+                                              OR CODE-FOUND-SW = "Y"
+               MOVE REQMT-ORD (SUB)  TO  PORCVNO OF DPOITEM-REC-I
+               MOVE IN-CODE          TO  CORPCDE OF DPOITEM-REC-I
+               PERFORM 999-READ-DPOITEM
+               IF FILE-STATUS = "00"
+                   MOVE "Y"          TO  CODE-FOUND-SW
+                   PERFORM 62-WRITE-DSHIPREL
+               END-IF
+           END-PERFORM
+           IF CODE-FOUND-SW = "N"
+               MOVE "CODE NOT FOUND ON REQUIREMENT ORDER"
+                                     TO  PRT-DTL-ERR
+               PERFORM 67-WRITE-ERROR.
+
+           PERFORM 999-READ-REC-INPUT.
+
+       62-WRITE-DSHIPREL.
+           MOVE CUR-DATE             TO  DREL-DATE-CN.
+           MOVE IN-CODE              TO  DREL-DSHIPREL-CODE.
+           IF PASS-OVR-PO-NUM > SPACES
+               MOVE PASS-OVR-PO-NUM  TO  DREL-NUMBER
+           ELSE
+           MOVE ORD-NUM (SUB)        TO  DREL-NUMBER.
+           MOVE ITM-NUMBER           TO  DREL-ITEM-NO.
+           MOVE 00                   TO  DREL-SEQ-NO.
+           MOVE ITM-SUB-DETL         TO  DREL-SUBD.
+           MOVE ITM-ADDL-DATA        TO  DREL-ADDTL-DATA.
+           MOVE ITM-TAX-CODE         TO  DREL-TAX-MSG.
+           MOVE NUM-QTY-R            TO  DREL-QUANTITY.
+           MOVE ITM-CLASS            TO  DREL-SUB.
+           MOVE ITM-COMPANY          TO  DREL-COMPANY.
+           MOVE ITM-PRIME            TO  DREL-PRIME.
+           PERFORM 63-CALCULATE-DATES.
+           PERFORM 64-FIND-STD-INSTR.
+           PERFORM 65-WRITE-DSHIPREL.
+      *---------- WRITE OUT STANDARD INSTRUCTION LINE.
+           MOVE 99                   TO  DREL-SEQ-NO.
+           MOVE SAVE-STD-INST        TO  DREL-DESC-LINE.
+           PERFORM 65-WRITE-DSHIPREL.
+
+       63-CALCULATE-DATES.
+           MOVE SPACES               TO  JULGREG-PARMS.
+           MOVE CUR-DATE             TO  GREG-DATE.
+           CALL "JULGREG"   USING GREG-DATE, JULIAN-DATE,
+                                  DAY-DIGIT, LEAP-YEAR-FLAG.
+      *----------- SHIP DATE IS ONE WEEK FROM CURRENT DATE.
+           ADD 7                     TO  JUL-DDD-9.
+           PERFORM UNTIL JUL-DDD-9 < 366
+               SUBTRACT 365        FROM  JUL-DDD-9
+               ADD 1                 TO  JUL-YEAR-9
+           END-PERFORM.
+           MOVE SPACES               TO  GREG-DATE.
+           CALL "JULGREG"   USING GREG-DATE, JULIAN-DATE,
+                                  DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE GREG-YMD             TO  DREL-SHIP-DATE.
+
+           MOVE SPACES               TO  JULGREG-PARMS.
+           MOVE CUR-DATE             TO  GREG-DATE.
+           CALL "JULGREG"   USING GREG-DATE, JULIAN-DATE,
+                                  DAY-DIGIT, LEAP-YEAR-FLAG.
+      *----------- EXPECT DATE IS THREE WEEKS FROM CURRENT DATE.
+           ADD 21                    TO  JUL-DDD-9.
+           PERFORM UNTIL JUL-DDD-9 < 366
+               SUBTRACT 365        FROM  JUL-DDD-9
+               ADD 1                 TO  JUL-YEAR-9
+           END-PERFORM.
+           MOVE SPACES               TO  GREG-DATE.
+           CALL "JULGREG"   USING GREG-DATE, JULIAN-DATE,
+                                  DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE GREG-YMD             TO  DREL-EXP-DATE.
+
+       64-FIND-STD-INSTR.
+           IF PASS-OVR-PO-NUM > SPACES
+               MOVE PASS-OVR-PO-NUM  TO  BUILD-PO-NUM
+               MOVE BUILD-PO         TO  PORCVNO OF DPODATAITM-REC-I
+           ELSE
+           MOVE REQMT-ORD (SUB)  TO  PORCVNO OF DPODATAITM-REC-I.
+           MOVE "000001"         TO  ITEMSEQNO OF DPODATAITM-REC-I.
+           READ DPODATAITM-I INTO BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               NEXT SENTENCE
+           ELSE
+               MOVE DATAITM-INFO             TO  STD-INST-SAVED
+               MOVE SAVE-STD-INST-BEFORE     TO  DREL-STD-INST
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+               MOVE HIGH-VALUES TO PORCVNO OF DPODATAITM-REC-I
+               START DPODATAITM-I KEY > PORCVNO OF DPODATAITM-REC-I
+                   INVALID KEY MOVE "00" TO  FILE-STATUS.
+
+       65-WRITE-DSHIPREL.
+           WRITE DSHIPREL-REC-O FROM BUF-DSHIPREL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DSHIPREL 65-WD" TO BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+       66-WRITE-HDGS.
+           ADD 1 TO PAGE-COUNT.
+           MOVE PAGE-COUNT TO PRT-HDG-2-PG.
+
+           MOVE "0" TO RPT-CTL.
+           MOVE PRT-HDG-1 TO RPT-LINE.
+           WRITE REPORT-REC.
+
+           MOVE "1" TO RPT-CTL.
+           MOVE PRT-HDG-2 TO RPT-LINE.
+           WRITE REPORT-REC.
+
+           MOVE "1" TO RPT-CTL.
+           MOVE PRT-HDG-3 TO RPT-LINE.
+           WRITE REPORT-REC.
+
+           MOVE "1" TO RPT-CTL.
+           MOVE PRT-HDG-4 TO RPT-LINE.
+           WRITE REPORT-REC.
+
+           MOVE "1" TO RPT-CTL.
+           MOVE PRT-HDG-3 TO RPT-LINE.
+           WRITE REPORT-REC.
+
+           MOVE 5 TO LINE-COUNT.
+
+       67-WRITE-ERROR.
+           MOVE "Y"              TO  ERR-SW.
+           MOVE "2"              TO  RPT-CTL.
+           MOVE IN-CODE          TO  PRT-DTL-CODE.
+           MOVE IN-QTY           TO  PRT-DTL-QTY.
+           MOVE IN-DESC          TO  PRT-DTL-DESC.
+           MOVE PRT-DTL-1        TO  RPT-LINE.
+           WRITE REPORT-REC.
+           ADD 2                 TO  LINE-COUNT.
+           IF LINE-COUNT > 59
+               MOVE 0 TO LINE-COUNT
+               PERFORM 66-WRITE-HDGS.
+
+      ******************************************************************
+      **         U T I L I T Y   P A R A G R A P H S                  **
+      ******************************************************************
+
+       999-BLOWUP.
+           MOVE "TLOADPS1" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+               DUMMY-VIEW-AREA DUMMY-KSAM-STAT BU-DISPLAY-MSG
+               BU-DISPLAY-FLDS.
+
+       999-READ-REC-INPUT.
+           READ REC-INPUT
+               AT END MOVE "Y" TO REC-INPUT-EOF-SW.
+
+       999-READ-DPOITEM.
+           READ DPOITEM-I INTO BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+

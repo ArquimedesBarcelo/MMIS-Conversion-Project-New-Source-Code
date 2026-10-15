@@ -1,0 +1,1380 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TAUTOQC.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.                THIS PROGRAM IS THE CRAFT-SORT
+      *                        VERSION OF THE AUTO-QUEUE (TAUTOQZ)
+      *                        PROGRAM.
+      *                        WHEN RUN FROM THE MULTI-IP SCREEN IT
+      *                        ALLOWS RESERVATION OF WORKORDERS ALSO.
+      *                        IF MMIS SWITCH-H (JCW-QRFRSH-305) IS SET
+      *                        'ON', SCREEN WILL REFRESH EVERY 3 MINUTES.
+      *               ****.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          REQUESTOR IS WORK-STATION
+                               SYSTEM-CONSOLE IS CONSOLE
+                               LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT CURRENT-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-CRAFTS-REQD
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-OPEN-QUEUE
+                  ASSIGN       TO DATABASE-MCFLMM1905
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZCFTHELP-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+           SELECT OUT-FILE
+                  ASSIGN       TO DISK-AUTOQC
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS DYNAMIC
+                  RELATIVE KEY IS ACT-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT SORT-FILE
+                  ASSIGN       TO DISK-SORTFILE.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  CURRENT-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  LC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1601.
+
+       FD  WO-CRAFTS-REQD
+           LABEL RECORDS ARE STANDARD.
+       01  CP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  WO-OPEN-QUEUE
+           LABEL RECORDS ARE STANDARD.
+       01  WOQ-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1905.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       FD  OUT-FILE RECORD CONTAINS 60 CHARACTERS
+           LABEL RECORDS ARE OMITTED
+           DATA RECORD IS OUT-REC.
+       01  OUT-REC.
+           05  OUT-WO-QUEUE    PIC 99.
+           05  OUT-CC-NUM      PIC XXXX.
+           05  OUT-EQUIP       PIC X(06).
+           05  OUT-DOWN        PIC X.
+           05  OUT-FILLER      PIC X.
+           05  OUT-WO-NUM      PIC X(10).
+           05  OUT-DESC        PIC X(30).
+           05  OUT-SKILL-1     PIC XX.
+           05  OUT-SKILL-2     PIC XX.
+           05  OUT-SKILL-3     PIC XX.
+
+       SD  SORT-FILE RECORD CONTAINS 60 CHARACTERS
+           DATA RECORD IS SORT-REC.
+       01  SORT-REC.
+           05  SORT-WO-QUEUE   PIC 99.
+           05  SORT-CC-NUM     PIC XXXX.
+           05  SORT-EQUIP.
+               10  SORT-EQ1    PIC X.
+               10  SORT-EQ2    PIC X.
+               10  SORT-EQ3    PIC X.
+               10  SORT-EQ4    PIC X.
+               10  SORT-EQ5    PIC X.
+               10  SORT-EQ6    PIC X.
+           05  SORT-DOWN       PIC X.
+           05  SORT-FILLER     PIC X.
+           05  SORT-WO-NUM     PIC X(10).
+           05  SORT-DESC       PIC X(30).
+           05  SORT-SKILL-1    PIC XX.
+           05  SORT-SKILL-2    PIC XX.
+           05  SORT-SKILL-3    PIC XX.
+
+       WORKING-STORAGE SECTION.
+       77  ACT-KEY             PIC 9999   VALUE 0.
+       77  MAX-KEY             PIC 9999   VALUE 0.
+       77  SAVE-KEY            PIC 9999   VALUE 0.
+       77  EOF-SW              PIC 9      VALUE 0.
+       77  ALARM               PIC 9      VALUE 0.
+       77  FILE-SW             PIC X      VALUE "B".
+       77  DISP-SW             PIC X      VALUE " ".
+       77  TO-CYCLE            PIC S9(3)  VALUE 36  COMP-3.
+       77  TO-CTR              PIC S9(3)  VALUE 0   COMP-3.
+       77  WRITE-CTR           PIC S9(3)  VALUE 0   COMP-3.
+       77  QUEUE-SW            PIC X.
+       77  QUEUE-ERROR         PIC X(76).
+       77  SAVE-TITLE          PIC X(10)  VALUE SPACES.
+       77  DWO-BUFFER          PIC X(10)  VALUE SPACES.
+       77  SCREEN-SAVE         PIC X(870) VALUE SPACES.
+       77  TRUE-VAL            PIC 1      VALUE B"1".
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X  VALUE "0".
+           05  FILE-STAT-2     PIC X  VALUE "0".
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TAUTOQC ".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "IN".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                   "AUTOMATIC QUEUE BACKLOG INQUIR".
+               10  PROG-DESC-A2    PIC X(30) VALUE
+                   "Y SORTED BY CRAFT.            ".
+               10  PROG-DESC-B1    PIC X(30) VALUE
+                   "CONTINUOUSLY DISPLAYS CHANGES ".
+               10  PROG-DESC-B2    PIC X(30) VALUE
+                   "TO THE WORKORDER QUEUE.       ".
+               10  PROG-FUNCTION1  PIC X(30) VALUE
+                   "RUNS FROM THE f1 KEY OF THE EX".
+               10  PROG-FUNCTION2  PIC X(30) VALUE
+                   "ECUTIVE SECONDARY MENU.       ".
+           05  PASSWORD-FLAG       PIC X.
+
+       01  RESERVATION-TABLE.
+           05  R-1             PIC X(10).
+           05  R-2             PIC X(10).
+           05  R-3             PIC X(10).
+           05  R-4             PIC X(10).
+           05  R-5             PIC X(10).
+
+       01  LINE-UP.
+           05  WO-QUEUE-UP     PIC 99.
+           05  WO-Q-X-UP       REDEFINES WO-QUEUE-UP PIC XX.
+           05  CC-NUM-UP       PIC XXXX.
+           05  EQUIP-UP        PIC X(06).
+           05  EQP-DN-UP       PIC X.
+           05  WO-NUM-SELECT.
+               10  WO-NUM-SEL  PIC X.
+               10  WO-NUM-UP   PIC X(10).
+           05  DESC-UP         PIC X(30).
+           05  SKILL-A-UP      PIC XX.
+           05  SKILL-B-UP      PIC XX.
+           05  SKILL-C-UP      PIC XX.
+
+       01  SCREEN-DATA.
+           05  CRAFT-TITLE     PIC X(10).
+           05  CRAFT-SUB.
+               10  FILLER      PIC XX.
+               10  CRAFT-DISP  PIC XX.
+           05  LINE-1.
+               10  WO-QUEUE-1  PIC 99.
+               10  WO-Q-X-1    REDEFINES WO-QUEUE-1 PIC XX.
+               10  CC-NUM-1    PIC XXXX.
+               10  EQUIP-1     PIC X(06).
+               10  DOWN-1      PIC X.
+               10  WO-NUM-S1.
+                   15  WO-S1   PIC X.
+                   15  WO-NUM-1 PIC X(10).
+               10  DESC-1      PIC X(30).
+               10  SKILL-A-1   PIC XX.
+               10  SKILL-B-1   PIC XX.
+               10  SKILL-C-1   PIC XX.
+           05  LINE-2.
+               10  WO-QUEUE-2  PIC 99.
+               10  WO-Q-X-2    REDEFINES WO-QUEUE-2 PIC XX.
+               10  CC-NUM-2    PIC XXXX.
+               10  EQUIP-2     PIC X(06).
+               10  DOWN-2      PIC X.
+               10  WO-NUM-S2.
+                   15  WO-S2   PIC X.
+                   15  WO-NUM-2 PIC X(10).
+               10  DESC-2      PIC X(30).
+               10  SKILL-A-2   PIC XX.
+               10  SKILL-B-2   PIC XX.
+               10  SKILL-C-2   PIC XX.
+           05  LINE-3.
+               10  WO-QUEUE-3  PIC 99.
+               10  WO-Q-X-3    REDEFINES WO-QUEUE-3 PIC XX.
+               10  CC-NUM-3    PIC XXXX.
+               10  EQUIP-3     PIC X(06).
+               10  DOWN-3      PIC X.
+               10  WO-NUM-S3.
+                   15  WO-S3   PIC X.
+                   15  WO-NUM-3 PIC X(10).
+               10  DESC-3      PIC X(30).
+               10  SKILL-A-3   PIC XX.
+               10  SKILL-B-3   PIC XX.
+               10  SKILL-C-3   PIC XX.
+           05  LINE-4.
+               10  WO-QUEUE-4  PIC 99.
+               10  WO-Q-X-4    REDEFINES WO-QUEUE-4 PIC XX.
+               10  CC-NUM-4    PIC XXXX.
+               10  EQUIP-4     PIC X(06).
+               10  DOWN-4      PIC X.
+               10  WO-NUM-S4.
+                   15  WO-S4   PIC X.
+                   15  WO-NUM-4 PIC X(10).
+               10  DESC-4      PIC X(30).
+               10  SKILL-A-4   PIC XX.
+               10  SKILL-B-4   PIC XX.
+               10  SKILL-C-4   PIC XX.
+           05  LINE-5.
+               10  WO-QUEUE-5  PIC 99.
+               10  WO-Q-X-5    REDEFINES WO-QUEUE-5 PIC XX.
+               10  CC-NUM-5    PIC XXXX.
+               10  EQUIP-5     PIC X(06).
+               10  DOWN-5      PIC X.
+               10  WO-NUM-S5.
+                   15  WO-S5   PIC X.
+                   15  WO-NUM-5 PIC X(10).
+               10  DESC-5      PIC X(30).
+               10  SKILL-A-5   PIC XX.
+               10  SKILL-B-5   PIC XX.
+               10  SKILL-C-5   PIC XX.
+           05  LINE-6.
+               10  WO-QUEUE-6  PIC 99.
+               10  WO-Q-X-6    REDEFINES WO-QUEUE-6 PIC XX.
+               10  CC-NUM-6    PIC XXXX.
+               10  EQUIP-6     PIC X(06).
+               10  DOWN-6      PIC X.
+               10  WO-NUM-S6.
+                   15  WO-S6   PIC X.
+                   15  WO-NUM-6 PIC X(10).
+               10  DESC-6      PIC X(30).
+               10  SKILL-A-6   PIC XX.
+               10  SKILL-B-6   PIC XX.
+               10  SKILL-C-6   PIC XX.
+           05  LINE-7.
+               10  WO-QUEUE-7  PIC 99.
+               10  WO-Q-X-7    REDEFINES WO-QUEUE-7 PIC XX.
+               10  CC-NUM-7    PIC XXXX.
+               10  EQUIP-7     PIC X(06).
+               10  DOWN-7      PIC X.
+               10  WO-NUM-S7.
+                   15  WO-S7   PIC X.
+                   15  WO-NUM-7 PIC X(10).
+               10  DESC-7      PIC X(30).
+               10  SKILL-A-7   PIC XX.
+               10  SKILL-B-7   PIC XX.
+               10  SKILL-C-7   PIC XX.
+           05  LINE-8.
+               10  WO-QUEUE-8  PIC 99.
+               10  WO-Q-X-8    REDEFINES WO-QUEUE-8 PIC XX.
+               10  CC-NUM-8    PIC XXXX.
+               10  EQUIP-8     PIC X(06).
+               10  DOWN-8      PIC X.
+               10  WO-NUM-S8.
+                   15  WO-S8   PIC X.
+                   15  WO-NUM-8 PIC X(10).
+               10  DESC-8      PIC X(30).
+               10  SKILL-A-8   PIC XX.
+               10  SKILL-B-8   PIC XX.
+               10  SKILL-C-8   PIC XX.
+           05  LINE-9.
+               10  WO-QUEUE-9  PIC 99.
+               10  WO-Q-X-9    REDEFINES WO-QUEUE-9 PIC XX.
+               10  CC-NUM-9    PIC XXXX.
+               10  EQUIP-9     PIC X(06).
+               10  DOWN-9      PIC X.
+               10  WO-NUM-S9.
+                   15  WO-S9   PIC X.
+                   15  WO-NUM-9 PIC X(10).
+               10  DESC-9      PIC X(30).
+               10  SKILL-A-9   PIC XX.
+               10  SKILL-B-9   PIC XX.
+               10  SKILL-C-9   PIC XX.
+           05  LINE-10.
+               10  WO-QUEUE-10 PIC 99.
+               10  WO-Q-X-10   REDEFINES WO-QUEUE-10 PIC XX.
+               10  CC-NUM-10   PIC XXXX.
+               10  EQUIP-10    PIC X(06).
+               10  DOWN-10     PIC X.
+               10  WO-NUM-S10.
+                   15  WO-S10  PIC X.
+                   15  WO-NUM-10 PIC X(10).
+               10  DESC-10     PIC X(30).
+               10  SKILL-A-10  PIC XX.
+               10  SKILL-B-10  PIC XX.
+               10  SKILL-C-10  PIC XX.
+           05  LINE-11.
+               10  WO-QUEUE-11 PIC 99.
+               10  WO-Q-X-11   REDEFINES WO-QUEUE-11 PIC XX.
+               10  CC-NUM-11   PIC XXXX.
+               10  EQUIP-11    PIC X(06).
+               10  DOWN-11     PIC X.
+               10  WO-NUM-S11.
+                   15  WO-S11  PIC X.
+                   15  WO-NUM-11 PIC X(10).
+               10  DESC-11     PIC X(30).
+               10  SKILL-A-11  PIC XX.
+               10  SKILL-B-11  PIC XX.
+               10  SKILL-C-11  PIC XX.
+           05  LINE-12.
+               10  WO-QUEUE-12 PIC 99.
+               10  WO-Q-X-12   REDEFINES WO-QUEUE-12 PIC XX.
+               10  CC-NUM-12   PIC XXXX.
+               10  EQUIP-12    PIC X(06).
+               10  DOWN-12     PIC X.
+               10  WO-NUM-S12.
+                   15  WO-S12  PIC X.
+                   15  WO-NUM-12 PIC X(10).
+               10  DESC-12     PIC X(30).
+               10  SKILL-A-12  PIC XX.
+               10  SKILL-B-12  PIC XX.
+               10  SKILL-C-12  PIC XX.
+           05  LINE-13.
+               10  WO-QUEUE-13 PIC 99.
+               10  WO-Q-X-13   REDEFINES WO-QUEUE-13 PIC XX.
+               10  CC-NUM-13   PIC XXXX.
+               10  EQUIP-13    PIC X(06).
+               10  DOWN-13     PIC X.
+               10  WO-NUM-S13.
+                   15  WO-S13  PIC X.
+                   15  WO-NUM-13 PIC X(10).
+               10  DESC-13     PIC X(30).
+               10  SKILL-A-13  PIC XX.
+               10  SKILL-B-13  PIC XX.
+               10  SKILL-C-13  PIC XX.
+           05  LINE-14.
+               10  WO-QUEUE-14 PIC 99.
+               10  WO-Q-X-14   REDEFINES WO-QUEUE-14 PIC XX.
+               10  CC-NUM-14   PIC XXXX.
+               10  EQUIP-14    PIC X(06).
+               10  DOWN-14     PIC X.
+               10  WO-NUM-S14.
+                   15  WO-S14  PIC X.
+                   15  WO-NUM-14 PIC X(10).
+               10  DESC-14     PIC X(30).
+               10  SKILL-A-14  PIC XX.
+               10  SKILL-B-14  PIC XX.
+               10  SKILL-C-14  PIC XX.
+           05  CMDMSG2         PIC X(79).
+           05  ERRMSG2         PIC X(79).
+
+       01  CRAFT-SCREEN-DATA.
+           05  CRAFT-BUF       PIC XX.
+           05  CMDMSG1         PIC X(79).
+           05  ERRMSG1         PIC X(79).
+
+       01  QUEUE-HOLD.
+           05  QH-SELECT       PIC X.
+           05  QH-FACTOR       PIC 99.
+           05  QH-EQUIP        PIC X(6).
+           05  QH-DOWN         PIC X.
+           05  QH-WO-NUM.
+               10  QH-WO-NUM-6 PIC X(6).
+               10  QH-WO-YR    PIC X.
+               10  QH-WO-SUF   PIC X(3).
+           05  QH-DESCRIPTION  PIC X(30).
+           05  QH-SKILL-1      PIC XX.
+           05  QH-SKILL-2      PIC XX.
+           05  QH-SKILL-3      PIC XX.
+
+       01  QUEUE-WO-DATA.
+           05  QUEUE-WO-SAVE   PIC X(10).
+           05  QUEUE-RESET     PIC X.
+
+       01  DB-ERROR.
+           05  DB-FUNC         PIC X(10) VALUE SPACES.
+           05  DB-FILE         PIC X(18) VALUE SPACES.
+           05  FILLER          PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY JCWAREA        IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  CRAFT-DATA.
+           COPY MWOCRAFT       IN COPYLIB.
+
+       01  MESSAGE-BUFFER-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       01  LABOR-CURR-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  FUNCTION-SW         PIC  9(4).
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF        PIC X(04).
+           05  CNAM-BUF        PIC X(16).
+
+       01  QUEUE-RECORDS.
+           05  QWO-A.
+               10  QA-SELECT   PIC X.
+               10  QA-FACTOR   PIC 99.
+               10  QA-EQUIP    PIC X(6).
+               10  QA-DOWN     PIC X.
+               10  QA-WO-NUM.
+                   15  QA-WO-NUM-6 PIC X(6).
+                   15  QA-WO-YR    PIC X.
+                   15  QA-WO-SUF   PIC X(3).
+               10  QA-DESCRIPTION  PIC X(30).
+               10  QA-SKILL-1  PIC XX.
+               10  QA-SKILL-2  PIC XX.
+               10  QA-SKILL-3  PIC XX.
+           05  QWO-B.
+               10  QB-SELECT   PIC X.
+               10  QB-FACTOR   PIC 99.
+               10  QB-EQUIP    PIC X(6).
+               10  QB-DOWN     PIC X.
+               10  QB-WO-NUM.
+                   15  QB-WO-NUM-6 PIC X(6).
+                   15  QB-WO-YR    PIC X.
+                   15  QB-WO-SUF   PIC X(3).
+               10  QB-DESCRIPTION  PIC X(30).
+               10  QB-SKILL-1  PIC XX.
+               10  QB-SKILL-2  PIC XX.
+               10  QB-SKILL-3  PIC XX.
+           05  QWO-C.
+               10  QC-SELECT   PIC X.
+               10  QC-FACTOR   PIC 99.
+               10  QC-EQUIP    PIC X(6).
+               10  QC-DOWN     PIC X.
+               10  QC-WO-NUM.
+                   15  QC-WO-NUM-6 PIC X(6).
+                   15  QC-WO-YR    PIC X.
+                   15  QC-WO-SUF   PIC X(3).
+               10  QC-DESCRIPTION  PIC X(30).
+               10  QC-SKILL-1  PIC XX.
+               10  QC-SKILL-2  PIC XX.
+               10  QC-SKILL-3  PIC XX.
+           05  QWO-D.
+               10  QD-SELECT   PIC X.
+               10  QD-FACTOR   PIC 99.
+               10  QD-EQUIP    PIC X(6).
+               10  QD-DOWN     PIC X.
+               10  QD-WO-NUM.
+                   15  QD-WO-NUM-6 PIC X(6).
+                   15  QD-WO-YR    PIC X.
+                   15  QD-WO-SUF   PIC X(3).
+               10  QD-DESCRIPTION  PIC X(30).
+               10  QD-SKILL-1  PIC XX.
+               10  QD-SKILL-2  PIC XX.
+               10  QD-SKILL-3  PIC XX.
+           05  QWO-E.
+               10  QE-SELECT   PIC X.
+               10  QE-FACTOR   PIC 99.
+               10  QE-EQUIP    PIC X(6).
+               10  QE-DOWN     PIC X.
+               10  QE-WO-NUM.
+                   15  QE-WO-NUM-6 PIC X(6).
+                   15  QE-WO-YR    PIC X.
+                   15  QE-WO-SUF   PIC X(3).
+               10  QE-DESCRIPTION  PIC X(30).
+               10  QE-SKILL-1  PIC XX.
+               10  QE-SKILL-2  PIC XX.
+               10  QE-SKILL-3  PIC XX.
+
+       01  RESERVATIONS        PIC  9(4).
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               FUNCTION-SW
+                               CNUM-BUFFER
+                               QUEUE-RECORDS
+                               RESERVATIONS.
+
+       BEGIN-SORT              SECTION 01.
+       CHECK-PASSWORD.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG NOT = "N"
+               GO TO OPEN-FILES.
+           GOBACK.
+
+       OPEN-FILES.
+           MOVE 0              TO WRITE-CTR TO-CTR.
+           MOVE 36             TO TO-CYCLE.
+           MOVE SPACES         TO WO-PLANNED-DATA.
+           OPEN INPUT          WO-CRAFTS-REQD.
+           OPEN INPUT          WO-BASIC.
+           OPEN INPUT          WO-OPEN-QUEUE.
+           OPEN INPUT          CURRENT-LABOR.
+           OPEN I-O            DISPLAY-FILE.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN FILE OPEN ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+
+       BEGIN-PROC.
+           PERFORM 1-HSK       THRU 1-EXIT.
+           GO TO 6-MAIN.
+
+       END-OF-JOB.
+           CLOSE               WO-CRAFTS-REQD.
+           CLOSE               WO-BASIC.
+           CLOSE               WO-OPEN-QUEUE.
+           CLOSE               CURRENT-LABOR.
+           CLOSE               OUT-FILE.
+           CLOSE               DISPLAY-FILE.
+           GOBACK.
+
+       1-HSK.
+           MOVE 0              TO EOF-SW ALARM.
+           MOVE "B"            TO FILE-SW.
+           MOVE SPACES         TO MESSAGE-BUFFER SCREEN-DATA.
+           MOVE SPACES         TO CRAFT-SCREEN-DATA.
+           MOVE SPACES         TO RESERVATION-TABLE.
+
+           IF QA-SELECT NOT = SPACE
+               MOVE QA-WO-NUM  TO R-1.
+           IF QB-SELECT NOT = SPACE
+               MOVE QB-WO-NUM  TO R-2.
+           IF QC-SELECT NOT = SPACE
+               MOVE QC-WO-NUM  TO R-3.
+           IF QD-SELECT NOT = SPACE
+               MOVE QD-WO-NUM  TO R-4.
+           IF QE-SELECT NOT = SPACE
+               MOVE QE-WO-NUM  TO R-5.
+
+           MOVE " "            TO TIMEOUT-SW.
+           IF FUNCTION-SW NOT = 1
+               IF JCW-QRFRSH-305 = "1"
+                   MOVE "X"    TO TIMEOUT-SW.
+
+      **********************************************************************
+      **    MESSAGE 029/055:
+      ** C R A F T
+      **********************************************************************
+           MOVE  29            TO CATREAD-MSG-SET.
+           MOVE  55            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO SAVE-TITLE.
+           IF SAVE-TITLE = SPACES
+             MOVE "C R A F T " TO SAVE-TITLE CRAFT-TITLE.
+
+           IF JCW-CJCW-274 = "  "
+               CALL "TRTVCRFT" USING CRAFT-BUF
+               MOVE CRAFT-BUF  TO CRAFT-MSTR
+           ELSE
+               MOVE JCW-CJCW-274 TO CRAFT-BUF CRAFT-MSTR.
+
+           MOVE CRAFT-MSTR     TO CRAFT-DISP.
+           MOVE "VAUTOQUE"     TO SCREEN-NAME.
+
+       1-EXIT.                 EXIT.
+
+       6-MAIN.
+           MOVE 0              TO ACT-KEY.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+
+           SORT SORT-FILE      DESCENDING KEY SORT-WO-QUEUE
+                               SORT-EQUIP SORT-WO-NUM
+              INPUT PROCEDURE  SORT-AC-RECS
+              OUTPUT PROCEDURE SORT-AC-OUT.
+
+           OPEN INPUT          OUT-FILE.
+           IF ACT-KEY = 0
+               MOVE 1          TO ALARM
+               MOVE SPACES     TO SCREEN-DATA
+               MOVE SAVE-TITLE TO CRAFT-TITLE
+               MOVE CRAFT-MSTR TO CRAFT-DISP
+      **********************************************************************
+      **    MESSAGE 040/003:
+      ** NO WORK ORDERS IN THE BACKLOG FOR THIS CRAFT
+      **********************************************************************
+               MOVE  40        TO CATREAD-MSG-SET
+               MOVE   3        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO CMDMSG2
+               GO TO 61-SHOWFORM.
+
+           IF ALARM = 1
+               PERFORM 63-ALARM-SCREEN THRU 63-ALARM-EXIT.
+           MOVE 0              TO ACT-KEY ALARM.
+
+       61-RESET-SCREEN.
+           MOVE SPACES         TO SCREEN-DATA MESSAGE-BUFFER.
+           MOVE SAVE-TITLE     TO CRAFT-TITLE.
+           MOVE CRAFT-MSTR     TO CRAFT-DISP.
+           PERFORM 62-FILL-SCREEN THRU 62-FS-EXIT.
+
+           IF FUNCTION-SW = 1
+      **********************************************************************
+      **    MESSAGE 031/055:
+      ** ENTER AN `R' TO RESERVE A WORKORDER, ENTER AN `X' TO DISPLAY
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE  55        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO CMDMSG2.
+
+       61-PUTBUFFER.
+           MOVE SCREEN-DATA    TO SCREEN-SAVE.
+
+       61-SHOWFORM.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           MOVE "00"           TO SCREEN-STATUS.
+
+       61-WRITEFORM.
+           MOVE 0              TO WRITE-CTR.
+           IF TIMEOUT-ON
+               MOVE TRUE-VAL   TO IND(97).
+
+       61-WRITELOOP.
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS = "9I"
+               IF WRITE-CTR < 5
+                   ADD 1       TO WRITE-CTR
+                   CALL "CLAUTOQTO"
+                   GO TO 61-WRITELOOP
+               ELSE
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB
+           ELSE
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           IF TIMEOUT-ON
+               ADD 1           TO TO-CTR
+               IF TO-CTR NOT > TO-CYCLE
+                   CALL "CLAUTOQTO"
+                   READ DISPLAY-FILE TERMINAL IS TERMINAL-ID
+                               INDIC ARE SCREEN-INDICATORS
+                       NO DATA GO TO 61-WRITEFORM
+               ELSE
+                   MOVE 2      TO KEY-HIT
+                   MOVE 0      TO TO-CTR
+                   GO TO END-READ-CYCLE
+           ELSE
+               READ  DISPLAY-FILE FORMAT IS SCREEN-NAME
+                   INDIC ARE SCREEN-INDICATORS
+               IF SCREEN-STATUS NOT = "00"
+                   DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+                   GO TO END-OF-JOB.
+
+       END-READ-CYCLE.
+           MOVE 0              TO TO-CTR.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+
+           IF KEY-HIT = 3
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT = 2
+               GO TO 6-MAIN.
+
+           IF KEY-HIT = 1
+               MOVE "  "       TO JCW-CJCW-274
+               CLOSE           OUT-FILE
+               GO TO BEGIN-PROC.
+
+           IF KEY-HIT = 0 OR 4 OR 5
+               NEXT SENTENCE
+           ELSE
+               GO TO 61-SHOWFORM.
+
+           MOVE SPACES         TO DISP-SW MESSAGE-BUFFER.
+           IF WO-S1 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-1     TO LINE-UP
+               MOVE WO-NUM-1   TO DWO-BUFFER
+               MOVE WO-NUM-1   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S1
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-1
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S2 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-2     TO LINE-UP
+               MOVE WO-NUM-2   TO DWO-BUFFER
+               MOVE WO-NUM-2   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S2
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-2
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S3 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-3     TO LINE-UP
+               MOVE WO-NUM-3   TO DWO-BUFFER
+               MOVE WO-NUM-3   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S3
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-3
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S4 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-4     TO LINE-UP
+               MOVE WO-NUM-4   TO DWO-BUFFER
+               MOVE WO-NUM-4   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S4
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-4
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S5 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-5     TO LINE-UP
+               MOVE WO-NUM-5   TO DWO-BUFFER
+               MOVE WO-NUM-5   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S5
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-5
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S6 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-6     TO LINE-UP
+               MOVE WO-NUM-6   TO DWO-BUFFER
+               MOVE WO-NUM-6   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S6
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-6
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S7 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-7     TO LINE-UP
+               MOVE WO-NUM-7   TO DWO-BUFFER
+               MOVE WO-NUM-7   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S7
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-7
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S8 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-8     TO LINE-UP
+               MOVE WO-NUM-8   TO DWO-BUFFER
+               MOVE WO-NUM-8   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S8
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-8
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S9 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-9     TO LINE-UP
+               MOVE WO-NUM-9   TO DWO-BUFFER
+               MOVE WO-NUM-9   TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S9
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-9
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S10 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-10    TO LINE-UP
+               MOVE WO-NUM-10  TO DWO-BUFFER
+               MOVE WO-NUM-10  TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S10
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-10
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S11 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-11    TO LINE-UP
+               MOVE WO-NUM-11  TO DWO-BUFFER
+               MOVE WO-NUM-11  TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S11
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-11
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S12 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-12    TO LINE-UP
+               MOVE WO-NUM-12  TO DWO-BUFFER
+               MOVE WO-NUM-12  TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S12
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-12
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S13 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-13    TO LINE-UP
+               MOVE WO-NUM-13  TO DWO-BUFFER
+               MOVE WO-NUM-13  TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S13
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-13
+                   GO TO 61-PUTBUFFER.
+
+           IF WO-S14 NOT = SPACE
+               MOVE "X"        TO DISP-SW
+               MOVE 0          TO WRITE-CTR
+               MOVE LINE-14    TO LINE-UP
+               MOVE WO-NUM-14  TO DWO-BUFFER
+               MOVE WO-NUM-14  TO WO-NUM-TRACK OF WO-TRACK-DATA
+               MOVE SPACE      TO WO-S14
+               PERFORM 64-DISPLAY-WO THRU 64-EXIT
+               IF DESC-UP = " * * *  R E S E R V E D  * * *"
+                   MOVE SPACE  TO WO-NUM-SEL
+                   MOVE LINE-UP TO LINE-14
+                   GO TO 61-PUTBUFFER.
+
+           IF DISP-SW = "X"
+               MOVE SCREEN-SAVE TO SCREEN-BUFFER
+               IF MESSAGE-BUFFER NOT = SPACES
+                   MOVE MESSAGE-BUFFER TO ERRMSG2
+                   MOVE B"1"   TO IND(99)
+               END-IF
+               GO TO 61-SHOWFORM.
+
+           IF EOF-SW = 1
+               MOVE 0          TO WRITE-CTR EOF-SW
+               CLOSE           OUT-FILE
+               GO TO 6-MAIN.
+
+           GO TO 61-RESET-SCREEN.
+
+       62-FILL-SCREEN.
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-1.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-2.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-3.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO              TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-4.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-5.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-6.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-7.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-8.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-9.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-10.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-11.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-12.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-13.
+
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF ACT-KEY > MAX-KEY
+               MOVE 1          TO EOF-SW
+               GO TO 62-FS-EXIT.
+           IF OUT-WO-NUM = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+               MOVE " * * *  R E S E R V E D  * * *" TO OUT-DESC.
+           MOVE OUT-REC        TO LINE-14.
+
+       62-FS-EXIT.             EXIT.
+
+       63-ALARM-SCREEN.
+           MOVE "VALARM"       TO SCREEN-NAME.
+
+       63-SHOWFORM.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           MOVE "00"           TO SCREEN-STATUS.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                        SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+
+           IF KEY-HIT = 0 OR 1 OR 2 OR 3 OR 4 OR 5 OR 6 OR 7 OR 8
+               NEXT SENTENCE
+           ELSE
+               GO TO 63-SHOWFORM.
+
+           MOVE "VAUTOQUE"     TO SCREEN-NAME.
+
+       63-ALARM-EXIT.          EXIT.
+
+       64-DISPLAY-WO.
+           IF DESC-UP = " * * *  R E S E R V E D  * * *"
+               MOVE "X"        TO WO-NUM-SEL.
+
+           IF FUNCTION-SW = 1
+               IF WO-NUM-SEL = "R"
+                   IF WO-NUM-UP = R-1 OR R-2 OR R-3 OR R-4 OR R-5
+                       GO TO 64-EXIT
+                   ELSE
+                   IF WO-NUM-UP = QA-WO-NUM
+                       PERFORM R-FILL
+                       MOVE "R" TO QA-SELECT
+                       MOVE " * * *  R E S E R V E D  * * *"
+                               TO DESC-UP
+                       GO TO 64-EXIT
+                   ELSE
+                   IF WO-NUM-UP = QB-WO-NUM
+                       PERFORM R-FILL
+                       MOVE "R" TO QB-SELECT
+                       MOVE " * * *  R E S E R V E D  * * *"
+                               TO DESC-UP
+                       GO TO 64-EXIT
+                   ELSE
+                   IF WO-NUM-UP = QC-WO-NUM
+                       PERFORM R-FILL
+                       MOVE "R" TO QC-SELECT
+                       MOVE " * * *  R E S E R V E D  * * *"
+                               TO DESC-UP
+                       GO TO 64-EXIT
+                   ELSE
+                   IF WO-NUM-UP = QD-WO-NUM
+                       PERFORM R-FILL
+                       MOVE "R" TO QD-SELECT
+                       MOVE " * * *  R E S E R V E D  * * *"
+                               TO DESC-UP
+                       GO TO 64-EXIT
+                   ELSE
+                   IF WO-NUM-UP = QE-WO-NUM
+                       PERFORM R-FILL
+                       MOVE "R" TO QE-SELECT
+                       MOVE " * * *  R E S E R V E D  * * *"
+                               TO DESC-UP
+                       GO TO 64-EXIT
+                   ELSE
+                       PERFORM RESERVE-FUNCTION
+                       MOVE " * * *  R E S E R V E D  * * *"
+                               TO DESC-UP
+                       GO TO 64-EXIT.
+
+           IF KEY-HIT = 5 AND CNUM-BUF = SPACES
+               MOVE
+           "YOU ARE NOT SIGNED INTO THE CRAFTSMAN'S FUNCTIONS SCREEN."
+                               TO MESSAGE-BUFFER
+               GO TO 64-EXIT.
+
+           MOVE DWO-BUFFER     TO WONUM OF WO-BASIC.
+           READ WO-BASIC       INTO WO-BASIC-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE DWO-BUFFER TO MSG-FLD
+               GO TO 64-EXIT.
+
+           IF DWO-BUFFER NOT = WO-NUM
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE DWO-BUFFER TO MSG-FLD
+               GO TO 64-EXIT.
+
+           MOVE SPACES         TO MESSAGE-BUFFER WO-PLANNED-DATA.
+           IF KEY-HIT = 4
+               MOVE "C"        TO RETURN-BYTE
+               CALL "TCHNGWO"  USING DBPARAMETERS
+                               WO-TRACK-DATA
+               CLOSE           OUT-FILE
+               GO TO 6-MAIN
+           ELSE
+           IF KEY-HIT = 5
+               MOVE CNUM-BUF       TO PERCCNUM OF CURRENT-LABOR
+               READ CURRENT-LABOR  INTO LABOR-CURR-DATA
+                   INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT = "23"
+                   MOVE "J"        TO RETURN-BYTE
+                   CALL "TIPNEWWO" USING DBPARAMETERS
+                                   QUEUE-WO-DATA
+                                   WO-BASIC-DATA
+                                   WO-PLANNED-DATA
+                                   WO-TRACK-DATA
+                                   CNUM-BUFFER
+                                   MESSAGE-BUFFER
+                                   FILE-SW
+                   CLOSE           OUT-FILE
+                   GO TO 6-MAIN
+               ELSE
+                   MOVE "YOU ARE ALREADY 'IP' ON A WORKORDER."
+                               TO MESSAGE-BUFFER
+                   GO TO 64-EXIT
+           ELSE
+               CALL "TDISPWO"  USING DBPARAMETERS
+                               WO-BASIC-DATA
+                               WO-PLANNED-DATA
+                               FILE-SW.
+
+           MOVE "VAUTOQUE"     TO SCREEN-NAME.
+
+       64-EXIT.                EXIT.
+
+       RESERVE-FUNCTION.
+           IF RESERVATIONS < 5
+               ADD 1           TO RESERVATIONS
+               PERFORM R-FILL
+               PERFORM LOAD-QUEUE-HOLD
+               IF QE-SELECT = SPACE
+                   MOVE QUEUE-HOLD TO QWO-E
+               ELSE
+               IF QD-SELECT = SPACE
+                   MOVE QUEUE-HOLD TO QWO-D
+               ELSE
+               IF QC-SELECT = SPACE
+                   MOVE QUEUE-HOLD TO QWO-C
+               ELSE
+               IF QB-SELECT = SPACE
+                   MOVE QUEUE-HOLD TO QWO-B
+               ELSE
+               IF QA-SELECT = SPACE
+                   MOVE QUEUE-HOLD TO QWO-A
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               GO TO END-OF-JOB.
+
+       LOAD-QUEUE-HOLD.
+           MOVE SPACES         TO QUEUE-HOLD.
+           MOVE WO-NUM-SEL     TO QH-SELECT.
+           MOVE WO-QUEUE-UP    TO QH-FACTOR.
+           MOVE EQUIP-UP       TO QH-EQUIP.
+           IF EQP-DN-UP = "D"
+               MOVE "Y"        TO QH-DOWN
+           ELSE
+               MOVE "N"        TO QH-DOWN.
+           MOVE WO-NUM-UP      TO QH-WO-NUM.
+           MOVE DESC-UP        TO QH-DESCRIPTION.
+           MOVE SKILL-A-UP     TO QH-SKILL-1.
+           MOVE SKILL-B-UP     TO QH-SKILL-2.
+           MOVE SKILL-C-UP     TO QH-SKILL-3.
+
+       R-FILL.
+           IF R-1 = SPACES MOVE WO-NUM-UP TO R-1 ELSE
+             IF R-2 = SPACES MOVE WO-NUM-UP TO R-2 ELSE
+               IF R-3 = SPACES MOVE WO-NUM-UP TO R-3 ELSE
+                 IF R-4 = SPACES MOVE WO-NUM-UP TO R-4 ELSE
+                   IF R-5 = SPACES MOVE WO-NUM-UP TO R-5.
+
+       65-ERROR.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+
+       999-CATREAD.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+
+       SORT-AC-RECS-SECT       SECTION 02.
+       SORT-AC-RECS.
+           PERFORM SORT-MAIN THRU SORT-M-EXIT.
+
+       SORT-MAIN.
+           MOVE CRAFT-MSTR     TO CRAFTREQD1 OF WO-OPEN-QUEUE.
+           START WO-OPEN-QUEUE KEY = CRAFTREQD1 OF WO-OPEN-QUEUE
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO SORT-M-EXIT
+               ELSE
+                   MOVE "START   " TO DB-FUNC
+                   MOVE "WO-OPEN-QUEUE" TO DB-FILE
+                   MOVE FILE-STAT  TO CON-WORD
+                   MOVE DB-ERROR   TO ERRMSG2
+                   MOVE 1          TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO END-OF-JOB.
+
+           PERFORM SORT-DBGET  THRU SORT-DBGET-EXIT.
+
+       SORT-M-EXIT.            EXIT.
+
+       SORT-DBGET.
+           MOVE SPACES         TO SORT-REC.
+           READ WO-OPEN-QUEUE  NEXT INTO WO-QUEUE-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO SORT-DBGET-EXIT
+               ELSE
+                   MOVE "READ    " TO DB-FUNC
+                   MOVE "WO-OPEN-QUEUE" TO DB-FILE
+                   MOVE FILE-STAT  TO CON-WORD
+                   MOVE DB-ERROR   TO ERRMSG2
+                   MOVE 1          TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO END-OF-JOB.
+
+           IF CRAFT-MSTR NOT = Q-SKILL-1
+               GO TO SORT-DBGET-EXIT.
+
+           IF FUNCTION-SW = 1
+               IF Q-RESERVE = "XX"
+                   GO TO SORT-DBGET
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               IF Q-RESERVE = "XX"
+                   MOVE " * * *  R E S E R V E D  * * *"
+                               TO Q-DESCRIPTION.
+
+           MOVE QUEUE-FACTOR   TO SORT-WO-QUEUE.
+           MOVE Q-EQUIP-NUM    TO SORT-EQUIP.
+           MOVE Q-WO-NUM       TO SORT-WO-NUM.
+           IF Q-CC-NUM NOT = "9999"
+               MOVE Q-CC-NUM   TO SORT-CC-NUM.
+           IF Q-EQP-DN = "Y"
+               MOVE "D"        TO SORT-DOWN.
+           MOVE Q-DESCRIPTION  TO SORT-DESC.
+           MOVE Q-SKILL-1      TO SORT-SKILL-1.
+           MOVE Q-SKILL-2      TO SORT-SKILL-2.
+           MOVE Q-SKILL-3      TO SORT-SKILL-3.
+           RELEASE SORT-REC.
+
+           GO TO SORT-DBGET.
+
+       SORT-DBGET-EXIT.        EXIT.
+
+       SORT-AC-OUT-SECT        SECTION 03.
+       SORT-AC-OUT.
+           OPEN OUTPUT         OUT-FILE.
+           PERFORM SORT-READ-LOOP THRU SRL-EXIT.
+           CLOSE               OUT-FILE.
+
+       SORT-READ-LOOP.
+           RETURN SORT-FILE AT END
+               MOVE ACT-KEY    TO MAX-KEY
+               GO TO SRL-EXIT.
+           ADD 1               TO ACT-KEY.
+           MOVE SORT-REC       TO OUT-REC.
+           WRITE OUT-REC INVALID KEY
+               DISPLAY "WRITE OUT-FILE ERR"
+               GO TO SRL-EXIT.
+           GO TO SORT-READ-LOOP.
+
+       SRL-EXIT.               EXIT.
+

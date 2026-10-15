@@ -1,0 +1,966 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     SMFRUPDT.
+       AUTHOR.         DAVID A. PLUM, JR.
+       DATE-WRITTEN.   MAY 1985.
+       DATE-COMPILED.
+       INSTALLATION.   THE GOODYEAR TIRE AND RUBBER COMPANY - AKRON.
+      *D************************************************************
+      *D  S M F R U P D T     MANUFACTURER UPDATE SUBPROGRAM       *
+      *D                                                           *
+      *D  THIS SUBPROGRAM IS CALLED BY:                            *
+      *D      1) TDSCMAIN                                          *
+      *D                                                           *
+      *D  SUBPROGRAMS CALLED:                                      *
+      *D      1) CRFMTMFR - REFORMAT MANUFACTURER SUBPROGRAM       *
+      *D      2) TSCRPRT2 - SCREEN PRINT SUBPROGRAM                *
+      *D      3) TBLOWUP  - BLOWUP SUBPROGRAM                      *
+      *D      4) CCODECHK - CODE CHECK SUBPROGRAM                  *
+      *D                                                           *
+      *D************************************************************
+      *D                                                           *
+      *D  THIS SUBPROGRAM PERFORMS THE FOLLOWING FUNCTIONS:        *
+      *D      1) LOADING OF MANUFACTURERS INTO THE DATA BASE       *
+      *D      2) DELETING MANUFACTURERS FROM THE DATA BASE         *
+      *D         (PERMITTED ONLY WHEN THE MANUFACTURER IS NOT      *
+      *D         LINKED TO ANY CODES)                              *
+      *D      3) MODIFICATION OF MANUFACTURERS THAT ARE PRESENT    *
+      *D         IN THE DATA BASE (EXCEPT MANUFACTURERS LINKED     *
+      *D         TO CORPORATE CODES - AS DEFINED IN SDSCMAIN.DOC)  *
+      *D                                                           *
+      *D************************************************************
+      *C  PROGRAM CHANGES:                                         *
+      *C                                                           *
+      *C  08/06/85  DATA BASE LOGGING CALLS WERE ADDED TO THIS     *
+      *C            PROGRAM.      D.A. PLUM                        *
+      *C                                                           *
+      *C  09/19/85  ADDED CALLS TO FINDJCW, NLAPPEND, CATOPEN, AND *
+      *C            CATCLOSE IN ORDER TO ACCOMODATE THE NATIVE     *
+      *C            LANGUAGE SUPPORT FACILITY.  ADDED LINKAGES AND *
+      *C            ALSO MADE THE CHANGE TO THE FORMFILE NAMES.    *
+      *C                                          -T W COTTON      *
+      *C                                                           *
+      *C  09/25/85  REPLACED CALLS TO THE SUBPROGRAM TRSTRMFR WITH *
+      *C            CALLS TO TRFMTMFR.  MANUFACTURER NAMES ARE     *
+      *C            NO LONGER LIMITED TO ONLY 6 WORDS.             *
+      *C                                 D.A. PLUM                 *
+      *C                                                           *
+      *C  10/10/85  REVISED LOGIC WITHIN THE MODIFY MFR NAME       *
+      *C            FUNCTION TO ACCOUNT FOR THE FACT THAT MFR DATA *
+      *C            IS NO LONGER BEING STORED IN DDESC.  ALSO      *
+      *C            ADDED LOGIC TO PROCESS THE NEW FIELD WITHIN    *
+      *C            DMANPART, 'MAN-PARTNO-TYPE'.                   *
+      *C                                 D.A. PLUM                 *
+      *C                                                           *
+      *C  01/21/86  REVISED LOGIC WITHIN THE "MODIFY MFR FUNCTION" *
+      *C            SO THAT MANUFACTURERS LINKED TO CORPORATE      *
+      *C            CODES ARE NEVER CHANGED BY THIS PROGRAM.       *
+      *C            WHETHER OR NOT A CODE IS A CORPORATE CODE IS   *
+      *C            DEPENDENT ON THE PLANT AND THE ACTUAL FORMAT   *
+      *C            OF THE CODE ITSELF.  THE DOCUMENTATION FILE    *
+      *C            FOR THIS SUBSYSTEM (SDSCMAIN.DOC) EXPLAINS THE *
+      *C            THE CONVENTIONS BEING FOLLOWED.                *
+      *C                                 D.A. PLUM                 *
+      *C                                                           *
+      *C  03/24/86  ADDED CALLS TO CCODECHK WHICH DETERMINES IF A  *
+      *C            CODE IS A "CORPORATE" CODE OR A "PLANT" CODE.  *
+      *C            ALSO ADDED MPLTINFO-PARMS AS A PARAMETER BEING *
+      *C            PASSED TO THIS SUBPROGRAM FROM TDSCMAIN.       *
+      *C            CHANGED CALLS TO TRFMTMFR TO CALL CRFMTMFR TO  *
+      *C            REFLECT THE RECENT CHANGE IN SUBPROGRAM NAMING *
+      *C            CONVENTIONS.                                   *
+      *C                                 D.A. PLUM                 *
+      *C                                                           *
+      *C  10/07/93  ADDED KSAM FILE KMANPART FOR MFR/PART/CC.      *
+      *C            WHENEVER A MANUFACTURER IS UPDATED, ALSO       *
+      *C            CHANGE THAT MANUFACTURER IN THE KSAM FILE.     *
+      *C            REQUEST #6428        J.S. BUNGO                *
+      *C                                                           *
+      *C  04/22/94  CONVERTED THIS PROGRAM TO RUN ON THE AS/400    *
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.    I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+      **************************************************************
+       INPUT-OUTPUT SECTION.
+      **************************************************************
+
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZDSCMAIN-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+           SELECT DMANPART-I
+                  ASSIGN TO DATABASE-MCFLCS3601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DMANPART-O
+                  ASSIGN TO DATABASE-MCFLCS3601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MMANUFACT-I
+                  ASSIGN TO DATABASE-MCFLCS3501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT MMANUFACT-O
+                  ASSIGN TO DATABASE-MCFLCS3501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+      **************************************************************
+       DATA DIVISION.
+      **************************************************************
+
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                PIC X(1700).
+
+       FD  DMANPART-I
+           LABEL RECORDS ARE STANDARD.
+       01  DMANPART-REC-I.
+           COPY DDS-MCRPCS3600  OF MCFLCS3601.
+
+       FD  DMANPART-O
+           LABEL RECORDS ARE STANDARD.
+       01  DMANPART-REC-O.
+           COPY DDS-MCRPCS3600  OF MCFLCS3601.
+
+       FD  MMANUFACT-I
+           LABEL RECORDS ARE STANDARD.
+       01  MMANUFACT-REC-I.
+           COPY DDS-MCRPCS3500  OF MCFLCS3501.
+
+       FD  MMANUFACT-O
+           LABEL RECORDS ARE STANDARD.
+       01  MMANUFACT-REC-O.
+           COPY DDS-MCRPCS3500  OF MCFLCS3501.
+
+      *FD  KMANPART-FILE.
+      *01  KMANPART-RECORD.
+      *    05  KMANPART-PARTNO        PIC X(20).
+      *    05  KMANPART-MFR           PIC X(26).
+      *    05  KMANPART-CORPCODE      PIC X(08).
+
+      **************************************************************
+       WORKING-STORAGE SECTION.
+      **************************************************************
+
+       77  PASSED-SPOOL-PRT           PIC S9(2) COMP VALUE 0.
+       77  CALC-ADDR                  PIC S9(9) COMP VALUE 0.
+       77  COUNT-UPDATES              PIC S9(4) COMP VALUE 0.
+       77  MMANUFACT-DELETE-FLAG      PIC X(1)  VALUE "Y".
+       77  EOF-DMANPART               PIC X(1)  VALUE SPACES.
+
+       01  SAVE-AREA.
+           05  SAVE-VIEW-STATUS       PIC S9(4) COMP VALUE 0.
+           05  SAVE-CHAIN-LENGTH      PIC S9(9) COMP VALUE 0.
+           05  SAVE-NEW-MFR-ARG       PIC X(26) VALUE SPACES.
+           05  SAVE-OLD-MFR-ARG       PIC X(26) VALUE SPACES.
+           05  SAVE-ADDR              PIC S9(9) COMP VALUE 0.
+           05  SAVE-CODE              PIC X(8)  VALUE SPACES.
+           05  SAVE-PARTNO            PIC X(20) VALUE SPACES.
+           05  SAVE-PARTNO-TYPE       PIC X(2)  VALUE SPACES.
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **                    DATA BASE AREA                       **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       COPY MMANUFAC OF COPYLIB.
+
+       COPY DMANPART OF COPYLIB.
+
+       01  DSET-NAMES.
+           05  DSET-MMANUFACT         PIC X(16)  VALUE "MMANUFACT;".
+           05  DSET-DMANPART          PIC X(16)  VALUE "DMANPART;".
+
+       COPY DBMODES OF COPYLIB.
+
+       COPY DBSTAT OF COPYLIB.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1         PIC X.
+           05  FILE-STATUS-2         PIC X.
+
+       01 SEARCH-ITEMS.
+           05  ALL-ITEMS             PIC X(2)  VALUE "@;".
+           05  MFR-SEARCH            PIC X(16) VALUE "MANUFACTURER;".
+
+       01 ARG-VALUES.
+           05  MFR-ARG               PIC X(26) VALUE SPACES.
+
+       01  DB-LOG-VALUES.
+           05 DB-LOG-TEXT            PIC X(8) VALUE "SMFRUPDT".
+           05 DB-LOG-TEXT-LEN        PIC S9(4) COMP VALUE -8.
+
+       COPY MULTLOCK OF COPYLIB.
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **               VIEW COMMUNICATION AREA                   **
+      **                                                         **
+      **        ------ ALSO SEE LINKAGE SECTION ------           **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       01  FIELD-NUMBER               PIC S9(4) COMP VALUE 1.
+       01  MESSAGE-BUFLEN             PIC S9(4) COMP VALUE 76.
+       01  MESSAGE-ACTLEN             PIC S9(4) COMP VALUE 76.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT               PIC X(64) VALUE SPACE.
+           05  MSG-FLD                PIC X(12) VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD
+                                      PIC Z(11)9.
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **                 TERMINAL I/O DATA AREA                  **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       01  MENU-SCREEN.
+           05  MENU-CMD-LINE          PIC X(79).
+           05  MENU-MSG-LINE          PIC X(79).
+
+       01  MFR-SCREEN.
+           05  MFR                    PIC X(26) VALUE SPACES.
+           05  MFR-CMD-LINE           PIC X(79).
+           05  MFR-MSG-LINE           PIC X(79).
+
+       01  MOD-SCREEN.
+           05  OLD-MFR                PIC X(26) VALUE SPACES.
+           05  NEW-MFR                PIC X(26) VALUE SPACES.
+           05  MOD-CMD-LINE           PIC X(79).
+           05  MOD-MSG-LINE           PIC X(79).
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **                  COMMUICATIONS AREAS                    **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       COPY CATREAD    OF COPYLIB.
+
+       COPY CRFMTMFR   OF COPYLIB.
+
+       COPY CCODECHK   OF COPYLIB.
+
+      ***** NOTE THAT "TSCRPRT2" ALSO USES PASSED-SPOOL-PRT, *****
+      ***** AND VIEW-COMAREA AS PARAMETERS IN ADDITION TO    *****
+      ***** THOSE DEFINED BELOW.                             *****
+
+       01  TSCRPRT2-PARAMETERS.
+           05  TSCRPRT2-PRINTCNTL        PIC S9(4) COMP VALUE 0.
+           05  TSCRPRT2-PAGECNTL         PIC S9(4) COMP VALUE 49.
+           05  TSCRPRT2-SPOOLSW          PIC X(1)  VALUE "N".
+
+       01  TSCRPRT2-ERROR-SW             PIC X(1)  VALUE "N".
+
+       01  TSCRPRT2-DISPLAY-AREA.
+           05     FILLER                 PIC X(2).
+           05  TSCRPRT2-MSG              PIC X(27).
+           05     FILLER                 PIC X(2).
+           05  TSCRPRT2-STAT             PIC S9(4).
+           05     FILLER                 PIC X(2).
+           05  TSCRPRT2-FLD              PIC X(14).
+           05     FILLER                 PIC X(2).
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY DISPDATA OF COPYLIB.
+
+       01  OFF-SWITCH                          PIC 1 VALUE B"0".
+       01  ON-SWITCH                           PIC 1 VALUE B"1".
+
+       01  IOFEEDBACK.
+           05  IO-OFFSET                       PIC S9(4) COMP-4.
+           05  IO-OUT-COUNT                    PIC S9(8) COMP-4.
+           05  IO-GET-COUNT                    PIC S9(8) COMP-4.
+           05  IO-PUT-GET-COUNT                PIC S9(8) COMP-4.
+           05  IO-OTHER-COUNT                  PIC S9(8) COMP-4.
+           05  FILLER                          PIC X.
+           05  IO-OPERATION                    PIC X.
+           05  IO-FORMAT                       PIC X(10).
+           05  IO-DEV-CLASS                    PIC X(2).
+           05  IO-PGM-DEVICE                   PIC X(10).
+           05  IO-REC-LEN                      PIC S9(8) COMP-4.
+           05  IO-RTG-DTA                      PIC X(80).
+           05  IO-BLK-REC                      PIC S9(4) COMP-4.
+           05  IO-RESV                         PIC X(4).
+           05  IO-BLK-CNT                      PIC S9(8) COMP-4.
+           05  FILLER                          PIC X(8).
+
+           05  FEEDBACK-SIZE                   PIC S9(8) COMP-4.
+           05  JOIN-LOGICAL                    PIC X(4).
+           05  KEY-OFFSET                      PIC S9(4) COMP-4.
+           05  LOCKED-RECORDS                  PIC S9(4) COMP-4.
+           05  MAX-FIELDS                      PIC S9(4) COMP-4.
+           05  FIELD-MAPPING-OFFSET            PIC S9(8) COMP-4.
+           05  CURRENT-FILE-POSITION           PIC X(1).
+           05  CURRENT-RECORD-DELETE           PIC X(1).
+           05  NO-OF-KEYS                      PIC S9(4) COMP-4.
+           05  RESERVED-FIELD                  PIC X(4).
+           05  KEY-LENGTH                      PIC S9(4) COMP-4.
+           05  DATA-MEMBER-NO                  PIC S9(4) COMP-4.
+           05  IO-RECNUM                       PIC S9(8) COMP-4.
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **             L I N K A G E     S E C T I O N             **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       LINKAGE SECTION.
+
+       01  BASE                       PIC X(10).
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **                 VIEW COMMUNICATION AREA                 **
+      **                                                         **
+      **       ----- ALSO SEE WORKING-STORAGE SECTION -----      **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+       COPY VCOMLINK OF COPYLIB.
+
+       COPY LANGSUB  OF COPYLIB.
+
+       01  MPLTINFO-PARMS.
+           05  MPLTINFO-PLANT-CODE       PIC X(3).
+           05  MPLTINFO-DDESC-LANG       PIC X(3).
+           05  MPLTINFO-DDESC2-LANG      PIC X(3).
+
+      *************************************************************
+      **#########################################################**
+      *************************************************************
+      **                                                         **
+      **          P R O C E D U R E    D I V I S I O N           **
+      **                                                         **
+      *************************************************************
+      **#########################################################**
+      *************************************************************
+
+       PROCEDURE DIVISION USING BASE,
+                                VIEW-COMAREA,
+                                LANGUAGE-PARMS,
+                                MPLTINFO-PARMS.
+
+       MANUFACTURER-INPUT-SECTION.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+           MOVE "SMFRUPDT" TO BU-PGM-NAME.
+           OPEN INPUT  DMANPART-I     MMANUFACT-I.
+           OPEN I-O    DISPLAY-FILE
+                       DMANPART-O     MMANUFACT-O.
+
+       2-EOJ.
+           CLOSE       DMANPART-I     MMANUFACT-I
+                       DISPLAY-FILE
+                       DMANPART-O     MMANUFACT-O.
+
+       2-BLOWUP.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, DUMMY-KSAM-STAT, BU-DISPLAY-MSG,
+                 BU-DISPLAY-AREA.
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+           MOVE "MFRMENU" TO VIEW-NFNAME.
+
+       6-PUT-WINDOW.
+           MOVE SPACES TO MESSAGE-BUFFER.
+
+       6-PUT-BUFFER.
+           MOVE SPACES TO MENU-SCREEN.
+
+       6-SHOW-FORM.
+           MOVE MENU-SCREEN TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC TO MENU-SCREEN.
+
+       6-PERFORM-SELECTION.
+           IF VIEW-LASTKEY = 1
+               PERFORM 61-ADD-MFR     THRU 61-ADD-MFR-X
+           ELSE
+           IF VIEW-LASTKEY = 2
+               PERFORM 62-DELETE-MFR  THRU 62-DELETE-MFR-X
+           ELSE
+           IF VIEW-LASTKEY = 8
+               PERFORM 63-MODIFY-MFR  THRU 63-MODIFY-MFR-X
+           ELSE
+           IF VIEW-LASTKEY = 3
+               GO TO 6-MAIN-X
+           ELSE
+      *--------INVALID FUNCTION KEY
+               MOVE   9 TO CATREAD-MSG-SET
+               MOVE  10 TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO MENU-CMD-LINE
+               MOVE ON-SWITCH TO IND (98)
+               MOVE MENU-SCREEN TO DISPLAY-REC
+               PERFORM 998-WRITE-SCREEN
+               PERFORM 998-AUTO-READ-SCREEN
+               GO TO 6-SHOW-FORM.
+
+           GO TO 6-MAIN.
+
+       6-MAIN-X.
+           EXIT.
+
+      *********************************************************
+      *                                                       *
+      *           A D D   M A N U F A C T U R E R             *
+      *                                                       *
+      *********************************************************
+
+       61-ADD-MFR.
+           MOVE "ADDMFR" TO VIEW-NFNAME.
+
+       61-PUT-WINDOW.
+           MOVE SPACES TO MESSAGE-BUFFER.
+
+       61-PUT-BUFFER.
+           MOVE SPACES TO MFR-SCREEN.
+
+       61-SHOW-FORM.
+           MOVE MFR-SCREEN TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC TO MFR-SCREEN.
+
+       61-READ-FIELDS.
+           IF VIEW-LASTKEY = 3
+               MOVE SPACES TO MESSAGE-BUFFER
+               GO TO 61-ADD-MFR-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      ***      INVALID FUNCTION KEY     ***
+               MOVE   9 TO CATREAD-MSG-SET
+               MOVE  10 TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+               MOVE ON-SWITCH TO IND (98)
+               MOVE MFR-SCREEN TO DISPLAY-REC
+               PERFORM 998-WRITE-SCREEN
+               PERFORM 998-AUTO-READ-SCREEN
+               GO TO 61-SHOW-FORM.
+
+       61-FIELD-EDITS.
+           IF MFR = SPACES
+      *-------MANUFACTURER MUST BE ENTERED
+              MOVE 13061 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+              MOVE ON-SWITCH TO IND (1), IND (98)
+              MOVE MFR-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 61-SHOW-FORM.
+
+       61-EDIT-MFR.
+           MOVE MFR-SCREEN TO SEND-MFR.
+
+           CALL "CRFMTMFR" USING REFORMAT-MFR-AREA,
+               BASE, VIEW-COMAREA.
+
+           MOVE RETURN-MFR TO MFR-ARG.
+           PERFORM 999-READ-MMANUFACT-I.
+
+           IF FILE-STATUS = "00"
+      *--------MANUFACTURER ALREADY EXISTS
+               MOVE  13 TO CATREAD-MSG-SET
+               MOVE  35 TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+               MOVE  ON-SWITCH TO IND (3), IND (98)
+               MOVE MFR-SCREEN TO DISPLAY-REC
+               PERFORM 998-WRITE-SCREEN
+               PERFORM 998-AUTO-READ-SCREEN
+               GO TO 61-SHOW-FORM.
+
+           MOVE MFR-ARG TO MANUFACT-MAN-NAME.
+           PERFORM 999-WRITE-MMANUFACT-O.
+
+      *----MANUFACTURER HAS BEEN ADDED.
+           MOVE SPACES TO MFR-SCREEN.
+           MOVE 13062 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO MFR-CMD-LINE.
+           MOVE ON-SWITCH TO IND (98).
+           MOVE MFR-SCREEN TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN.
+           PERFORM 998-AUTO-READ-SCREEN.
+           GO TO 61-SHOW-FORM.
+
+       61-ADD-MFR-X.
+           EXIT.
+
+      *********************************************************
+      *                                                       *
+      *         D E L E T E   M A N U F A C T U R E R         *
+      *                                                       *
+      *********************************************************
+
+       62-DELETE-MFR.
+           MOVE "DELMFR" TO VIEW-NFNAME.
+
+       62-PUT-WINDOW.
+           MOVE SPACES  TO  MESSAGE-BUFFER.
+
+       62-PUT-BUFFER.
+           MOVE SPACES TO MFR-SCREEN.
+
+       62-SHOW-FORM.
+           MOVE MFR-SCREEN TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC TO MFR-SCREEN.
+
+       62-READ-FIELDS.
+           IF VIEW-LASTKEY = 3
+               MOVE SPACES TO MESSAGE-BUFFER
+               GO TO 62-DELETE-MFR-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *--------INVALID FUNCTION KEY
+               MOVE   9 TO CATREAD-MSG-SET
+               MOVE  10 TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+               MOVE ON-SWITCH TO IND (98)
+               MOVE MFR-SCREEN TO DISPLAY-REC
+               PERFORM 998-WRITE-SCREEN
+               PERFORM 998-AUTO-READ-SCREEN
+               GO TO 62-SHOW-FORM.
+
+       62-FIELD-EDITS.
+           IF MFR = SPACES
+      *-------MANUFACTURER MUST BE ENTERED
+              MOVE 13061 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+              MOVE ON-SWITCH TO IND (1), IND (98)
+              MOVE MFR-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 62-SHOW-FORM.
+
+       62-EDIT-MFR.
+           MOVE MFR-SCREEN TO SEND-MFR.
+
+           CALL "CRFMTMFR" USING REFORMAT-MFR-AREA,
+               BASE, VIEW-COMAREA.
+
+           MOVE RETURN-MFR TO MFR-ARG.
+           PERFORM 999-READ-MMANUFACT-I.
+
+           IF FILE-STATUS-1 = "2"
+      *-------MANUFACTURER DOES NOT EXIST
+              MOVE  13 TO CATREAD-MSG-SET
+              MOVE  10 TO CATREAD-MSG-NUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+              MOVE ON-SWITCH TO IND (3), IND (98)
+              MOVE MFR-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 62-SHOW-FORM.
+
+           PERFORM 999-START-DMANPART-I.
+           IF FILE-STATUS = "00"
+      *-------CANNOT DELETE. MANUFACTURER IS LINKED TO
+      *-------1 OR MORE CODES
+              MOVE 03049 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+              MOVE ON-SWITCH TO IND (3), IND (98)
+              MOVE MFR-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 62-SHOW-FORM
+           ELSE
+              PERFORM 999-READ-MMANUFACT-O
+              PERFORM 999-DELETE-MMANUFACT-O
+      *-------MANUFACTURER HAS BEEN DELETED
+              MOVE SPACES TO MFR-SCREEN
+              MOVE 13063 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MFR-CMD-LINE
+              MOVE ON-SWITCH TO IND (98)
+              MOVE MFR-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 62-SHOW-FORM.
+
+       62-DELETE-MFR-X.
+           EXIT.
+
+      *********************************************************
+      *                                                       *
+      *         M O D I F Y   M A N U F A C T U R E R         *
+      *                                                       *
+      *********************************************************
+
+       63-MODIFY-MFR.
+           MOVE "MODMFR" TO VIEW-NFNAME.
+
+       63-PUT-WINDOW.
+           MOVE SPACES TO MESSAGE-BUFFER.
+
+       63-PUT-BUFFER.
+           MOVE SPACES TO MOD-SCREEN.
+
+       63-SHOW-FORM.
+           MOVE MOD-SCREEN TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC TO MOD-SCREEN.
+
+       63-READ-FIELDS.
+           IF VIEW-LASTKEY = 3
+               MOVE SPACES TO MESSAGE-BUFFER
+               GO TO 63-MODIFY-MFR-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *--------INVALID FUNCTION KEY
+               MOVE   9 TO CATREAD-MSG-SET
+               MOVE  10 TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO MOD-CMD-LINE
+               MOVE ON-SWITCH TO IND (98)
+               MOVE MOD-SCREEN TO DISPLAY-REC
+               PERFORM 998-WRITE-SCREEN
+               PERFORM 998-AUTO-READ-SCREEN
+               GO TO 63-SHOW-FORM.
+
+       63-FIELD-EDITS.
+           IF OLD-MFR = SPACES
+      *-------MANUFACT MUST BE ENTERED
+              MOVE 13061 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MOD-CMD-LINE
+              MOVE ON-SWITCH TO IND (3), IND (98)
+              MOVE MOD-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 63-SHOW-FORM.
+           IF NEW-MFR = SPACES
+      *-------MANUFACT MUST BE ENTERED
+              MOVE 13061 TO CATREAD-MSG-NUMBER
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MOD-CMD-LINE
+              MOVE ON-SWITCH TO IND (4), IND (98)
+              MOVE MOD-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 63-SHOW-FORM.
+
+       63-VERIFY-OLD-MFR.
+           MOVE OLD-MFR TO SEND-MFR.
+
+           CALL "CRFMTMFR" USING REFORMAT-MFR-AREA,
+                BASE, VIEW-COMAREA.
+
+           MOVE RETURN-MFR TO MFR-ARG, SAVE-OLD-MFR-ARG.
+           PERFORM 999-READ-MMANUFACT-I.
+
+           IF FILE-STATUS NOT = "00"
+      *-------MANUFACTURER DOES NOT EXIST
+              MOVE  13 TO CATREAD-MSG-SET
+              MOVE  10 TO CATREAD-MSG-NUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MOD-CMD-LINE
+              MOVE ON-SWITCH TO IND (3), IND (98)
+              MOVE MOD-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 63-SHOW-FORM.
+
+       63-VERIFY-NEW-MFR.
+           MOVE NEW-MFR TO SEND-MFR.
+
+           CALL "CRFMTMFR" USING REFORMAT-MFR-AREA,
+               BASE, VIEW-COMAREA.
+
+           MOVE RETURN-MFR TO MFR-ARG, SAVE-NEW-MFR-ARG.
+
+           PERFORM 999-READ-MMANUFACT-I.
+           IF FILE-STATUS NOT = "00"
+              MOVE MFR-ARG TO MANUFACT-MAN-NAME
+              PERFORM 999-WRITE-MMANUFACT-O.
+
+       63-CHECK-FOR-SAME.
+           IF SAVE-OLD-MFR-ARG = SAVE-NEW-MFR-ARG
+      *-------OLD MFR AND NEW MFR ARE THE SAME
+              MOVE  15 TO CATREAD-MSG-SET
+              MOVE  11 TO CATREAD-MSG-NUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE MESSAGE-BUFFER TO MOD-CMD-LINE
+              MOVE  ON-SWITCH TO IND (3), IND (4), IND (98)
+              MOVE MOD-SCREEN TO DISPLAY-REC
+              PERFORM 998-WRITE-SCREEN
+              PERFORM 998-AUTO-READ-SCREEN
+              GO TO 63-SHOW-FORM.
+
+       63-REPLACE-OLD.
+           MOVE "Y" TO MMANUFACT-DELETE-FLAG.
+           MOVE SAVE-OLD-MFR-ARG TO MFR-ARG.
+
+           PERFORM 999-START-DMANPART-O.
+           IF FILE-STATUS = "00"
+              PERFORM 631-UPDATE-DMANPART.
+           IF MMANUFACT-DELETE-FLAG = "Y"
+              PERFORM 999-READ-MMANUFACT-O
+              IF FILE-STATUS = "00"
+                 PERFORM 999-DELETE-MMANUFACT-O.
+
+      *----MANUFACTURER HAS BEEN UPDATED WHERE ALLOWED.
+           MOVE SPACES TO MOD-SCREEN.
+           MOVE 13064 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO MOD-CMD-LINE.
+           MOVE ON-SWITCH TO IND (98).
+           MOVE MOD-SCREEN TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN.
+           PERFORM 998-AUTO-READ-SCREEN.
+           GO TO 63-SHOW-FORM.
+
+       63-MODIFY-MFR-X.
+           EXIT.
+
+       631-UPDATE-DMANPART.
+
+      *----REPLACE OLD MFR WITH NEW MFR IN DMANPART
+      *----PROVIDED THAT THE MFR IS NOT LINKED TO A
+      *----CORPORATE CODE.
+
+           MOVE "N" TO EOF-DMANPART.
+
+           PERFORM 6311-UPDATE-1-CODE THRU 6311-UPDATE-1-CODE-X
+              UNTIL EOF-DMANPART = "Y".
+
+       631-UPDATE-DMANPART-X.
+           EXIT.
+
+       6311-UPDATE-1-CODE.
+           PERFORM 999-READ-NEXT-DMANPART-O.
+
+           IF MAN-NAME NOT = MFR-ARG
+              MOVE "Y" TO EOF-DMANPART
+              PERFORM 999-RESET-DMANPART-O
+              GO TO 6311-UPDATE-1-CODE-X.
+
+           MOVE MAN-CORPCODE        TO SAVE-CODE, CODE-CHK-IN.
+           MOVE MAN-PARTNO-TYPE     TO SAVE-PARTNO-TYPE.
+           MOVE MAN-PARTNO          TO SAVE-PARTNO.
+           MOVE MPLTINFO-PLANT-CODE TO PLANT-CHK.
+
+           CALL "CCODECHK" USING CCODECHK-PARMS.
+
+      *----DON'T MODIFY IF CODE IS A CORPORATE CODE
+
+           IF CODE-IS-CORP-CODE
+               MOVE "N" TO MMANUFACT-DELETE-FLAG
+               GO TO 6311-UPDATE-1-CODE-X.
+
+           PERFORM 999-DELETE-DMANPART-O.
+
+           MOVE SPACES           TO BUF-DMANPART.
+           MOVE SAVE-NEW-MFR-ARG TO MAN-NAME.
+           MOVE SAVE-PARTNO-TYPE TO MAN-PARTNO-TYPE.
+           MOVE SAVE-PARTNO      TO MAN-PARTNO.
+           MOVE SAVE-CODE        TO MAN-CORPCODE.
+
+           PERFORM 999-WRITE-DMANPART-O.
+
+       6311-UPDATE-1-CODE-X.
+           EXIT.
+
+      *-----------------------------------------------------------------
+      *    UTILITY SECTION.
+      *-----------------------------------------------------------------
+
+       998-WRITE-SCREEN.
+           WRITE DISPLAY-REC  FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+       998-READ-SCREEN.
+           READ  DISPLAY-FILE FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+      *------ A BAD STATUS MAY MEAN USER TURNED OFF TERMINAL.
+      *------ IF SO, SIMULATE THE F3 KEY TO EXIT PROGRAM.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       998-AUTO-READ-SCREEN.
+           READ  DISPLAY-FILE TERMINAL IS TERMINAL-ID
+               INDIC ARE SRF-INDICATORS
+                   NO DATA MOVE DISPLAY-STATUS TO DISPLAY-STATUS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+       999-CATREAD.
+           MOVE SPACES TO MESSAGE-BUFFER.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE CATREAD-MSG-SET TO CATREAD-MSG-SET
+               MOVE CATREAD-MSG-NUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.
+           EXIT.
+
+      *---------------------------------
+      * MMANUFACT
+      *---------------------------------
+
+      *-INPUT---------------------------
+
+       999-READ-MMANUFACT-I.
+           MOVE MFR-ARG TO MANUFACT OF MMANUFACT-REC-I.
+           READ MMANUFACT-I INTO BUF-MMANUFACT
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "READ MMANUFACT-I:999-RMI" TO BU-DISPLAY-MSG
+                 MOVE MFR-ARG                  TO BU-DISPLAY-FLD (1)
+                 PERFORM 2-BLOWUP.
+
+      *-OUTPUT--------------------------
+
+       999-READ-MMANUFACT-O.
+           MOVE MFR-ARG TO MANUFACT OF MMANUFACT-REC-O.
+           READ MMANUFACT-O INTO BUF-MMANUFACT
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "READ MMANUFACT-O:999-RMO" TO BU-DISPLAY-MSG
+                 MOVE MFR-ARG                  TO BU-DISPLAY-FLD (1)
+                 PERFORM 2-BLOWUP.
+
+       999-WRITE-MMANUFACT-O.
+           WRITE MMANUFACT-REC-O FROM BUF-MMANUFACT
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "WRITE MMANUFACT-O:999-WMO" TO BU-DISPLAY-MSG
+              MOVE MFR-ARG                   TO BU-DISPLAY-FLD (1)
+              PERFORM 2-BLOWUP.
+
+       999-DELETE-MMANUFACT-O.
+           DELETE MMANUFACT-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "DELETE MMANUFACT-O:999-DMO" TO BU-DISPLAY-MSG
+              PERFORM 2-BLOWUP.
+
+      *---------------------------------
+      * DMANPART
+      *---------------------------------
+
+      *-INPUT---------------------------
+
+       999-START-DMANPART-I.
+           MOVE MFR-ARG TO MANUFACT OF DMANPART-REC-I.
+           START DMANPART-I KEY = MANUFACT OF DMANPART-REC-I
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "START DMANPART-I:999-SDI" TO BU-DISPLAY-MSG
+                 MOVE MFR-ARG                 TO BU-DISPLAY-FLD (1)
+                 PERFORM 2-BLOWUP.
+
+      *-OUTPUT--------------------------
+
+       999-START-DMANPART-O.
+           MOVE MFR-ARG TO MANUFACT OF DMANPART-REC-O.
+           START DMANPART-O KEY = MANUFACT OF DMANPART-REC-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              IF FILE-STATUS-1 NOT = "2"
+                 MOVE "START DMANPART-O:999-SDO" TO BU-DISPLAY-MSG
+                 MOVE MFR-ARG                 TO BU-DISPLAY-FLD (1)
+                 PERFORM 2-BLOWUP.
+
+       999-READ-NEXT-DMANPART-O.
+           READ DMANPART-O NEXT INTO BUF-DMANPART
+              AT END MOVE "Y" TO EOF-DMANPART.
+
+       999-RESET-DMANPART-O.
+           MOVE HIGH-VALUES TO MANUFACT OF DMANPART-REC-O.
+           START DMANPART-O KEY > MANUFACT OF DMANPART-REC-O
+              INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       999-WRITE-DMANPART-O.
+           WRITE DMANPART-REC-O FROM BUF-DMANPART
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "WRITE DMANPART-O:999-WDO" TO BU-DISPLAY-MSG
+              MOVE MFR-ARG                 TO BU-DISPLAY-FLD (1)
+              PERFORM 2-BLOWUP.
+
+       999-DELETE-DMANPART-O.
+           DELETE DMANPART-O
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "DELETE DMANPART-O:999-DDO" TO BU-DISPLAY-MSG
+              MOVE MFR-ARG                 TO BU-DISPLAY-FLD (1)
+              PERFORM 2-BLOWUP.
+

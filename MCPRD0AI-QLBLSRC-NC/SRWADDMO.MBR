@@ -1,0 +1,689 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.          SRWADDMO.
+000400 AUTHOR.              B DISMUKES.
+000500 DATE-WRITTEN.        8/06/92.
+000600 DATE-COMPILED.
+000700*INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+000800*SECURITY.
+000900*REMARKS.
+      ****************************************************************
+      *                     S R W A D D M O                          *
+      *                                                              *
+      *  THIS PROGRAM IS CALLED FROM THE MP1 SCREEN BY THE 'F5' KEY. *
+      *  IT ALLOWS THE USER TO ADD OR MODIFY WITHDRAWAL RESTRICTIONS *
+      *  ON CORPORATE CODES.                                         *
+      *                                                              *
+      ****************************************************************
+      *C
+      *C 05/14/96  JEFF BUNGO   REQUEST 96-026
+      *C    ADD NEW LINE TYPE "X" FOR RESTRICTED WITHDRAWAL.
+      *C    "X" WILL RESTRICT CC# IN DEPT#.  THE DEPT# WILL BE IN
+      *C    THE FIRST COLUMN AND THE REMAINING COLUMNS WILL BE CC#.
+      *C    ALLOW WITHDRAWALS IF DEPT/CC MATCH DEPT/CC ON THE
+      *C    WITHDRAWAL.  ALSO, ALLOW ALL OTHER DEPTS OUTSIDE OF
+      *C    SPECIFIED DEPT TO WITHDRAWAL, DEPENDENT ON OTHER
+      *C    RESTRICTIONS SET (THIS IS DIFFERENT THAN THE OTHER
+      *C    RESTRICTIONS).
+      *C
+      *C 06/12/96   JEFF BUNGO
+      *C    EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C    RECOMPILE PROGRAM TO PICK UP NEW FILE FORMATS.
+      *C
+      *C 08/06/96   JEFF BUNGO
+      *C    ALLOW A TOTAL OF 15 RESTRICTIONS PER PAGE AND
+      *C    INCREASE THE TOTAL PAGES TO THREE FROM ONE.
+      *C
+
+001300 ENVIRONMENT DIVISION.
+001400 CONFIGURATION SECTION.
+001500 SOURCE-COMPUTER.  AS-400.
+001600 OBJECT-COMPUTER.  AS-400.
+       SPECIAL-NAMES. I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRESTRIC-I-O
+                  ASSIGN TO DATABASE-MCFLCS5001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MVALIDPLTDATA
+                  ASSIGN TO DATABASE-MCFLCS1701
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT PER-PERSON-PC-I
+               ASSIGN TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-CRAFTS-REQD-FILE
+               ASSIGN TO DATABASE-MCFLMM0601
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPLTMAST-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+001700
+001800 DATA DIVISION.
+       FILE SECTION.
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-I-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DRESTRIC-I-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRESTRIC-REC-I-O.
+           COPY DDS-MCRPCS5000  OF MCFLCS5001.
+
+       FD  MVALIDPLTDATA
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDPLTDATA-REC.
+           COPY DDS-MCRPCS1700  OF MCFLCS1701.
+
+       FD  PER-PERSON-PC-I
+           LABEL RECORDS ARE STANDARD.
+       01  PER-PERSON-PC-REC-I.
+           COPY DDS-MCRPMM0300  OF MCFLMM0301.
+
+       FD  WO-CRAFTS-REQD-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WCRFREC.
+       01  WCRFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC              PIC X(1500).
+
+001900 WORKING-STORAGE SECTION.
+002000
+002100 77  MPLT-COMP-4              PIC X(4).
+002400 77  OPEN-REQ-SW              PIC X(1).
+       77  CODE-LIT                 PIC X(16) VALUE "  CORPORATE CODE".
+       77  CLASS-LIT                PIC X(16) VALUE "ACCOUNTING CLASS".
+002500
+003200**************************************************************
+003300**                                                          **
+003400**                S U B P R O G R A M   A R E A S           **
+003500**                                                          **
+003600**************************************************************
+003700
+003800 COPY DBSTAT     IN COPYLIB.
+003900 COPY TSHWRDFM   IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+004100 COPY TBLOWUP    IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+007400
+008100 01  SCREEN-PRINT-PARMS.
+008200     05  PRINT-CTL            PIC S9(4)  VALUE ZERO    COMP-4.
+008300     05  PAGE-CTL             PIC S9(4)  VALUE 49      COMP-4.
+008400     05  SPOOLFIL-OPEN-SW     PIC X(1)   VALUE "N".
+009400
+008600 01  FIELD-NUMBER             PIC S9(4)  VALUE 1       COMP-4.
+
+008600 01  COL-NUM                  PIC S9(4)  VALUE 1       COMP-4.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT             PIC X(68)  VALUE SPACES.
+           05  MSG-FLD              PIC X(10)  VALUE SPACES.
+           05  MSG-FLD-9   REDEFINES MSG-FLD   PIC ZZZZZZZZZ9.
+
+       01  HOLD-RESTRICT-CODE.
+           05  FILLER               PIC X(7).
+           05  HOLD-RESTRICT-CODE-8 PIC X(1).
+
+009400
+009500******************************************************************
+009600**                                                              **
+009700**             D A T A B A S E   W O R K                        **
+009800**                                                              **
+009900******************************************************************
+010000 01  MPLTINFO-ARG             PIC X(4).
+
+       01  DATASET-NAMES.
+010200     05  DSET-MPLTINFO        PIC X(16) VALUE "MPLTINFO;".
+010200     05  DSET-DRESTRIC        PIC X(16) VALUE "DRESTRIC;".
+           05  DSET-MVALIDPLTDATA   PIC X(16) VALUE "MVALIDPLTDATA;".
+
+       01  MODE-VALUES.
+010700     05  MODE1                PIC S9(4) COMP-4 VALUE 1.
+010800     05  MODE5                PIC S9(4) COMP-4 VALUE 5.
+010900     05  MODE7                PIC S9(4) COMP-4 VALUE 7.
+
+008600 01  ARGUMENT-VALUES.
+008700     05  PLT-ARG              PIC X(4).
+009100     05  CODE-ARG             PIC X(8).
+
+       01  VALID-ARG.
+           05  VALID-ARG-1-2        PIC X(2).
+           05  VALID-ARG-3-10       PIC X(8).
+011300
+       01  FILE-STATUS.
+           05  FILE-STATUS-1        PIC X  VALUE "0".
+           05  FILE-STATUS-2        PIC X  VALUE "0".
+
+011400******************************************************************
+011500**                                                              **
+011600**       D A T A B A S E   B U F F E R S                        **
+011700**                                                              **
+011800******************************************************************
+016800
+016900 COPY DRESTRIC           IN  COPYLIB.
+
+       COPY MVALDPLT           IN COPYLIB.
+
+       01  BUF-PER-PERSONNEL.            COPY MPERSONL IN COPYLIB.
+012600
+014600 01  WO-CRAFT-BUFF            PIC XX.
+
+       01  PAGE-TABLE.
+           05  PAGE-BUFFER OCCURS 3 TIMES PIC X(615).
+       01  PAGENO                   PIC S9(2) VALUE 0.
+       01  MAX-INDEX                PIC S9(2) VALUE 0.
+
+016300**************************************************************
+016400**                                                          **
+016500**                  S C R E E N   D A T A                   **
+016600**                                                          **
+016700**************************************************************
+016800
+016900 01  SCREEN-DATA.
+           05  DE-PAGE                     PIC 9(1).
+           05  DE-HEADER-LIT               PIC X(16).
+           05  DE-CODE-LIT                 PIC X(16).
+           05  SCREEN-TABLE.
+017000         10  DE-CORP-CODE            PIC X(7).
+               10  DE-CORP-CODE-8          PIC X.
+017100         10  DE-RESTRICT-TABLE       PIC X(615).
+           05  DE-COMMAND-LINE             PIC X(79).
+           05  DE-MESSAGE-LINE             PIC X(79).
+021200
+021300**************************************************************
+021400**                                                          **
+021500**            L I N K A G E   S E C T I O N                 **
+021600**                                                          **
+021700**************************************************************
+021800
+021900 LINKAGE SECTION.
+       01 BASE                      PIC X(10).
+011900 COPY MSTORERM   IN COPYLIB.
+       COPY VCOMLINK   IN COPYLIB.
+       COPY LANGSUB    IN COPYLIB.
+       01  RESTRICT-TYPE            PIC X(1).
+023100
+023200 PROCEDURE DIVISION USING          BASE,
+                                         BUF-MSTORERM,
+024000                                   VIEW-COMAREA,
+024100                                   LANGUAGE-PARMS,
+                                         RESTRICT-TYPE.
+024300
+024400 1-HSK.
+           OPEN       I-O DISPLAY-FILE,
+                          DRESTRIC-I-O.
+           OPEN     INPUT MVALIDPLTDATA,
+                          PER-PERSON-PC-I,
+                          WO-CRAFTS-REQD-FILE.
+037600     MOVE "ADDMODRW"     TO   VIEW-NFNAME.
+024600     MOVE SPACES                   TO   BUF-DRESTRIC,
+                                              SCREEN-DATA.
+           IF RESTRICT-TYPE = SPACES
+               MOVE CODE-LIT   TO   DE-HEADER-LIT
+                                    DE-CODE-LIT
+           ELSE
+           IF RESTRICT-TYPE = "C"
+               MOVE CLASS-LIT  TO   DE-HEADER-LIT
+                                    DE-CODE-LIT.
+
+           MOVE CORP-CODE      TO   HOLD-RESTRICT-CODE
+                                    RES-CORP-CODE
+                                    DE-CORP-CODE.
+           MOVE RESTRICT-TYPE  TO   RES-RESTRICT-TYPE
+                                    HOLD-RESTRICT-CODE-8.
+037900     MOVE HOLD-RESTRICT-CODE TO CORPCDE OF DRESTRIC-REC-I-O.
+
+028900     PERFORM 6-MAIN THRU 6-M-X.
+           CLOSE          DISPLAY-FILE,
+                          DRESTRIC-I-O,
+                          MVALIDPLTDATA,
+                          PER-PERSON-PC-I,
+                          WO-CRAFTS-REQD-FILE.
+
+       2-EOJ.
+029000     GOBACK.
+029100
+029200 2-BLOWUP.
+029300     MOVE "SRWADDMO"               TO   BU-PGM-NAME.
+029400     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+029500       VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+029600       BU-DISPLAY-FLDS.
+054500
+054600 4-PGM-ERROR.
+           ADD 10  TO FIELD-NUMBER.
+           MOVE B"1" TO IND (FIELD-NUMBER), IND (99).
+           MOVE B"1" TO IND (COL-NUM).
+           MOVE MESSAGE-BUFFER TO DE-MESSAGE-LINE.
+055400
+055500 4-PGM-ERROR-X.
+055600     EXIT.
+
+036300******************************************************************
+036400**                                                              **
+036500**                      M A I N   M E N U                       **
+036600**                                                              **
+036700******************************************************************
+036800 6-MAIN.
+
+           READ DRESTRIC-I-O INTO BUF-DRESTRIC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE RES-CORP-CODE      TO DE-CORP-CODE
+               MOVE RES-RESTRICT-TABLE TO PAGE-TABLE
+               MOVE 1 TO PAGENO
+               MOVE PAGE-BUFFER(PAGENO) TO DE-RESTRICT-TABLE
+      *        MOVE BUF-DRESTRIC       TO SCREEN-TABLE
+               MOVE SPACES             TO DE-CORP-CODE-8
+               PERFORM 60-MODIFY-RESTRICTIONS THRU 60-MR-X
+           ELSE IF FILE-STATUS = "23"
+               MOVE SPACES TO PAGE-TABLE
+               MOVE 1 TO PAGENO
+               PERFORM 61-ADD-RESTRICTIONS THRU 61-AR-X
+           ELSE
+               MOVE "READ DRESTRICT  6-MAIN"      TO BU-DISPLAY-MSG
+               MOVE "RESTRICT CODE ="             TO BU-DISPLAY-FLD (1)
+               MOVE DE-CORP-CODE                  TO BU-DISPLAY-FLD (2)
+               MOVE RESTRICT-TYPE                 TO BU-DISPLAY-FLD (3)
+               GO TO 2-BLOWUP.
+
+       6-M-X.
+           EXIT.
+058300
+058400******************************************************************
+058500**                                                              **
+058600**    M O D I F Y   R E S T R I C T I O N S                     **
+058700**                                                              **
+058800******************************************************************
+
+037400 60-MODIFY-RESTRICTIONS.
+
+       60-SHOWFORM-MOD-SCREEN.
+           MOVE PAGENO             TO DE-PAGE.
+           MOVE SCREEN-DATA        TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC        TO SCREEN-DATA.
+           MOVE DE-RESTRICT-TABLE  TO PAGE-BUFFER(PAGENO).
+           MOVE PAGE-TABLE         TO RES-RESTRICT-TABLE.
+
+           IF RES-RESTRICT-TABLE = SPACES
+               PERFORM 60-DELETE-RESTRICTIONS THRU 60-DR-X
+               MOVE 3 TO VIEW-LASTKEY.
+
+070900     IF VIEW-LASTKEY = 3
+071100         GO TO 60-MR-X
+           ELSE
+072500     IF VIEW-LASTKEY = 1 OR
+072600                     = 2 OR
+072600                     = 4 OR
+072800                     = 5 OR
+072900                     = 6
+073200*M-----  INVALID FUNCTION KEY
+073300         MOVE   9 TO LANG-SETNUM
+073400         MOVE  10 TO LANG-MSGNUM
+073500         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+073700         MOVE  1  TO  FIELD-NUMBER
+073700         MOVE 95  TO  COL-NUM
+073800         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+073900         GO TO 60-SHOWFORM-MOD-SCREEN.
+
+           PERFORM 999-CHECK-EDITS  THRU 999-CE-X.
+           IF MESSAGE-BUFFER = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 60-SHOWFORM-MOD-SCREEN.
+
+      *-----IF PAGE, DO NOT SAVE DATA BUT DISPLAY NEXT PAGE
+           IF VIEW-LASTKEY = 7
+             IF PAGENO = 1
+               MOVE  14 TO LANG-SETNUM
+               MOVE  98 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE  1  TO  FIELD-NUMBER
+               MOVE 95  TO  COL-NUM
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 60-SHOWFORM-MOD-SCREEN
+             ELSE
+               SUBTRACT 1 FROM PAGENO
+               MOVE PAGE-BUFFER(PAGENO) TO DE-RESTRICT-TABLE
+               GO TO 60-SHOWFORM-MOD-SCREEN
+           ELSE
+           IF VIEW-LASTKEY = 8
+             IF PAGENO = 3
+               MOVE  14 TO LANG-SETNUM
+               MOVE  96 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE  1  TO  FIELD-NUMBER
+               MOVE 95  TO  COL-NUM
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 60-SHOWFORM-MOD-SCREEN
+             ELSE
+               ADD 1 TO PAGENO
+               MOVE PAGE-BUFFER(PAGENO) TO DE-RESTRICT-TABLE
+               GO TO 60-SHOWFORM-MOD-SCREEN.
+
+
+       60-REWRITE-RESTRICTIONS.
+           REWRITE DRESTRIC-REC-I-O FROM BUF-DRESTRIC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE "X"                       TO STR-RESTRICTED-FLG
+           ELSE
+248800         MOVE "REWRITE 60-REWRITE-DRESTRIC" TO BU-DISPLAY-MSG
+248800         MOVE "RESTRICT CODE ="             TO BU-DISPLAY-FLD (1)
+248800         MOVE DE-CORP-CODE                  TO BU-DISPLAY-FLD (2)
+               MOVE RESTRICT-TYPE                 TO BU-DISPLAY-FLD (3)
+248900         GO TO 2-BLOWUP.
+
+043700
+       60-MR-X.
+           EXIT.
+
+       60-DELETE-RESTRICTIONS.
+           DELETE DRESTRIC-I-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00" OR "23"
+               MOVE SPACES                    TO STR-RESTRICTED-FLG
+           ELSE
+248800         MOVE "DELETE 60-DELETE-DRESTRIC" TO BU-DISPLAY-MSG
+248800         MOVE "RESTRICT CODE ="             TO BU-DISPLAY-FLD (1)
+248800         MOVE DE-CORP-CODE                  TO BU-DISPLAY-FLD (2)
+               MOVE RESTRICT-TYPE                 TO BU-DISPLAY-FLD (3)
+248900         GO TO 2-BLOWUP.
+043700
+       60-DR-X.
+           EXIT.
+
+043800******************************************************************
+043900**                                                              **
+044000**    A D D   R E S T R I C T I O N S                           **
+044100**                                                              **
+044200******************************************************************
+044300 61-ADD-RESTRICTIONS.
+
+       61-SHOWFORM-ADD-SCREEN.
+           MOVE PAGENO             TO DE-PAGE.
+           MOVE SCREEN-DATA        TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC        TO SCREEN-DATA.
+           MOVE DE-RESTRICT-TABLE  TO PAGE-BUFFER(PAGENO).
+           MOVE PAGE-TABLE         TO RES-RESTRICT-TABLE.
+
+           IF RES-RESTRICT-TABLE = SPACES AND
+               (VIEW-LASTKEY NOT = 7 AND VIEW-LASTKEY NOT = 8)
+               MOVE 3 TO VIEW-LASTKEY.
+
+070900     IF VIEW-LASTKEY = 3
+071100         GO TO 61-AR-X
+071200     ELSE
+072500     IF VIEW-LASTKEY = 1 OR
+072600                     = 2 OR
+072600                     = 4 OR
+072800                     = 5 OR
+072900                     = 6
+073200*M------ INVALID FUNCTION KEY
+073300         MOVE   9 TO LANG-SETNUM
+073400         MOVE  10 TO LANG-MSGNUM
+073500         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+073700         MOVE  1  TO  FIELD-NUMBER
+073700         MOVE 95  TO  COL-NUM
+073800         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+073900         GO TO 61-SHOWFORM-ADD-SCREEN.
+
+           PERFORM 999-CHECK-EDITS  THRU 999-CE-X.
+           IF MESSAGE-BUFFER = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-ADD-SCREEN.
+
+      *-----IF PAGE, DO NOT SAVE DATA BUT DISPLAY NEXT PAGE
+           IF VIEW-LASTKEY = 7
+             IF PAGENO = 1
+               MOVE  14 TO LANG-SETNUM
+               MOVE  98 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE  1  TO  FIELD-NUMBER
+               MOVE 95  TO  COL-NUM
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-ADD-SCREEN
+             ELSE
+               SUBTRACT 1 FROM PAGENO
+               MOVE PAGE-BUFFER(PAGENO) TO DE-RESTRICT-TABLE
+               GO TO 61-SHOWFORM-ADD-SCREEN
+           ELSE
+           IF VIEW-LASTKEY = 8
+             IF PAGENO = 3
+               MOVE  14 TO LANG-SETNUM
+               MOVE  96 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE  1  TO  FIELD-NUMBER
+               MOVE 95  TO  COL-NUM
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-ADD-SCREEN
+             ELSE
+               ADD 1 TO PAGENO
+               MOVE PAGE-BUFFER(PAGENO) TO DE-RESTRICT-TABLE
+               GO TO 61-SHOWFORM-ADD-SCREEN.
+
+       61-WRITE-RESTRICTIONS.
+           WRITE DRESTRIC-REC-I-O FROM BUF-DRESTRIC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE "X"                       TO STR-RESTRICTED-FLG
+           ELSE
+248800         MOVE "WRITE 61-WRITE-DRESTRIC" TO BU-DISPLAY-MSG
+248800         MOVE "CORP-CODE ="             TO BU-DISPLAY-FLD (1)
+248800         MOVE DE-CORP-CODE              TO BU-DISPLAY-FLD (2)
+248900         GO TO 2-BLOWUP.
+043700
+       61-AR-X.
+           EXIT.
+110700
+       COPY DISPCALL IN COPYLIB.
+
+       999-CHECK-EDITS.
+           MOVE SPACES TO MESSAGE-BUFFER.
+           IF PAGENO = 1
+               SET L-INDEX  TO 1
+               MOVE 16 TO MAX-INDEX
+           ELSE IF PAGENO = 2
+               SET L-INDEX  TO 16
+               MOVE 31 TO MAX-INDEX
+           ELSE IF PAGENO = 3
+               SET L-INDEX  TO 31
+               MOVE 46 TO MAX-INDEX.
+
+
+       999-BEGIN-EDITS.
+           IF RES-DESC-BYTE (L-INDEX) = "C"
+               SET D-INDEX  TO 1
+               PERFORM 9991-CHECK-CC     THRU 9991-CC-X
+           ELSE IF RES-DESC-BYTE (L-INDEX) = "D"
+               SET D-INDEX  TO 1
+               PERFORM 9991-CHECK-DEPT   THRU 9991-CD-X
+           ELSE IF RES-DESC-BYTE (L-INDEX) = "T"
+               SET D-INDEX  TO 1
+               PERFORM 9991-CHECK-CRAFT  THRU 9991-CT-X
+      *------EDIT NEW TYPE OF "X" (CC# IN DEPT#)
+      *------  EDIT FIRST COLUMN FOR DEPT#, REST FOR CC#
+           ELSE IF RES-DESC-BYTE (L-INDEX) = "X"
+               SET D-INDEX TO 1
+               PERFORM 9991-CHECK-DEPT THRU 9991-CD-X
+               IF MESSAGE-BUFFER = SPACES
+                   PERFORM 9991-CHECK-CC   THRU 9991-CC-X
+               END-IF
+           ELSE
+               SET D-INDEX  TO 1
+               PERFORM 9991-CHECK-SPACE  THRU 9991-CS-X.
+
+           IF MESSAGE-BUFFER NOT = SPACES
+               GO TO 999-CE-X.
+
+           SET L-INDEX UP BY 1.
+           IF L-INDEX  LESS THAN MAX-INDEX
+               GO TO 999-BEGIN-EDITS.
+
+       999-CE-X.
+           EXIT.
+
+       9991-CHECK-CC.
+           IF RES-LINE-DATA (L-INDEX, D-INDEX) = SPACES
+               NEXT SENTENCE
+           ELSE
+               IF RES-LINE-DATA (L-INDEX, D-INDEX) = "9999" OR "NEWS"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO PERCCNUM
+                   PERFORM 9999-START-PER-PERSON
+               END-IF
+               IF COND-WORD = 17
+      *M-----  "E17: EMPLOYEE ID NOT VALID"
+                   MOVE   5        TO LANG-SETNUM
+                   MOVE  17        TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO MSG-FLD
+                   SET  FIELD-NUMBER  TO L-INDEX
+                   SET  COL-NUM       TO D-INDEX
+                   GO TO 9991-CC-X.
+           SET D-INDEX UP BY 1.
+           IF D-INDEX  LESS THAN 11
+               GO TO 9991-CHECK-CC.
+
+       9991-CC-X.
+           EXIT.
+
+       9991-CHECK-DEPT.
+           IF RES-LINE-DATA (L-INDEX, D-INDEX) = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE "DP"                             TO VALID-ARG-1-2
+               MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO VALID-ARG-3-10
+               PERFORM 9999-START-MVALIDPLTDATA
+               IF COND-WORD = 17
+      *        "D12: DEPARTEMENT CODE DOES NOT EXIST"
+                   MOVE   4        TO LANG-SETNUM
+                   MOVE  12        TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO MSG-FLD
+                   SET  FIELD-NUMBER  TO L-INDEX
+                   SET  COL-NUM       TO D-INDEX
+                   GO TO 9991-CD-X.
+           SET D-INDEX UP BY 1.
+      *-------ONLY CHECK THE FIRST COLUMN FOR DEPT# FOR TYPE X
+           IF RES-DESC-BYTE (L-INDEX) NOT = "X"
+               IF D-INDEX  LESS THAN 11
+                   GO TO 9991-CHECK-DEPT.
+
+       9991-CD-X.
+           EXIT.
+
+       9991-CHECK-CRAFT.
+           IF RES-LINE-DATA (L-INDEX, D-INDEX) = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO CRAFTREQD
+               PERFORM 9999-START-WO-CRAFTS
+               IF COND-WORD = 17
+      *M-----  "CODE DOES NOT EXIST"
+                   MOVE  29        TO LANG-SETNUM
+                   MOVE  83        TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO MSG-FLD
+                   SET  FIELD-NUMBER  TO L-INDEX
+                   SET  COL-NUM       TO D-INDEX
+                   GO TO 9991-CT-X.
+           SET D-INDEX UP BY 1.
+           IF D-INDEX  LESS THAN 11
+               GO TO 9991-CHECK-CRAFT.
+
+       9991-CT-X.
+           EXIT.
+
+       9991-CHECK-SPACE.
+           IF RES-LINE-DATA (L-INDEX, D-INDEX) = SPACES
+               NEXT SENTENCE
+           ELSE
+      *M-----  "CODE MUST HAVE LINE DESCRIPTION TO BE VALID"
+               MOVE "CODE MUST HAVE LINE DESCRIPTION TO BE VALID"
+                                                            TO MSG-TEXT
+               MOVE RES-LINE-DATA (L-INDEX, D-INDEX) TO MSG-FLD
+               SET  FIELD-NUMBER  TO L-INDEX
+               SET  COL-NUM       TO D-INDEX
+               GO TO 9991-CS-X.
+           SET D-INDEX UP BY 1.
+           IF D-INDEX  LESS 11
+               GO TO 9991-CHECK-SPACE.
+
+       9991-CS-X.
+           EXIT.
+
+       9999-START-PER-PERSON.
+           MOVE 0              TO COND-WORD.
+           START PER-PERSON-PC-I KEY = PERCCNUM OF PER-PERSON-PC-I
+               INVALID KEY     MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17     TO COND-WORD
+               ELSE
+                   MOVE 99     TO COND-WORD.
+
+       9999-START-MVALIDPLTDATA.
+           MOVE 0              TO COND-WORD.
+           MOVE VALID-ARG      TO VALDTAKEY OF MVALIDPLTDATA-REC.
+           START MVALIDPLTDATA KEY = VALDTAKEY OF MVALIDPLTDATA-REC
+               INVALID KEY     MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17     TO COND-WORD
+               ELSE
+                   MOVE 99     TO COND-WORD.
+
+       9999-START-WO-CRAFTS.
+           MOVE 0              TO COND-WORD.
+           START WO-CRAFTS-REQD-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY     MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17     TO COND-WORD
+               ELSE
+                   MOVE 99     TO COND-WORD.
+
+110800 999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+112400 999-CATREAD-EXIT.
+112500     EXIT.

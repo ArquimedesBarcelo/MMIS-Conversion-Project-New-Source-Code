@@ -1,0 +1,209 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TFRTCLNUP.
+       AUTHOR.               KALMAN.
+       DATE-WRITTEN.         OCT 1993.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D*     THIS PROGRAM WILL BE RUN AFTER THE FREIGHT HOLD FILE
+      *D*     IS PROCESSED AS THE LAST STEP OF MONTH END CLOSING.
+      *D*     IT WILL DELETE ANY FREIGHT FILES THAT ARE APPROXIMATELY
+      *D*     MORE THAN TWO MONTHS OLD. (IT WILL KEEP THE 50 MOST
+      *D*     CURRENT FREIGHT FILES.)
+      *D*
+      *C* CHANGES.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.    I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+      ******************************************************************
+       INPUT-OUTPUT SECTION.
+      ******************************************************************
+       FILE-CONTROL.
+           SELECT MACCOUNT-INFO-I
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+      ******************************************************************
+       DATA DIVISION.
+      ******************************************************************
+
+       FILE SECTION.
+
+       FD  MACCOUNT-INFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MACCOUNT-INFO-REC-I.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+      ******************************************************************
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+      *-----------------------------------------------------------------
+      *  Q C M D E X C   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  RMVM-CMD.
+           05  PIC X(34)     VALUE "RMVM FILE(*LIBL/FRTDATAFL) MBR(FRT".
+           05  RMVM-SEQ      PIC X(4).
+           05  PIC X(1)      VALUE ")".
+
+       01  RMVM-LEN          PIC S9(10)V9(5) COMP-3 VALUE 39.
+
+      *-----------------------------------------------------------------
+      *  M I S C E L L A N E O U S   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  SEQ-NUMBER               PIC 9(4).
+       01  SEQ-ALPHA  REDEFINES SEQ-NUMBER  PIC X(4).
+
+       01  OLDEST-FILE-TO-KEEP      PIC 9(4).
+       01  NEXT-FILE-TO-DLT         PIC 9(4).
+
+      *-----------------------------------------------------------------
+      *  A R G U M E N T   V A L U E S
+      *-----------------------------------------------------------------
+
+       01  MACCT-ARG                PIC X(4)  VALUE SPACES.
+
+      *-----------------------------------------------------------------
+      *  F L A G S   A N D   S W I T C H E S
+      *-----------------------------------------------------------------
+
+       01  RTN-CODE                 PIC X.
+
+       01  CLEANUP-COMPLETE         PIC X.
+
+      *-----------------------------------------------------------------
+      *  I N D E X E S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  A C C U M U L A T O R S
+      *-----------------------------------------------------------------
+
+       01  FILE-COUNTER             PIC 9(3).
+
+       01  MISSING-FILES            PIC 9.
+
+      *-----------------------------------------------------------------
+      *  S A V E   F I E L D S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  T A B L E S
+      *-----------------------------------------------------------------
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   A N D   F I L E   B U F F E R S
+      *-----------------------------------------------------------------
+
+       COPY MACTINFO OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       COPY DBCSACCT OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+      ******************************************************************
+       PROCEDURE DIVISION.
+      ******************************************************************
+
+       00-CONTROL.
+
+           PERFORM 10-HSK.
+
+           PERFORM 60-DELETE-MBRS.
+
+           PERFORM 20-EOJ.
+
+           GOBACK.
+
+       10-HSK.
+
+           OPEN INPUT      MACCOUNT-INFO-I.
+
+      *----GET THE SEQUENCE NUMBER FOR THE LAST FRT FILE READ.
+
+           MOVE "FRT" TO MACCT-ARG.
+           PERFORM 9999-READ-MACCOUNT-INFO-I.
+           SUBTRACT 49 FROM MACCT-FRT-LAST-FILE-READ
+              GIVING OLDEST-FILE-TO-KEEP.
+
+           MOVE "N" TO CLEANUP-COMPLETE.
+
+       20-EOJ.
+
+           CLOSE           MACCOUNT-INFO-I.
+
+       60-DELETE-MBRS.
+
+           PERFORM VARYING FILE-COUNTER FROM 1 BY 1
+              UNTIL CLEANUP-COMPLETE = "Y"
+
+              SUBTRACT FILE-COUNTER FROM OLDEST-FILE-TO-KEEP
+                 GIVING NEXT-FILE-TO-DLT
+
+      *-------CHECK FOR MEMBER IN FRTDATAFL WITH THIS SEQ NUM
+
+              INITIALIZE RTN-CODE
+              MOVE NEXT-FILE-TO-DLT TO SEQ-ALPHA
+              CALL "FRTCHKOBJ" USING   SEQ-ALPHA   RTN-CODE
+
+      *-------ASSUME THAT IF THERE ARE 3 MISSING FILES IN A ROW
+      *-------THEN THERE ARE NO MORE FREIGHT FILES TO DELETE.
+      *-------HOWEVER, IF THERE ARE 2 OR LESS FILES NOT FOUND BEFORE
+      *-------ANOTHER FREIGHT FILE IS FOUND, THEN RESET THE
+      *-------COUNTER AND CONTINUE DELETING LOOP.
+
+              IF RTN-CODE = "1"
+                 ADD 1 TO MISSING-FILES
+                 IF MISSING-FILES = 3
+                    MOVE "Y" TO CLEANUP-COMPLETE
+                 END-IF
+              ELSE
+                 INITIALIZE MISSING-FILES
+                 MOVE NEXT-FILE-TO-DLT TO RMVM-SEQ
+                 CALL "QCMDEXC" USING  RMVM-CMD  RMVM-LEN
+              END-IF
+           END-PERFORM.
+
+      *-----------------------------------------------------------------
+      *9999 UTILITY SECTION.
+      *-----------------------------------------------------------------
+
+       9999-BLOWUP.
+           MOVE "TFRCLNUP" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+      *---------------------------------
+      * MACCOUNT-INFO
+      *---------------------------------
+
+       9999-READ-MACCOUNT-INFO-I.
+           MOVE MACCT-ARG TO INFOKEY OF MACCOUNT-INFO-REC-I.
+           READ MACCOUNT-INFO-I INTO BUF-MACCT-INFO
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "READ MACCOUNT-INFO*9999-RMIKI" TO BU-DISPLAY-MSG
+              MOVE MACCT-ARG TO BU-DISPLAY-FLD (1)
+              GO TO 9999-BLOWUP.
+

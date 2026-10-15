@@ -1,0 +1,315 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          TSTRXISADJ.
+       AUTHOR.              JEFF BUNGO.
+       DATE-WRITTEN.        08/04/97.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.
+      * THIS PROGRAM IS FOR NON CSIS EXTERNAL SYSTEMS TO CALL IN ORDER
+      * TO MAKE STOREROOM ISSUES AND STOREROOM ADJUSTMENTS TO INVENTORY.
+      *
+      * THE FOLLOWING PARAMETERS MUST BE PASSED TO THIS PROGRAM FROM
+      * THE EXTERNAL SYSTEM:
+      *    CORP-CDE - CSIS CORPORATE CODE
+      *    QTY      - QUANTITY OF ISSUE OR QUANTITY AFTER ADJUSTMENT
+      *    UM       - UNIT OF MEASURE
+      *    NON-SIG  - NON-SIG FOR ISSUES (CHARGE CUSTOMER)
+      *    MSG      - STATUS MESSAGE BACK TO CALLING PROGRAM
+      *               IF SPACES THEN SUCCESSFUL CALL
+      *
+      * IF THE NON-SIG PARAMETER IS NOT SPACES THEN THE CALL IS
+      * CONSIDERED AN ISSUE.  IF THE NON-SIG PARAMETER IS SPACES
+      * THEN THE CALL IS CONSIDERED AN ADJUSTMENT.
+      *
+      *C  07/19/2001    CA YODER
+      *C     CHANGED QUANTITY FIELD IN LINKAGE SECTION TO COMP-3.
+      *C
+      *C  08/15/2001    CA YODER
+      *C     CHANGED BIN ADJUSTMENT LOGIC TO SUBTRACT ADJUSTMENT
+      *C     QTY INSTEAD OF ADDING IT.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MSTORERM
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+           SELECT DDAILYTC
+               ASSIGN TO DATABASE-MCFLCS1601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+           SELECT MPLTINFO
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+       FD  DDAILYTC
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       WORKING-STORAGE SECTION.
+
+       77  MCXCBLERR-SCOPE              PIC X(1)  VALUE "C".
+       77  SUB                          PIC 9(1).
+       77  DUMMY-REQFILNO               PIC S9(4) BINARY VALUE 0.
+       77  BASE                         PIC X(10).
+       77  COMPANY-CODE                 PIC X(3).
+
+       01  SAVE-ONHAND-BEFORE           PIC S9(8).
+       01  SAVE-RSRVD-BEFORE            PIC S9(8).
+
+       01  RET-CODE                     PIC X(2)  VALUE SPACES.
+       01  WORK-QTY                     PIC 9(8)  VALUE ZEROS.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X(1)  VALUE "0".
+           05  FILE-STATUS-2            PIC X(1)  VALUE "0".
+
+       COPY LANGUAGE   IN COPYLIB.
+       COPY MSTORERM   IN COPYLIB.
+       COPY MPLT0      IN COPYLIB.
+       COPY MPLTP01    IN COPYLIB.
+       COPY DDAILYTC   IN COPYLIB.
+       COPY TC333      IN COPYLIB.
+       COPY TC433      IN COPYLIB.
+       COPY TC332      IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  CORP-CDE              PIC X(7).
+       01  QTY                   PIC S9(8)   COMP-3.
+       01  UM                    PIC X(2).
+       01  NON-SIG               PIC X(10).
+       01  MSG                   PIC X(80).
+
+       PROCEDURE DIVISION USING CORP-CDE
+                                QTY
+                                UM
+                                NON-SIG
+                                MSG.
+
+       1-HOUSEKEEP.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+           OPEN I-O MSTORERM
+                    DDAILYTC.
+           OPEN INPUT MPLTINFO.
+
+      *------ GET COMPANY CODE
+           MOVE "P 01" TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE MPLTINFO-COMPANY TO COMPANY-CODE
+           ELSE
+               MOVE SPACES TO COMPANY-CODE.
+
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+
+       2-EOJ.
+           CLOSE MSTORERM
+                 DDAILYTC
+                 MPLTINFO.
+           GOBACK.
+
+       6-MAIN.
+      *-----CHECK FOR EXISTENCE OF PASSED CORPORATE CODE
+           MOVE CORP-CDE TO CORPCDE OF MSTORERM-REC.
+           READ MSTORERM INTO BUF-MSTORERM
+           IF FILE-STATUS NOT = "00"
+              MOVE "CORPORATE CODE DOES NOT EXIST" TO MSG
+              GO TO 6-MAIN-X.
+
+      *------EDIT UNIT OF MEASURE AGAINST CSIS PRIMARY UM
+           IF UM NOT = STR-UM
+              MOVE "UNIT OF MEASURE DOES NOT MATCH CSIS PRIMARY UM"
+                 TO MSG
+               GO TO 6-MAIN-X.
+
+      *-----DETERMINE IF AN ISSUE OR ADJUSTMENT
+      *----- BASED ON THE NON-SIG PARAMETER
+           IF NON-SIG NOT = SPACES
+              PERFORM 61-ISSUE THRU 61-EXIT
+           ELSE
+              PERFORM 62-ADJUST THRU 62-EXIT.
+       6-MAIN-X.
+           EXIT.
+
+
+       61-ISSUE.
+           IF QTY > (STR-ONHAND - STR-RESERVED)
+              MOVE "CSIS DOES NOT HAVE SUFFICIENT ONHAND FOR WITHDRAWAL"
+                 TO MSG
+              GO TO 61-EXIT.
+
+           MOVE STR-ONHAND TO SAVE-ONHAND-BEFORE.
+           MOVE STR-RESERVED TO SAVE-RSRVD-BEFORE.
+           COMPUTE STR-ONHAND ROUNDED = STR-ONHAND - QTY.
+
+      *-----REMOVE FROM BINS STARTING WITH FIRST BIN
+           MOVE QTY TO WORK-QTY.
+           PERFORM VARYING SUB FROM 1 BY 1
+             UNTIL SUB = 6 OR WORK-QTY = 0
+                 IF STR-LOC-ONHAND(SUB) < WORK-QTY
+                     COMPUTE WORK-QTY = WORK-QTY - STR-LOC-ONHAND(SUB)
+                     MOVE 0 TO STR-LOC-ONHAND(SUB)
+                 ELSE
+                     COMPUTE STR-LOC-ONHAND(SUB) =
+                             STR-LOC-ONHAND(SUB) - WORK-QTY
+                             MOVE 0 TO WORK-QTY
+                 END-IF
+           END-PERFORM.
+
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  STR-ACT-DATE.
+           IF STR-ACT-DATE-YY > "70"
+               MOVE "19" TO STR-ACT-DATE-CC
+           ELSE
+               MOVE "20" TO STR-ACT-DATE-CC.
+           MOVE STR-ACT-DATE-CN TO STR-LAST-IDATE-CN.
+           MOVE NON-SIG TO STR-LAST-EMPL.
+           MOVE STR-DFLT-DEPT TO STR-LAST-CHARGE.
+
+           REWRITE MSTORERM-REC FROM BUF-MSTORERM
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "ERROR UPDATING ONHAND FOR CORPORATE CODE" TO MSG
+              GO TO 61-EXIT.
+
+      *----- CALL PROGRAM TO UPDATE THE REQFILE IF NEEDED FOR AUTO REQS
+           CALL "TREQFILU" USING RET-CODE, BASE, DUMMY-REQFILNO,
+             CORP-CODE, SAVE-ONHAND-BEFORE, SAVE-RSRVD-BEFORE,
+             STR-ONHAND, STR-RESERVED, STR-REORDER, STR-EXPEDITE.
+
+      *------WRITE TRANSACTION
+           MOVE SPACES                   TO  DDAILYTC-DATA.
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO  DDAILYTC-TIME.
+           MOVE COMPANY-CODE             TO  DDAILYTC-PLT.
+           IF STR-AVG-COST > 99999.9999
+               MOVE "433"                TO  DDAILYTC-TC
+               MOVE CORP-CODE            TO  TC433-CORPCODE
+               MOVE STR-LAST-EMPL        TO  TC433-EMP
+               MOVE QTY                  TO  TC433-QTY
+               MOVE STR-AVG-COST         TO  TC433-AVG-COST
+               MOVE STR-UM               TO  TC433-UM
+               MOVE NON-SIG              TO  TC433-WO
+               MOVE STR-EXPENSE-CLASS    TO  TC433-EXP-CLASS
+               MOVE STR-DFLT-DEPT        TO  TC433-DEPARTMENT
+                                             TC433-REQ-DEPT
+               MOVE STR-CLASS            TO  TC433-CLASS
+           ELSE
+               MOVE "333"                TO  DDAILYTC-TC
+               MOVE CORP-CODE            TO  TC333-CORPCODE
+               MOVE STR-LAST-EMPL        TO  TC333-EMP
+               MOVE QTY                  TO  TC333-QTY
+               MOVE STR-AVG-COST         TO  TC333-AVG-COST
+               MOVE STR-UM               TO  TC333-UM
+               MOVE STR-DFLT-DEPT        TO  TC333-DEPARTMENT
+                                             TC333-REQ-DEPT
+               MOVE NON-SIG              TO  TC333-WO
+               MOVE STR-EXPENSE-CLASS    TO  TC333-EXP-CLASS
+               MOVE STR-CLASS            TO  TC333-CLASS
+           END-IF.
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           MOVE SPACES TO MSG.
+       61-EXIT.
+           EXIT.
+
+       62-ADJUST.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  STR-ACT-DATE.
+           IF STR-ACT-DATE-YY > "70"
+               MOVE "19" TO STR-ACT-DATE-CC
+           ELSE
+               MOVE "20" TO STR-ACT-DATE-CC.
+           MOVE STR-ACT-DATE-CN TO STR-INV-DATE-CN.
+
+           MOVE STR-RESERVED TO SAVE-RSRVD-BEFORE.
+           MOVE STR-ONHAND TO SAVE-ONHAND-BEFORE.
+           MOVE QTY TO STR-ONHAND.
+
+           SUBTRACT QTY FROM SAVE-ONHAND-BEFORE GIVING TC332-ADJ-QTY.
+
+      *----- UPDATE BIN LOCATION ONHAND
+      *-----  FOR INCREASES ADD TO PRIMARY BIN LOCATION
+      *-----  FOR DECREASES REMOVE FROM BINS STARTING WITH PRIMARY
+           MOVE TC332-ADJ-QTY TO WORK-QTY
+           IF TC332-ADJ-QTY > 0
+      ******   ADD TC332-ADJ-QTY TO STR-LOC-ONHAND(1)
+               SUBTRACT TC332-ADJ-QTY FROM STR-LOC-ONHAND(1)
+           ELSE
+               PERFORM VARYING SUB FROM 1 BY 1
+                 UNTIL SUB = 6 OR WORK-QTY = 0
+                 IF STR-LOC-ONHAND(SUB) < WORK-QTY
+                     SUBTRACT STR-LOC-ONHAND(SUB) FROM WORK-QTY
+                     MOVE 0 TO STR-LOC-ONHAND(SUB)
+                 ELSE
+                     SUBTRACT WORK-QTY FROM STR-LOC-ONHAND(SUB)
+                     MOVE 0 TO WORK-QTY
+                 END-IF
+               END-PERFORM
+           END-IF.
+
+           REWRITE MSTORERM-REC FROM BUF-MSTORERM
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+              MOVE "ERROR UPDATING ONHAND FOR CORPORATE CODE" TO MSG
+              GO TO 62-EXIT.
+
+      *----- CALL PROGRAM TO UPDATE THE REQFILE IF NEEDED FOR AUTO REQS
+           IF TC332-ADJ-QTY NOT = 0
+             CALL "TREQFILU" USING RET-CODE, BASE, DUMMY-REQFILNO,
+               CORP-CODE, SAVE-ONHAND-BEFORE, SAVE-RSRVD-BEFORE,
+               STR-ONHAND, STR-RESERVED, STR-REORDER, STR-EXPEDITE.
+
+      *------WRITE TRANSACTION
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO DDAILYTC-TIME.
+           MOVE "332"                    TO  DDAILYTC-TC.
+           MOVE COMPANY-CODE             TO  DDAILYTC-PLT.
+           MOVE CORP-CODE                TO  TC332-CORP-CODE.
+           MOVE STR-DFLT-DEPT            TO  TC332-DEPT-CHG.
+      *------- 2 FIELDS EXIST FOR AVERAGE COST - IF COST IS GREATER THAN
+      *------- 9,999,999.99 THEN THE SMALLER FIELD WILL BE TRUNCATED.
+           MOVE STR-AVG-COST             TO  TC332-AVG-COST-SMALL.
+           MOVE STR-AVG-COST             TO  TC332-AVG-COST-BIG.
+           MOVE STR-UM                   TO  TC332-UM.
+           MOVE STR-ONHAND               TO  TC332-NEW-ONHAND.
+           MOVE STR-EXPENSE-CLASS        TO  TC332-DFLT-EXP-CLASS.
+           MOVE STR-CLASS                TO  TC332-CLASS.
+
+           WRITE DDAILYTC-REC FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           MOVE SPACES TO MSG.
+       62-EXIT.
+           EXIT.

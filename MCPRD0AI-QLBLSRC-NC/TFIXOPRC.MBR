@@ -1,0 +1,719 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TFIXOPRC.
+       AUTHOR.               CA YODER.
+       DATE-WRITTEN.         JUNE 1996.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *-----------------------------------------------------------*
+      *                                                           *
+      *  T F I X O P R C                                          *
+      *                                                           *
+      *    THIS PROGRAM ADJUSTS THE OPEN RECEIVER QUANTITY IN     *
+      *    DTRANS FOR INV TRANSACTIONS FOR NON-RECEIVABLE PO'S.   *
+      *    IF A PO IS NON-RECEIVABLE AND DELIVERED QUANTITY = 0,  *
+      *    THE BALANCE QUANTITY IS SET TO 0.                      *
+      *                                                           *
+      *-----------------------------------------------------------*
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      IBM-AS400.
+       OBJECT-COMPUTER.      IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DPORECD-I
+               ASSIGN          TO DATABASE-MCFLCS0901
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT DPORECDH-I
+               ASSIGN          TO DATABASE-MCFLST0301
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+               ASSIGN          TO DATABASE-MCFLCS1002
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT DPOITEMH-I
+               ASSIGN          TO DATABASE-MCFLST0401
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT DTRANS-IO
+               ASSIGN          TO DATABASE-MCFLCA0703
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT SORT-FILE
+               ASSIGN TO DISK-SORT.
+
+           SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS0901.
+
+       FD  DPORECDH-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECDH-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLST0301.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCS1002.
+
+       FD  DPOITEMH-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEMH-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLST0401.
+
+       FD  DTRANS-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-IO.
+           COPY DDS-MCRPCA0700  OF MCFLCA0703.
+
+       SD  SORT-FILE
+           RECORD CONTAINS 138 CHARACTERS.
+       01  SORT-REC.
+           05  SORT-CODE        PIC X(8).
+           05  SORT-CLASS       PIC X(4).
+           05  SORT-DEPT        PIC X(6).
+           05  SORT-ACCT        PIC X(6).
+           05  SORT-PO-NUM.
+               10  SORT-PO      PIC X(7).
+               10  SORT-RLSE    PIC X(3).
+           05  SORT-RCVR        PIC X(4).
+           05  SORT-ITEM        PIC X(4).
+           05  SORT-DATE-CN.
+               10  SORT-CC      PIC X(2).
+               10  SORT-DATE.
+                   15  SORT-YY  PIC X(2).
+                   15  SORT-MM  PIC X(2).
+                   15  SORT-DD  PIC X(2).
+           05  SORT-QTY         PIC S9(10).
+           05  SORT-VALUE       PIC S9(12)V99.
+           05  SORT-UM          PIC X(2).
+           05  SORT-BAL-QTY     PIC S9(10).
+           05  SORT-NON-RCV     PIC X.
+           05  SORT-ORD-QTY     PIC S9(8)V9(4).
+           05  SORT-DLVR-QTY    PIC S9(8)V9(4).
+           05  SORT-STR-QTY     PIC S9(8)V9(4).
+           05  SORT-PD-QTY      PIC S9(8)V9(4).
+           05  SORT-MSG         PIC 9(2).
+           05  SORT-HIST        PIC X.
+
+       FD  ONLINE-PRT
+           DATA RECORD IS PRT-REC
+           RECORD CONTAINS 132 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  PRT-REC                       PIC X(132).
+
+       WORKING-STORAGE SECTION.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X(1)  VALUE "0".
+           05  FILE-STATUS-2             PIC X(1)  VALUE "0".
+
+       01  PO-ARG.
+           05  PO-ARG-PREFIX             PIC X.
+           05  POH-ARG.
+               10  PO-ARG-NUM            PIC X(7).
+               10  PO-ARG-RLSE           PIC X(3).
+               10  PO-ARG-RCVR           PIC X(3).
+
+       01  FILE-SWITCHES.
+           05  DTRANS-EOF-SW             PIC X    VALUE "N".
+           05  RECORD-PRINTED-SW         PIC X    VALUE "N".
+           05  PO-FOUND                  PIC X    VALUE "N".
+           05  ITEM-FOUND                PIC X    VALUE "N".
+           05  HISTORY-DB                PIC X    VALUE "N".
+           05  SORT-EOF-SW               PIC X    VALUE "N".
+           05  UPDATE-ANSWER             PIC X    VALUE "N".
+
+       01  PAGE-NUM                      PIC 9(3) VALUE 0.
+       01  NUM-LINES                     PIC 9(2) VALUE 0.
+
+       01  PGM-COUNTERS.
+           05  NUM-INV                   PIC 9(6) VALUE 0.
+           05  NUM-QTY-GT-0              PIC 9(6) VALUE 0.
+           05  NUM-SET-TO-0              PIC 9(6) VALUE 0.
+
+       01  CURRENT-DATE.
+           05  CUR-YY                    PIC X(2).
+           05  CUR-MM                    PIC X(2).
+           05  CUR-DD                    PIC X(2).
+
+       01  CURRENT-TIME.
+           05  CUR-HR                    PIC X(2).
+           05  CUR-MIN                   PIC X(2).
+           05  CUR-SEC                   PIC X(2).
+
+       01  DIFF-PD-DLVR                  PIC S9(11)V9(4).
+       01  DIFF-STR-DLVR                 PIC S9(11)V9(4).
+
+       01  MESSAGE-VALUES.
+           05  MESSAGE-1                 PIC X(32)  VALUE
+                           "BALANCE QUANTITY SET TO 0       ".
+           05  MESSAGE-2                 PIC X(32)  VALUE
+                           "NON-RCV BUT DELIVERED NOT = 0   ".
+           05  MESSAGE-3                 PIC X(32)  VALUE
+                           "NOT A NON-RCV PO                ".
+           05  MESSAGE-4                 PIC X(32)  VALUE
+                           "PO EXISTS, BUT ITEM DOES NOT    ".
+           05  MESSAGE-5                 PIC X(32)  VALUE
+                           "PO DOES NOT EXIST IN DATABASE   ".
+           05  MESSAGE-6                 PIC X(32)  VALUE
+                           "*ERROR WITH REWRITE OF DTRANS*  ".
+
+       01  MESSAGE-TABLE  REDEFINES  MESSAGE-VALUES.
+           05  MESSAGE-ENTRY  OCCURS 6 TIMES   PIC X(32).
+
+       01  HOLD-FIELDS.
+           05  HOLD-PO-NUM               PIC X(10).
+           05  HOLD-ITEM-NUM             PIC X(4).
+
+      *----------------------------------------------------------------*
+      *                R E P O R T   L I N E S                         *
+      *----------------------------------------------------------------*
+
+       01  HEADING-1.
+           05  FILLER             PIC X(1)  VALUE SPACE.
+           05  H1-MM              PIC X(2).
+           05  FILLER             PIC X     VALUE "/".
+           05  H1-DD              PIC X(2).
+           05  FILLER             PIC X     VALUE "/".
+           05  H1-YY              PIC X(2).
+           05  FILLER             PIC X(35) VALUE SPACES.
+           05  FILLER             PIC X(44) VALUE
+                    "NON-RECEIVABLE PO REPORT -- INV TRANSACTIONS".
+           05  FILLER             PIC X(35) VALUE SPACES.
+           05  FILLER             PIC X(8)  VALUE "TFIXOPRC".
+           05  FILLER             PIC X(1)  VALUE SPACE.
+
+       01  HEADING-2.
+           05  FILLER             PIC X(1)  VALUE SPACE.
+           05  H2-HR              PIC X(2).
+           05  FILLER             PIC X     VALUE ":".
+           05  H2-MIN             PIC X(2).
+           05  FILLER             PIC X     VALUE ":".
+           05  H2-SEC             PIC X(2).
+           05  FILLER             PIC X(48) VALUE SPACES.
+           05  H2-TITLE           PIC X(18).
+           05  FILLER             PIC X(48) VALUE SPACES.
+           05  FILLER             PIC X(5)  VALUE "PAGE ".
+           05  H2-PAGE-NUM        PIC ZZ9.
+           05  FILLER             PIC X(1)  VALUE SPACE.
+
+       01  HEADING-3.
+           05  FILLER             PIC X(1)  VALUE SPACE.
+           05  FILLER             PIC X(11) VALUE "PO NUM/RLSE".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "ITEM".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(3)  VALUE "N/R".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "HIST".
+           05  FILLER             PIC X(12) VALUE "    ORD QTY ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(14) VALUE "     DLVR QTY ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(14) VALUE "      STR QTY ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(14) VALUE "       PD QTY ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(14) VALUE "DIFF(PD-DLVR) ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(14) VALUE "DIFF(STR-DLVR)".
+           05  FILLER             PIC X(13) VALUE SPACES.
+
+       01  DETAIL-LINE-1.
+           05  FILLER             PIC X     VALUE SPACE.
+           05  DL1-PO-NUM         PIC X(7).
+           05  FILLER             PIC X     VALUE SPACE.
+           05  DL1-RLSE           PIC X(3).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-ITEM           PIC X(4).
+           05  FILLER             PIC X(3)  VALUE SPACES.
+           05  DL1-NON-RCV        PIC X.
+           05  FILLER             PIC X(3)  VALUE SPACES.
+           05  DL1-HIST           PIC X.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-ORD-QTY        PIC ZZZZZZZZ.ZZZZ-.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-DLVR-QTY       PIC ZZZZZZZZ.ZZZZ-.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-STR-QTY        PIC ZZZZZZZZ.ZZZZ-.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-PD-QTY         PIC ZZZZZZZZ.ZZZZ-.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-DIFF-PD-DLVR   PIC ZZZZZZZZ.ZZZZ-.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL1-DIFF-STR-DLVR  PIC ZZZZZZZZ.ZZZZ-.
+           05  FILLER             PIC X(4)  VALUE SPACES.
+
+       01  HEADING-4.
+           05  FILLER             PIC X(3)  VALUE SPACES.
+           05  FILLER             PIC X(8)  VALUE "DATE    ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "RCVR".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(8)  VALUE "CODE    ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(5)  VALUE "CLASS".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(6)  VALUE "DEPT  ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(6)  VALUE "ACCT  ".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(10) VALUE "       QTY".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(2)  VALUE "UM".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(15) VALUE "          VALUE".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(10) VALUE "   BAL QTY".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(7)  VALUE "MESSAGE".
+           05  FILLER             PIC X(28) VALUE SPACES.
+
+       01  DETAIL-LINE-2.
+           05  FILLER             PIC X(3)  VALUE SPACES.
+           05  DL2-MM             PIC X(2).
+           05  DL2-SLASH-1        PIC X.
+           05  DL2-DD             PIC X(2).
+           05  DL2-SLASH-2        PIC X.
+           05  DL2-YY             PIC X(2).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-RCVR           PIC X(4).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-CODE           PIC X(8).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-CLASS          PIC X(4).
+           05  FILLER             PIC X(3)  VALUE SPACES.
+           05  DL2-DEPT           PIC X(6).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-ACCT           PIC X(6).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-QTY            PIC Z(9)9.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-UM             PIC X(2).
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-VALUE          PIC Z(11)9.99.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-BAL-QTY        PIC Z(9)9.
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  DL2-MESSAGE        PIC X(32).
+           05  FILLER             PIC X(3)  VALUE SPACES.
+
+       01  DASH-LINE.
+           05  FILLER             PIC X     VALUE SPACE.
+           05  FILLER             PIC X(130)  VALUE ALL "-".
+           05  FILLER             PIC X     VALUE SPACE.
+
+       01  TOTAL-LINE.
+           05  FILLER             PIC X(1)  VALUE SPACES.
+           05  TL-DESCRIP         PIC X(21).
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  TL-NUM             PIC ZZZ,ZZ9.
+           05  FILLER             PIC X(98) VALUE SPACES.
+
+      *----------------------------------------------------------------*
+      *                U T I L I T Y   A R E A S                       *
+      *----------------------------------------------------------------*
+
+       COPY TBLOWUP     IN COPYLIB.
+
+       COPY DATAB       IN COPYLIB.
+
+       COPY VCOMAREA    IN COPYLIB.
+
+      *----------------------------------------------------------------*
+      *              D A T A B A S E   B U F F E R S                   *
+      *----------------------------------------------------------------*
+
+       COPY DPORECD     IN COPYLIB.
+
+       COPY DPORECDH    IN COPYLIB.
+
+       COPY DPOITEM     IN COPYLIB.
+
+       COPY DPOITEMH    IN COPYLIB.
+
+       COPY DTRANS      IN COPYLIB.
+
+      *----------------------------------------------------------------*
+      *              P R O C E D U R E   D I V I S I O N               *
+      *----------------------------------------------------------------*
+
+       PROCEDURE DIVISION.
+
+       MAINLINE SECTION.
+       0-BEGIN.
+           PERFORM 1-HSK.
+           SORT SORT-FILE
+               ON ASCENDING KEY SORT-PO-NUM
+                                SORT-ITEM
+                                SORT-DATE-CN
+               INPUT  PROCEDURE IS 7-PROCESS-DTRANS
+               OUTPUT PROCEDURE IS 8-PRINT-REPORT.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+      *----------------------------------------------------------------*
+      *                H O U S E K E E P I N G                         *
+      *----------------------------------------------------------------*
+
+       1-HSK.
+           OPEN INPUT    DPORECD-I
+                         DPORECDH-I
+                         DPOITEM-I
+                         DPOITEMH-I
+                I-O      DTRANS-IO
+                OUTPUT   ONLINE-PRT.
+
+           DISPLAY "DO YOU WANT TO UPDATE DTRANS? (Y/N)".
+           ACCEPT UPDATE-ANSWER.
+           IF UPDATE-ANSWER = "Y"
+               MOVE "   ** UPDATE **   "  TO  H2-TITLE
+           ELSE
+               MOVE "  * REPORT ONLY * "  TO  H2-TITLE.
+           ACCEPT CURRENT-DATE FROM DATE.
+           ACCEPT CURRENT-TIME FROM TIME.
+
+           MOVE CUR-YY       TO  H1-YY.
+           MOVE CUR-MM       TO  H1-MM.
+           MOVE CUR-DD       TO  H1-DD.
+           MOVE CUR-HR       TO  H2-HR.
+           MOVE CUR-MIN      TO  H2-MIN.
+           MOVE CUR-SEC      TO  H2-SEC.
+
+           MOVE "N"          TO  DTRANS-EOF-SW
+                                 RECORD-PRINTED-SW.
+           INITIALIZE            PGM-COUNTERS
+                                 DETAIL-LINE-1
+                                 DETAIL-LINE-2
+                                 PAGE-NUM.
+
+      *----------------------------------------------------------------*
+      *                E N D - O F - P R O G R A M                     *
+      *----------------------------------------------------------------*
+
+       2-EOJ.
+           IF RECORD-PRINTED-SW = "N"
+               MOVE "****** NO RECORDS QUALIFIED FOR REPORT ******"
+                                              TO  PRT-REC
+               WRITE PRT-REC AFTER ADVANCING 2 LINES
+           ELSE
+               IF NUM-LINES > 55
+                   PERFORM 9999-WRITE-HEADINGS
+               END-IF
+               INITIALIZE PRT-REC
+               MOVE " ***** REPORT TOTALS *****"  TO  PRT-REC
+               WRITE PRT-REC AFTER ADVANCING 2
+               INITIALIZE TOTAL-LINE
+               MOVE "INVOICE TRANSACTIONS:"   TO  TL-DESCRIP
+               MOVE NUM-INV                   TO  TL-NUM
+               WRITE PRT-REC FROM TOTAL-LINE AFTER ADVANCING 2
+               INITIALIZE TOTAL-LINE
+               MOVE "BALANCE QTY > 0:     "   TO  TL-DESCRIP
+               MOVE NUM-QTY-GT-0              TO  TL-NUM
+               WRITE PRT-REC FROM TOTAL-LINE AFTER ADVANCING 1
+               INITIALIZE TOTAL-LINE
+               MOVE "BALANCE QTY SET TO 0:"   TO  TL-DESCRIP
+               MOVE NUM-SET-TO-0              TO  TL-NUM
+               WRITE PRT-REC FROM TOTAL-LINE AFTER ADVANCING 1.
+           CLOSE         DPORECD-I
+                         DPORECDH-I
+                         DPOITEM-I
+                         DPOITEMH-I
+                         DTRANS-IO
+                         ONLINE-PRT.
+
+      *----------------------------------------------------------------*
+      *                I N P U T   P R O C E D U R E                   *
+      *----------------------------------------------------------------*
+
+       7-PROCESS-DTRANS SECTION.
+       7-BEGIN.
+           PERFORM 7-1-HSK.
+           PERFORM 7-6-CHECK-DTRANS
+               UNTIL DTRANS-EOF-SW = "Y".
+           GO TO 7-EXIT.
+
+       7-1-HSK.
+           PERFORM 9999-START-DTRANS.
+           PERFORM 9999-READ-NEXT-DTRANS.
+
+       7-6-CHECK-DTRANS.
+           IF TRANS-CODE = "INV "
+               ADD 1                       TO  NUM-INV
+               IF TRANS-BALANCE-QTY > 0
+                   ADD 1                   TO  NUM-QTY-GT-0
+                   PERFORM 7-60-PROCESS-DTRANS.
+           PERFORM 9999-READ-NEXT-DTRANS.
+
+       7-60-PROCESS-DTRANS.
+           INITIALIZE SORT-REC.
+           PERFORM 7-61-FIND-PO.
+           IF PO-FOUND = "Y"
+               IF HISTORY-DB = "Y"
+                   PERFORM 7-62-SEARCH-HISTORY
+               ELSE
+                   PERFORM 7-63-SEARCH-LIVE.
+           PERFORM 7-64-MOVE-DTRANS.
+           PERFORM 7-65-UPDATE-DTRANS.
+           RELEASE SORT-REC.
+
+       7-61-FIND-PO.
+           MOVE TRANS-ORDER-NUM            TO  PO-ARG-NUM.
+           MOVE TRANS-RELEASE              TO  PO-ARG-RLSE.
+           MOVE "000"                      TO  PO-ARG-RCVR.
+           MOVE "P"                        TO  PO-ARG-PREFIX.
+           MOVE "N"                        TO  HISTORY-DB.
+           PERFORM 9999-READ-DPORECD.
+           IF FILE-STATUS = "00"
+               MOVE "Y"                    TO  PO-FOUND
+           ELSE
+               MOVE "Y"                    TO  HISTORY-DB
+               PERFORM 9999-READ-DPORECDH
+               IF FILE-STATUS = "00"
+                   MOVE "Y"                TO  PO-FOUND
+                                               SORT-HIST
+               ELSE
+                   MOVE "N"                TO  PO-FOUND.
+
+       7-62-SEARCH-HISTORY.
+           PERFORM 9999-READ-DPOITEMH.
+           IF FILE-STATUS = "00"
+               MOVE "Y"                    TO  ITEM-FOUND
+               MOVE POH-NON-RCV-INDIC      TO  SORT-NON-RCV
+               MOVE ITMH-QTY-ORD           TO  SORT-ORD-QTY
+               MOVE ITMH-QTY-DLVR          TO  SORT-DLVR-QTY
+               MOVE ITMH-QTY-STORED        TO  SORT-STR-QTY
+               MOVE ITMH-QTY-PAID          TO  SORT-PD-QTY
+           ELSE
+               MOVE "N"                    TO  ITEM-FOUND.
+
+       7-63-SEARCH-LIVE.
+           PERFORM 9999-READ-DPOITEM.
+           IF FILE-STATUS = "00"
+               MOVE "Y"                    TO  ITEM-FOUND
+               MOVE PO-NON-RCV-INDIC       TO  SORT-NON-RCV
+               MOVE ITM-QTY-ORD            TO  SORT-ORD-QTY
+               MOVE ITM-QTY-DLVR           TO  SORT-DLVR-QTY
+               MOVE ITM-QTY-STORED         TO  SORT-STR-QTY
+               MOVE ITM-QTY-PAID           TO  SORT-PD-QTY
+           ELSE
+               MOVE "N"                    TO  ITEM-FOUND.
+
+       7-64-MOVE-DTRANS.
+           MOVE TRANS-PO-NUM            TO  SORT-PO-NUM.
+           MOVE TRANS-STORES-CODE       TO  SORT-CODE.
+           MOVE TRANS-CLASS             TO  SORT-CLASS.
+           MOVE TRANS-DEPT              TO  SORT-DEPT.
+           MOVE TRANS-ACCT              TO  SORT-ACCT.
+           MOVE TRANS-RCVR-NUM          TO  SORT-RCVR.
+           MOVE TRANS-ITEM-NUM          TO  SORT-ITEM.
+           MOVE TRANS-DATE-CN           TO  SORT-DATE-CN.
+           MOVE TRANS-QTY               TO  SORT-QTY.
+           MOVE TRANS-VALUE             TO  SORT-VALUE.
+           MOVE TRANS-UNIT-MEASURE      TO  SORT-UM.
+           MOVE TRANS-BALANCE-QTY       TO  SORT-BAL-QTY.
+
+       7-65-UPDATE-DTRANS.
+           IF PO-FOUND = "Y"
+               IF ITEM-FOUND = "Y"
+                   IF SORT-NON-RCV = "X"
+                       IF SORT-DLVR-QTY = 0
+                           MOVE 1       TO  SORT-MSG
+                           ADD 1        TO  NUM-SET-TO-0
+                           IF UPDATE-ANSWER = "Y"
+                               PERFORM 9999-REWRITE-DTRANS
+                               IF FILE-STATUS NOT = "00"
+                                   MOVE 6  TO  SORT-MSG
+                               END-IF
+                           END-IF
+                       ELSE
+                           MOVE 2       TO  SORT-MSG
+                       END-IF
+                   ELSE
+                       MOVE 3           TO  SORT-MSG
+                   END-IF
+               ELSE
+                   MOVE 4               TO  SORT-MSG
+               END-IF
+           ELSE
+               MOVE 5                   TO  SORT-MSG
+           END-IF.
+
+       7-EXIT.
+           EXIT.
+
+      *----------------------------------------------------------------*
+      *               O U T P U T   P R O C E D U R E                  *
+      *----------------------------------------------------------------*
+
+       8-PRINT-REPORT SECTION.
+       8-BEGIN.
+           PERFORM 8-1-HSK.
+           PERFORM 8-6-PROCESS-SORT
+               UNTIL SORT-EOF-SW = "Y".
+           GO TO 8-EXIT.
+
+       8-1-HSK.
+           MOVE "Y"                     TO  RECORD-PRINTED-SW.
+           PERFORM 9999-WRITE-HEADINGS.
+           RETURN SORT-FILE
+               AT END MOVE "Y" TO SORT-EOF-SW.
+           IF SORT-EOF-SW = "Y"
+               MOVE "N"                 TO  RECORD-PRINTED-SW
+               GO TO 8-EXIT.
+
+       8-6-PROCESS-SORT.
+           IF (SORT-PO-NUM NOT = HOLD-PO-NUM)  OR
+                  (SORT-PO-NUM = HOLD-PO-NUM AND
+                 SORT-ITEM NOT = HOLD-ITEM-NUM)
+               PERFORM 8-60-PRINT-LINE1
+               MOVE SORT-PO-NUM          TO  HOLD-PO-NUM
+               MOVE SORT-ITEM            TO  HOLD-ITEM-NUM.
+           PERFORM 8-61-PRINT-LINE2.
+           RETURN SORT-FILE
+               AT END MOVE "Y" TO  SORT-EOF-SW.
+
+       8-60-PRINT-LINE1.
+           MOVE SORT-PO                  TO  DL1-PO-NUM.
+           MOVE SORT-RLSE                TO  DL1-RLSE.
+           MOVE SORT-NON-RCV             TO  DL1-NON-RCV.
+           MOVE SORT-HIST                TO  DL1-HIST.
+           MOVE SORT-ITEM                TO  DL1-ITEM.
+           MOVE SORT-ORD-QTY             TO  DL1-ORD-QTY.
+           MOVE SORT-DLVR-QTY            TO  DL1-DLVR-QTY.
+           MOVE SORT-STR-QTY             TO  DL1-STR-QTY.
+           MOVE SORT-PD-QTY              TO  DL1-PD-QTY.
+           COMPUTE DIFF-PD-DLVR  =  SORT-PD-QTY
+                                 -  SORT-DLVR-QTY.
+           MOVE DIFF-PD-DLVR             TO  DL1-DIFF-PD-DLVR.
+           COMPUTE DIFF-STR-DLVR =  SORT-STR-QTY
+                                 -  SORT-DLVR-QTY.
+           MOVE DIFF-STR-DLVR            TO  DL1-DIFF-STR-DLVR.
+           PERFORM 9999-WRITE-DETAIL-1.
+
+       8-61-PRINT-LINE2.
+           MOVE SORT-MM                  TO  DL2-MM.
+           MOVE SORT-DD                  TO  DL2-DD.
+           MOVE SORT-YY                  TO  DL2-YY.
+           MOVE "/"                      TO  DL2-SLASH-1
+                                             DL2-SLASH-2.
+           MOVE SORT-RCVR                TO  DL2-RCVR.
+           MOVE SORT-CODE                TO  DL2-CODE.
+           MOVE SORT-CLASS               TO  DL2-CLASS.
+           MOVE SORT-DEPT                TO  DL2-DEPT.
+           MOVE SORT-ACCT                TO  DL2-ACCT.
+           MOVE SORT-QTY                 TO  DL2-QTY.
+           MOVE SORT-UM                  TO  DL2-UM.
+           MOVE SORT-VALUE               TO  DL2-VALUE.
+           MOVE SORT-BAL-QTY             TO  DL2-BAL-QTY.
+           MOVE MESSAGE-ENTRY(SORT-MSG)  TO  DL2-MESSAGE.
+           PERFORM 9999-WRITE-DETAIL-2.
+
+       8-EXIT.
+           EXIT.
+
+      *----------------------------------------------------------------*
+      *                I N P U T / O U T P U T                         *
+      *----------------------------------------------------------------*
+
+       9999-UTILITY SECTION.
+       9999-WRITE-DETAIL-1.
+           WRITE PRT-REC FROM DETAIL-LINE-1 AFTER ADVANCING 2.
+           ADD 2                         TO  NUM-LINES.
+           INITIALIZE DETAIL-LINE-1.
+
+       9999-WRITE-DETAIL-2.
+           WRITE PRT-REC FROM DETAIL-LINE-2 AFTER ADVANCING 1.
+           ADD 1                         TO  NUM-LINES.
+           IF NUM-LINES > 55
+               PERFORM 9999-WRITE-HEADINGS.
+           INITIALIZE DETAIL-LINE-2.
+
+       9999-WRITE-HEADINGS.
+           ADD 1                         TO  PAGE-NUM.
+           MOVE PAGE-NUM                 TO  H2-PAGE-NUM.
+           WRITE PRT-REC FROM HEADING-1 AFTER ADVANCING PAGE.
+           WRITE PRT-REC FROM HEADING-2 AFTER ADVANCING 1.
+           WRITE PRT-REC FROM HEADING-3 AFTER ADVANCING 2.
+           WRITE PRT-REC FROM HEADING-4 AFTER ADVANCING 1.
+           WRITE PRT-REC FROM DASH-LINE AFTER ADVANCING 1.
+           MOVE 5                        TO  NUM-LINES.
+
+       9999-START-DTRANS.
+           MOVE "N"                      TO  DTRANS-EOF-SW.
+           MOVE LOW-VALUES     TO PONUM OF DTRANS-REC-IO.
+           START DTRANS-IO KEY > PONUM OF DTRANS-REC-IO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "ERROR WITH START OF DTRANS*9999-SD"
+                                         TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+       9999-READ-NEXT-DTRANS.
+           READ DTRANS-IO NEXT INTO BUF-DTRANS
+               AT END MOVE "Y" TO DTRANS-EOF-SW.
+
+       9999-READ-DPORECD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-I.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-DPORECDH.
+           MOVE POH-ARG TO PORCVNO OF DPORECDH-I.
+           READ DPORECDH-I INTO BUF-DPORECD-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-DPOITEM.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-I.
+           MOVE TRANS-ITEM-NUM TO ITEMNO OF DPOITEM-I.
+           READ DPOITEM-I INTO BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-READ-DPOITEMH.
+           MOVE POH-ARG TO PORCVNO OF DPOITEMH-I.
+           MOVE TRANS-ITEM-NUM TO ITMNO OF DPOITEMH-I.
+           READ DPOITEMH-I INTO BUF-DPOITEM-H
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-REWRITE-DTRANS.
+           MOVE 0 TO TRANS-BALANCE-QTY.
+           REWRITE DTRANS-REC-IO FROM BUF-DTRANS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-BLOWUP.
+           MOVE "TFIXOPRC" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+

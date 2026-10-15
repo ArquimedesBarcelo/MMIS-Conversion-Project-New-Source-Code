@@ -1,0 +1,3745 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.
+           TMANCRTE.
+       AUTHOR.
+           KURT MOVSESIAN.
+      *REMARKS.
+
+      *D************************************************************
+      *D                                                           *
+      *D  T M A N C R T E    THIS PROGRAMS CREATES MANIFEST FILES  *
+      *D    BASED ON ONE OF THE FOLLOWING 4 OPTIONS -              *
+      *D     1) 'NEW'  - CREATE A NEW MANIFEST FILE                *
+      *D     2) 'REPR' - REPROCESS THE CURRENT MANIFEST FILE       *
+      *D     3) 'RLSE' - RELEASE THE CURRENT MANIFEST FILE. ALSO   *
+      *D         CREATE A LOCAL STORES FILE FOR LOCAL PLANT ACCTG. *
+      *D     4) 'DLET' - DELETE THE CURRENT MANIFEST FILE          *
+      *D                                                           *
+      *D    THIS PROGRAM IS EXECUTED IN THE TEMPORARY JOB STREAM   *
+      *D    'BXMANJOB.PUB' WHICH IS CREATED BY 'TMANFTHD'          *
+      *D                                                           *
+      *D    FILE DEFINITIONS (INPUTS/OUTPUTS)                      *
+      *D       1) MANWKFL1 - FILE THAT CONTAINS A LIST OF ALL      *
+      *D                    REGISTER NUMBERS CONTAINED IN THE      *
+      *D                    MOST RECENT MANIFEST FILE RUN          *
+      *D       2) MANAKFL1 - THE AKRON MANIFEST FILE. THIS FILE    *
+      *D                    MUST BE SENT TO AKRON ACCOUNTS PAYABLE *
+      *D                    ON THE IBM BEFORE ANOTHER MANIFEST     *
+      *D                    FILE CAN BE CREATED                    *
+      *D       3) MANSTFL1 - THE LOCAL STORES FILE USED BY THE SUB *
+      *D                    PLANTS FOR THEIR LOCAL STORES ACCTG.   *
+      *D                    SYSTEMS.  THIS FILE IS ONLY CREATED    *
+      *D                    WHEN THE 'RLSE' MANIFEST OPTION IS     *
+      *D                    SELECTED.                              *
+      *D       4) MANRPTFL - REPORT FILE WHICH CONTAINS A ONE PAGE *
+      *D                     SUMMARY OF WHICH OPTION WAS CHOOSEN   *
+      *D                     TO CREATE THE AKRON MANIFEST FILE     *
+      *D       5) STRRPTFL - A REPORT FILE WHICH DESCRIBES THE     *
+      *D                     THE STORES FILE CONTENT IN A USER     *
+      *D                     LEGIBLE FORMATT.  THIS FILE IS ONLY   *
+      *D                     UPDATED WHEN THE 'RLSE' MANIFEST      *
+      *D                     OPTION IS CHOOSEN SINCE THIS REPORT   *
+      *D                     CORRESPONDS TO THE 'MANSTFL' FILE.    *
+      *D                                                           *
+      *D************************************************************
+      *C
+      *C   OCT. 1985
+      *C   1. ADDED A NEW STORES RCD ID '6' WHICH CONTAINS
+      *C      CONTAINERS CHARGES, OTHER, AND CPW CHARGES.
+      *C      ALSO ADDED NET DUE VENDOR TO STORES RCD ID '2'
+      *C      AND A TOTAL COST DISTRIBUTED GRAND TOTAL TO
+      *C      RCD ID '9'
+      *C   2. ADDED A MANIFEST REPORT WHICH GIVES A REGISTER
+      *C      BY REGISTER LISTING WHEN EVER A 'NEW' OR 'REPR' IS
+      *C      RAN. THIS WILL HELP THEM CHECK THEIR SEND TO AKRON
+      *C      AND ALSO AID THEM WHEN BALANCING TO THEIR STORES
+      *C      ACCOUNTING SYSTEM.
+      *C   3. A SUMMARY TOTAL PAGE IS NOW PRINTED FOR A 'NEW', 'REPR'
+      *C      AND 'RLSE' TO HELP IN BALANCING TO STORES ACCOUNTING.
+      *C
+      *C   MAY 29,1992         KURT MOVSESIAN   REQUEST# 6192
+      *C   CHANGE THE 'RLSE' PROCESSING LOGIC TO NOT PASS 'GST'
+      *C   PAYMENTS TO STORES 'CSAS'.  THE FILE PASSED TO CSAS WILL
+      *C   NOT INCLUDE 'GST' PAYMENTS.  'GST' IS A GOODS AND SERVICE
+      *C   TAX PAID BY THE CANADIAN PLANTS.  BUT THEY GET TOTAL
+      *C   REIMBURSEMENT FOR THIS TAX THEY PAY TO THEIR VENDORS.
+      *C   THEREFORE THEY DONT WANT THIS TAX PAYMENT GETTING PASSED
+      *C   TO STORES ACCOUNTING WHERE IT WILL EFFECT THEIR LEDGERS
+      *C   AND AVERAGE COST CALCULATIONS.
+      *C
+      *C   MAY 05, 1994        CR KALMAN        REQUEST# 6511
+      *C   CREATED A LOGICAL VIEW FOR DINVRCD WITH A KEY ON INVOICESTS
+      *C   TO REDUCE THE TIME SPENT ON SEARCHING THROUGH DINVRCD FOR
+      *C   INVOICES TO PAY. (DIDN'T DECREASE THE PGM'S RUNNING TIME
+      *C   SUBSTANTIALLY. WILL TRY SOMETHING ELSE.)
+      *C
+      *C   JUNE 09, 1994       CR KALMAN        REQUEST# 6511
+      *C*  REPLACED OPENING, WRITING, CLOSING AND DELETING OF A FILE
+      *C*  FOR EACH REGISTER IN THE MANIFEST WITH A TABLE TO DO
+      *C*  THE PROCESSING.
+      *C
+      *C  JUNE 23, 1994   CR KALMAN
+      *C   ADDED CALL TO COBOL ERROR HANDLER -MCXCBLERR.
+      *C
+      *C  26SEP1994   CATHY ZUBEK    REQUEST #6532
+      *C  ADDED A NEW FIELD FOR CLASS OF ENTRY TO THE ID5 RECORD OF THE
+      *C  MAN-STORES-FILE.
+      *C
+      *C  05MAY1996   CA YODER       REQ #94-005
+      *C  ADDED LOGIC TO USE THE CURRENCY CODE FROM THE INVOICE IF ONE
+      *C  EXISTS.  OTHERWISE, USE THE PO CURRENCY CODE.
+      *C
+      *C  15JUL1996   CA YODER
+      *C  MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.
+      *C
+      *C  02JUL1997   CA YODER
+      *C  CORRECTED PROBLEM OF IMPROPERLY ALLOCATING FREIGHT CHARGES
+      *C  IF NO MATERIAL EXTENSION EXISTS.  WHEN THERE WAS A DIVISION
+      *C  BY ZERO WHEN FIGURING THE ITM-MATL-EXT-PCNT, THE STATEMENT
+      *C  WAS SKIPPED, RETAINING THE PREVIOUS INVOICE'S PERCENTAGE.
+      *C  IF AN INVOICE HAS A MATERIAL EXTENSION OF ZERO AND A FREIGHT
+      *C  CHARGE > ZERO, THE ITEMS ON THE INVOICE ARE COUNTED TO FIGURE
+      *C  THE ALLOCATION PERCENT.
+      *C
+      *C  ALSO, THE TAX CHARGE WAS NOT BEING PROPERLY ALLOCATED FOR
+      *C  AN INVOICE WHEN NO MATERIAL EXTENSION EXISTED.  THE TAX WAS
+      *C  BEING PLACED ON THE FIRST ITEM ONLY.  USED THE NUMBER OF
+      *C  ITEMS TO FIGURE OUT THE TAX PERCENTAGE.
+      *C
+      *C  17OCT1997   CA YODER
+      *C  INCREASED SIZE OF DIST-TABLE SINCE IT WAS BLOWING UP IN
+      *C  NAPANEE.  INCREASED IT FROM 100 TO 150.
+      *C
+      *C  03FEB1998   CA YODER
+      *C  INCREASED SIZE OF DIST-TABLE TO 1000 SINCE RECEIVING NOW
+      *C  HANDLES UP TO 999 ITEMS PER RECEIVING SLIP.
+      *C
+      *C  02APR1998   CA YODER
+      *C  FOUND A PROBLEM WITH SELECTING RECORDS FOR THE SORT-FILE.
+      *C  IF AN INVOICE WITH A "C" STATUS WAS FOUND, IT WOULD READ
+      *C  ALL OF THE "C" RECORDS AND THEN THROUGH THE "1" RECORDS.
+      *C  WHEN READING ALL OF THE "1" RECORDS, ALL OF THE INVOICES
+      *C  WOULD BE DUPLICATED SINCE THEY WERE ALREADY WRITTEN
+      *C  WHEN SEARCHING FOR THE "C" RECORDS.  THERE WAS NO CHECK
+      *C  TO STOP AFTER ALL OF THE "C" RECORDS.  (PARAGRAPHS
+      *C  61-READ-DINVRCD & 61-GET-DINVRCD.)  ADDED LOGIC TO STOP
+      *C  AFTER ALL THE "C" RECORDS BEFORE SELECTING THE "1"
+      *C  RECORDS.
+      *C
+      *C  06/02/99   CA YODER   (DECATUR REQUEST)
+      *C    EXPANDED TAX RATE PERCENTAGE FROM 2 DECIMAL
+      *C    PLACES TO 4.
+      *C
+      *C  10/20/2004  CA YODER   REQUEST #2004-99953
+      *C  ADDED LOGIC TO EXCLUDE TVQ TAX IN VALUE PASSED TO CSAS
+      *C  FOR VALLEYFIELD.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MANIFEST-REPORT
+                  ASSIGN TO DATABASE-MANRPTFL.
+
+           SELECT STORES-REPORT
+                  ASSIGN TO DATABASE-STRRPTFL.
+
+9406CK*    SELECT DIST-ITEM-FILE
+  .   *           ORGANIZATION IS INDEXED
+  .   *             ACCESS MODE IS DYNAMIC
+  .   *           RECORD KEY IS DIST-ITEM-NO
+  .   *             WITH DUPLICATES
+  .   *           ASSIGN TO DATABASE-DITEMFIL
+9406CK*           FILE STATUS IS FILE-STATUS.
+
+           SELECT SORT-ITEMS
+                  ASSIGN TO DISK-SORT.
+
+           SELECT SORT-REGISTER-FILE
+                  ASSIGN TO DISK-SORT.
+
+           SELECT REG-FILE
+                  ASSIGN TO DATABASE-MANWKFL1.
+
+           SELECT MAN-AKRON-FILE
+                  ASSIGN TO DATABASE-MANAKFL1.
+
+           SELECT MAN-STORES-FILE
+                  ASSIGN TO DATABASE-MANSTR.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-O
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-I
+                  ASSIGN TO DATABASE-MCFLCS1101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+
+           SELECT DPOFREIGHT-I
+                  ASSIGN TO DATABASE-MCFLCS2404
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-O
+                  ASSIGN TO DATABASE-MCFLCS2501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+9405CK     SELECT DINVRCD-STS-I
+  .               ASSIGN TO DATABASE-MCFLCS2505
+  .               ORGANIZATION IS INDEXED
+  .                 ACCESS MODE IS DYNAMIC
+  .               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+9405CK            FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVITM-I
+                  ASSIGN TO DATABASE-MCFLCS2601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVACCT-I
+                  ASSIGN TO DATABASE-MCFLCS2701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MTAX-I
+                  ASSIGN TO DATABASE-MCFLCS3701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  MPLTINFO-O
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-O-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-I-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-I-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-I-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  DPODATAITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-I-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-I-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0701.
+
+       FD  DPOFREIGHT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHT-I-REC.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2404.
+
+       FD  DINVACCT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVACCT-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2701.
+
+       FD  DINVRCD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2501.
+
+9405CK FD  DINVRCD-STS-I
+  .        LABEL RECORDS ARE STANDARD.
+  .    01  DINVRCD-STS-I-REC.
+9405CK     COPY DDS-ALL-FORMATS OF MCFLCS2505.
+
+       FD  DINVITM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2601.
+
+       FD  MTAX-I
+           LABEL RECORDS ARE STANDARD.
+       01  MTAX-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS3701.
+
+
+
+       FD  MANIFEST-REPORT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS MANIFEST-REPORT-RCD.
+       01  MANIFEST-REPORT-RCD.
+           05  MAN-CTL               PIC 9.
+           05  MANIFEST-REPORT-LINE  PIC X(132).
+
+       FD  STORES-REPORT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS STORES-REPORT-RCD.
+       01  STORES-REPORT-RCD.
+           05  STR-CTL               PIC 9.
+           05  STORES-REPORT-LINE    PIC X(132).
+
+9406CK*FD  DIST-ITEM-FILE
+  .   *    LABEL RECORDS ARE OMITTED
+  .   *    RECORD CONTAINS 69 CHARACTERS
+  .   *    DATA RECORD IS DIST-ITEM-RCD.
+  .   *01  DIST-ITEM-RCD.
+  .   *    05  DIST-ITEM-NO          PIC X(4).
+  .   *    05  DIST-CORP-CODE        PIC X(7).
+  .   *    05  DIST-UM               PIC X(2).
+  .   *    05  DIST-QUANTITY         PIC S9(8)V99.
+  .   *    05  DIST-ITEM-VALUE       PIC S9(11)V99.
+  .   *    05  DIST-ITEM-FRT         PIC S9(11)V99.
+  .   *    05  DIST-ITEM-TAX         PIC S9(11)V99.
+  .   *    05  DIST-ITEM-TAX-PCNT    PIC 9(2)V9(4).
+9406CK*    05  DIST-MEMO-INDIC       PIC X.
+
+       SD  SORT-ITEMS
+           RECORD CONTAINS 87 CHARACTERS.
+       01  SORT-ITEMS-RCD.
+           05  S-ITEM                PIC 9(4).
+           05  S-CORP-CODE           PIC X(7).
+           05  S-CLASS               PIC X(3).
+           05  S-UM                  PIC X(2).
+           05  S-QUANTITY            PIC S9(8)V99.
+           05  S-ITEM-DIST-COST      PIC S9(11)V99.
+           05  S-ITEM-FRT            PIC S9(11)V99.
+           05  S-ITEM-TAX            PIC S9(11)V99.
+           05  S-ACCTG-DATA.
+               10  S-PRIME           PIC X(3).
+               10  S-SUB             PIC X(3).
+               10  S-SUBD            PIC X(4).
+               10  S-ADDL-DATA       PIC X(6).
+           05  S-ITEM-PCT            PIC 9V9(4).
+           05  S-ITEM-MEMO-INDIC     PIC X.
+
+       SD  SORT-REGISTER-FILE
+           RECORD CONTAINS 5 CHARACTERS.
+       01  SORT-REGISTER-RCD.
+           05  S-REGISTER-NO         PIC X(5).
+
+       FD  REG-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 5 CHARACTERS.
+       01  REG-RCD.
+           05  REGISTER-NO           PIC X(5).
+
+       FD  MAN-AKRON-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 80 CHARACTERS
+           DATA RECORD IS MAN-AKRON-REC.
+       01  MAN-AKRON-REC             PIC X(80).
+
+       FD  MAN-STORES-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 80 CHARACTERS
+           DATA RECORDS ARE STORES-ID0-RCD,
+                            STORES-ID1-RCD,
+                            STORES-ID2-RCD,
+                            STORES-ID3-RCD,
+                            STORES-ID4-RCD,
+                            STORES-ID5-RCD,
+                            STORES-ID6-RCD,
+                            STORES-ID9-RCD.
+       01  STORES-ID0-RCD.
+           05  RECORD-ID0            PIC X.
+           05  STORES-MANIFEST-NO    PIC X(3).
+           05  STORES-MANIFEST-DATE  PIC X(6).
+           05  STORES-FILE-ID0       PIC 9(4).
+           05  STORES-MAN-FUNCT      PIC X(4).
+           05  STORES-REPORT-INDS.
+               10  STORES-RPT-1      PIC X.
+               10  STORES-RPT-2      PIC X.
+           05  FILLER                PIC X(60).
+       01  STORES-ID1-RCD.
+           05  RECORD-ID1            PIC X.
+           05  STORES-REG-NO-ID1     PIC X(5).
+           05  STORES-INVOICE-TYPE   PIC X.
+           05  STORES-PO-NUMBER      PIC X(10).
+           05  STORES-VENDOR-CODE    PIC X(7).
+           05  STORES-BUDGT-NO       PIC X(12).
+           05  STORES-DIST-COST      PIC S9(8)V99.
+           05  STORES-DISCOUNT       PIC S9(8)V99.
+           05  STORES-TERMS          PIC X(2).
+           05  STORES-TOTAL-TAX      PIC S9(8)V99.
+           05  STORES-TAX-CODE       PIC X(2).
+           05  STORES-NO-CHECK       PIC X.
+           05  FILLER                PIC X(9).
+       01  STORES-ID2-RCD.
+           05  RECORD-ID2            PIC X.
+           05  STORES-REG-NO-ID2     PIC X(5).
+           05  STORES-ZBILL-NO       PIC X(6).
+           05  STORES-ZBILL-AMT      PIC S9(8)V99.
+           05  STORES-TOTAL-PFRT     PIC S9(8)V99.
+           05  STORES-TOTAL-CFRT     PIC S9(8)V99.
+           05  STORES-ADD-EMPLOYEE   PIC X(4).
+           05  STORES-MOD-EMPLOYEE   PIC X(4).
+           05  STORES-ACCRUED-TAX    PIC S9(8)V99.
+           05  STORES-DUE-VENDOR     PIC S9(8)V99.
+           05  FILLER                PIC X(10).
+       01  STORES-ID3-RCD.
+           05  RECORD-ID3            PIC X.
+           05  STORES-REG-NO-ID3     PIC X(5).
+           05  STORES-PRO-NO         PIC X(16).
+           05  STORES-CARRIER        PIC X(4).
+           05  STORES-FRT-CHRG       PIC S9(8)V99.
+           05  FILLER                PIC X(44).
+       01  STORES-ID4-RCD.
+           05  RECORD-ID4            PIC X.
+           05  STORES-REG-NO-ID4     PIC X(5).
+           05  STORES-INV-DESC       PIC X(55).
+           05  FILLER                PIC X(19).
+       01  STORES-ID5-RCD.
+           05  RECORD-ID5            PIC X.
+           05  STORES-REG-NO-ID5     PIC X(5).
+           05  STORES-CORP-CODE      PIC X(7).
+           05  STORES-CLASS          PIC X(3).
+           05  STORES-ITEM-NO        PIC 9(3).
+           05  STORES-QTY            PIC S9(8)V99.
+           05  STORES-UM             PIC X(2).
+           05  STORES-VALUE          PIC S9(8)V99.
+           05  STORES-ITM-FRT        PIC S9(8)V99.
+           05  STORES-ITM-TAX        PIC S9(8)V99.
+           05  STORES-ITM-ACCOUNTING.
+               10  STORES-PRIME      PIC X(3).
+               10  STORES-SUB        PIC X(3).
+               10  STORES-SUBD       PIC X(4).
+               10  STORES-ADDL-DATA  PIC X(6).
+           05  STORES-ITM-MEMO-INDIC PIC X.
+           05  STORES-CE             PIC X(1).
+           05  FILLER                PIC X(1).
+       01  STORES-ID6-RCD.
+           05  RECORD-ID6            PIC X.
+           05  STORES-REG-NO-ID6     PIC X(5).
+           05  STORES-CONTAINERS     PIC S9(8)V9(2).
+           05  STORES-OTHER          PIC S9(8)V9(2).
+           05  STORES-CPW            PIC S9(8)V9(2).
+           05  STORES-INV-NO         PIC X(14).
+           05  FILLER                PIC X(30).
+       01  STORES-ID9-RCD.
+           05  RECORD-ID9            PIC X.
+           05  STORES-MANIFEST-NO-9  PIC X(3).
+           05  STORES-MANIFEST-DATE-9  PIC X(6).
+           05  STORES-TOTAL-RECORDS  PIC 9(6).
+           05  STORES-FILE-ID9       PIC 9(4).
+           05  STORES-TOTAL-COST     PIC S9(8)V9(2).
+           05  FILLER                PIC X(50).
+
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+       01  SAVE-STORES-ID5-RCD         PIC X(80)  VALUE SPACES.
+       01  SAVE-SORT-ITEMS-RCD         PIC X(87)  VALUE SPACES.
+       77  TERRITORY-SAVE              PIC X(4)   VALUE SPACES.
+       77  MANIFEST-HEADER-TOTAL       PIC S9(11)V99 VALUE ZEROS.
+       77  HDR-NET-DUE-VENDOR-TOTAL    PIC S9(11)V99 VALUE ZEROS.
+       77  PAGE-CTR                    PIC S9(4) COMP-4  VALUE ZEROS.
+       77  LINE-CTR                    PIC S9(4) COMP-4  VALUE ZEROS.
+       77  FRT-CTR                     PIC S9(4) COMP-4  VALUE ZEROS.
+       77  STORES-RCD-CTR              PIC S9(6) COMP-4  VALUE ZEROS.
+       77  SUB                         PIC 99  COMP-4    VALUE ZEROS.
+       77  ITEM-IX                     PIC 9(4) COMP-4    VALUE ZEROS.
+       77  SAVE-MAN-FIRST-DIG          PIC X        VALUE SPACES.
+       77  SAVE-MANIFEST-NO            PIC X(3)     VALUE SPACES.
+       77  SAVE-CO                     PIC X(3)     VALUE SPACES.
+       77  MAN-EMP-ID                  PIC X(4)     VALUE SPACES.
+       77  SAVE-TOTAL-TAX              PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-PREPAYED-FRT           PIC S9(11)V99 VALUE ZEROS.
+       77  PRIME-SAVE                  PIC X(3)     VALUE SPACES.
+       77  ITEM-PRICE-EXT              PIC S9(11)V99 VALUE ZEROS.
+       77  INV-TOTAL-ITM-EXT           PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-TOTAL-FRT              PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-TOTAL-MATL-COST        PIC S9(11)V99 VALUE ZEROS.
+       77  ITM-MATL-EXT-PCNT           PIC S9V9(10) VALUE ZEROS.
+       77  ACCT-PCT                    PIC S9V9(4)  VALUE ZEROS.
+       77  SAVE-ACCT-ADDR              PIC S9(9)  COMP VALUE ZEROS.
+       77  SAVE-FRWD-ADDR              PIC S9(9)  COMP VALUE ZEROS.
+       77  TOTAL-QTY-DIST              PIC S9(8)V99 VALUE ZEROS.
+       77  TOTAL-COST-DIST             PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-FRT-DIST              PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-TAX-DIST              PIC S9(11)V99 VALUE ZEROS.
+       77  DIST-COST-DIFF              PIC S9(11)V99 VALUE ZEROS.
+       77  DIST-FRT-DIFF               PIC S9(11)V99 VALUE ZEROS.
+       77  DIST-TAX-DIFF               PIC S9(11)V99 VALUE ZEROS.
+       77  DIST-QTY-DIFF               PIC S9(8)V99 VALUE ZEROS.
+       77  SAVE-ITEM-QTY               PIC S9(8)V99 VALUE ZEROS.
+       77  SAVE-ITEM-DIST-COST         PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-ITEM-FRT               PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-ITEM-TAX               PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-ITEM-NO                PIC X(4)     VALUE SPACES.
+       77  MAN-RCD-COUNTER             PIC S9(6) COMP-4  VALUE ZEROS.
+       77  MAN-INVOICE-COUNTER         PIC S9(4) COMP-4  VALUE ZEROS.
+      *77  TOTAL-MTAX-PERCENT          PIC S9(4)V99 COMP-4 VALUE ZEROS.
+       77  TOTAL-MTAX-PERCENT         PIC S9(4)V9999 COMP-4 VALUE ZEROS.
+       77  ITM-TAX-ADJUST              PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-ACCRUED-TAX           PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-TOTAL-ITEM-TAX-DIST    PIC S9(11)V99 VALUE ZEROS.
+      *77  TAX-ITEM-PCNT               PIC 9V9(4)   VALUE ZEROS.
+       77  TAX-ITEM-PCNT               PIC 9V9(6)   VALUE ZEROS.
+       77  ADDL-ITEM-TAX               PIC S9(11)V99 VALUE ZEROS.
+       77  SAVE-LAST-ITEM-NO           PIC X(4)     VALUE SPACES.
+       77  TOTAL-CE-AMOUNT             PIC S9(11)V99 VALUE ZEROS.
+       77  CE-SUB                      PIC S9(4) COMP-4 VALUE ZEROS.
+       77  CALC-COST-DIST              PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-CNTRS                 PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-CNTRS              PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-OTHER                 PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-OTHER              PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-CE9                   PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-CE9                PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-CPW                   PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-CPW                PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-DISTRIBUTED-COST      PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-DISTRIBUTED-COST   PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-CE-AMOUNT          PIC S9(11)V99 VALUE ZEROS.
+       77  IT-CTR                      PIC S9(4) COMP-4 VALUE ZEROS.
+       77  TOTAL-BALANCE-AMT           PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-BALANCE-AMT        PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-GST-TAX               PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-GST-TAX            PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-TVQ-TAX               PIC S9(11)V99 VALUE ZEROS.
+       77  TOTAL-IT-TVQ-TAX            PIC S9(11)V99 VALUE ZEROS.
+       77  NEG-CE9-CASH-DSCNT          PIC S9(11)V99 VALUE ZEROS.
+       77  NEG-CPW-VALUE               PIC S9(11)V99 VALUE ZEROS.
+       77  CHK-VEN-CODE                PIC X(10)     VALUE SPACES.
+       77  CHK-INV-DATE                PIC 9(6)      VALUE ZEROS.
+       77  SKIP-INVOICE-SW             PIC X(1)      VALUE "N".
+       77  SAVE-CTL                    PIC 9         VALUE 0.
+       77  SAVE2-CTL                   PIC 9         VALUE 0.
+       01  GST-TAX-SW                  PIC X(1)      VALUE "N".
+           88  GST-TAX                               VALUE "Y".
+       77  GST-ENTRY                   PIC S9(4)     VALUE ZEROS.
+       77  NUM-ITEMS                   PIC 9(3)      VALUE ZEROS.
+       77  SAVE-STATUS                 PIC X(2)      VALUE SPACES.
+9406CK 01  SCOPE                       PIC X.
+
+      **************************************
+      *                                    *
+      *   SWITCHES                         *
+      *                                    *
+      **************************************
+
+       01  SWITCH-AREA.
+           05  EOF-SW                  PIC X        VALUE SPACES.
+           05  MTH-OVERRIDE-SW         PIC X        VALUE "N".
+           05  AT-LEAST-ONE-ACCT-ENTRY  PIC X        VALUE "N".
+           05  NO-ITEMS-SW             PIC X        VALUE "N".
+
+
+       01  PROCESS-MANIFEST-INDICATOR     PIC X(4)  VALUE SPACES.
+           88  NEW-OPTION                           VALUE "NEW ".
+           88  REPR-OPTION                          VALUE "REPR".
+           88  DLET-OPTION                          VALUE "DLET".
+           88  RLSE-OPTION                          VALUE "RLSE".
+       01  MANIFEST-OPTION                 PIC 9(1) VALUE ZEROS.
+
+       01  MANIFEST-MM-BUILD.
+           05  MAN-MM-1-DIG         PIC X.
+           05  MAN-MM-2-DIG         PIC X.
+
+       01  MANIFEST-YEAR                PIC 99  VALUE ZEROS.
+
+       01  SAVE-MANIFEST-DATE.
+           05  SAVE-MANIFEST-DATE-YY    PIC XX  VALUE SPACES.
+           05  SAVE-MANIFEST-DATE-MM    PIC XX  VALUE SPACES.
+           05  SAVE-MANIFEST-DATE-DD    PIC XX  VALUE SPACES.
+
+       01  SAVE-LOCAL-ACCTG-REPORTS.
+           05  SAVE-RPT-1-IND           PIC X   VALUE SPACES.
+           05  SAVE-RPT-2-IND           PIC X   VALUE SPACES.
+
+       01  SAVE-MAN-NO.
+           05  SAVE-MAN-NO-PREFIX       PIC X   VALUE SPACES.
+           05  SAVE-MAN-SEQ-CTR         PIC 99  VALUE ZEROES.
+
+       01  SAVE-CUR-MAN.
+           05  SAVE-CUR-MAN-PREFIX      PIC X   VALUE SPACES.
+           05  SAVE-CUR-MAN-NO          PIC 99  VALUE ZEROES.
+
+       01  SAVE-PRIOR-MAN.
+           05  SAVE-PRIOR-MAN-PREFIX    PIC X   VALUE SPACES.
+           05  SAVE-PRIOR-MAN-NO        PIC 99  VALUE ZEROES.
+
+       01  ACCOUNT-CE.
+           05  ACCOUNT-CE-ENTRY  OCCURS 10 TIMES.
+               10  ACCT-CE-PR        PIC X(3).
+               10  ACCT-CE-SA        PIC X(3).
+               10  ACCT-CE-SD        PIC X(3).
+
+       01  WS-ITEM-SEQ-NO.
+           05  WS-ITEM               PIC X(4).
+           05  WS-SEQ-NO             PIC X(2).
+
+       COPY CCHKOBJ  IN COPYLIB.
+
+       COPY CCRTFILE IN COPYLIB.
+
+       COPY CDLTFILE IN COPYLIB.
+
+       01  COMMAND-AREA.
+           05  QCMDEXC-MANSTR.
+               10  OVRDBF-MANSTR      PIC X(70) VALUE SPACES.
+               10  DBF-MANSTR-PARM2 PIC S9(10)V9(5) COMP-3 VALUE 70.
+
+       01  LISTF-COMMAND.
+           05  FILLER  PIC X(6)  VALUE "LISTF ".
+           05  LISTF-FNAME  PIC X(8)  VALUE SPACES.
+
+       01  BUILD-COMMAND.
+           05  FILLER  PIC X(6)  VALUE "BUILD ".
+           05  BUILD-FNAME  PIC X(8) VALUE SPACES.
+           05  FILLER  PIC X(20) VALUE ";REC=-80,16,F,ASCII;".
+           05  FILLER  PIC X(15) VALUE "DISC=10000,32,1".
+
+       01  FILE-COMMAND.
+           05  FILLER  PIC X(12) VALUE "FILE MANSTR=".
+           05  FILE-FNAME  PIC X(8)  VALUE SPACES.
+
+       01  MAN-STR-LIT.
+           05  FILLER      PIC X(6) VALUE "MANSTR".
+           05  MAN-STR-FILE-NO  PIC 9(2)  VALUE ZEROS.
+
+       COPY SCURCONV IN COPYLIB.
+
+       01  SAVE-VEN-ADDR.
+           05  VEN-ADDR-LINES  PIC X(44)  OCCURS 4 TIMES.
+
+       01  VEN-NOT-ON-FILE.
+           05  FILLER  PIC X(14)  VALUE "** VENDOR NOT ".
+           05  FILLER  PIC X(10)  VALUE "ON FILE **".
+
+
+
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       01  AKRON-HDR-RCD.
+           05  AKRON-MAN-FUNCT       PIC X(4).
+           05  FILLER                PIC X(3).
+           05  AKRON-SUB-TERR        PIC X(4).
+           05  AKRON-HDR-MAN-NO      PIC X(3).
+           05  AKRON-MAN-DATE.
+               10  AKRON-MAN-DATE-MM PIC XX.
+               10  AKRON-MAN-DATE-DD PIC XX.
+               10  AKRON-MAN-DATE-YY PIC XX.
+           05  AKRON-MAN-TOTAL       PIC S9(8)V99.
+           05  FILLER                PIC X(50).
+       01  AKRON-CE-RCD.
+           05  AKRON-REG-NO          PIC X(5).
+           05  FILLER                PIC X(2).
+           05  AKRON-CE-AMOUNT       PIC S9(8)V99.
+           05  AKRON-CE              PIC X.
+           05  AKRON-INVOICE-NO      PIC X(14).
+           05  AKRON-INVOICE-DATE.
+               10  AKRON-INVOICE-DATE-MM    PIC XX.
+               10  AKRON-INVOICE-DATE-DD    PIC XX.
+               10  AKRON-INVOICE-DATE-YY    PIC XX.
+           05  AKRON-INVOICE-TERMS   PIC X(2).
+           05  FILLER                PIC X(6).
+           05  AKRON-VEN-CODE        PIC X(7).
+           05  AKRON-ACCOUNT.
+               10  AKRON-PR          PIC X(3).
+               10  AKRON-SA          PIC X(3).
+               10  AKRON-SD          PIC X(3).
+           05  AKRON-PO-NO           PIC X(7).
+           05  AKRON-PO-RLS-NO       PIC X(3).
+           05  AKRON-PO-RCV-IND      PIC X.
+           05  FILLER                PIC X(5).
+           05  AKRON-CURRENCY-CODE   PIC X(2).
+
+9406CK 01  DIST-TABLE.
+  .         05  OCCURS 1000 TIMES.
+  .            10  DIST-ITEM-NO          PIC X(4).
+  .            10  DIST-CORP-CODE        PIC X(7).
+  .            10  DIST-UM               PIC X(2).
+  .            10  DIST-QUANTITY         PIC S9(8)V99.
+  .            10  DIST-ITEM-VALUE       PIC S9(11)V99.
+  .            10  DIST-ITEM-FRT         PIC S9(11)V99.
+  .            10  DIST-ITEM-TAX         PIC S9(11)V99.
+  .            10  DIST-ITEM-TAX-PCNT    PIC 9(2)V9(4).
+9406CK         10  DIST-MEMO-INDIC       PIC X.
+
+       COPY MSTORERM   IN COPYLIB.
+
+       COPY DFREIGHT   IN COPYLIB.
+
+       COPY DPORECD    IN COPYLIB.
+
+       COPY DPOITEM    IN COPYLIB.
+
+       COPY DPODATA    IN COPYLIB.
+
+       COPY DVENDOR    IN COPYLIB.
+
+       COPY DINVRCD    IN COPYLIB.
+
+       COPY MPLTINFO   IN COPYLIB.
+
+       COPY DINVITM    IN COPYLIB.
+
+       COPY DINVACCT   IN COPYLIB.
+
+       COPY MTAX       IN COPYLIB.
+
+       COPY DATAB      IN COPYLIB.
+
+       01  ARG-VALUES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+           05  REQ-ARG                PIC X(12) VALUE SPACES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+           05  REGISTER-ARG           PIC X(6)  VALUE SPACES.
+           05  TAX-ARG                PIC X(2)  VALUE SPACES.
+           05  VEN-ARG                PIC X(10) VALUE SPACES.
+           05  INV-ARG                PIC X(14) VALUE SPACES.
+           05  CURRENT-REC-ARG        PIC S9(9) COMP.
+
+      *****************************************************
+      *                                                   *
+      *   R E P O R T    H E A D E R S  &  D E T A I L S  *
+      *                                                   *
+      *****************************************************
+
+
+       01  HEADER-1.
+           05  FILLER            PIC X(6)  VALUE " PAGE ".
+           05  PAGE-NO-OUT       PIC ZZZ9  VALUE ZEROS.
+           05  FILLER            PIC X(15) VALUE SPACES.
+           05  RPT-HEADER        PIC X(44) VALUE SPACES.
+           05  FILLER            PIC X     VALUE SPACES.
+           05  PRT-CO            PIC X(3)  VALUE SPACES.
+           05  FILLER            PIC X(10) VALUE SPACES.
+           05  PRT-DATE          PIC X(8)  VALUE SPACES.
+           05  FILLER            PIC X(5)  VALUE SPACES.
+           05  PRT-TIME          PIC X(8)  VALUE SPACES.
+           05  FILLER            PIC X(15) VALUE SPACES.
+           05  FILLER            PIC X(8)  VALUE "TMANCRTE".
+           05  FILLER            PIC X(2)  VALUE SPACES.
+
+       01  MANIFEST-HEADER1.
+           05  FILLER  PIC X(36) VALUE SPACES.
+           05  FILLER  PIC X(60) VALUE ALL "*".
+           05  FILLER  PIC X(36) VALUE SPACES.
+
+       01  MANIFEST-HEADER2.
+           05  FILLER  PIC X(36) VALUE SPACES.
+           05  FILLER  PIC X(2)  VALUE "**".
+           05  FILLER  PIC X(56) VALUE SPACES.
+           05  FILLER  PIC X(2)  VALUE "**".
+           05  FILLER  PIC X(36) VALUE SPACES.
+
+       01  MANIFEST-HEADER3.
+           05  FILLER  PIC X(36) VALUE SPACES.
+           05  FILLER  PIC X(2)  VALUE "**".
+           05  FILLER  PIC X(10) VALUE SPACES.
+           05  MAN-HDR3-RPT-LINE  PIC X(42) VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC X(2)  VALUE "**".
+           05  FILLER  PIC X(36) VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE1.
+           05  FILLER  PIC X(17) VALUE "MANIFEST FUNCTION".
+           05  FILLER  PIC X(9)  VALUE "       - ".
+           05  MAN-FUNCT-OUT  PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC X(12) VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE2.
+           05  FILLER  PIC X(15) VALUE "MANIFEST NUMBER".
+           05  FILLER  PIC X(11) VALUE "         - ".
+           05  MAN-NO-OUT  PIC X(3) VALUE SPACES.
+           05  FILLER  PIC X(13) VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE3.
+           05  FILLER  PIC X(13) VALUE "MANIFEST DATE".
+           05  FILLER  PIC X(13) VALUE "           - ".
+           05  MAN-DATE-OUT PIC X(8) VALUE SPACES.
+           05  FILLER  PIC X(8)  VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE4.
+           05  FILLER  PIC X(14) VALUE "MANIFEST TOTAL".
+           05  FILLER  PIC X(12) VALUE "          - ".
+           05  MAN-TOTAL-OUT  PIC -(11)9.99 VALUE ZEROS.
+           05  FILLER  PIC X(1)  VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE5.
+           05  FILLER  PIC X(16) VALUE "MANIFEST RECORD ".
+           05  FILLER  PIC X(10) VALUE "COUNT   - ".
+           05  MAN-RCD-OUT PIC Z(5)9 VALUE ZEROS.
+           05  FILLER  PIC X(11)  VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE6.
+           05  FILLER  PIC X(17) VALUE "MANIFEST INVOICE ".
+           05  FILLER  PIC X(9) VALUE "COUNT  - ".
+           05  MAN-INV-CTR-OUT  PIC ZZZ9 VALUE ZEROS.
+           05  FILLER  PIC X(12) VALUE SPACES.
+
+       01  MANIFEST-RPT-LINE7.
+           05  FILLER  PIC X(17) VALUE "MANIFEST EMPLOYEE".
+           05  FILLER  PIC X(9)  VALUE " ID    - ".
+           05  MAN-EMP-ID-OUT PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC X(12) VALUE SPACES.
+
+       01  STORES-PAGE-HDR-1.
+           05  FILLER  PIC X(15) VALUE SPACES.
+           05  FILLER  PIC X(17) VALUE "MANIFEST NUMBER  ".
+           05  STR-MAN-NO-OUT  PIC X(3) VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC X(15) VALUE "MANIFEST DATE  ".
+           05  STR-MAN-DATE-OUT  PIC X(8) VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC X(19) VALUE "NUMBER OF INVOICES ".
+           05  STR-MAN-INV-CTR-OUT  PIC ZZZ9.
+           05  FILLER  PIC X(41) VALUE SPACES.
+
+       01  STORES-HEADER-1.
+           05  FILLER  PIC X(11) VALUE "REGISTER   ".
+           05  FILLER  PIC X(16) VALUE "PURCHASE ORDER  ".
+           05  FILLER  PIC X(13) VALUE "VENDOR CODE  ".
+           05  FILLER  PIC X(17) VALUE "BUDGET NUMBER    ".
+           05  FILLER  PIC X(14) VALUE "DIST. COST    ".
+           05  FILLER  PIC X(22) VALUE "NET DUE VENDOR        ".
+           05  FILLER  PIC X(11) VALUE "DISCOUNT   ".
+           05  FILLER  PIC X(14) VALUE "TERMS         ".
+           05  FILLER  PIC X(6)  VALUE "TAX   ".
+           05  FILLER  PIC X(8)  VALUE "TAX CODE".
+           05  FILLER  PIC X(6)  VALUE SPACES.
+
+       01  STORES-DETAIL-LINE-1.
+           05  FILLER  PIC X(2)  VALUE SPACES.
+           05  REG-OUT  PIC X(5) VALUE SPACES.
+           05  FILLER  PIC X(6)  VALUE SPACES.
+           05  PO-NUM-OUT PIC X(10)  VALUE SPACES.
+           05  FILLER  PIC X(6)  VALUE SPACES.
+           05  VEN-CODE-OUT PIC X(7) VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE SPACES.
+           05  BUDGT-NO-OUT PIC X(12) VALUE SPACES.
+           05  FILLER  PIC X(1)  VALUE SPACES.
+           05  DIST-COST-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(2) VALUE SPACES.
+           05  DUE-VENDOR-OUT PIC Z(10)9.99CR VALUE ZEROS.
+           05  DISCOUNT-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(2)  VALUE SPACES.
+           05  TERMS-OUT  PIC X(2)  VALUE SPACES.
+           05  TAX-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(3)  VALUE SPACES.
+           05  TAX-CODE-OUT  PIC X(2)  VALUE SPACES.
+           05  FILLER  PIC X VALUE SPACES.
+
+       01  STORES-HEADER-2.
+           05  FILLER  PIC X(11) VALUE SPACES.
+           05  FILLER  PIC X(14) VALUE "TOTAL PREPAID ".
+           05  FILLER  PIC X(10) VALUE "FREIGHT   ".
+           05  FILLER  PIC X(14) VALUE "TOTAL COLLECT ".
+           05  FILLER  PIC X(14) VALUE "FREIGHT       ".
+           05  FILLER  PIC X(16) VALUE "ACCRUED TAX     ".
+           05  FILLER  PIC X(22) VALUE "EMPLOYEE ID ADD/CHANGE".
+           05  FILLER  PIC X(1)  VALUE SPACES.
+
+       01  STORES-DETAIL-LINE-2.
+           05  FILLER  PIC X(13) VALUE SPACES.
+           05  TOT-PFRT-OUT PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(8) VALUE SPACES.
+           05  TOT-CFRT-OUT PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(8)  VALUE SPACES.
+           05  ACCRUED-TAX-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(9)  VALUE SPACES.
+           05  EMP-ADD-ID-OUT PIC X(4) VALUE SPACES.
+           05  FILLER  PIC X  VALUE "/".
+           05  EMP-CHG-ID-OUT PIC X(4) VALUE SPACES.
+           05  FILLER  PIC X(8)  VALUE SPACES.
+
+       01  STORES-HEADER-2B.
+           05  FILLER  PIC X(11) VALUE SPACES.
+           05  FILLER  PIC X(21) VALUE "RETURNABLE CONTAINERS".
+           05  FILLER  PIC X(11) VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE "OTHER".
+           05  FILLER  PIC X(11) VALUE SPACES.
+           05  FILLER  PIC X(16) VALUE "CONTRACTORS PAY ".
+           05  FILLER  PIC X(8)  VALUE "WITHHELD".
+           05  FILLER  PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC X(15) VALUE "NO CHECK INDIC.".
+           05  FILLER  PIC X(27) VALUE SPACES.
+
+       01  STORES-DETAIL-LINE-2B.
+           05  FILLER  PIC X(13) VALUE SPACES.
+           05  CONTAINERS-OUT PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(8) VALUE SPACES.
+           05  OTHER-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(8) VALUE SPACES.
+           05  CPW-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(17) VALUE SPACES.
+           05  NO-CHECK-INDIC-OUT  PIC X VALUE SPACES.
+           05  FILLER  PIC X(35) VALUE SPACES.
+
+       01  STORES-HEADER-3.
+           05  FILLER  PIC X(20) VALUE SPACES.
+           05  FILLER  PIC X(15) VALUE "COLLECT FREIGHT".
+           05  FILLER  PIC X(9)  VALUE SPACES.
+           05  FILLER  PIC X(19) VALUE "PRO NUMBER         ".
+           05  FILLER  PIC X(12) VALUE "CARRIER     ".
+           05  FILLER  PIC X(14) VALUE "FREIGHT CHARGE".
+           05  FILLER  PIC X(43) VALUE SPACES.
+
+       01  STORES-DETAIL-LINE-3.
+           05  FILLER  PIC X(44) VALUE SPACES.
+           05  PRO-NO-OUT PIC X(16) VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE SPACES.
+           05  CARRIER-OUT PIC X(4) VALUE SPACES.
+           05  FILLER  PIC X(6)  VALUE SPACES.
+           05  FRT-CHRG-OUT PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(41) VALUE SPACES.
+
+       01  STORES-HEADER-4.
+           05  FILLER  PIC X(14) VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE "DESCRIPTION".
+           05  FILLER  PIC X(107) VALUE SPACES.
+
+       01  STORES-DETAIL-LINE-4.
+           05  FILLER  PIC X(16) VALUE SPACES.
+           05  DESC-OUT PIC X(55) VALUE SPACES.
+           05  FILLER  PIC X(61) VALUE SPACES.
+
+       01  STORES-HEADER-5.
+           05  FILLER  PIC X(4) VALUE SPACES.
+           05  FILLER  PIC X(17) VALUE "ITEM  CORP CODE  ".
+           05  FILLER  PIC X(15) VALUE "CLASS  UM      ".
+           05  FILLER  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(13) VALUE "QUANTITY     ".
+           05  FILLER  PIC X(15) VALUE "ITEM VALUE     ".
+           05  FILLER  PIC X(20) VALUE "ITEM FREIGHT        ".
+           05  FILLER  PIC X(12) VALUE "ITEM TAX    ".
+           05  FILLER  PIC X(15) VALUE "ACCOUNTING DATA".
+           05  FILLER  PIC X(12) VALUE SPACES.
+
+       01  STORES-DETAIL-LINE-5.
+           05  FILLER  PIC X(5) VALUE SPACES.
+           05  ITEM-OUT  PIC ZZ9 VALUE ZEROS.
+           05  ITEM-OUT-X  REDEFINES ITEM-OUT  PIC X(3).
+           05  FILLER  PIC X(3)  VALUE SPACES.
+           05  CORP-CODE-OUT  PIC X(7) VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE SPACES.
+           05  CLASS-OUT PIC X(3) VALUE SPACES.
+           05  FILLER  PIC X(3)  VALUE SPACES.
+           05  UM-OUT  PIC X(2) VALUE SPACES.
+           05  FILLER  PIC X(2) VALUE SPACES.
+           05  MEMO-QTY-OUT PIC X(8) VALUE SPACES.
+           05  FILLER  PIC X(2) VALUE SPACES.
+           05  QTY-OUT  PIC -(8)9.99 VALUE ZEROS.
+           05  FILLER  PIC X(1) VALUE SPACES.
+           05  ITEM-VALUE-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(1) VALUE SPACES.
+           05  ITEM-FRT-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  ITEM-TAX-OUT  PIC Z(10)9.99CR VALUE ZEROS.
+           05  FILLER  PIC X(1) VALUE SPACES.
+           05  PRIME-OUT PIC X(3) VALUE SPACES.
+           05  FILLER  PIC X    VALUE SPACES.
+           05  SUB-OUT  PIC X(3) VALUE SPACES.
+           05  FILLER  PIC X    VALUE SPACES.
+           05  SUBD-OUT  PIC X(4) VALUE SPACES.
+           05  FILLER  PIC X    VALUE SPACES.
+           05  ADDL-DATA-OUT  PIC X(6) VALUE SPACES.
+           05  FILLER  PIC X    VALUE SPACES.
+           05  ACCT-PCT-OUT PIC ZZ9.99 VALUE ZEROS.
+           05  ACCT-PCT-OUT-X  REDEFINES ACCT-PCT-OUT  PIC X(6).
+           05  FILLER  PIC X    VALUE "%".
+
+       01  MANIFEST-DETAIL-LINE1.
+           05  FILLER  PIC X(9)  VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "INVOICE NO".
+           05  FILLER  PIC X(9)  VALUE SPACES.
+           05  FILLER  PIC X(13) VALUE "DATE    TERMS".
+           05  FILLER  PIC X(13) VALUE SPACES.
+           05  FILLER  PIC X(14) VALUE "CE   CE AMOUNT".
+           05  FILLER  PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC X(8)  VALUE "CE ACCT.".
+           05  FILLER  PIC X(3)  VALUE SPACES.
+           05  FILLER  PIC X(15) VALUE "TOTAL CE $     ".
+           05  M-CE-TOTAL  PIC -(11)9.99 VALUE ZEROS.
+           05  FILLER  PIC X(20) VALUE SPACES.
+
+       01  MANIFEST-DETAIL-LINES.
+           05  MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(2)  VALUE SPACES.
+               10  M-REG-NO  PIC X(5) VALUE SPACES.
+               10  FILLER  PIC X(2)  VALUE SPACES.
+               10  M-INV-NO  PIC X(14) VALUE SPACES.
+               10  FILLER  PIC X(3)  VALUE SPACES.
+               10  M-INV-DATE  PIC X(8)  VALUE SPACES.
+               10  FILLER  PIC X(3)  VALUE SPACES.
+               10  M-INV-TERMS  PIC X(2)  VALUE SPACES.
+               10  FILLER  PIC X(15) VALUE SPACES.
+               10  M-CE1  PIC X  VALUE SPACES.
+               10  M-CE1-VALUE  PIC -(11)9.99  VALUE ZEROS.
+               10  FILLER  PIC X(2)  VALUE SPACES.
+               10  M-CE1-ACCT  PIC X(9)  VALUE SPACES.
+               10  FILLER  PIC X(2)  VALUE SPACES.
+               10  M-CONT-LIT  PIC X(15) VALUE "CONTAINERS (-) ".
+               10  M-CONTAINERS  PIC -(11)9.99 VALUE ZEROS.
+               10  FILLER  PIC X(4) VALUE SPACES.
+               10  M-INTERNAL-LIT1  PIC X(8) VALUE SPACES.
+               10  FILLER  PIC X(7)  VALUE SPACES.
+
+           05  MANIFEST-DETAIL-LINE3 REDEFINES MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(9).
+               10  M-VEN-LIT  PIC X(7).
+               10  M-VEN-CODE  PIC X(7).
+               10  FILLER  PIC X(31).
+               10  M-CE2  PIC X.
+               10  M-CE2-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+               10  M-CE2-ACCT  PIC X(9).
+               10  FILLER  PIC X(2).
+               10  M-OTHER-LIT  PIC X(15).
+               10  M-OTHER-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(5).
+               10  M-INTERNAL-LIT2  PIC X(5).
+               10  FILLER  PIC X(9).
+
+           05  MANIFEST-DETAIL-LINE4 REDEFINES MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(9).
+               10  M-VEN-NAME  PIC X(44).
+               10  FILLER  PIC X(1).
+               10  M-CE3  PIC X.
+               10  M-CE3-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+               10  M-CE3-ACCT  PIC X(9).
+               10  FILLER  PIC X(2).
+               10  M-CE9-LIT  PIC X(15).
+               10  M-CE9  PIC -(11)9.99.
+               10  FILLER  PIC X(19).
+
+           05  MANIFEST-DETAIL-LINE5 REDEFINES MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(9).
+               10  M-VEN-ADDR1  PIC X(44).
+               10  FILLER  PIC X(1).
+               10  M-CE4  PIC X.
+               10  M-CE4-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+               10  M-CE4-ACCT  PIC X(9).
+               10  FILLER  PIC X(2).
+               10  M-CPW-LIT  PIC X(15).
+               10  M-CPW  PIC -(11)9.99.
+               10  DIST-LIT  PIC X(19).
+
+           05  MANIFEST-DETAIL-LINE6 REDEFINES MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(9).
+               10  M-VEN-ADDR2  PIC X(44).
+               10  FILLER  PIC X(1).
+               10  M-CE5  PIC X.
+               10  M-CE5-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+               10  M-CE5-ACCT  PIC X(9).
+               10  FILLER  PIC X(2).
+               10  M-BAL-LIT  PIC X(15).
+               10  M-BALANCE  PIC -(11)9.99.
+               10  FILLER  PIC X(2) .
+               10  M-COST-DIST  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+
+           05  MANIFEST-DETAIL-LINE7 REDEFINES MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(9).
+               10  M-VEN-ADDR3  PIC X(44).
+               10  FILLER  PIC X(1).
+               10  M-CE7  PIC X.
+               10  M-CE7-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+               10  M-CE7-ACCT  PIC X(9).
+               10  FILLER  PIC X(51).
+
+           05  MANIFEST-DETAIL-LINE8 REDEFINES MANIFEST-DETAIL-LINE2.
+               10  FILLER  PIC X(54).
+               10  M-CE8  PIC X.
+               10  M-CE8-VALUE  PIC -(11)9.99.
+               10  FILLER  PIC X(2).
+               10  M-CE9-ACCT  PIC X(9).
+               10  FILLER  PIC X(51).
+
+       01  OUT-BALANCE-MSG.
+           05  FILLER  PIC X(19)  VALUE "## OUT OF BALANCE -".
+           05  FILLER  PIC X(18)  VALUE " OUT OF BALANCE ##".
+           05  FILLER  PIC X(56)  VALUE SPACES.
+           05  FILLER  PIC X(19)  VALUE "## OUT OF BALANCE -".
+           05  FILLER  PIC X(18)  VALUE " OUT OF BALANCE ##".
+
+       01  MAN-SUM-OUT-BAL-MSG.
+           05  FILLER  PIC X(20) VALUE SPACES.
+           05  FILLER  PIC X(20) VALUE ALL "*".
+           05  FILLER  PIC X(12) VALUE " TOTAL COST ".
+           05  FILLER  PIC X(15) VALUE "DISTRIBUTED IS ".
+           05  FILLER  PIC X(15) VALUE "OUT OF BALANCE ".
+           05  FILLER  PIC X(20) VALUE ALL "*".
+           05  FILLER  PIC X(30) VALUE SPACES.
+
+       01  MANIFEST-CONTROL-LINES.
+           05  MANIFEST-CONTROL-LINE1.
+               10  FILLER  PIC X(20) VALUE SPACES.
+               10  CONTROL-TOTAL-LIT  PIC X(25) VALUE SPACES.
+               10  FILLER  PIC X(1)  VALUE SPACES.
+               10  CONTROL-REG-TOTAL-OUT  PIC -(11)9.99 VALUE ZEROS.
+               10  FILLER  PIC X(7) VALUE SPACES.
+               10  CONTROL-IT-TOTAL-OUT   PIC -(11)9.99 VALUE ZEROS.
+               10  FILLER  PIC X(7) VALUE SPACES.
+               10  CONTROL-TOTAL-OUT  PIC -(11)9.99 VALUE ZEROS.
+               10  FILLER  PIC X(27) VALUE SPACES.
+           05  MANIFEST-CONTROL-LINE2 REDEFINES MANIFEST-CONTROL-LINE1.
+               10  FILLER  PIC X(50).
+               10  CONTROL-DASH-OUT-1  PIC X(11).
+               10  FILLER  PIC X(11).
+               10  CONTROL-DASH-OUT-2  PIC X(11).
+               10  FILLER  PIC X(11).
+               10  CONTROL-DASH-OUT-3  PIC X(11).
+               10  FILLER  PIC X(27).
+
+       01  NO-CHECK-HDR.
+           05  FILLER   PIC X(76) VALUE SPACES.
+           05  FILLER  PIC X(2)  VALUE "¢ ".
+           05  IT-CTR-OUT  PIC ZZ9 VALUE ZEROS.
+           05  FILLER  PIC X(2)  VALUE " !".
+           05  FILLER  PIC X(49) VALUE SPACES.
+
+       01  MANIFEST-HEADER.
+           05  FILLER  PIC X(17)  VALUE "ACCOUNTS PAYABLE ".
+           05  FILLER  PIC X(19)  VALUE "MANIFEST PROCESSING".
+           05  FILLER  PIC X(7)   VALUE " REPORT".
+
+       01  STORES-HEADER.
+           05  FILLER  PIC X(17)  VALUE "ACCOUNTS PAYABLE ".
+           05  FILLER  PIC X(13)  VALUE "LOCAL STORES ".
+           05  FILLER  PIC X(14)  VALUE "SUMMARY REPORT".
+
+       01  DASH-LINE.
+           05  FILLER  PIC X(132) VALUE ALL "-".
+
+       01  ASTERISK-LINE.
+           05  FILLER  PIC X(132) VALUE ALL "*".
+
+       01  NO-ITEMS-MSG.
+           05  FILLER  PIC X(14) VALUE SPACES.
+           05  FILLER  PIC X(16) VALUE "** NO ITEMS WERE".
+           05  FILLER  PIC X(15) VALUE " FOUND ON THIS ".
+           05  FILLER  PIC X(10) VALUE "INVOICE **".
+           05  FILLER  PIC X(77) VALUE SPACES.
+
+       01  SAVE-REPORT-LINE  PIC X(132)  VALUE SPACES.
+
+       01  DETAIL-LINE       PIC X(132)  VALUE SPACES.
+
+      **************************************************
+      **                DATE AREAS                    **
+      **************************************************
+
+       01  DATES-AND-TIMES.
+           05  CUR-DATE.
+               10  YY               PIC XX.
+               10  MM               PIC XX.
+               10  DD               PIC XX.
+
+       COPY TDATECHK   IN COPYLIB.
+
+       COPY JCWAREA    IN COPYLIB.
+
+       COPY TBLOWUP    IN COPYLIB.
+
+       COPY VIEWDUM    IN COPYLIB.
+
+
+
+       PROCEDURE DIVISION.
+
+       PROC-DIV SECTION 01.
+
+
+       1-BEGIN.
+9406CK     MOVE "C" TO SCOPE.
+9406CK     CALL "MCXCBLERR" USING SCOPE.
+
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           PERFORM 2-EOJ  THRU 2-EOJ-X.
+
+           GOBACK.
+
+
+
+       1-HSK.
+
+           OPEN INPUT MSTORERM-I, DPOFREIGHT-I, DPORECD-I, DPOITEM-I,
+                      DPODATAITM-I, DVENDOR-I, DINVITM-I, DINVACCT-I,
+9405CK                MTAX-I, DINVRCD-STS-I.
+           OPEN I-O   DINVRCD-O, MPLTINFO-O.
+      **************************************************
+      *                                                *
+      *   GET CO. AND PRIME FROM MPLTINFO              *
+      *   USING 'P 01' AS THE ARGUMENT                 *
+      *                                                *
+      **************************************************
+
+           MOVE "P 01"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-O-REC.
+           READ MPLTINFO-O INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ MPLTINFO 1-HSK P 01"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE MPLTINFO-COMPANY     TO  PRT-CO, SAVE-CO.
+           MOVE MPLTINFO-TERR        TO  TERRITORY-SAVE.
+           MOVE MPLTINFO-PRIME       TO  PRIME-SAVE.
+
+      *******************************************************
+      *    CHECK FOR A 'GST' TAX DISTRICT.  THIS IS NEEDED
+      *    LATER SINCE GST TAX IS DEDUCTED FROM INVOICE
+      *    TOTALS BEFORE GOING TO CSAS.
+      *******************************************************
+
+           MOVE ZEROS   TO  GST-ENTRY.
+           MOVE "PTX1"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-O-REC.
+           READ MPLTINFO-O INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ MPLTINFO 1-HSK PTX1"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+           PERFORM VARYING SUB FROM 1 BY 1
+               UNTIL GST-ENTRY > 0 OR
+                     SUB > 2
+               IF MPLTINFO-TAX-DISTRICT(SUB) = "GST"
+                   MOVE SUB TO GST-ENTRY
+                   SET GST-TAX TO TRUE
+               END-IF
+           END-PERFORM.
+
+           IF GST-ENTRY = ZERO
+               MOVE "PTX2"  TO  PLT-ARG
+               MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-O-REC
+               READ MPLTINFO-O INTO BUF-MPLTINFO
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   IF FILE-STATUS-1 = "2"
+                       NEXT SENTENCE
+                   ELSE
+                       MOVE "READ MPLTINFO 1-HSK PTX1"
+                                          TO BU-DISPLAY-MSG
+                       MOVE PLT-ARG      TO  BU-DISPLAY-FLD (1)
+                       GO TO 2-BLOWUP
+               ELSE
+                   PERFORM VARYING SUB FROM 1 BY 1
+                       UNTIL GST-ENTRY > 0 OR
+                             SUB > 2
+                       IF MPLTINFO-TAX-DISTRICT(SUB) = "GST"
+                           COMPUTE GST-ENTRY = SUB + 2
+                           SET GST-TAX TO TRUE
+                       END-IF
+                   END-PERFORM
+               END-IF
+           END-IF.
+
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES TO PLTINFOKEY OF MPLTINFO-O-REC.
+           START MPLTINFO-O KEY > PLTINFOKEY OF MPLTINFO-O-REC
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+           MOVE 1                    TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT       TO  PRT-DATE.
+           MOVE DATE-YMD-OUT         TO  CUR-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  PRT-TIME.
+
+           MOVE ZEROS TO  LINE-CTR.
+
+       1-H-X.
+           EXIT.
+
+
+       2-EOJ.
+           CLOSE MSTORERM-I, DPOFREIGHT-I, DPORECD-I, DPOITEM-I,
+                 DPODATAITM-I, DVENDOR-I, DINVITM-I, DINVACCT-I,
+9405CK           MTAX-I, DINVRCD-STS-I,
+                 DINVRCD-O, MPLTINFO-O.
+
+       2-EOJ-X.
+           EXIT.
+
+      *********************************************
+      *                                           *
+      *  BLOWUP ROUTINE EXECUTES WHENEVER A       *
+      *  FATAL ERROR OCCURS                       *
+      *                                           *
+      *********************************************
+
+       2-BLOWUP.
+           MOVE "TMANCRTE"              TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       5-WRITE-STORES-REPORT-LINE.
+      *    MOVE STR-CTL TO SAVE2-CTL.
+           IF LINE-CTR > 54
+               PERFORM 5-WRITE-STORES-REPORT-HEADER.
+           ADD STR-CTL  TO  LINE-CTR.
+           WRITE STORES-REPORT-RCD.
+           IF DETAIL-LINE = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE 1       TO  STR-CTL
+               ADD STR-CTL  TO  LINE-CTR
+               MOVE DETAIL-LINE  TO  STORES-REPORT-LINE
+               WRITE STORES-REPORT-RCD.
+
+       5-WRITE-STORES-REPORT-HEADER.
+           MOVE STORES-REPORT-LINE       TO  SAVE-REPORT-LINE.
+           MOVE ZERO                     TO  STR-CTL,
+                                             LINE-CTR.
+           ADD 1                         TO  PAGE-CTR.
+           MOVE PAGE-CTR                 TO  PAGE-NO-OUT.
+           MOVE HEADER-1                 TO  STORES-REPORT-LINE.
+           WRITE STORES-REPORT-RCD.
+           MOVE STORES-PAGE-HDR-1        TO  STORES-REPORT-LINE.
+           MOVE 2                        TO  STR-CTL.
+           WRITE STORES-REPORT-RCD.
+           MOVE DASH-LINE                TO  STORES-REPORT-LINE.
+           MOVE 1                        TO  STR-CTL.
+           WRITE STORES-REPORT-RCD.
+           MOVE SAVE-REPORT-LINE         TO  STORES-REPORT-LINE.
+           MOVE 2                        TO  STR-CTL, SAVE2-CTL.
+
+       5-WRITE-MANIFEST-REPORT-LINE.
+           MOVE MAN-CTL                  TO  SAVE-CTL.
+           IF LINE-CTR > 54
+               PERFORM 5-WRITE-MANIFEST-REPORT-HEADER.
+           ADD SAVE-CTL TO LINE-CTR.
+           WRITE MANIFEST-REPORT-RCD.
+
+       5-WRITE-MANIFEST-REPORT-HEADER.
+           MOVE MANIFEST-REPORT-LINE     TO  SAVE-REPORT-LINE.
+           MOVE ZERO                     TO  MAN-CTL,
+                                             LINE-CTR.
+           ADD 1                         TO  PAGE-CTR.
+           MOVE PAGE-CTR                 TO  PAGE-NO-OUT.
+           MOVE HEADER-1                 TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE DASH-LINE                TO  MANIFEST-REPORT-LINE.
+           MOVE 2                        TO  MAN-CTL.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE SAVE-REPORT-LINE         TO  MANIFEST-REPORT-LINE.
+           MOVE 1                        TO  MAN-CTL, SAVE-CTL.
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+
+       6-MAIN.
+           PERFORM 60-ACCEPT-OPTIONS  THRU  60-AO-X.
+           OPEN OUTPUT MANIFEST-REPORT.
+           PERFORM 61-READ-DINVRCD  THRU  61-RD-X.
+
+           SORT SORT-REGISTER-FILE
+               ON ASCENDING KEY  S-REGISTER-NO
+                  USING REG-FILE
+                  GIVING REG-FILE.
+
+           IF NEW-OPTION  OR
+              REPR-OPTION
+               PERFORM 62-CREATE-AKRON-FILE  THRU  62-CAF-X.
+           CLOSE MANIFEST-REPORT.
+
+           IF RLSE-OPTION
+               PERFORM 63-RELEASE-OPTION  THRU  63-RO-X.
+
+           IF DLET-OPTION
+               PERFORM 64-DELETE-OPTION  THRU  64-DO-X.
+
+           PERFORM 65-PURGE-MNACTIVE  THRU  65-PM-X.
+
+           IF RLSE-OPTION
+               PERFORM 65-PURGE-STACTIVE  THRU 65-PS-X.
+
+       6-M-X.
+           EXIT.
+
+       60-ACCEPT-OPTIONS.
+
+           ACCEPT PROCESS-MANIFEST-INDICATOR.
+           IF NEW-OPTION
+               MOVE 1 TO MANIFEST-OPTION
+           ELSE
+           IF REPR-OPTION
+               MOVE 2 TO MANIFEST-OPTION
+           ELSE
+           IF DLET-OPTION
+               MOVE 4 TO MANIFEST-OPTION
+           ELSE
+           IF RLSE-OPTION
+               MOVE 3 TO MANIFEST-OPTION
+           ELSE
+               MOVE "INVALID OPTION SELECT*60-AO" TO BU-DISPLAY-MSG
+               MOVE PROCESS-MANIFEST-INDICATOR  TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+           ACCEPT MAN-EMP-ID.
+
+           ACCEPT MTH-OVERRIDE-SW.
+
+           ACCEPT SAVE-LOCAL-ACCTG-REPORTS.
+
+           MOVE MANIFEST-OPTION       TO  SETJCW-VALUE.
+           MOVE 288                   TO  SETJCW-STARTING-POS.
+           MOVE 1                     TO  SETJCW-LENGTH.
+           CALL "SETJCW" USING SETJCW-VALUE,
+                               SETJCW-STARTING-POS,
+                               SETJCW-LENGTH,
+                               SETJCW-STATUS.
+           IF SETJCW-STATUS NOT = "00"
+               MOVE "SETJCW COMMAND FAILED"  TO  BU-DISPLAY-MSG
+               MOVE SETJCW-STATUS            TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+       60-AO-X.
+           EXIT.
+
+       61-READ-DINVRCD.
+
+           OPEN OUTPUT REG-FILE.
+           MOVE "PMAN"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-O-REC.
+           READ MPLTINFO-O INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET MPLTINFO 61-RD PMAN"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES TO PLTINFOKEY OF MPLTINFO-O-REC.
+           START MPLTINFO-O KEY > PLTINFOKEY OF MPLTINFO-O-REC
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+           MOVE MPLTINFO-MAN-NO         TO SAVE-MAN-NO.
+           MOVE MPLTINFO-CUR-MAN        TO SAVE-CUR-MAN.
+           MOVE MPLTINFO-PRIOR-MAN      TO SAVE-PRIOR-MAN.
+
+      *----IF RUNNING A "NEW" ONLY LOOK FOR STATUS = P OR M
+      *----USING LOGICAL VIEW WITH KEY OF INVOICESTS
+
+           IF NEW-OPTION
+              MOVE "M " TO INVOICESTS OF DINVRCD-STS-I-REC
+              START DINVRCD-STS-I KEY >= INVOICESTS OF DINVRCD-STS-I-REC
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+              END-START
+              IF FILE-STATUS  = "00"
+                 PERFORM 61-GET-DINVRCD THRU 61-GD-X
+              END-IF
+
+      *-------SINCE "P" FOLLOWS "M" DIRECTLY, THE P'S WERE GETTING
+      *-------PICKED UP TWICE CAUSING DUPLICATION IN THE MANIFEST WHEN
+      *-------EVER AN "M" OCCURRED IN THE FILE.
+      *-------MAKING THE SEARCH FOR "M" AS ">=" INSTEAD OF JUST "=" WILL
+      *-------PICK UP ANY M'S IF THEY EXIST AND THE P'S ONLY ONCE.
+      *-------IF THERE IS EVER A NEW STATUS THAT IS ADDED BETWEEN M AND P
+      *-------THEN THIS SECTION OF CODE WILL HAVE TO BE UNCOMMENTED AND
+      *-------THE SEARCH FOR "M" WILL HAVE TO BE CHANGED TO "=".
+
+      *       MOVE "P " TO INVOICESTS OF DINVRCD-STS-I-REC
+      *       START DINVRCD-STS-I KEY = INVOICESTS OF DINVRCD-STS-I-REC
+      *          INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+      *       END-START
+      *       IF FILE-STATUS  = "00"
+      *          PERFORM 61-GET-DINVRCD THRU 61-GD-X
+      *       END-IF
+
+      *----IF RUNNING A "REPR" OR "RLSE" OR "DLET" ONLY LOOK FOR
+      *----STATUS = 1 OR C
+
+           ELSE
+              MOVE "C " TO INVOICESTS OF DINVRCD-STS-I-REC
+                           SAVE-STATUS
+              START DINVRCD-STS-I KEY = INVOICESTS OF DINVRCD-STS-I-REC
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+              END-START
+              IF FILE-STATUS  = "00"
+                 PERFORM 61-GET-DINVRCD THRU 61-GD-X
+              END-IF
+              MOVE "1 " TO INVOICESTS OF DINVRCD-STS-I-REC
+                           SAVE-STATUS
+              START DINVRCD-STS-I KEY = INVOICESTS OF DINVRCD-STS-I-REC
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+              END-START
+              IF FILE-STATUS  = "00"
+                 PERFORM 61-GET-DINVRCD THRU 61-GD-X
+              END-IF.
+
+           GO TO 61-CLOSE-REG-FILE.
+
+       61-GET-DINVRCD.
+           READ DINVRCD-STS-I NEXT INTO BUF-DINVRCD
+               AT END GO TO 61-GD-X.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DINVRCD 61-GD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           IF NEW-OPTION
+               NEXT SENTENCE
+           ELSE
+               IF INV-STATUS NOT = SAVE-STATUS
+                   GO TO 61-GD-X.
+
+           IF NEW-OPTION
+              IF INV-STATUS = "P " OR "M "
+                 NEXT SENTENCE
+              ELSE
+                 GO TO 61-GD-X
+              END-IF
+           ELSE
+              IF INV-STATUS = "1 " OR "C "
+                 NEXT SENTENCE
+              ELSE
+                 GO TO 61-GD-X
+              END-IF.
+
+      *--- FOR MANIFEST GOING TO TORONTO FOR PAYMENT, THE HEADER
+      *--- TOTAL RECORD INCLUDES ONLY THE INVOICE NET DUE AMOUNTS.
+      *--- VALLEYFIELD - NAPANEE (ADDED 2/7/90)
+           ADD INV-NET-DUE-VENDOR   TO  HDR-NET-DUE-VENDOR-TOTAL.
+
+           IF INV-NO-CHECK-INDIC = SPACES
+               PERFORM 611-ADD-CE-VALUES  THRU  611-ACV-X
+               ADD 1                TO  MAN-INVOICE-COUNTER.
+
+      ********************************************************
+      **   CHECK TO MAKE SURE PAYMENT IND IS EITHER 'P' OR 'I'
+      **   IF ITS NOT, BLOW THE PROGRAM DOWN.
+      **   MAY 6, 1994, CHANGED TO DEFAULT THE IND TO "P" IF
+      **   THE PO MATL EXT = THE INV MATL EXT. OTHERWISE,
+      **   BLOW THE PROGRAM DOWN.
+      ********************************************************
+
+           IF INV-PAYMENT-IND = SPACES
+              IF INV-I-MATL-EXT = INV-P-MATL-EXT
+                 MOVE INV-REG-NO TO REGISTERNO OF DINVRCD-O-REC
+                 READ DINVRCD-O INTO BUF-DINVRCD
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                 END-READ
+                 IF FILE-STATUS  = "00"
+                    MOVE "P" TO INV-PAYMENT-IND
+                    REWRITE DINVRCD-O-REC FROM BUF-DINVRCD
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                    END-REWRITE
+                    IF FILE-STATUS NOT = "00"
+                       MOVE "BAD PAYMENT-IND & BAD REWRT OF DINVRCD"
+                            TO BU-DISPLAY-MSG
+                       MOVE INV-REG-NO      TO BU-DISPLAY-FLD (1)
+                       MOVE INV-PAYMENT-IND TO BU-DISPLAY-FLD (2)
+                       GO TO 2-BLOWUP.
+
+           IF INV-PAYMENT-IND = "P" OR "I"
+               NEXT SENTENCE
+           ELSE
+               MOVE "INVALID PAYMENT OPTION; NOT 'P' OR 'I'"
+                   TO BU-DISPLAY-MSG
+               MOVE INV-REG-NO          TO BU-DISPLAY-FLD (1)
+               MOVE INV-PAYMENT-IND     TO BU-DISPLAY-FLD (2)
+               GO TO 2-BLOWUP.
+
+           MOVE INV-REG-NO          TO  REGISTER-NO.
+           WRITE REG-RCD.
+           GO TO 61-GET-DINVRCD.
+
+       61-GD-X.
+           EXIT.
+
+       61-CLOSE-REG-FILE.
+           CLOSE REG-FILE.
+
+           IF REPR-OPTION
+               GO TO 61-UPDATE-MPLTINFO.
+           OPEN INPUT REG-FILE.
+
+           IF NEW-OPTION
+               PERFORM 611-ASSIGN-MANIFEST-NUM  THRU  611-AMN-X.
+
+       61-GET-DINVRCD-FOR-UPDATE.
+
+           READ REG-FILE
+               AT END
+                 GO TO 61-UPDATE-INVRCD-COMPLETE.
+
+           MOVE REGISTER-NO  TO  REGISTER-ARG.
+           PERFORM 65-GET-DINVRCD  THRU  65-GD-X.
+           IF NEW-OPTION
+               MOVE  SAVE-MAN-NO             TO  INV-MFEST-NO
+               MOVE  MANIFEST-YEAR           TO  INV-MFEST-YY
+               MOVE "1"                      TO  INV-STATUS
+           ELSE
+           IF RLSE-OPTION
+               MOVE "2"                      TO  INV-STATUS
+           ELSE
+           IF DLET-OPTION
+               MOVE "P"                      TO  INV-STATUS
+               MOVE SPACES                   TO  INV-MFEST-NO.
+
+           REWRITE DINVRCD-O-REC FROM BUF-DINVRCD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "REWRITE DINVRCD 61-GMFU" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           GO TO 61-GET-DINVRCD-FOR-UPDATE.
+
+       61-UPDATE-INVRCD-COMPLETE.
+           CLOSE REG-FILE.
+
+       61-UPDATE-MPLTINFO.
+           PERFORM 611-UPDATE-MPLTINFO  THRU  611-UM-X.
+
+       61-WRITE-MANIFEST-REPORT.
+           MOVE MANIFEST-HEADER       TO  RPT-HEADER.
+           MOVE ZEROS                 TO  PAGE-CTR.
+           MOVE SPACES                TO  MANIFEST-REPORT-LINE.
+           MOVE 1                     TO  MAN-CTL.
+           PERFORM 5-WRITE-MANIFEST-REPORT-HEADER.
+           MOVE 5                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER1      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE MPLTINFO-MAN-STATUS   TO  MAN-FUNCT-OUT.
+           MOVE MPLTINFO-MAN-NO       TO  MAN-NO-OUT.
+           MOVE 4                     TO  DATE-MODE.
+           MOVE MPLTINFO-MAN-DATE     TO  DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT        TO  MAN-DATE-OUT.
+           MOVE MPLTINFO-MAN-TOTAL    TO  MAN-TOTAL-OUT.
+           MOVE MAN-RCD-COUNTER       TO  MAN-RCD-OUT.
+           MOVE MAN-INVOICE-COUNTER   TO  MAN-INV-CTR-OUT.
+           MOVE MPLTINFO-MAN-ID       TO  MAN-EMP-ID-OUT.
+           MOVE MANIFEST-RPT-LINE1    TO  MAN-HDR3-RPT-LINE.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-RPT-LINE2    TO  MAN-HDR3-RPT-LINE.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-RPT-LINE3    TO  MAN-HDR3-RPT-LINE.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-RPT-LINE4    TO  MAN-HDR3-RPT-LINE.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-RPT-LINE5    TO  MAN-HDR3-RPT-LINE.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-RPT-LINE6    TO  MAN-HDR3-RPT-LINE.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-RPT-LINE7    TO  MAN-HDR3-RPT-LINE.
+           MOVE MANIFEST-HEADER3      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER2      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+           MOVE 1                     TO  MAN-CTL.
+           MOVE MANIFEST-HEADER1      TO  MANIFEST-REPORT-LINE.
+           WRITE MANIFEST-REPORT-RCD.
+
+       61-RD-X.
+           EXIT.
+
+      *****************************************************
+      *                                                   *
+      *    CALCULATE THE MANIFEST TOTAL FOR THE HEADER    *
+      *    RECORD INTO AKRON. EVERY CLASS OF ENTRY IS     *
+      *    INCLUDED                                       *
+      *                                                   *
+      *   EVERY CE SENT IS ACCOUNTED FOR IN THE RECORD    *
+      *   COUNTER STORED IN 'MPLTINFO'                    *
+      *                                                   *
+      *****************************************************
+
+       611-ADD-CE-VALUES.
+           MOVE ZEROS                    TO  SUB.
+
+       611-CE-VALUES-LOOP.
+           ADD 1 TO SUB.
+           IF SUB > 9
+               GO TO 611-CHECK-CFRT.
+           IF CE-VALUE (SUB) = ZEROS
+               NEXT SENTENCE
+           ELSE
+               ADD 1  TO  MAN-RCD-COUNTER
+               ADD CE-VALUE (SUB)    TO  MANIFEST-HEADER-TOTAL.
+           GO TO 611-CE-VALUES-LOOP.
+
+       611-CHECK-CFRT.
+           IF INV-TOTAL-CFRT NOT = ZEROS
+               ADD INV-TOTAL-CFRT  TO  MANIFEST-HEADER-TOTAL
+               ADD 1  TO  MAN-RCD-COUNTER.
+
+           MOVE ZERO  TO  SUB.
+
+       611-CHECK-FOR-ACCRUED-TAX.
+           ADD 1  TO  SUB.
+           IF SUB > 4
+               GO TO 611-ACV-X.
+           IF INV-ATAX-AMT (SUB) = ZEROS
+               NEXT SENTENCE
+           ELSE
+               ADD INV-ATAX-AMT (SUB)  TO  MANIFEST-HEADER-TOTAL
+               ADD 1  TO  MAN-RCD-COUNTER.
+           GO TO 611-CHECK-FOR-ACCRUED-TAX.
+
+       611-ACV-X.
+           EXIT.
+
+       611-ASSIGN-MANIFEST-NUM.
+           MOVE MM OF CUR-DATE          TO  MANIFEST-MM-BUILD.
+           IF MAN-MM-1-DIG = "0"
+               MOVE MAN-MM-2-DIG        TO  SAVE-MAN-FIRST-DIG
+           ELSE
+           IF MAN-MM-2-DIG = "0"
+               MOVE "O"                 TO  SAVE-MAN-FIRST-DIG
+           ELSE
+           IF MAN-MM-2-DIG = "1"
+               MOVE "N"                 TO  SAVE-MAN-FIRST-DIG
+           ELSE
+           IF MAN-MM-2-DIG = "2"
+               MOVE "D"                 TO  SAVE-MAN-FIRST-DIG.
+
+           MOVE YY OF CUR-DATE          TO  MANIFEST-YEAR.
+           IF MTH-OVERRIDE-SW = "Y"
+               IF SAVE-MAN-FIRST-DIG = SAVE-CUR-MAN-PREFIX
+                   ADD 1  TO  SAVE-PRIOR-MAN-NO
+                   MOVE SAVE-PRIOR-MAN  TO  SAVE-MAN-NO
+                   IF SAVE-PRIOR-MAN-PREFIX = "D"
+                       IF MANIFEST-YEAR = 00
+                           MOVE 99      TO   MANIFEST-YEAR
+                       ELSE
+                           SUBTRACT 1   FROM MANIFEST-YEAR
+                       END-IF
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+                   ADD 1  TO  SAVE-CUR-MAN-NO
+                   MOVE SAVE-CUR-MAN    TO  SAVE-MAN-NO
+                   IF SAVE-CUR-MAN-PREFIX = "D"
+                       IF MANIFEST-YEAR = 00
+                           MOVE 99      TO   MANIFEST-YEAR
+                       ELSE
+                           SUBTRACT 1   FROM MANIFEST-YEAR
+                       END-IF
+                   ELSE
+                       NEXT SENTENCE
+           ELSE
+               IF SAVE-MAN-FIRST-DIG = SAVE-CUR-MAN-PREFIX
+                   ADD 1  TO  SAVE-CUR-MAN-NO
+                   MOVE SAVE-CUR-MAN  TO  SAVE-MAN-NO
+               ELSE
+                   MOVE SAVE-MAN-FIRST-DIG  TO
+                                          SAVE-MAN-NO-PREFIX
+                   MOVE 1                 TO  SAVE-MAN-SEQ-CTR
+                   MOVE SAVE-CUR-MAN  TO  SAVE-PRIOR-MAN
+                   MOVE SAVE-MAN-NO   TO  SAVE-CUR-MAN.
+
+       611-AMN-X.
+           EXIT.
+
+       611-UPDATE-MPLTINFO.
+           MOVE "PMAN"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-O-REC.
+           READ MPLTINFO-O INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET MPLTINFO 61-RD PMAN"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE SAVE-MAN-NO                TO  MPLTINFO-MAN-NO.
+           MOVE SAVE-CUR-MAN               TO  MPLTINFO-CUR-MAN.
+           MOVE SAVE-PRIOR-MAN             TO  MPLTINFO-PRIOR-MAN.
+           MOVE MAN-EMP-ID                 TO  MPLTINFO-MAN-ID.
+      *--- DIFFERENT HEADER RECORD SENT TO TORONTO THAN TO AKRON
+      *--- VALLEYFIELD AND NAPANEE PLANTS
+           IF SAVE-CO = "629" OR "631"
+              MOVE HDR-NET-DUE-VENDOR-TOTAL TO MPLTINFO-MAN-TOTAL
+           ELSE
+              MOVE MANIFEST-HEADER-TOTAL   TO  MPLTINFO-MAN-TOTAL.
+           MOVE MAN-RCD-COUNTER            TO  MPLTINFO-RECORD-CTR.
+           MOVE MAN-INVOICE-COUNTER        TO  MPLTINFO-INVOICE-CTR.
+           MOVE "1"                        TO  MPLTINFO-SEND-STATUS.
+           MOVE SPACES                     TO  MPLTINFO-MODIFY-SW.
+           IF NEW-OPTION
+               MOVE CUR-DATE               TO  MPLTINFO-MAN-DATE
+               MOVE "NEW "                 TO  MPLTINFO-MAN-STATUS
+           ELSE
+           IF REPR-OPTION
+               MOVE "REPR"                 TO  MPLTINFO-MAN-STATUS
+           ELSE
+           IF RLSE-OPTION
+               MOVE "RLSE"                 TO  MPLTINFO-MAN-STATUS
+           ELSE
+           IF DLET-OPTION
+               MOVE "DLET"                 TO  MPLTINFO-MAN-STATUS.
+           REWRITE MPLTINFO-O-REC FROM BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "REWRITE MPLTINFO 611-UM" TO BU-DISPLAY-MSG
+               MOVE MPLTINFO-MAN-NO          TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+           MOVE MPLTINFO-MAN-DATE        TO  SAVE-MANIFEST-DATE.
+           MOVE MPLTINFO-MAN-NO          TO  SAVE-MANIFEST-NO.
+
+       611-UM-X.
+           EXIT.
+
+       62-CREATE-AKRON-FILE.
+           OPEN INPUT REG-FILE.
+           OPEN OUTPUT MAN-AKRON-FILE.
+           MOVE 99  TO  LINE-CTR.
+           MOVE SPACES  TO  MANIFEST-DETAIL-LINES.
+
+           PERFORM 621-WRITE-AKRON-HDR-RCD.
+
+       62-READ-REG-FILE.
+           READ  REG-FILE
+               AT END
+                   GO TO 62-CLOSE-FILES.
+
+           MOVE REGISTER-NO  TO  REGISTER-ARG.
+           PERFORM 65-GET-DINVRCD  THRU  65-GD-X.
+           IF SKIP-INVOICE-SW = "Y"
+               MOVE "N"  TO SKIP-INVOICE-SW
+               GO TO 62-READ-REG-FILE.
+
+           PERFORM 65-GET-PO-HEADER  THRU  65-GPH-X.
+
+           PERFORM 65-GET-VENDOR  THRU  65-GV-X.
+
+           MOVE SPACES             TO  AKRON-CE-RCD.
+           MOVE INV-REG-NO         TO  AKRON-REG-NO,
+                                       M-REG-NO.
+           MOVE INV-NO             TO  AKRON-INVOICE-NO,
+                                       M-INV-NO.
+           MOVE 4                  TO  DATE-MODE.
+           MOVE INV-DATE           TO  DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT           TO  AKRON-INVOICE-DATE.
+           MOVE DATE-SLASH-OUT     TO  M-INV-DATE.
+           MOVE INV-TERMS          TO  AKRON-INVOICE-TERMS,
+                                       M-INV-TERMS.
+           MOVE INV-VEN-CODE       TO  AKRON-VEN-CODE.
+           MOVE PO-PO-NO           TO  AKRON-PO-NO.
+           MOVE PO-RLS-NO          TO  AKRON-PO-RLS-NO.
+           IF PO-NON-RCV-INDIC = SPACES
+              MOVE "Y"             TO  AKRON-PO-RCV-IND.
+      *--------- USE INVOICE CURRENCY CODE IF THERE IS ONE.
+           IF INV-CURR-CODE NOT = SPACES
+               MOVE INV-CURR-CODE      TO  AKRON-CURRENCY-CODE
+           ELSE
+               MOVE PO-CURRENCY-CODE   TO  AKRON-CURRENCY-CODE.
+
+           MOVE ZEROS           TO  SUB,
+                                    TOTAL-CE-AMOUNT.
+
+       62-CE-LOOP.
+           ADD 1  TO  SUB.
+           IF SUB > 9
+               GO TO 62-CHECK-COLLECT-FRT.
+           IF CE-VALUE (SUB) = ZEROS
+               GO TO 62-CE-LOOP.
+           MOVE CE-CODE (SUB)       TO  AKRON-CE.
+           MOVE CE-VALUE (SUB)      TO  AKRON-CE-AMOUNT.
+           MOVE CE-ACCTG-DATA (SUB) TO  AKRON-ACCOUNT.
+           ADD CE-VALUE (SUB)       TO  TOTAL-CE-AMOUNT.
+           IF INV-NO-CHECK-INDIC  = SPACES
+               WRITE MAN-AKRON-REC FROM AKRON-CE-RCD.
+           GO TO 62-CE-LOOP.
+
+       62-CHECK-COLLECT-FRT.
+           IF INV-TOTAL-CFRT NOT = ZEROS
+               MOVE "3"              TO  AKRON-CE
+               MOVE INV-TOTAL-CFRT   TO  AKRON-CE-AMOUNT
+               MOVE "116051000"      TO  AKRON-ACCOUNT
+               ADD INV-TOTAL-CFRT    TO  TOTAL-CE-AMOUNT
+               IF INV-NO-CHECK-INDIC  = SPACES
+                   WRITE MAN-AKRON-REC FROM AKRON-CE-RCD.
+
+           MOVE ZERO  TO  SUB.
+
+       62-CHECK-FOR-ACCRUED-TAX.
+           ADD 1  TO  SUB.
+           IF SUB > 4
+               GO TO 62-INVOICE-COMPLETE.
+           IF INV-ATAX-AMT (SUB) NOT = ZEROS
+               MOVE "5"                   TO  AKRON-CE
+               MOVE INV-ATAX-AMT (SUB)    TO  AKRON-CE-AMOUNT
+               MOVE INV-ATAX-ACCTG (SUB)  TO  AKRON-ACCOUNT
+               ADD  INV-ATAX-AMT (SUB)    TO  TOTAL-CE-AMOUNT
+               IF INV-NO-CHECK-INDIC  = SPACES
+                   WRITE MAN-AKRON-REC FROM AKRON-CE-RCD.
+           GO TO 62-CHECK-FOR-ACCRUED-TAX.
+
+       62-INVOICE-COMPLETE.
+           PERFORM 621-WRITE-MANIFEST-REPORT  THRU  621-WMR-X.
+           GO TO 62-READ-REG-FILE.
+
+       62-CLOSE-FILES.
+           PERFORM 621-WRITE-CONTROL-PAGE  THRU  621-WCP-X.
+           CLOSE MAN-AKRON-FILE,
+                 REG-FILE.
+
+
+       62-CAF-X.
+           EXIT.
+
+
+       621-WRITE-AKRON-HDR-RCD.
+           MOVE SPACES                 TO  AKRON-HDR-RCD.
+           MOVE PROCESS-MANIFEST-INDICATOR  TO  AKRON-MAN-FUNCT.
+           MOVE TERRITORY-SAVE         TO  AKRON-SUB-TERR.
+           MOVE SAVE-MANIFEST-NO       TO  AKRON-HDR-MAN-NO.
+           MOVE SAVE-MANIFEST-DATE     TO  DATE-VALIDATE-IN.
+           MOVE 4                      TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-OUT               TO  AKRON-MAN-DATE.
+      *--- DIFFERENT HEADER RECORD SENT TO TORONTO THAN TO AKRON
+      *--- INCLUDED VALLEYFIELD AND NAPANEE PLANTS
+           IF SAVE-CO = "629" OR "631"
+              MOVE HDR-NET-DUE-VENDOR-TOTAL TO AKRON-MAN-TOTAL
+           ELSE
+              MOVE MANIFEST-HEADER-TOTAL  TO  AKRON-MAN-TOTAL.
+           WRITE MAN-AKRON-REC FROM AKRON-HDR-RCD.
+
+       621-WRITE-MANIFEST-REPORT.
+           MOVE TOTAL-CE-AMOUNT          TO  M-CE-TOTAL,
+                                             CALC-COST-DIST.
+           IF INV-NO-CHECK-INDIC NOT = SPACES
+               ADD TOTAL-CE-AMOUNT       TO  TOTAL-IT-CE-AMOUNT.
+           MOVE 1                        TO  MAN-CTL.
+           MOVE MANIFEST-DETAIL-LINE1    TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+           MOVE ZERO                     TO  CE-SUB,
+                                             SUB.
+
+           PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X.
+           MOVE "CONTAINERS (-)"         TO  M-CONT-LIT.
+           MOVE INV-ADD-CTNRS            TO  M-CONTAINERS.
+           IF INV-NO-CHECK-INDIC = SPACES
+               ADD INV-ADD-CTNRS         TO  TOTAL-CNTRS
+           ELSE
+               ADD INV-ADD-CTNRS         TO  TOTAL-IT-CNTRS.
+           SUBTRACT INV-ADD-CTNRS        FROM CALC-COST-DIST.
+           IF INV-NO-CHECK-INDIC NOT = SPACES
+               MOVE "INTERNAL"           TO  M-INTERNAL-LIT1.
+           MOVE 1                        TO  MAN-CTL.
+           MOVE MANIFEST-DETAIL-LINE2    TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-DETAIL-LINES.
+           PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X.
+           MOVE INV-VEN-CODE-1-7         TO  M-VEN-CODE.
+           MOVE "VENDOR"                 TO  M-VEN-LIT.
+           MOVE "OTHER      (+)"         TO  M-OTHER-LIT.
+           MOVE INV-ADJ-OTHER            TO  M-OTHER-VALUE.
+           ADD INV-ADJ-OTHER             TO  CALC-COST-DIST.
+           IF INV-NO-CHECK-INDIC = SPACES
+               ADD INV-ADJ-OTHER         TO  TOTAL-OTHER
+           ELSE
+               ADD INV-ADJ-OTHER         TO  TOTAL-IT-OTHER.
+           IF INV-NO-CHECK-INDIC NOT = SPACES
+               MOVE "ORDER"              TO  M-INTERNAL-LIT2.
+           MOVE 1                        TO  MAN-CTL.
+           MOVE MANIFEST-DETAIL-LINE3    TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-DETAIL-LINES.
+           PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X.
+           MOVE VEN-ADDR-LINES (1)       TO  M-VEN-NAME.
+           MOVE "CE9        (+)"         TO  M-CE9-LIT.
+           MULTIPLY CE9-CASH-DSCNT    BY -1 GIVING NEG-CE9-CASH-DSCNT.
+           MOVE NEG-CE9-CASH-DSCNT       TO  M-CE9.
+           ADD NEG-CE9-CASH-DSCNT        TO  CALC-COST-DIST.
+           IF INV-NO-CHECK-INDIC = SPACES
+               ADD NEG-CE9-CASH-DSCNT    TO  TOTAL-CE9
+           ELSE
+               ADD NEG-CE9-CASH-DSCNT    TO  TOTAL-IT-CE9.
+           MOVE 1                        TO  MAN-CTL.
+           MOVE MANIFEST-DETAIL-LINE4    TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-DETAIL-LINES.
+           PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X.
+           MOVE VEN-ADDR-LINES (2)       TO  M-VEN-ADDR1.
+           MOVE "CPW        (+)"         TO  M-CPW-LIT.
+           IF CE-EXT-ACCTG-DATA-1 = "113930000"
+               MULTIPLY CE-EXT-VALUE-1  BY -1
+                   GIVING NEG-CPW-VALUE
+               MOVE NEG-CPW-VALUE        TO  M-CPW
+               ADD NEG-CPW-VALUE         TO  CALC-COST-DIST
+               IF INV-NO-CHECK-INDIC = SPACES
+                   ADD NEG-CPW-VALUE     TO  TOTAL-CPW
+               ELSE
+                   ADD NEG-CPW-VALUE     TO  TOTAL-IT-CPW.
+           MOVE "  COST DISTRIBUTED"     TO  DIST-LIT.
+           MOVE 1                        TO  MAN-CTL.
+           MOVE MANIFEST-DETAIL-LINE5    TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-DETAIL-LINES.
+           PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X.
+           MOVE VEN-ADDR-LINES (3)       TO  M-VEN-ADDR2.
+           MOVE "BALANCE    (=)"         TO  M-BAL-LIT.
+           MOVE CALC-COST-DIST           TO  M-BALANCE.
+           MOVE INV-DIST-COST            TO  M-COST-DIST.
+           IF INV-NO-CHECK-INDIC = SPACES
+               ADD INV-DIST-COST         TO  TOTAL-DISTRIBUTED-COST
+           ELSE
+               ADD INV-DIST-COST         TO  TOTAL-IT-DISTRIBUTED-COST.
+           MOVE 1                        TO  MAN-CTL.
+           MOVE MANIFEST-DETAIL-LINE6    TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES  TO  MANIFEST-DETAIL-LINES.
+           IF VEN-ADDR-LINES (4) = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE VEN-ADDR-LINES (4)   TO  M-VEN-ADDR3
+               PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X
+               MOVE 1                    TO  MAN-CTL
+               MOVE MANIFEST-DETAIL-LINE7 TO  MANIFEST-REPORT-LINE
+               PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+       621-FINISH-CE.
+           MOVE SPACES                   TO  MANIFEST-DETAIL-LINES.
+           IF CE-SUB > 13
+               NEXT SENTENCE
+           ELSE
+               PERFORM 6211-GET-CE-ENTRY  THRU  6211-GCE-X
+               IF M-CE1 = SPACES
+                   NEXT SENTENCE
+               ELSE
+                   MOVE 1                TO  MAN-CTL
+                   MOVE MANIFEST-DETAIL-LINE8  TO
+                        MANIFEST-REPORT-LINE
+                   PERFORM 5-WRITE-MANIFEST-REPORT-LINE
+                   GO TO 621-FINISH-CE.
+
+       621-CHECK-BALANCE.
+           IF CALC-COST-DIST = INV-DIST-COST
+               NEXT SENTENCE
+           ELSE
+               MOVE 1                    TO  MAN-CTL
+               MOVE OUT-BALANCE-MSG      TO  MANIFEST-REPORT-LINE
+               PERFORM 5-WRITE-MANIFEST-REPORT-LINE
+               MOVE 1                    TO  MAN-CTL
+               MOVE OUT-BALANCE-MSG      TO  MANIFEST-REPORT-LINE
+               PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           IF INV-NO-CHECK-INDIC NOT = SPACES
+               ADD 1                     TO  IT-CTR.
+
+           MOVE 1                        TO  MAN-CTL.
+           MOVE ASTERISK-LINE            TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+       621-WMR-X.
+           EXIT.
+
+       621-WRITE-CONTROL-PAGE.
+           MOVE 99  TO  LINE-CTR.
+           MOVE SPACES                   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-HEADER.
+           MOVE 5                        TO  MAN-CTL.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+           MOVE 2                        TO  MAN-CTL.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "   PAYMENTS"            TO  CONTROL-DASH-OUT-1.
+           MOVE "  NO CHECKS"            TO  CONTROL-DASH-OUT-2.
+           MOVE "      TOTAL"            TO  CONTROL-DASH-OUT-3.
+           MOVE MANIFEST-CONTROL-LINE2   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE IT-CTR                   TO  IT-CTR-OUT.
+           MOVE NO-CHECK-HDR             TO  MANIFEST-REPORT-LINE.
+           MOVE 1                        TO  MAN-CTL.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+           MOVE 2                        TO  MAN-CTL.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "TOTAL CE DOLLARS"           TO  CONTROL-TOTAL-LIT.
+           MOVE MANIFEST-HEADER-TOTAL    TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CE-AMOUNT       TO  CONTROL-IT-TOTAL-OUT.
+           ADD MANIFEST-HEADER-TOTAL, TOTAL-IT-CE-AMOUNT
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "CONTAINERS            (-)"  TO  CONTROL-TOTAL-LIT.
+           MOVE TOTAL-CNTRS              TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CNTRS           TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-CNTRS, TOTAL-IT-CNTRS
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  MAN-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "OTHER                 (+)"  TO  CONTROL-TOTAL-LIT.
+           MOVE TOTAL-OTHER              TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-OTHER           TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-OTHER, TOTAL-IT-OTHER
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "CE9                   (+)" TO CONTROL-TOTAL-LIT.
+           MOVE TOTAL-CE9                TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CE9             TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-CE9, TOTAL-IT-CE9
+              GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  MAN-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "CPW                   (+)" TO CONTROL-TOTAL-LIT.
+           MOVE TOTAL-CPW                TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CPW             TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-CPW, TOTAL-IT-CPW
+              GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  MAN-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "-----------"            TO  CONTROL-DASH-OUT-1,
+                                             CONTROL-DASH-OUT-2,
+                                             CONTROL-DASH-OUT-3.
+           MOVE 2                        TO  MAN-CTL.
+           MOVE MANIFEST-CONTROL-LINE2   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           SUBTRACT TOTAL-CNTRS FROM MANIFEST-HEADER-TOTAL
+               GIVING TOTAL-BALANCE-AMT.
+           ADD TOTAL-OTHER, TOTAL-CE9,
+               TOTAL-CPW  TO TOTAL-BALANCE-AMT.
+           SUBTRACT TOTAL-IT-CNTRS FROM TOTAL-IT-CE-AMOUNT
+               GIVING TOTAL-IT-BALANCE-AMT.
+           ADD TOTAL-IT-OTHER, TOTAL-IT-CE9,
+               TOTAL-IT-CPW  TO TOTAL-IT-BALANCE-AMT.
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "BALANCE TOTAL         (=)"  TO  CONTROL-TOTAL-LIT.
+           MOVE TOTAL-BALANCE-AMT        TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-BALANCE-AMT     TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-BALANCE-AMT, TOTAL-IT-BALANCE-AMT
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  MAN-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "TOTAL COST DISTRIBUTED   " TO CONTROL-TOTAL-LIT.
+           MOVE TOTAL-DISTRIBUTED-COST   TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-DISTRIBUTED-COST TO CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-DISTRIBUTED-COST, TOTAL-IT-DISTRIBUTED-COST
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  MAN-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  MANIFEST-REPORT-LINE.
+           PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+           IF TOTAL-BALANCE-AMT NOT = TOTAL-DISTRIBUTED-COST  OR
+              TOTAL-IT-BALANCE-AMT NOT = TOTAL-IT-DISTRIBUTED-COST
+               MOVE 2                    TO  MAN-CTL
+               MOVE MAN-SUM-OUT-BAL-MSG  TO  MANIFEST-REPORT-LINE
+               PERFORM 5-WRITE-MANIFEST-REPORT-LINE
+               MOVE 2                    TO  MAN-CTL
+               MOVE MAN-SUM-OUT-BAL-MSG  TO  MANIFEST-REPORT-LINE
+               PERFORM 5-WRITE-MANIFEST-REPORT-LINE
+               MOVE 2                    TO  MAN-CTL
+               MOVE MAN-SUM-OUT-BAL-MSG  TO  MANIFEST-REPORT-LINE
+               PERFORM 5-WRITE-MANIFEST-REPORT-LINE.
+
+       621-WCP-X.
+            EXIT.
+
+       6211-GET-CE-ENTRY.
+           IF CE-SUB > 8
+               GO TO 6211-CHECK-COLLECT-FRT
+           ELSE
+               ADD 1  TO  CE-SUB.
+           IF CE-VALUE (CE-SUB) = ZEROS
+               GO TO 6211-GET-CE-ENTRY.
+           MOVE CE-CODE (CE-SUB)         TO  M-CE1.
+           MOVE CE-VALUE (CE-SUB)        TO  M-CE1-VALUE.
+           MOVE CE-ACCTG-DATA (CE-SUB)   TO  M-CE1-ACCT.
+           GO TO 6211-GCE-X.
+
+       6211-CHECK-COLLECT-FRT.
+           IF CE-SUB > 9
+               GO TO 6211-CHECK-ATAX
+           ELSE
+               ADD 1  TO  CE-SUB.
+           IF INV-TOTAL-CFRT = ZEROS
+               NEXT SENTENCE
+           ELSE
+               MOVE "3"                  TO  M-CE1
+               MOVE INV-TOTAL-CFRT       TO  M-CE1-VALUE
+               MOVE "116051000"          TO  M-CE1-ACCT
+               GO TO 6211-GCE-X.
+
+       6211-CHECK-ATAX.
+           IF CE-SUB > 13
+               GO TO 6211-GCE-X
+           ELSE
+               ADD 1  TO  CE-SUB, SUB.
+           IF INV-ATAX-AMT (SUB) = ZEROS
+               GO TO 6211-CHECK-ATAX
+           ELSE
+               MOVE "5"                  TO  M-CE1
+               MOVE INV-ATAX-AMT (SUB)   TO  M-CE1-VALUE
+               MOVE INV-ATAX-ACCTG (SUB) TO  M-CE1-ACCT.
+
+       6211-GCE-X.
+           EXIT.
+
+
+       63-RELEASE-OPTION.
+           MOVE "PSTR"  TO  PLT-ARG.
+           MOVE PLT-ARG TO  PLTINFOKEY OF MPLTINFO-O-REC.
+           READ MPLTINFO-O INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ MPLTINFO 63-RO PSTR"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG                  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+           ADD 1                      TO  MPLTINFO-STORES-FILE-NO.
+
+           OPEN OUTPUT MAN-AKRON-FILE.
+           PERFORM 621-WRITE-AKRON-HDR-RCD.
+           CLOSE MAN-AKRON-FILE.
+
+           PERFORM 631-FIND-LATEST-STORES  THRU  631-FLS-X.
+
+           STRING "OVRDBF FILE(MANSTR) TOFILE(",
+             MAN-STR-LIT, ")",
+             DELIMITED BY SIZE INTO OVRDBF-MANSTR.
+           CALL "QCMDEXC" USING OVRDBF-MANSTR, DBF-MANSTR-PARM2.
+
+           OPEN OUTPUT MAN-STORES-FILE,
+                       STORES-REPORT.
+           OPEN INPUT REG-FILE.
+
+           MOVE STORES-HEADER         TO  RPT-HEADER.
+           MOVE ZEROS                 TO  PAGE-CTR.
+           MOVE MAN-NO-OUT            TO  STR-MAN-NO-OUT.
+           MOVE MAN-DATE-OUT          TO  STR-MAN-DATE-OUT.
+           MOVE MAN-INVOICE-COUNTER   TO  STR-MAN-INV-CTR-OUT.
+           MOVE SPACES                TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-HEADER.
+           MOVE ZEROS                 TO  TOTAL-DISTRIBUTED-COST,
+                                          TOTAL-CNTRS,
+                                          TOTAL-OTHER,
+                                          TOTAL-CE9,
+                                          TOTAL-CPW,
+                                          TOTAL-IT-DISTRIBUTED-COST,
+                                          TOTAL-IT-CNTRS,
+                                          TOTAL-IT-OTHER,
+                                          TOTAL-IT-CE9,
+                                          TOTAL-IT-CPW,
+                                          TOTAL-IT-CE-AMOUNT,
+                                          TOTAL-GST-TAX,
+                                          TOTAL-IT-GST-TAX,
+                                          TOTAL-TVQ-TAX,
+                                          TOTAL-IT-TVQ-TAX,
+                                          IT-CTR.
+
+       63-WRITE-HDR-RCD.
+           MOVE SPACES                TO  STORES-ID0-RCD.
+           MOVE "0"                   TO  RECORD-ID0.
+           MOVE SAVE-MANIFEST-NO      TO  STORES-MANIFEST-NO.
+           MOVE SAVE-MANIFEST-DATE    TO  STORES-MANIFEST-DATE.
+           MOVE MPLTINFO-STORES-FILE-NO  TO  STORES-FILE-ID0.
+           MOVE PROCESS-MANIFEST-INDICATOR  TO  STORES-MAN-FUNCT.
+           MOVE SAVE-LOCAL-ACCTG-REPORTS TO  STORES-REPORT-INDS.
+           WRITE STORES-ID0-RCD.
+           MOVE 1                     TO  STORES-RCD-CTR.
+
+       63-READ-REG-FILE.
+           READ REG-FILE
+               AT END
+                   GO TO 63-WRITE-SUMMARY-PAGE.
+
+           MOVE REGISTER-NO            TO  REGISTER-ARG.
+           PERFORM 65-GET-DINVRCD  THRU  65-GD-X.
+           PERFORM 65-GET-PO-HEADER  THRU  65-GPH-X.
+      *--------- USE INVOICE CURRENCY CODE IF THERE IS ONE.
+           IF INV-CURR-CODE NOT = SPACES
+               MOVE INV-CURR-CODE     TO   SCURCONV-CUR-CODE
+           ELSE
+               MOVE PO-CURRENCY-CODE  TO   SCURCONV-CUR-CODE.
+
+       63-WRITE-ID1.
+           MOVE SPACES                TO  STORES-ID1-RCD.
+           MOVE "1"                   TO  RECORD-ID1.
+           MOVE INV-REG-NO            TO  STORES-REG-NO-ID1,
+                                          REG-OUT.
+           MOVE INV-PO-RLSE           TO  STORES-PO-NUMBER,
+                                          PO-NUM-OUT.
+           MOVE INV-VEN-CODE          TO  STORES-VENDOR-CODE,
+                                          VEN-CODE-OUT.
+           MOVE PO-BUDGET-NUMBER      TO  STORES-BUDGT-NO,
+                                          BUDGT-NO-OUT.
+
+      *************************************************************
+      **   KEEP A TOTAL OF THE 'CE' VALUES FOR INTERNAL ORDERS 'NO
+      **   CHECK' SINCE THEY ARE NOT INCLUDED IN THE MANIFEST TOTAL
+      **   'MANIFEST-HEADER-TOTAL'
+      *************************************************************
+           IF INV-NO-CHECK-INDIC NOT = SPACES
+               PERFORM 631-ADD-IT-CE-VALUES  THRU 631-AICV-X.
+
+      *************************************************************
+      **   IF GST TAX IS ON THE INVOICE THEN DEDUCT THIS AMOUNT
+      **   FROM THE INVOICE AMOUNT DISTRIBUTED TO CSAS.
+      **   THIS IS DONE BY DEDUCTING THE GST TAX FROM 'DISTRIBUTED
+      **   COST', AND 'TOTAL TAX'(INV-ADD-TAX).
+      **   ACCRUED TAX IS ALSO CHECKED AND DEDUCTED FROM
+      **   'DISTRIBUTED COST'.
+      *************************************************************
+
+           IF GST-TAX
+               SUBTRACT INV-ADD-GST FROM
+                   INV-DIST-COST,
+                   INV-ADD-TAX
+               SUBTRACT INV-ATAX-AMT(GST-ENTRY) FROM
+                   INV-DIST-COST
+               IF INV-NO-CHECK-INDIC = SPACES
+                   ADD INV-ADD-GST, INV-ATAX-AMT(GST-ENTRY)
+                        TO TOTAL-GST-TAX
+               ELSE
+                   ADD INV-ADD-GST, INV-ATAX-AMT(GST-ENTRY)
+                        TO TOTAL-IT-GST-TAX
+               END-IF
+               MOVE ZERO  TO INV-ATAX-AMT(GST-ENTRY)
+           END-IF.
+
+      *************************************************************
+      **   DEDUCT TVQ TAX AMOUNT FROM AMOUNT PAID TO CSAS FOR
+      **   VALLEYFEILD.
+      *************************************************************
+
+           IF INV-TAX-CODE = "2Q" AND SAVE-CO = "629"
+               IF INV-NO-CHECK-INDIC = SPACES
+                   ADD INV-ADD-TAX
+                       TO TOTAL-TVQ-TAX
+               ELSE
+                   ADD INV-ADD-TAX
+                       TO TOTAL-IT-TVQ-TAX
+               END-IF
+               SUBTRACT INV-ADD-TAX FROM
+                   INV-DIST-COST,
+                   INV-ADD-TAX
+           END-IF.
+
+      *************************************************************
+
+           MOVE INV-DIST-COST         TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-DIST-COST,
+                                          DIST-COST-OUT.
+           MOVE INV-NET-DUE-VENDOR    TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  DUE-VENDOR-OUT.
+           MOVE CE9-CASH-DSCNT        TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-DISCOUNT,
+                                          DISCOUNT-OUT.
+           MOVE INV-TERMS             TO  STORES-TERMS,
+                                          TERMS-OUT.
+           ADD INV-ADD-TAX, CE5-TAX  GIVING
+                STORES-TOTAL-TAX ROUNDED, SAVE-TOTAL-TAX ROUNDED.
+           MOVE STORES-TOTAL-TAX      TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-TOTAL-TAX,
+                                          TAX-OUT.
+      *    MOVE SAVE-TOTAL-TAX        TO  TAX-OUT.
+           MOVE INV-TAX-CODE          TO  STORES-TAX-CODE,
+                                          TAX-CODE-OUT.
+           MOVE INV-NO-CHECK-INDIC    TO  STORES-NO-CHECK.
+           WRITE STORES-ID1-RCD.
+           ADD 1                      TO  STORES-RCD-CTR.
+
+           MOVE STORES-HEADER-1       TO  STORES-REPORT-LINE.
+           MOVE 2                     TO  STR-CTL.
+           MOVE STORES-DETAIL-LINE-1  TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+       63-WRITE-ID2.
+           MOVE SPACES                TO  STORES-ID2-RCD.
+           MOVE "2"                   TO  RECORD-ID2.
+           MOVE INV-REG-NO            TO  STORES-REG-NO-ID2.
+           ADD INV-ADD-VFRT, CE3-FRT       GIVING
+               STORES-TOTAL-PFRT, SAVE-PREPAYED-FRT.
+           MOVE STORES-TOTAL-PFRT     TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-TOTAL-PFRT,
+                                          TOT-PFRT-OUT.
+      *    MOVE SAVE-PREPAYED-FRT     TO  TOT-PFRT-OUT.
+           MOVE INV-TOTAL-CFRT        TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-TOTAL-CFRT,
+                                          TOT-CFRT-OUT.
+           MOVE ZEROS                 TO  TOTAL-ACCRUED-TAX.
+           PERFORM 631-ADD-ATAX  THRU  631-AA-X
+               VARYING SUB FROM 1 BY 1
+                   UNTIL SUB > 4.
+           ADD TOTAL-ACCRUED-TAX      TO  SAVE-TOTAL-TAX.
+           MOVE TOTAL-ACCRUED-TAX     TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-ACCRUED-TAX,
+                                          ACCRUED-TAX-OUT.
+           MOVE INV-ADD-CLERK         TO  STORES-ADD-EMPLOYEE,
+                                          EMP-ADD-ID-OUT.
+           MOVE INV-MOD-CLERK         TO  STORES-MOD-EMPLOYEE,
+                                          EMP-CHG-ID-OUT.
+           MOVE INV-NET-DUE-VENDOR    TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-DUE-VENDOR.
+           WRITE STORES-ID2-RCD.
+           ADD 1                      TO  STORES-RCD-CTR.
+
+           MOVE STORES-HEADER-2       TO  STORES-REPORT-LINE.
+           MOVE 2                     TO  STR-CTL.
+           MOVE STORES-DETAIL-LINE-2  TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+       63-WRITE-ID6.
+           MOVE SPACES                TO  STORES-ID6-RCD.
+           MOVE "6"                   TO  RECORD-ID6.
+           MOVE INV-REG-NO            TO  STORES-REG-NO-ID6.
+           MOVE INV-ADD-CTNRS         TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-CONTAINERS,
+                                          CONTAINERS-OUT.
+           MOVE INV-ADJ-OTHER         TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-OTHER,
+                                          OTHER-OUT.
+           IF CE-EXT-ACCTG-DATA-1 = "113930000"
+               MOVE CE-EXT-VALUE-1    TO  SCURCONV-PRICE-DEC
+               PERFORM 631-CALL-SCURCONV
+               MOVE SCURCONV-PRICE-DEC TO  STORES-CPW
+                                          CPW-OUT
+               IF INV-NO-CHECK-INDIC = SPACES
+                   ADD CE-EXT-VALUE-1  TO  TOTAL-CPW
+               ELSE
+                   ADD CE-EXT-VALUE-1  TO  TOTAL-IT-CPW
+           ELSE
+               MOVE ZEROS             TO  STORES-CPW,
+                                          CPW-OUT.
+           MOVE INV-NO-CHECK-INDIC    TO  NO-CHECK-INDIC-OUT.
+           MOVE INV-NO                TO  STORES-INV-NO.
+
+           WRITE STORES-ID6-RCD.
+           ADD 1                      TO  STORES-RCD-CTR.
+
+           MOVE STORES-HEADER-2B      TO  STORES-REPORT-LINE.
+           MOVE 2                     TO  STR-CTL.
+           MOVE STORES-DETAIL-LINE-2B TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           IF INV-NO-CHECK-INDIC = SPACES
+               ADD INV-ADD-CTNRS      TO  TOTAL-CNTRS
+               ADD INV-ADJ-OTHER      TO  TOTAL-OTHER
+               ADD CE9-CASH-DSCNT     TO  TOTAL-CE9
+               ADD INV-DIST-COST      TO  TOTAL-DISTRIBUTED-COST
+           ELSE
+               ADD INV-ADD-CTNRS      TO  TOTAL-IT-CNTRS
+               ADD INV-ADJ-OTHER      TO  TOTAL-IT-OTHER
+               ADD CE9-CASH-DSCNT     TO  TOTAL-IT-CE9
+               ADD 1                  TO  IT-CTR
+               ADD INV-DIST-COST      TO  TOTAL-IT-DISTRIBUTED-COST.
+
+       63-WRITE-ID3.
+           MOVE REGISTER-ARG TO REGISTERNO OF DPOFREIGHT-I-REC.
+           START DPOFREIGHT-I KEY = REGISTERNO OF DPOFREIGHT-I-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 63-WRITE-ID4
+               ELSE
+                   MOVE "START DPOFREIGHT 63-WI"  TO  BU-DISPLAY-MSG
+                   MOVE REGISTER-ARG           TO  BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP.
+
+           MOVE ZEROS                 TO  FRT-CTR.
+
+       63-GET-DPOFREIGHT-LOOP.
+           READ DPOFREIGHT-I NEXT INTO BUF-DPOFREIGHT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 63-WRITE-ID4
+               ELSE
+                   MOVE "READN DPOFREIGHT 63-GDL" TO BU-DISPLAY-MSG
+                   MOVE REGISTER-ARG  TO  BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP.
+           IF REGISTERNO OF DPOFREIGHT-I-REC NOT = REGISTER-ARG
+               GO TO 63-WRITE-ID4.
+
+           ADD 1                      TO  FRT-CTR.
+
+           MOVE SPACES                TO  STORES-ID3-RCD.
+           MOVE "3"                   TO  RECORD-ID3.
+           MOVE INV-REG-NO            TO  STORES-REG-NO-ID3.
+           MOVE FRT-BILL-NO           TO  STORES-PRO-NO,
+                                          PRO-NO-OUT.
+           MOVE FRT-CARRIER           TO  STORES-CARRIER,
+                                          CARRIER-OUT.
+           MOVE FRT-CHARGES-9         TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-FRT-CHRG,
+                                          FRT-CHRG-OUT.
+           WRITE STORES-ID3-RCD.
+           ADD 1                      TO  STORES-RCD-CTR.
+
+           IF FRT-CTR = 1
+               MOVE STORES-HEADER-3          TO STORES-REPORT-LINE
+               MOVE 2                        TO STR-CTL
+               MOVE STORES-DETAIL-LINE-3     TO DETAIL-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE
+           ELSE
+               MOVE STORES-DETAIL-LINE-3     TO STORES-REPORT-LINE
+               MOVE 1                        TO STR-CTL
+               MOVE SPACES                   TO DETAIL-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           GO TO 63-GET-DPOFREIGHT-LOOP.
+
+       63-WRITE-ID4.
+           MOVE SPACES                TO  STORES-ID4-RCD.
+           MOVE "4"                   TO  RECORD-ID4.
+           MOVE INV-REG-NO            TO  STORES-REG-NO-ID4.
+           PERFORM 631-INVOICE-DESC  THRU  631-ID-X.
+
+       63-WRITE-ID5.
+           MOVE ZEROS                 TO  INV-TOTAL-ITM-EXT.
+           IF INV-PAYMENT-IND = "P"
+               ADD  INV-P-MATL-EXT    TO  INV-TOTAL-ITM-EXT ROUNDED
+           ELSE
+               ADD  INV-I-MATL-EXT    TO  INV-TOTAL-ITM-EXT ROUNDED.
+           ADD INV-TOTAL-CFRT, SAVE-PREPAYED-FRT  GIVING
+               SAVE-TOTAL-FRT ROUNDED.
+           SUBTRACT SAVE-TOTAL-FRT, SAVE-TOTAL-TAX FROM
+               INV-DIST-COST  GIVING SAVE-TOTAL-MATL-COST.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVITM-I-REC.
+           START DINVITM-I KEY = REGISTERNO OF DINVITM-I-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE "Y" TO NO-ITEMS-SW
+               ELSE
+                   MOVE "START DINVITM 63-WI5" TO  BU-DISPLAY-MSG
+                   MOVE REGISTER-ARG           TO  BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP
+           ELSE
+               MOVE "N"               TO  NO-ITEMS-SW.
+
+      *--------- FIND OUT NUMBER OF ITEMS IN ORDER TO ALLOCATE FREIGHT
+      *--------- & TAX CHARGES EVENLY AMONG ITEMS.
+           IF NO-ITEMS-SW = "N"
+               IF INV-TOTAL-ITM-EXT = 0 AND (SAVE-TOTAL-FRT > 0
+                                             OR SAVE-TOTAL-TAX > 0)
+                   MOVE 0             TO  NUM-ITEMS
+                   READ DINVITM-I NEXT INTO BUF-DINVITM
+                       AT END MOVE FILE-STATUS TO FILE-STATUS
+                   END-READ
+                   PERFORM UNTIL FILE-STATUS NOT = "00" OR
+                                 INVITM-REG-NO NOT = REGISTER-ARG
+                       ADD 1         TO  NUM-ITEMS
+                       READ DINVITM-I NEXT INTO BUF-DINVITM
+                           AT END MOVE FILE-STATUS TO FILE-STATUS
+                       END-READ
+                   END-PERFORM
+                   MOVE REGISTER-ARG TO REGISTERNO OF DINVITM-I-REC
+                   START DINVITM-I KEY = REGISTERNO OF DINVITM-I-REC
+                       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           MOVE ZEROS                 TO  TOTAL-COST-DIST,
+                                          TOTAL-FRT-DIST,
+                                          TOTAL-TAX-DIST.
+
+      *----- CALL CCRTFILE TO CREATE A TEMPORARY FILE
+      *----- LIBRARY 'QTEMP' IS USED FOR TEMPORARY FILES
+9406CK*    MOVE SPACES        TO CCRTFILE-PARMS.
+  .   *    MOVE "DITEMFIL"    TO CCRTFILE-FILE.
+  .   *    MOVE 69            TO CCRTFILE-RECORD-LENGTH.
+  .   *    MOVE 1000          TO CCRTFILE-NO-RECORDS.
+  .   *    MOVE 1000          TO CCRTFILE-INCREMENT-AMT.
+  .   *    MOVE 10            TO CCRTFILE-NO-INCREMENTS.
+  .   *    CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+  .   *                          CCRTFILE-FILE,
+  .   *                          CCRTFILE-RECORD-LENGTH,
+  .   *                          CCRTFILE-NO-RECORDS,
+  .   *                          CCRTFILE-INCREMENT-AMT,
+  .   *                          CCRTFILE-NO-INCREMENTS,
+  .   *                          CCRTFILE-STATUS.
+  .   *    IF CCRTFILE-STATUS NOT = "00"
+  .   *        MOVE "CCRTFILE CREATE OF 'DITEMFIL' FAILED"
+  .   *           TO BU-DISPLAY-MSG
+  .   *        GO TO 2-BLOWUP.
+  .   *    OPEN I-O    DIST-ITEM-FILE.
+  .
+9406CK     INITIALIZE ITEM-IX.
+
+           SORT SORT-ITEMS
+               ON ASCENDING KEY S-ITEM,
+                                S-ITEM-PCT
+               INPUT PROCEDURE IS COLLECT-ITEM-INFO
+               OUTPUT PROCEDURE IS DIST-COST-WRITE-REPORT.
+
+9406CK     INITIALIZE DIST-TABLE.
+
+9406CK*    MOVE "DITEMFIL"     TO  DLTFILE-FILE-NAME.
+  .   *    CALL "CDLTFILE" USING DLTFILE-LIB-NAME,
+  .   *                          DLTFILE-FILE-NAME,
+  .   *                          DLTFILE-RETURN-STATUS.
+  .   *    IF DLTFILE-RETURN-STATUS NOT = "00"
+  .   *        MOVE "DELETE COMMAND FAILED"  TO  BU-DISPLAY-MSG
+  .   *        MOVE DLTFILE-RETURN-STATUS    TO  BU-DISPLAY-FLD (1)
+9406CK*        GO TO 2-BLOWUP.
+
+           GO TO 63-READ-REG-FILE.
+
+       63-WRITE-SUMMARY-PAGE.
+           MOVE 99  TO  LINE-CTR.
+           MOVE SPACES                   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-HEADER.
+           MOVE 5                        TO  STR-CTL.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "   PAYMENTS"            TO  CONTROL-DASH-OUT-1.
+           MOVE "  NO CHECKS"            TO  CONTROL-DASH-OUT-2.
+           MOVE "      TOTAL"            TO  CONTROL-DASH-OUT-3.
+           MOVE MANIFEST-CONTROL-LINE2   TO  STORES-REPORT-LINE.
+           MOVE 2                        TO  STR-CTL.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE IT-CTR                   TO  IT-CTR-OUT.
+           MOVE NO-CHECK-HDR             TO  STORES-REPORT-LINE.
+           MOVE 1                        TO  STR-CTL.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "TOTAL CE DOLLARS"           TO  CONTROL-TOTAL-LIT.
+           MOVE MANIFEST-HEADER-TOTAL    TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CE-AMOUNT       TO  CONTROL-IT-TOTAL-OUT.
+           ADD MANIFEST-HEADER-TOTAL, TOTAL-IT-CE-AMOUNT
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           MOVE 2                        TO  STR-CTL.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "CONTAINERS            (-)"  TO  CONTROL-TOTAL-LIT.
+           MOVE TOTAL-CNTRS              TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CNTRS           TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-CNTRS, TOTAL-IT-CNTRS
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "OTHER                 (+)"  TO  CONTROL-TOTAL-LIT.
+           MOVE TOTAL-OTHER              TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-OTHER           TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-OTHER, TOTAL-IT-OTHER
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "CE9                   (+)" TO CONTROL-TOTAL-LIT.
+           MULTIPLY -1 BY TOTAL-CE9   GIVING TOTAL-CE9.
+           MULTIPLY -1 BY TOTAL-IT-CE9   GIVING TOTAL-IT-CE9.
+           MOVE TOTAL-CE9                TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CE9             TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-CE9, TOTAL-IT-CE9
+              GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "CPW                   (+)" TO CONTROL-TOTAL-LIT.
+           MULTIPLY -1 BY TOTAL-CPW  GIVING  TOTAL-CPW.
+           MULTIPLY -1 BY TOTAL-IT-CPW  GIVING  TOTAL-IT-CPW.
+           MOVE TOTAL-CPW                TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-CPW             TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-CPW, TOTAL-IT-CPW
+              GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           IF GST-TAX
+               MOVE SPACES               TO  MANIFEST-CONTROL-LINES
+               MOVE "GST                   (-)" TO CONTROL-TOTAL-LIT
+               MOVE TOTAL-GST-TAX        TO  CONTROL-REG-TOTAL-OUT
+               MOVE TOTAL-IT-GST-TAX     TO  CONTROL-IT-TOTAL-OUT
+               ADD TOTAL-GST-TAX, TOTAL-IT-GST-TAX
+                   GIVING CONTROL-TOTAL-OUT
+               MOVE 2                    TO  STR-CTL
+               MOVE MANIFEST-CONTROL-LINE1   TO STORES-REPORT-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+      *------- PRINT TVQ TAX LINE FOR VALLEYFIELD.
+           IF SAVE-CO = "629"
+               MOVE SPACES               TO  MANIFEST-CONTROL-LINES
+               MOVE "TVQ                   (-)" TO CONTROL-TOTAL-LIT
+               MOVE TOTAL-TVQ-TAX        TO  CONTROL-REG-TOTAL-OUT
+               MOVE TOTAL-IT-TVQ-TAX     TO  CONTROL-IT-TOTAL-OUT
+               ADD TOTAL-TVQ-TAX, TOTAL-IT-TVQ-TAX
+                   GIVING CONTROL-TOTAL-OUT
+               MOVE 2                    TO  STR-CTL
+               MOVE MANIFEST-CONTROL-LINE1   TO STORES-REPORT-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "-----------"            TO  CONTROL-DASH-OUT-1,
+                                             CONTROL-DASH-OUT-2,
+                                             CONTROL-DASH-OUT-3.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE2   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           SUBTRACT TOTAL-CNTRS FROM MANIFEST-HEADER-TOTAL
+               GIVING TOTAL-BALANCE-AMT.
+           ADD TOTAL-OTHER, TOTAL-CE9,
+               TOTAL-CPW  TO TOTAL-BALANCE-AMT.
+           SUBTRACT TOTAL-IT-CNTRS FROM TOTAL-IT-CE-AMOUNT
+               GIVING TOTAL-IT-BALANCE-AMT.
+           ADD TOTAL-IT-OTHER, TOTAL-IT-CE9,
+               TOTAL-IT-CPW  TO TOTAL-IT-BALANCE-AMT.
+           IF GST-TAX
+               SUBTRACT TOTAL-GST-TAX FROM MANIFEST-HEADER-TOTAL
+                   GIVING TOTAL-BALANCE-AMT
+               SUBTRACT TOTAL-IT-GST-TAX FROM TOTAL-IT-CE-AMOUNT
+                   GIVING TOTAL-IT-BALANCE-AMT
+           END-IF.
+      *---------- IF VALLEYFIELD, SUBTRACT TVQ TAX ALSO.
+           IF SAVE-CO = "629"
+               SUBTRACT TOTAL-TVQ-TAX FROM TOTAL-BALANCE-AMT
+               SUBTRACT TOTAL-IT-TVQ-TAX FROM TOTAL-IT-BALANCE-AMT
+           END-IF.
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "BALANCE TOTAL         (=)"  TO  CONTROL-TOTAL-LIT.
+           MOVE TOTAL-BALANCE-AMT        TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-BALANCE-AMT     TO  CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-BALANCE-AMT, TOTAL-IT-BALANCE-AMT
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           MOVE SPACES                   TO  MANIFEST-CONTROL-LINES.
+           MOVE "TOTAL COST DISTRIBUTED   " TO CONTROL-TOTAL-LIT.
+           MOVE TOTAL-DISTRIBUTED-COST   TO  CONTROL-REG-TOTAL-OUT.
+           MOVE TOTAL-IT-DISTRIBUTED-COST TO CONTROL-IT-TOTAL-OUT.
+           ADD TOTAL-DISTRIBUTED-COST, TOTAL-IT-DISTRIBUTED-COST
+               GIVING CONTROL-TOTAL-OUT.
+           MOVE 2                        TO  STR-CTL.
+           MOVE MANIFEST-CONTROL-LINE1   TO  STORES-REPORT-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+           IF TOTAL-BALANCE-AMT NOT = TOTAL-DISTRIBUTED-COST  OR
+              TOTAL-IT-BALANCE-AMT NOT = TOTAL-IT-DISTRIBUTED-COST
+               MOVE 2                    TO  STR-CTL
+               MOVE MAN-SUM-OUT-BAL-MSG  TO  STORES-REPORT-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE
+               MOVE 2                    TO  STR-CTL
+               MOVE MAN-SUM-OUT-BAL-MSG  TO  STORES-REPORT-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE
+               MOVE 2                    TO  STR-CTL
+               MOVE MAN-SUM-OUT-BAL-MSG  TO  STORES-REPORT-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+       63-CLOSE-FILES.
+           MOVE SPACES                TO  STORES-ID9-RCD.
+           MOVE "9"                   TO  RECORD-ID9.
+           ADD 1                      TO  STORES-RCD-CTR.
+           MOVE STORES-RCD-CTR        TO  STORES-TOTAL-RECORDS.
+           MOVE SAVE-MANIFEST-NO      TO  STORES-MANIFEST-NO-9.
+           MOVE SAVE-MANIFEST-DATE    TO  STORES-MANIFEST-DATE-9.
+           MOVE MPLTINFO-STORES-FILE-NO  TO  STORES-FILE-ID9.
+           ADD TOTAL-DISTRIBUTED-COST, TOTAL-IT-DISTRIBUTED-COST
+               GIVING STORES-TOTAL-COST.
+           MOVE STORES-TOTAL-COST        TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC       TO  STORES-TOTAL-COST.
+           WRITE STORES-ID9-RCD.
+
+           CLOSE MAN-STORES-FILE,
+                 STORES-REPORT,
+                 REG-FILE.
+
+       63-UPDATE-STORES-FILE-ID.
+           REWRITE MPLTINFO-O-REC FROM BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "REWRITE MPLTINFO 63-USFI" TO BU-DISPLAY-MSG
+               MOVE MPLTINFO-MAN-NO          TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+       63-RO-X.
+           EXIT.
+
+       631-INVOICE-DESC.
+           MOVE PO-ARG TO PORCVNO OF DPODATAITM-I-REC.
+           MOVE "000099" TO ITEMSEQNO OF DPODATAITM-I-REC.
+           START DPODATAITM-I KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                    GO TO 631-ID-X
+               ELSE
+               MOVE "START DATAITM 631-ID"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG                 TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+       631-GET-DPODATAITM.
+           READ DPODATAITM-I NEXT INTO BUF-DPODATAITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READN DATAITM 631-GD" TO BU-DISPLAY-MSG
+               MOVE PO-ARG        TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE DATAITM-INFO          TO  STORES-INV-DESC,
+                                          DESC-OUT.
+           WRITE STORES-ID4-RCD.
+           ADD 1                      TO  STORES-RCD-CTR.
+
+           MOVE STORES-HEADER-4       TO  STORES-REPORT-LINE.
+           MOVE 2                     TO  STR-CTL.
+           MOVE STORES-DETAIL-LINE-4  TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+       631-ID-X.
+           EXIT.
+
+       631-ADD-IT-CE-VALUES.
+           MOVE ZEROS                    TO  SUB.
+
+       631-CE-VALUES-LOOP.
+           ADD 1 TO SUB.
+           IF SUB > 9
+               GO TO 631-CHECK-CFRT.
+           IF CE-VALUE (SUB) = ZEROS
+               NEXT SENTENCE
+           ELSE
+               ADD CE-VALUE (SUB)    TO  TOTAL-IT-CE-AMOUNT.
+           GO TO 631-CE-VALUES-LOOP.
+
+       631-CHECK-CFRT.
+           IF INV-TOTAL-CFRT NOT = ZEROS
+               ADD INV-TOTAL-CFRT  TO  TOTAL-IT-CE-AMOUNT.
+
+           MOVE ZERO  TO  SUB.
+
+       631-CHECK-FOR-ACCRUED-TAX.
+           ADD 1  TO  SUB.
+           IF SUB > 4
+               GO TO 631-AICV-X.
+           IF INV-ATAX-AMT (SUB) = ZEROS
+               NEXT SENTENCE
+           ELSE
+               ADD INV-ATAX-AMT (SUB)  TO  TOTAL-IT-CE-AMOUNT.
+           GO TO 631-CHECK-FOR-ACCRUED-TAX.
+
+       631-AICV-X.
+           EXIT.
+
+
+       631-CALL-SCURCONV.
+           MOVE ZEROS TO SCURCONV-PRICE-WHL.
+           CALL "SCURCONV" USING BASE,
+                                 SCURCONV-PARMS,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE "CALL SCURCONV * 631-CS" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       COLLECT-ITEM-INFO SECTION.
+
+       63-GET-ITEM-LOOP.
+
+      *
+      * IF THERE ARE NO ITEMS ON THIS INVOICE THEN DONT
+      * DO ANYTHING
+      *
+           IF NO-ITEMS-SW = "Y"
+9406CK*      CLOSE DIST-ITEM-FILE
+             GO TO 63-ITEM-INFO-COMPLETE.
+
+           READ DINVITM-I NEXT INTO BUF-DINVITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 631-CONT-ITEM-DIST
+               ELSE
+                   MOVE "READN DINVITM 63-GIL" TO BU-DISPLAY-MSG
+                   MOVE REGISTER-ARG         TO BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP.
+           IF REGISTERNO OF DINVITM-I-REC NOT = REGISTER-ARG
+               GO TO 631-CONT-ITEM-DIST.
+
+9406CK     ADD 1 TO ITEM-IX.
+  .        IF ITEM-IX > 1000
+  .           MOVE "DIST-TABLE HAS MORE THAN 1000 ITEMS"
+  .                TO BU-DISPLAY-MSG
+  .           MOVE "LAST ITEM ="       TO BU-DISPLAY-FLD (1)
+  .           MOVE INVITM-ITEM-NO TO BU-DISPLAY-FLD (2)
+9406CK        GO TO 2-BLOWUP.
+
+9406CK     MOVE INVITM-ITEM-NO        TO  DIST-ITEM-NO    (ITEM-IX).
+  .        MOVE INVITM-CORPCODE       TO  DIST-CORP-CODE  (ITEM-IX).
+  .        MOVE INVITM-PO-UM          TO  DIST-UM         (ITEM-IX).
+9406CK     MOVE INVITM-MEMO-INDIC     TO  DIST-MEMO-INDIC (ITEM-IX).
+           IF INV-PAYMENT-IND = "P"
+9406CK         MOVE INVITM-PO-QTY-PD  TO  DIST-QUANTITY (ITEM-IX)
+               IF INVITM-PO-QTY-PD = ZEROS
+                   MOVE INVITM-PO-UPRICE      TO  ITEM-PRICE-EXT
+               ELSE
+                   MULTIPLY INVITM-PO-QTY-PD BY INVITM-PO-UPRICE
+                       GIVING ITEM-PRICE-EXT ROUNDED
+           ELSE
+           IF INV-PAYMENT-IND = "I"
+9406CK         MOVE INVITM-INV-QTY-PD TO  DIST-QUANTITY (ITEM-IX)
+               IF INVITM-INV-QTY-PD = ZEROS
+                   MOVE INVITM-INV-UPRICE     TO  ITEM-PRICE-EXT
+               ELSE
+                   MULTIPLY INVITM-INV-QTY-PD BY INVITM-INV-UPRICE
+                       GIVING ITEM-PRICE-EXT ROUNDED.
+           IF INVITM-CORPCODE = "NON-STR"
+               NEXT SENTENCE
+           ELSE
+               PERFORM 631-CONVERT-QTY-TO-STR  THRU  631-CQTS-X.
+           MOVE 0 TO ITM-MATL-EXT-PCNT.
+      *--------- IF NO MATERIAL EXTENSION, USE NUMBER OF ITEMS TO FIGURE
+      *--------- OUT PERCENTAGE ALLOCATION.
+           IF INV-TOTAL-ITM-EXT = 0 AND SAVE-TOTAL-FRT > 0
+                                    AND NUM-ITEMS > 0
+               COMPUTE ITM-MATL-EXT-PCNT = (1 / NUM-ITEMS)
+           ELSE
+           DIVIDE ITEM-PRICE-EXT  BY  INV-TOTAL-ITM-EXT
+               GIVING ITM-MATL-EXT-PCNT ROUNDED.
+           MULTIPLY SAVE-TOTAL-MATL-COST  BY  ITM-MATL-EXT-PCNT
+9406CK         GIVING DIST-ITEM-VALUE (ITEM-IX) ROUNDED.
+9406CK     ADD DIST-ITEM-VALUE (ITEM-IX)  TO  TOTAL-COST-DIST.
+           MULTIPLY SAVE-TOTAL-FRT BY ITM-MATL-EXT-PCNT
+9406CK         GIVING DIST-ITEM-FRT (ITEM-IX) ROUNDED.
+  .        ADD DIST-ITEM-FRT (ITEM-IX) TO  TOTAL-FRT-DIST.
+  .        MOVE ZEROS                  TO  DIST-ITEM-TAX (ITEM-IX),
+9406CK                                    DIST-ITEM-TAX-PCNT (ITEM-IX).
+           IF INVITM-TAX-CODE = TAX-ARG
+               NEXT SENTENCE
+           ELSE
+               MOVE INVITM-TAX-CODE  TO  TAX-ARG
+               MOVE TAX-ARG TO TAXCDE OF MTAX-I-REC
+               READ MTAX-I INTO BUF-MTAX
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS-1 = "2"
+                   MOVE SPACES  TO  TAX-ARG
+                   GO TO 631-CONT-ITEM-DIST
+               ELSE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "GET MTAX *63-GIL" TO BU-DISPLAY-MSG
+                   MOVE TAX-ARG  TO  BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP.
+
+           MOVE ZEROS  TO  TOTAL-MTAX-PERCENT.
+
+      *--------- MOVE ZERO TO TAX PERCENTAGE AMOUNT FOR GST/TVQ TAX
+      *--------- CODE "2Q" FOR VALLEYFIELD.
+           IF INV-TAX-CODE = "2Q" AND SAVE-CO = "629"
+               MOVE 0 TO TOTAL-MTAX-PERCENT
+           ELSE
+           PERFORM 6311-ADD-TAX-PCT  THRU  6311-ATP-X
+               VARYING SUB  FROM 1 BY 1
+                   UNTIL SUB > 4.
+           COMPUTE TAX-ITEM-PCNT ROUNDED =
+               TOTAL-MTAX-PERCENT / 100.
+      *--------- IF NO MATERIAL EXTENSION, USE NUMBER OF ITEMS TO FIGURE
+      *--------- OUT PERCENTAGE ALLOCATION.
+           IF INV-TOTAL-ITM-EXT = 0 AND SAVE-TOTAL-TAX > 0
+                                    AND NUM-ITEMS > 0
+               COMPUTE DIST-ITEM-TAX (ITEM-IX) ROUNDED =
+                   SAVE-TOTAL-TAX * (1 / NUM-ITEMS)
+           ELSE
+9406CK     COMPUTE DIST-ITEM-TAX (ITEM-IX) ROUNDED =
+               TAX-ITEM-PCNT * ITEM-PRICE-EXT.
+9406CK     MOVE TOTAL-MTAX-PERCENT     TO  DIST-ITEM-TAX-PCNT (ITEM-IX).
+9406CK     ADD DIST-ITEM-TAX (ITEM-IX) TO  TOTAL-TAX-DIST.
+
+       631-CONT-ITEM-DIST.
+      *IF END-OF-CHAIN OF DINVITM
+           IF (FILE-STATUS = "10" OR "14" OR "46" ) OR
+              (REGISTERNO OF DINVITM-I-REC NOT = REGISTER-ARG)
+                   PERFORM 631-CHECK-FOR-PROPER-COST-DIST
+                      THRU  631-CFPCD-X
+           ELSE
+9406CK*        WRITE DIST-ITEM-RCD
+               GO TO 63-GET-ITEM-LOOP.
+
+9406CK*    OPEN INPUT DIST-ITEM-FILE.
+9406CK     INITIALIZE ITEM-IX.
+
+       631-READ-DIST-FILE.
+9406CK*    READ DIST-ITEM-FILE NEXT AT END
+9406CK*        CLOSE DIST-ITEM-FILE
+9406CK*        GO TO 63-ITEM-INFO-COMPLETE.
+
+9406CK     ADD 1 TO ITEM-IX.
+  .        IF ITEM-IX > 1000 OR DIST-ITEM-NO (ITEM-IX) = SPACES
+  .           GO TO 63-ITEM-INFO-COMPLETE.
+  .
+  .        MOVE DIST-ITEM-NO    (ITEM-IX) TO  S-ITEM.
+  .        MOVE DIST-CORP-CODE  (ITEM-IX) TO  S-CORP-CODE.
+  .        MOVE DIST-UM         (ITEM-IX) TO  S-UM.
+  .        MOVE DIST-QUANTITY   (ITEM-IX) TO  S-QUANTITY.
+  .        MOVE DIST-ITEM-VALUE (ITEM-IX) TO  S-ITEM-DIST-COST.
+  .        MOVE DIST-ITEM-FRT   (ITEM-IX) TO  S-ITEM-FRT.
+  .        MOVE DIST-ITEM-TAX   (ITEM-IX) TO  S-ITEM-TAX.
+9406CK     MOVE DIST-MEMO-INDIC (ITEM-IX) TO  S-ITEM-MEMO-INDIC.
+           MOVE "N"                       TO  AT-LEAST-ONE-ACCT-ENTRY.
+
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVACCT-I-REC.
+           MOVE S-ITEM       TO WS-ITEM
+           MOVE "01"         TO WS-SEQ-NO
+           MOVE WS-ITEM-SEQ-NO TO ITEMSEQNO  OF DINVACCT-I-REC.
+           START DINVACCT-I KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE SPACES TO S-ACCTG-DATA
+                   MOVE 1      TO S-ITEM-PCT
+                   RELEASE SORT-ITEMS-RCD
+               ELSE
+                   MOVE "START DINVACCT 63-WI5"  TO  BU-DISPLAY-MSG
+                   MOVE REGISTER-ARG       TO  BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP
+           ELSE
+               PERFORM 631-GET-DINVACCT-DATA  THRU  631-GDD-X.
+
+           GO TO 631-READ-DIST-FILE.
+
+
+
+       631-CONVERT-QTY-TO-STR.
+           MOVE INVITM-CORPCODE       TO  CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-I-REC.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ MSTORERM  631-CQTS" TO BU-DISPLAY-MSG
+               MOVE CODE-ARG                 TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+9406CK     IF DIST-UM (ITEM-IX) = STR-UM
+               NEXT SENTENCE
+           ELSE
+9406CK     IF DIST-UM (ITEM-IX) = STR-UM1
+  .            MULTIPLY DIST-QUANTITY (ITEM-IX) BY STR-UM1-CF
+  .                GIVING DIST-QUANTITY (ITEM-IX) ROUNDED
+9406CK         MOVE STR-UM  TO  DIST-UM (ITEM-IX)
+           ELSE
+9406CK     IF DIST-UM (ITEM-IX) = STR-UM2
+  .            MULTIPLY DIST-QUANTITY (ITEM-IX) BY STR-UM2-CF
+  .                GIVING DIST-QUANTITY (ITEM-IX) ROUNDED
+9406CK         MOVE STR-UM  TO  DIST-UM (ITEM-IX).
+
+       631-CQTS-X.
+           EXIT.
+
+       631-GET-DINVACCT-DATA.
+           READ DINVACCT-I NEXT INTO BUF-DINVACCT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 631-GDD-X
+               ELSE
+               MOVE "READN DINVACCT 631-GDD" TO BU-DISPLAY-MSG
+               MOVE REGISTER-ARG          TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           IF REGISTERNO OF DINVACCT-I-REC NOT = REGISTER-ARG OR
+                         INVACCT-ITEM      NOT = WS-ITEM
+                  GO TO 631-GDD-X.
+
+           DIVIDE INVACCT-PCT BY 100 GIVING ACCT-PCT ROUNDED.
+           MOVE INVACCT-DATA          TO  S-ACCTG-DATA.
+           MOVE INVACCT-SUB           TO  S-CLASS.
+           MOVE ACCT-PCT              TO  S-ITEM-PCT.
+           MOVE SORT-ITEMS-RCD        TO  SAVE-SORT-ITEMS-RCD.
+           RELEASE SORT-ITEMS-RCD.
+           MOVE SAVE-SORT-ITEMS-RCD   TO  SORT-ITEMS-RCD.
+
+           GO TO 631-GET-DINVACCT-DATA.
+
+       631-GDD-X.
+           EXIT.
+
+       631-CHECK-FOR-PROPER-COST-DIST.
+9406CK*    READ DIST-ITEM-FILE LAST
+  .   *      AT END MOVE FILE-STATUS TO FILE-STATUS.
+  .   *    IF FILE-STATUS NOT EQUAL "00"
+  .   *      MOVE "ERR IN 631-CHECK-FOR-PROPER... READ" TO
+  .   *        BU-DISPLAY-MSG
+  .   *      MOVE "REG#=" TO BU-DISPLAY-FLD(1)
+  .   *      MOVE REGISTER-NO TO BU-DISPLAY-FLD(2)
+  .   *      PERFORM 2-BLOWUP
+9406CK*    END-IF.
+           SUBTRACT TOTAL-COST-DIST   FROM  SAVE-TOTAL-MATL-COST
+               GIVING DIST-COST-DIFF.
+9406CK     ADD DIST-COST-DIFF         TO  DIST-ITEM-VALUE (ITEM-IX).
+           SUBTRACT TOTAL-FRT-DIST    FROM  SAVE-TOTAL-FRT
+               GIVING DIST-FRT-DIFF.
+9406CK     ADD DIST-FRT-DIFF          TO  DIST-ITEM-FRT (ITEM-IX).
+9406CK*    REWRITE DIST-ITEM-RCD
+  .   *      INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+  .   *    IF FILE-STATUS NOT EQUAL "00"
+  .   *      MOVE "ERR IN 631-CHECK-FOR-PROPER... REWRITE" TO
+  .   *        BU-DISPLAY-MSG
+  .   *      MOVE "REG#=" TO BU-DISPLAY-FLD(1)
+  .   *      MOVE REGISTER-NO TO BU-DISPLAY-FLD(2)
+  .   *      PERFORM 2-BLOWUP
+  .   *    END-IF.
+9406CK*    CLOSE DIST-ITEM-FILE.
+           SUBTRACT TOTAL-TAX-DIST    FROM  SAVE-TOTAL-TAX
+               GIVING DIST-TAX-DIFF.
+           IF DIST-TAX-DIFF NOT = ZEROS
+               PERFORM 6311-DIST-REMAINING-TAX THRU 6311-DRT-X.
+
+       631-CFPCD-X.
+           EXIT.
+
+       631-ADD-ATAX.
+           ADD INV-ATAX-AMT (SUB)  TO  TOTAL-ACCRUED-TAX.
+
+       631-AA-X.
+           EXIT.
+
+      *************************************************************
+      **    IF 'GST' TAX IS PART OF THE TAX PAID THEN DONT
+      **    INCLUDE THIS IN THE PERCENTAGE CALCULATION SINCE
+      **    THE TAX AMOUNT FOR 'GST' IS NOT INCLUDED IN THE
+      **    TOTAL TAX PAID FOR DISTRIBUTION PURPOSES TO 'CSAS'
+      **    'GST' TAX IS A GOODS AND SERVICES TAX PAID BY THE
+      **    CANADIAN PLANTS.
+      *************************************************************
+
+       6311-ADD-TAX-PCT.
+           IF GST-TAX
+               IF GST-ENTRY = SUB
+                   NEXT SENTENCE
+               ELSE
+                   ADD MTAX-PERCENT (SUB)  TO TOTAL-MTAX-PERCENT
+           ELSE
+               ADD MTAX-PERCENT (SUB)  TO  TOTAL-MTAX-PERCENT.
+
+       6311-ATP-X.
+           EXIT.
+
+       6311-DIST-REMAINING-TAX.
+9406CK*    OPEN I-O DIST-ITEM-FILE.
+9406CK     INITIALIZE ITEM-IX.
+           MOVE TOTAL-TAX-DIST  TO  SAVE-TOTAL-ITEM-TAX-DIST.
+           MOVE SPACES          TO  SAVE-LAST-ITEM-NO.
+
+       6311-READ-DIST-ITEM-RCD.
+9406CK*    READ DIST-ITEM-FILE NEXT  AT END
+9406CK*        GO TO 6311-CHECK-PROPER-TAX-DIST.
+
+9406CK     ADD 1 TO ITEM-IX.
+  .        IF ITEM-IX > 1000 OR DIST-ITEM-NO (ITEM-IX) = SPACES
+9406CK        GO TO 6311-CHECK-PROPER-TAX-DIST.
+
+9406CK     MOVE DIST-ITEM-NO (ITEM-IX) TO  SAVE-LAST-ITEM-NO.
+9406CK     IF DIST-ITEM-TAX-PCNT (ITEM-IX) = ZEROS
+               GO TO 6311-READ-DIST-ITEM-RCD.
+9406CK     DIVIDE DIST-ITEM-TAX (ITEM-IX) BY SAVE-TOTAL-ITEM-TAX-DIST
+               GIVING TAX-ITEM-PCNT ROUNDED.
+           MULTIPLY TAX-ITEM-PCNT  BY  DIST-TAX-DIFF
+               GIVING ADDL-ITEM-TAX  ROUNDED.
+9406CK     ADD ADDL-ITEM-TAX       TO  DIST-ITEM-TAX (ITEM-IX),
+                                       TOTAL-TAX-DIST.
+9406CK*    REWRITE DIST-ITEM-RCD
+9406CK*       INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           GO TO 6311-READ-DIST-ITEM-RCD.
+
+       6311-CHECK-PROPER-TAX-DIST.
+9406CK*    CLOSE DIST-ITEM-FILE.
+           IF TOTAL-TAX-DIST  NOT =  SAVE-TOTAL-TAX
+               SUBTRACT TOTAL-TAX-DIST  FROM  SAVE-TOTAL-TAX
+                   GIVING DIST-TAX-DIFF
+               PERFORM 6311-BALANCE-TAX-DIST  THRU  6311-BTD-X.
+
+       6311-DRT-X.
+           EXIT.
+
+       6311-BALANCE-TAX-DIST.
+9406CK*    OPEN I-O  DIST-ITEM-FILE.
+9406CK     INITIALIZE ITEM-IX.
+
+       6311-READ-DIST-FILE-AGAIN.
+9406CK*    READ DIST-ITEM-FILE NEXT  AT END
+9406CK*        GO TO 6311-CLOSE-FILE.
+
+9406CK     ADD 1 TO ITEM-IX.
+  .        IF ITEM-IX > 1000 OR DIST-ITEM-NO (ITEM-IX) = SPACES
+9406CK        GO TO 6311-CLOSE-FILE.
+
+           IF DIST-ITEM-NO (ITEM-IX) = SAVE-LAST-ITEM-NO  OR
+              DIST-ITEM-TAX-PCNT (ITEM-IX)  NOT = ZEROS
+               ADD DIST-TAX-DIFF  TO  DIST-ITEM-TAX (ITEM-IX)
+9406CK*        REWRITE DIST-ITEM-RCD
+               GO TO 6311-CLOSE-FILE.
+
+           GO TO 6311-READ-DIST-FILE-AGAIN.
+
+       6311-CLOSE-FILE.
+9406CK*    CLOSE DIST-ITEM-FILE.
+
+       6311-BTD-X.
+           EXIT.
+
+       63-ITEM-INFO-COMPLETE.
+           EXIT.
+
+
+       DIST-COST-WRITE-REPORT SECTION.
+
+       63-DIST-COSTS.
+           MOVE SPACES                TO  STORES-ID5-RCD.
+           MOVE "5"                   TO  RECORD-ID5.
+
+9409CZ     MOVE CE1-CODE              TO  STORES-CE.
+
+           MOVE INV-REG-NO            TO  STORES-REG-NO-ID5.
+
+           MOVE STORES-HEADER-5       TO  STORES-REPORT-LINE.
+           MOVE 2                     TO  STR-CTL.
+           MOVE SPACES                TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+           MOVE ZEROS                 TO  SAVE-ITEM-NO.
+           IF NO-ITEMS-SW = "Y"
+               MOVE NO-ITEMS-MSG      TO  STORES-REPORT-LINE
+               MOVE 2                 TO  STR-CTL
+               MOVE SPACES            TO  DETAIL-LINE
+               PERFORM 5-WRITE-STORES-REPORT-LINE
+               GO TO 63-ITEM-PROCESSING-DONE.
+
+           MOVE SPACES                TO  EOF-SW.
+           PERFORM 631-RETURN-RCD.
+           IF EOF-SW = "Y"
+               GO TO 63-ITEM-PROCESSING-DONE.
+
+       63-NEW-ITEM-LOOP.
+           MOVE S-ITEM                TO  STORES-ITEM-NO,
+                                          ITEM-OUT,
+                                          SAVE-ITEM-NO.
+           PERFORM 631-PO-CHECK THRU 631-PC-X.
+      *    MOVE S-CORP-CODE           TO  STORES-CORP-CODE,
+      *                                   CORP-CODE-OUT.
+           MOVE S-CLASS               TO  STORES-CLASS,
+                                          CLASS-OUT.
+           MOVE S-UM                  TO  STORES-UM,
+                                          UM-OUT.
+           MOVE S-ITEM-MEMO-INDIC     TO  STORES-ITM-MEMO-INDIC.
+           IF S-ITEM-MEMO-INDIC = "X"
+               MOVE "MEMO QTY"        TO  MEMO-QTY-OUT
+           ELSE
+               MOVE SPACES            TO  MEMO-QTY-OUT.
+           MOVE "N"                   TO  AT-LEAST-ONE-ACCT-ENTRY.
+           MOVE S-QUANTITY            TO  SAVE-ITEM-QTY.
+           MOVE S-ITEM-DIST-COST      TO  SAVE-ITEM-DIST-COST.
+           MOVE S-ITEM-FRT            TO  SAVE-ITEM-FRT.
+           MOVE S-ITEM-TAX            TO  SAVE-ITEM-TAX.
+           MOVE ZEROS                 TO  TOTAL-QTY-DIST,
+                                          TOTAL-COST-DIST,
+                                          TOTAL-FRT-DIST,
+                                          TOTAL-TAX-DIST.
+
+       63-DIST-ACCT-COSTS.
+           MOVE S-PRIME               TO  STORES-PRIME,
+                                          PRIME-OUT.
+           MOVE S-SUB                 TO  STORES-SUB,
+                                          SUB-OUT.
+           MOVE S-SUBD                TO  STORES-SUBD,
+                                          SUBD-OUT.
+           MOVE S-ADDL-DATA           TO  STORES-ADDL-DATA,
+                                          ADDL-DATA-OUT.
+           MOVE S-ITEM-PCT            TO  ACCT-PCT.
+           MULTIPLY ACCT-PCT          BY  100
+               GIVING ACCT-PCT-OUT ROUNDED.
+           MULTIPLY S-QUANTITY        BY  ACCT-PCT
+               GIVING STORES-QTY ROUNDED.
+           ADD  STORES-QTY            TO  TOTAL-QTY-DIST.
+           MULTIPLY S-ITEM-DIST-COST  BY  ACCT-PCT
+               GIVING STORES-VALUE ROUNDED.
+           ADD  STORES-VALUE          TO  TOTAL-COST-DIST.
+           MOVE STORES-VALUE          TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-VALUE.
+           MULTIPLY S-ITEM-FRT        BY  ACCT-PCT
+               GIVING STORES-ITM-FRT ROUNDED.
+           ADD  STORES-ITM-FRT        TO  TOTAL-FRT-DIST.
+           MOVE STORES-ITM-FRT        TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-ITM-FRT.
+           MULTIPLY S-ITEM-TAX        BY  ACCT-PCT
+               GIVING STORES-ITM-TAX ROUNDED.
+           ADD  STORES-ITM-TAX        TO  TOTAL-TAX-DIST.
+           MOVE STORES-ITM-TAX        TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  STORES-ITM-TAX.
+
+           PERFORM 631-RETURN-RCD.
+           IF EOF-SW = "Y"
+               PERFORM 631-CHECK-FOR-PROPER-ITEM-DIST
+                   THRU  631-CFPID-X
+           ELSE
+           IF SAVE-ITEM-NO = S-ITEM
+               NEXT SENTENCE
+           ELSE
+               PERFORM 631-CHECK-FOR-PROPER-ITEM-DIST
+                   THRU  631-CFPID-X.
+
+       63-WRITE-STORES-ID5-RCD.
+           MOVE STORES-QTY            TO  QTY-OUT.
+           MOVE STORES-VALUE          TO  ITEM-VALUE-OUT.
+           MOVE STORES-ITM-FRT        TO  ITEM-FRT-OUT.
+           MOVE STORES-ITM-TAX        TO  ITEM-TAX-OUT.
+           IF AT-LEAST-ONE-ACCT-ENTRY = "Y"
+               MOVE SPACES            TO  ITEM-OUT-X,
+                                          CORP-CODE-OUT,
+                                          CLASS-OUT,
+                                          UM-OUT,
+                                          MEMO-QTY-OUT.
+           MOVE STORES-ID5-RCD        TO  SAVE-STORES-ID5-RCD.
+           WRITE STORES-ID5-RCD.
+           ADD 1                      TO  STORES-RCD-CTR.
+
+           MOVE STORES-DETAIL-LINE-5  TO  STORES-REPORT-LINE.
+           MOVE 1                     TO  STR-CTL.
+           MOVE SPACES                TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+           MOVE "Y"                   TO  AT-LEAST-ONE-ACCT-ENTRY.
+
+           IF EOF-SW = "Y"
+               GO TO 63-ITEM-PROCESSING-DONE
+           ELSE
+           MOVE SPACES              TO STORES-ID5-RCD
+           MOVE SAVE-STORES-ID5-RCD TO STORES-ID5-RCD
+           IF SAVE-ITEM-NO = S-ITEM
+               GO TO 63-DIST-ACCT-COSTS
+           ELSE
+               GO TO 63-NEW-ITEM-LOOP.
+
+       631-RETURN-RCD.
+           RETURN  SORT-ITEMS
+               AT END
+                   MOVE "Y"           TO  EOF-SW.
+
+       631-CHECK-FOR-PROPER-ITEM-DIST.
+           SUBTRACT TOTAL-QTY-DIST    FROM  SAVE-ITEM-QTY
+               GIVING DIST-QTY-DIFF.
+           ADD DIST-QTY-DIFF          TO  STORES-QTY.
+           SUBTRACT TOTAL-COST-DIST   FROM  SAVE-ITEM-DIST-COST
+               GIVING DIST-COST-DIFF.
+           MOVE DIST-COST-DIFF        TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  DIST-COST-DIFF.
+           ADD DIST-COST-DIFF         TO  STORES-VALUE.
+           SUBTRACT TOTAL-FRT-DIST    FROM  SAVE-ITEM-FRT
+               GIVING DIST-FRT-DIFF.
+           MOVE DIST-FRT-DIFF         TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  DIST-FRT-DIFF.
+           ADD DIST-FRT-DIFF          TO  STORES-ITM-FRT.
+           SUBTRACT TOTAL-TAX-DIST    FROM  SAVE-ITEM-TAX
+               GIVING DIST-TAX-DIFF.
+           MOVE DIST-TAX-DIFF         TO  SCURCONV-PRICE-DEC.
+           PERFORM 631-CALL-SCURCONV.
+           MOVE SCURCONV-PRICE-DEC    TO  DIST-TAX-DIFF.
+           ADD DIST-TAX-DIFF          TO  STORES-ITM-TAX.
+
+       631-CFPID-X.
+           EXIT.
+
+
+       631-FIND-LATEST-STORES.
+           IF MAN-STR-FILE-NO = 99
+               MOVE "MANIFEST STORES FILE GENS = 99" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           ADD 1             TO  MAN-STR-FILE-NO.
+           MOVE MAN-STR-LIT  TO  CHKOBJ-FILE-NAME.
+           CALL "CCHKOBJ" USING CHKOBJ-FILE-NAME,
+                                CHKOBJ-RETURN-STATUS.
+           IF CHKOBJ-RETURN-STATUS  = "00"
+               GO TO 631-FIND-LATEST-STORES.
+
+           MOVE SPACES         TO  CCRTFILE-PARMS.
+           MOVE MAN-STR-LIT    TO  CCRTFILE-FILE.
+           MOVE 80             TO  CCRTFILE-RECORD-LENGTH.
+           MOVE 10000          TO  CCRTFILE-NO-RECORDS.
+           MOVE 1000           TO  CCRTFILE-INCREMENT-AMT.
+           MOVE 10             TO  CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE FAILED"  TO  BU-DISPLAY-MSG
+               MOVE CCRTFILE-STATUS           TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+
+       631-FLS-X.
+           EXIT.
+
+       631-PO-CHECK.
+      *------ CHECK THE PO TO SEE IF THIS ITEM IS LINKED TO A MASTER STOCK
+      *------ CODE, IF A MASTER STOCK EXISTS THEN WE NEED TO SUBSTITUTE IN THE
+      *------ MASTER STOCK CODE SO THAT STORES ACCTG CAN CALCULATE A CORRECT
+      *------ AVG. COST.
+
+           MOVE PO-ARG       TO PORCVNO OF DPOITEM-I-REC.
+           MOVE SAVE-ITEM-NO TO ITEMNO OF DPOITEM-I-REC.
+           START DPOITEM-I KEY = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE S-CORP-CODE       TO  STORES-CORP-CODE
+                                              CORP-CODE-OUT
+                   GO TO 631-PC-X
+               ELSE
+                   MOVE "START DPOITEM * 631-PC"  TO BU-DISPLAY-MSG
+                   MOVE REGISTER-ARG          TO BU-DISPLAY-FLD (1)
+                   MOVE STORES-ITEM-NO        TO BU-DISPLAY-FLD (2)
+                   MOVE PO-ARG                TO BU-DISPLAY-FLD (3)
+                   GO TO 2-BLOWUP.
+
+        631-GET-PO-ITEM.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READN DPOITEM *631-GPI" TO BU-DISPLAY-MSG
+               MOVE REGISTER-ARG          TO BU-DISPLAY-FLD (1)
+               MOVE STORES-ITEM-NO        TO BU-DISPLAY-FLD (2)
+               MOVE PO-ARG                TO BU-DISPLAY-FLD (3)
+               GO TO 2-BLOWUP.
+           IF ITM-MASTER-STOCK = SPACES
+               MOVE S-CORP-CODE           TO  STORES-CORP-CODE
+                                              CORP-CODE-OUT
+           ELSE
+               MOVE ITM-MASTER-STOCK      TO  STORES-CORP-CODE
+                                              CORP-CODE-OUT.
+       631-PC-X.
+           EXIT.
+
+       63-ITEM-PROCESSING-DONE.
+           MOVE ASTERISK-LINE         TO  STORES-REPORT-LINE.
+           MOVE 2                     TO  STR-CTL.
+           MOVE SPACES                TO  DETAIL-LINE.
+           PERFORM 5-WRITE-STORES-REPORT-LINE.
+
+
+
+       DELETE-MANIFEST SECTION.
+
+       64-DELETE-OPTION.
+           OPEN OUTPUT MAN-AKRON-FILE.
+           PERFORM 621-WRITE-AKRON-HDR-RCD.
+           CLOSE MAN-AKRON-FILE.
+
+       64-DO-X.
+           EXIT.
+
+
+       65-GET-DINVRCD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVRCD-O-REC.
+           START DINVRCD-O KEY = REGISTERNO OF DINVRCD-O-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *----- IF THE INVOICE DOES NOT EXIST AT THIS POINT WE
+      *-----  WILL SKIP OVER IT BECAUSE THE USER DELETED THE
+      *-----  INVOICE BETWEEN THE START AND END OF A MANIFEST
+                   MOVE "Y"              TO SKIP-INVOICE-SW
+                   GO TO 65-GD-X
+               ELSE
+               MOVE "START DINVRCD 65-GD" TO  BU-DISPLAY-MSG
+               MOVE REGISTER-ARG         TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+           READ DINVRCD-O NEXT INTO BUF-DINVRCD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READN DINVRCD 65-GD" TO BU-DISPLAY-MSG
+               MOVE REGISTER-ARG  TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+      *----- IF THE USER PLACED THE INVOICE ON HOLD WE WILL ALSO
+      *----- NOT PROCESS IT AT THIS TIME.
+           IF INV-STATUS = "H " OR "I "
+               MOVE "Y" TO SKIP-INVOICE-SW.
+
+       65-GD-X.
+           EXIT.
+
+       65-GET-PO-HEADER.
+           MOVE INV-PO-RCV-NO    TO  PO-ARG.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-I-REC.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-I-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "START DPORECD 65-GPH"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG                 TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READN DPORECD 65-GPH"  TO  BU-DISPLAY-MSG
+               MOVE PO-ARG                TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+       65-GPH-X.
+           EXIT.
+
+       65-PURGE-MNACTIVE.
+
+      *****************************************
+      *                                       *
+      *   PURGE 'MNACTIVE' FILE SO ANOTHER    *
+      *   BATCH PROCESS JOB STREAM CAN BE     *
+      *   LAUNCHED BY 'TINVMAN' SINCE THIS    *
+      *   JOB IS DONE                         *
+      *                                       *
+      *****************************************
+
+           MOVE "MNACTIVE"      TO  DLTFILE-FILE-NAME.
+           CALL "MCDLT"    USING DLTFILE-FILE-NAME.
+      *                          DLTFILE-FILE-NAME,
+      *                          DLTFILE-RETURN-STATUS.
+      *    IF DLTFILE-RETURN-STATUS NOT = "00"
+      *        MOVE "DLTFILE MNACTIVE FAILED" TO BU-DISPLAY-MSG
+      *        MOVE DLTFILE-RETURN-STATUS     TO BU-DISPLAY-FLD (1)
+      *        GO TO 2-BLOWUP.
+
+       65-PM-X.
+           EXIT.
+
+       65-PURGE-STACTIVE.
+
+      *****************************************
+      *                                       *
+      *   PURGE 'STACTIVE' FILE SO ANOTHER    *
+      *   BATCH PROCESS JOB STREAM CAN BE     *
+      *   LAUNCHED BY 'TINVMAN' SINCE THIS    *
+      *   JOB IS DONE                         *
+      *                                       *
+      *****************************************
+
+           MOVE "STACTIVE"      TO  DLTFILE-FILE-NAME.
+           CALL "MCDLT"    USING DLTFILE-FILE-NAME.
+      **   CALL "CDLTFILE" USING DLTFILE-LIB-NAME,
+      **                         DLTFILE-FILE-NAME,
+      **                         DLTFILE-RETURN-STATUS.
+      **   IF DLTFILE-RETURN-STATUS NOT = "00"
+      **       MOVE "DLTFILE STACTIVE FAILED" TO BU-DISPLAY-MSG
+      **       MOVE DLTFILE-RETURN-STATUS     TO BU-DISPLAY-FLD (1)
+      **       GO TO 2-BLOWUP.
+
+       65-PS-X.
+           EXIT.
+
+
+       65-GET-VENDOR.
+           MOVE INV-VEN-CODE             TO  VEN-ARG.
+           MOVE SPACES                   TO  SAVE-VEN-ADDR.
+           MOVE ZEROS                    TO  SUB.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-I-REC.
+           START DVENDOR-I KEY = VENCDE OF DVENDOR-I-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE VEN-NOT-ON-FILE TO VEN-ADDR-LINES (1)
+                   GO TO 65-GV-X
+               ELSE
+               MOVE "START DVENDOR 65-GV"  TO  BU-DISPLAY-MSG
+               MOVE VEN-ARG                TO  BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+       65-GET-VENDOR-LOOP.
+           ADD 1  TO  SUB.
+           IF SUB > 4
+               GO TO 65-GV-X.
+           READ DVENDOR-I NEXT INTO BUF-DVENDOR
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   IF SUB = 1
+                       MOVE VEN-NOT-ON-FILE TO VEN-ADDR-LINES (1)
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+                   MOVE "READN DVENDOR 65-GVL" TO BU-DISPLAY-MSG
+                   MOVE VEN-ARG  TO  BU-DISPLAY-FLD (1)
+                   GO TO 2-BLOWUP
+           ELSE
+               IF VENCDE OF DVENDOR-I-REC NOT = VEN-ARG
+                   IF SUB = 1
+                       MOVE VEN-NOT-ON-FILE TO VEN-ADDR-LINES (1)
+                   ELSE
+                       NEXT SENTENCE
+               ELSE
+                   IF VEN-ITM-NO > 7
+                       NEXT SENTENCE
+                   ELSE
+                       MOVE VEN-ITM-DATA    TO  VEN-ADDR-LINES (SUB)
+                       GO TO 65-GET-VENDOR-LOOP.
+
+       65-GV-X.
+           EXIT.

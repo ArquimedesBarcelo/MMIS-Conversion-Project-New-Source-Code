@@ -1,0 +1,653 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TPORCRPT.
+       AUTHOR.         CA YODER.
+       DATE-WRITTEN.   JANUARY 2004.
+      *
+      *  THIS PROGRAM PRODUCES TWO REPORTS.  ONE REPORT LISTS
+      *  PURCHASE ORDERS CREATED WITHIN THE DATE RANGE SPECIFIED.
+      *  THE OTHER SHOWS RECEIVING SLIPS CREATED WITHIN A DATE
+      *  RANGE.
+      *
+      *CHANGES:
+      *C
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       SPECIAL-NAMES.  C01 IS NEW-PAGE.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE  ASSIGN TO PRINTER-MCPRT.
+
+           SELECT SORT-FILE   ASSIGN TO DISK-SORT.
+
+           SELECT DPORECD-I
+               ASSIGN TO DATABASE-MCFLCS0901
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECDH-I
+               ASSIGN TO DATABASE-MCFLST0303
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+               ASSIGN TO DATABASE-MCFLCS0701
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVITEM-I
+               ASSIGN TO DATABASE-MCFLCS1201
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVITMH-I
+               ASSIGN TO DATABASE-MCFLST0603
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PRINT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRT-REC.
+       01  PRT-REC              PIC X(132).
+
+       SD  SORT-FILE
+           RECORD CONTAINS 89 CHARACTERS
+           DATA RECORD IS SORT-REC.
+       01  SORT-REC.
+           05  BUYER-SORT               PIC X(4).
+           05  PO-NUMBER-SORT.
+               10  PONUM-SORT           PIC X(7).
+               10  BLANKET-SORT         PIC X(3).
+               10  RECEIVER-SORT        PIC X(3).
+           05  PO-DATE-SORT-CN.
+               10  PO-DATE-SORT-CC      PIC X(2).
+               10  PO-DATE-SORT.
+                   15  PO-DATE-SORT-YY  PIC X(2).
+                   15  FILLER           PIC X(4).
+           05  EXPECT-DATE-SORT         PIC X(6).
+           05  POSHIP-DATE-SORT         PIC X(6).
+           05  VIA-SORT                 PIC X(15).
+           05  FOB-SORT                 PIC X(15).
+           05  VENCODE-SORT             PIC X(10).
+           05  NON-RCV-SORT             PIC X.
+           05  CORP-CODE-SORT           PIC X(7).
+           05  ITEM-NUM-SORT            PIC X(4).
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-MCRPCS0900  OF MCFLCS0901.
+
+       FD  DPORECDH-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECDH-REC-I.
+           COPY DDS-MCRPST0300  OF MCFLST0303.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-MCRPCS0700  OF MCFLCS0701.
+
+       FD  DRCVITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-REC-I.
+           COPY DDS-MCRPCS1200  OF MCFLCS1201.
+
+       FD  DRCVITMH-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITMH-REC-I.
+           COPY DDS-MCRPST0600  OF MCFLST0603.
+
+       WORKING-STORAGE SECTION.
+
+       77  ALL-RECORDS-RETRIEVED-SW           PIC X VALUE "N".
+       77  ALL-RECORDS-WRITTEN-SW             PIC X VALUE "N".
+       77  RET-CODE                           PIC X(2).
+       77  MCXCBLERR-SCOPE                    PIC X(1)  VALUE "C".
+
+       01  LINE-CTR                           PIC 9(4) VALUE 60.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+      *------------- ACCEPT FIELDS
+       01  ROUTE-LINE                 PIC X(80)  VALUE SPACES.
+       01  D-BEG-DATE-X-CN.
+           05  D-BEG-DATE-X-CC  PIC X(2).
+           05  D-BEG-DATE-X.
+               10  D-BEG-DATE-X-YY PIC X(2).
+               10  FILLER       PIC X(4).
+       01  D-BEG-DATE-9-CN      REDEFINES D-BEG-DATE-X-CN
+                                PIC 9(8).
+       01  D-END-DATE-X-CN.
+           05  D-END-DATE-X-CC  PIC X(2).
+           05  D-END-DATE-X.
+               10  D-END-DATE-X-YY PIC X(2).
+               10  FILLER       PIC X(4).
+       01  D-END-DATE-9-CN      REDEFINES D-END-DATE-X-CN
+                                PIC 9(8).
+
+       01  BUILD-PO.
+           05  PO-PREFIX          PIC X     VALUE "P".
+           05  BUILD-PO-NUM-PART  PIC X(13)  VALUE SPACES.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT               PIC X(64)  VALUE SPACES.
+           05  MSG-FLD                PIC X(12)  VALUE SPACES.
+           05  MSG-FLD-9 REDEFINES MSG-FLD
+                                      PIC Z(11)9.
+
+       01  HOLD-POH-DATE             PIC 9(8).
+
+       COPY ESCNAM2 OF COPYLIB.
+       COPY CCHKOBJ OF COPYLIB.
+       COPY OVRPFDATA OF COPYLIB.
+       COPY THDPRTA OF COPYLIB.
+
+      **************************************************************
+      **
+      **        DATABASE I/O WORK AREA
+      **
+      **************************************************************
+
+       COPY MPLT0      IN COPYLIB.
+       COPY MPLTPOPT   IN COPYLIB.
+       COPY DPORECD    IN COPYLIB.
+       COPY DPORECDH   IN COPYLIB.
+       COPY DVENDOR    IN COPYLIB.
+       COPY DRCVITEM   IN COPYLIB.
+       COPY DRCVITMH   IN COPYLIB.
+       COPY DATAB      IN COPYLIB.
+
+       01 ARG-VALUES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+           05  VEN-ARG                PIC X(10) VALUE SPACES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+           05  BUYER-ARG              PIC X(4)  VALUE SPACES.
+           05  DATE-ARG               PIC 9(8)  VALUE 0.
+
+      *********************************************************
+      **          R E P O R T   L I N E S                    **
+      *********************************************************
+
+       01  HEADING-1.
+           05  FILLER        PIC X(8)  VALUE "TPORCRPT".
+           05  FILLER        PIC X(27) VALUE SPACES.
+      *----------- PURCHASE ORDERS FROM:
+      *----------- RECEIVING SLIPS FROM:
+           05  H1-TITLE      PIC X(21).
+           05  FILLER        PIC X.
+           05  H1-FROM       PIC X(8).
+           05  FILLER        PIC X(4)  VALUE " TO ".
+           05  H1-TO         PIC X(8).
+           05  FILLER        PIC X(20) VALUE SPACES.
+           05  DATE-2-H      PIC X(8)  VALUE SPACE.
+           05  FILLER        PIC XX    VALUE SPACES.
+           05  TIME-2-H      PIC X(8).
+           05  FILLER        PIC X     VALUE SPACES.
+
+       01  HEADING-2.
+           05  FILLER   PIC X(14) VALUE "PURCHASE ORDER".
+           05  FILLER   PIC X(02) VALUE SPACES.
+           05  FILLER   PIC X(03) VALUE "NR".
+           05  FILLER   PIC X(01) VALUE SPACES.
+           05  FILLER   PIC X(07) VALUE "PO DATE".
+           05  FILLER   PIC X(04) VALUE SPACES.
+           05  FILLER   PIC X(09) VALUE "SHIP DATE".
+           05  FILLER   PIC X(03) VALUE SPACES.
+           05  FILLER   PIC X(11) VALUE "EXPECT DATE".
+           05  FILLER   PIC X(02) VALUE SPACES.
+           05  FILLER   PIC X(06) VALUE "VENDOR".
+           05  FILLER   PIC X(37) VALUE SPACES.
+           05  FILLER   PIC X(03) VALUE "FOB".
+           05  FILLER   PIC X(15) VALUE SPACES.
+           05  FILLER   PIC X(05) VALUE "BUYER".
+
+       01  HEADING-2-R.
+           05  FILLER   PIC X(14) VALUE "PURCHASE ORDER".
+           05  FILLER   PIC X(04) VALUE SPACES.
+           05  FILLER   PIC X(08) VALUE "RCV DATE".
+           05  FILLER   PIC X(03) VALUE SPACES.
+           05  FILLER   PIC X(04) VALUE "ITEM".
+           05  FILLER   PIC X(03) VALUE SPACES.
+           05  FILLER   PIC X(09) VALUE "CORP CODE".
+
+      **-------------  D E T A I L   L I N E S
+
+       01  DETAIL-LINE1.
+           05  PO-NUM             PIC X(7).
+           05  HYPH-1             PIC X.
+           05  PO-RLSE            PIC X(3).
+           05  HYPH-2             PIC X.
+           05  PO-RCV             PIC X(3).
+           05  FILLER             PIC X(2).
+           05  NON-RCV-L1         PIC X.
+           05  FILLER             PIC X(2).
+           05  PO-DATE-L1         PIC X(8).
+           05  FILLER             PIC X(3).
+           05  SHIP-DATE-L1       PIC X(8).
+           05  FILLER             PIC X(5).
+           05  EXPECT-DATE-L1     PIC X(8).
+           05  FILLER             PIC X(4).
+           05  VEN-NAME-L1        PIC X(40).
+           05  FILLER             PIC X(3).
+           05  FOB-L1             PIC X(15).
+           05  FILLER             PIC X(3).
+           05  BUYER-L1           PIC X(4).
+
+       01  DETAIL-LINE1-R.
+           05  PO-NUM-R           PIC X(7).
+           05  HYPH-1-R           PIC X.
+           05  PO-RLSE-R          PIC X(3).
+           05  HYPH-2-R           PIC X.
+           05  PO-RCV-R           PIC X(3).
+           05  FILLER             PIC X(3).
+           05  PO-DATE-L1-R       PIC X(8).
+           05  FILLER             PIC X(3).
+           05  ITEM-NUM-L1-R      PIC X(4).
+           05  FILLER             PIC X(3).
+           05  CORP-CODE-L1-R     PIC X(8).
+
+      ***************************************************************
+      **           C A L L E D   S U B P R O G R A M S             **
+      ***************************************************************
+       COPY TBLOWUP    IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY LANGUAGE   IN COPYLIB.
+
+       LINKAGE SECTION.
+       COPY THDPRTB OF COPYLIB.
+       01  DATA-LINE                  PIC X(161).
+       01  DATA-LINE-X REDEFINES DATA-LINE.
+           05  D-REPORT               PIC X.
+           05  D-BEG-DATE             PIC X(6).
+           05  D-END-DATE             PIC X(6).
+           05  D-SORT-OPT             PIC X.
+           05  FILLER                 PIC X(147).
+
+       PROCEDURE DIVISION USING HD-ROUTE-DATA, DATA-LINE.
+
+       0-BEGIN SECTION.
+
+       6-MAIN.
+           PERFORM 1-HSK.
+           IF D-SORT-OPT = "B"
+             SORT SORT-FILE ASCENDING KEY BUYER-SORT
+                                          PO-NUMBER-SORT
+                 INPUT PROCEDURE IS 8-INPUT-RECORDS
+                 OUTPUT PROCEDURE IS 9-OUTPUT-RECORDS
+           ELSE
+             SORT SORT-FILE ASCENDING KEY PO-NUMBER-SORT
+                 INPUT PROCEDURE IS 8-INPUT-RECORDS
+                 OUTPUT PROCEDURE IS 9-OUTPUT-RECORDS.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+           MOVE "TPORCRPT"               TO  BU-PGM-NAME.
+           MOVE "C"                      TO  MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+      *----------  OPEN OUTPUT FILE
+           MOVE HD-SPOOLER-NUMBER  TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"             TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES    TO OVRPRTF-COPIES.
+           MOVE "MCPRT"            TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT PRINT-FILE.
+           MOVE "DHDR114.PUB"      TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM,
+               HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+               MOVE "THDPRT2 ERROR * POLIST" TO BU-DISPLAY-MSG
+               MOVE "HD-RET-CODE = "        TO BU-DISPLAY-FLD (1)
+               MOVE HD-RET-CODE             TO BU-DISPLAY-FLD9 (1)
+               GO TO 2-BLOWUP.
+
+           OPEN INPUT DVENDOR-I
+                      DPORECD-I
+                      DPORECDH-I
+                      DRCVITEM-I
+                      DRCVITMH-I.
+
+       2-EOJ.
+           CLOSE PRINT-FILE.
+           CLOSE DPORECD-I DVENDOR-I
+                 DRCVITEM-I
+                 DPORECDH-I
+                 DRCVITMH-I.
+
+       2-BLOWUP.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+       8-INPUT-RECORDS.
+           PERFORM 81-HSK.
+           IF D-REPORT = "A"
+               PERFORM 82-GET-LIVE-POS
+               PERFORM 83-GET-HIST-POS
+           ELSE
+               PERFORM 84-GET-LIVE-RCV
+               PERFORM 85-GET-HIST-RCV.
+
+       81-HSK.
+           MOVE 1        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT     TO DATE-2-H.
+           MOVE DATE-FORMATTED-TIME-OUT TO TIME-2-H.
+
+      *----------  CHANGE INPUT DATES FROM MDY TO YMD
+           MOVE 3 TO DATE-MODE.
+           MOVE D-BEG-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT TO D-BEG-DATE-X.
+      *-----GET CENTURY FOR BEGINNING DATE
+           IF D-BEG-DATE-X-YY > "70"
+               MOVE "19" TO D-BEG-DATE-X-CC
+           ELSE
+               MOVE "20" TO D-BEG-DATE-X-CC.
+           MOVE DATE-SLASH-OUT TO H1-FROM.
+
+           MOVE D-END-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT TO D-END-DATE-X.
+      *-----GET CENTURY FOR ENDING DATE
+           IF D-END-DATE-X-YY > "70"
+               MOVE "19" TO D-END-DATE-X-CC
+           ELSE
+               MOVE "20" TO D-END-DATE-X-CC.
+           MOVE DATE-SLASH-OUT TO H1-TO.
+
+       82-GET-LIVE-POS.
+           MOVE "00" TO FILE-STATUS.
+           MOVE SPACES TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY >=  PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW
+           ELSE
+               READ DPORECD-I NEXT INTO BUF-DPORECD
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+           PERFORM 86-MAIN UNTIL
+               ALL-RECORDS-RETRIEVED-SW = "Y".
+
+       83-GET-HIST-POS.
+           MOVE "00" TO FILE-STATUS.
+           MOVE "N"  TO ALL-RECORDS-RETRIEVED-SW.
+           MOVE D-BEG-DATE-9-CN TO PODTE OF DPORECDH-REC-I.
+           START DPORECDH-I KEY >=  PODTE OF DPORECDH-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW
+           ELSE
+               READ DPORECDH-I NEXT INTO BUF-DPORECD-H
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+           PERFORM 87-MAIN UNTIL
+               ALL-RECORDS-RETRIEVED-SW = "Y"
+               OR POH-DATE > D-END-DATE-9-CN.
+
+       84-GET-LIVE-RCV.
+           MOVE "N" TO ALL-RECORDS-RETRIEVED-SW.
+           MOVE "00" TO FILE-STATUS.
+           MOVE SPACES TO PORCVNO OF DRCVITEM-REC-I.
+           START DRCVITEM-I KEY >=  PORCVNO OF DRCVITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW
+           ELSE
+               READ DRCVITEM-I NEXT INTO BUF-DRCVITEM
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+           PERFORM 88-MAIN UNTIL
+               ALL-RECORDS-RETRIEVED-SW = "Y".
+
+       85-GET-HIST-RCV.
+           MOVE "00" TO FILE-STATUS.
+           MOVE "N"  TO ALL-RECORDS-RETRIEVED-SW.
+           MOVE D-BEG-DATE-X-CN TO DTERCVD OF DRCVITMH-REC-I.
+           START DRCVITMH-I KEY >=  DTERCVD OF DRCVITMH-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW
+           ELSE
+               READ DRCVITMH-I NEXT INTO BUF-DRCVITEM-H
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+           PERFORM 89-MAIN UNTIL
+               ALL-RECORDS-RETRIEVED-SW = "Y"
+               OR RCVH-DATE-RCVD-CN > D-END-DATE-X-CN.
+
+       86-MAIN.
+           IF PO-DATE-CN < D-BEG-DATE-X-CN OR
+              PO-DATE-CN > D-END-DATE-X-CN
+               NEXT SENTENCE
+           ELSE
+               MOVE SPACES         TO SORT-REC
+               MOVE PO-PO-NO       TO PONUM-SORT
+               MOVE PO-RLS-NO      TO BLANKET-SORT
+               MOVE PO-RCVR        TO RECEIVER-SORT
+               MOVE PO-DATE-CN     TO PO-DATE-SORT-CN
+               MOVE PO-EXPECT-DATE TO EXPECT-DATE-SORT
+               MOVE PO-BUYER-CODE  TO BUYER-SORT
+               MOVE PO-SHIP-DATE   TO POSHIP-DATE-SORT
+               MOVE PO-VIA         TO VIA-SORT
+               MOVE PO-FOB         TO FOB-SORT
+               MOVE PO-VEN-CODE    TO VENCODE-SORT
+               MOVE PO-NON-RCV-INDIC  TO NON-RCV-SORT
+               RELEASE SORT-REC.
+
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+                 AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+                 MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+
+       87-MAIN.
+           IF POH-DATE < D-BEG-DATE-9-CN OR
+              POH-DATE > D-END-DATE-9-CN
+               NEXT SENTENCE
+           ELSE
+               MOVE POH-POH-NO     TO PONUM-SORT
+               MOVE POH-RLS-NO     TO BLANKET-SORT
+               MOVE POH-RCVR       TO RECEIVER-SORT
+               MOVE POH-DATE       TO HOLD-POH-DATE
+               MOVE HOLD-POH-DATE  TO PO-DATE-SORT-CN
+               IF POH-EXPECT-DATE > 0
+                   MOVE POH-EXPECT-DATE   TO HOLD-POH-DATE
+                   MOVE HOLD-POH-DATE     TO EXPECT-DATE-SORT
+               ELSE
+                   MOVE SPACES            TO EXPECT-DATE-SORT
+               END-IF
+               MOVE POH-BUYER-CODE TO BUYER-SORT
+               IF POH-SHIP-DATE > 0
+                   MOVE POH-SHIP-DATE  TO HOLD-POH-DATE
+                   MOVE HOLD-POH-DATE  TO POSHIP-DATE-SORT
+               ELSE
+                   MOVE SPACES         TO POSHIP-DATE-SORT
+               END-IF
+               MOVE POH-VIA        TO VIA-SORT
+               MOVE POH-FOB        TO FOB-SORT
+               MOVE POH-VEN-CODE   TO VENCODE-SORT
+               MOVE POH-NON-RCV-INDIC TO NON-RCV-SORT
+               RELEASE SORT-REC.
+
+           READ DPORECDH-I NEXT INTO BUF-DPORECD-H
+                 AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+                 MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+
+       88-MAIN.
+           IF RCV-DATE-RCVD-CN < D-BEG-DATE-X-CN OR
+              RCV-DATE-RCVD-CN > D-END-DATE-X-CN
+               NEXT SENTENCE
+           ELSE
+               MOVE SPACES         TO SORT-REC
+               MOVE RCV-PO-NO      TO PONUM-SORT
+               MOVE RCV-PO-REL     TO BLANKET-SORT
+               MOVE RCV-PO-RCVR    TO RECEIVER-SORT
+               MOVE RCV-DATE-RCVD-CN  TO PO-DATE-SORT-CN
+               MOVE RCV-CORP-CODE     TO CORP-CODE-SORT
+               MOVE RCV-ITEM-NUMBER   TO ITEM-NUM-SORT
+               RELEASE SORT-REC.
+
+           READ DRCVITEM-I NEXT INTO BUF-DRCVITEM
+                 AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+                 MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+
+       89-MAIN.
+           IF RCVH-DATE-RCVD-CN < D-BEG-DATE-X-CN OR
+              RCVH-DATE-RCVD-CN > D-END-DATE-X-CN
+               NEXT SENTENCE
+           ELSE
+               MOVE SPACES             TO SORT-REC
+               MOVE RCVH-PO-NO         TO PONUM-SORT
+               MOVE RCVH-PO-REL        TO BLANKET-SORT
+               MOVE RCVH-PO-RCVR       TO RECEIVER-SORT
+               MOVE RCVH-DATE-RCVD-CN  TO PO-DATE-SORT-CN
+               MOVE RCVH-CORP-CODE     TO CORP-CODE-SORT
+               MOVE RCVH-ITEM-NUMBER   TO ITEM-NUM-SORT
+               RELEASE SORT-REC.
+
+           READ DRCVITMH-I NEXT INTO BUF-DRCVITEM-H
+                 AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+                 MOVE "Y" TO ALL-RECORDS-RETRIEVED-SW.
+
+       9-OUTPUT-RECORDS.
+           RETURN SORT-FILE AT END
+               MOVE "Y" TO ALL-RECORDS-WRITTEN-SW.
+           IF D-REPORT = "A"
+               PERFORM 96-MAIN UNTIL
+                   ALL-RECORDS-WRITTEN-SW = "Y"
+           ELSE
+               PERFORM 97-MAIN UNTIL
+                   ALL-RECORDS-WRITTEN-SW = "Y".
+
+       96-MAIN.
+           IF LINE-CTR > 59
+               PERFORM 98-HEADINGS.
+
+           MOVE SPACES                 TO DETAIL-LINE1.
+           MOVE PONUM-SORT             TO PO-NUM.
+           MOVE BLANKET-SORT           TO PO-RLSE.
+           MOVE RECEIVER-SORT          TO PO-RCV.
+           MOVE "-"                    TO HYPH-1  HYPH-2.
+           MOVE  4                     TO DATE-MODE.
+           MOVE PO-DATE-SORT           TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT         TO PO-DATE-L1.
+           IF EXPECT-DATE-SORT  NOT = SPACES
+             IF EXPECT-DATE-SORT IS NUMERIC
+               MOVE EXPECT-DATE-SORT TO DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT   TO EXPECT-DATE-L1
+             ELSE
+                MOVE EXPECT-DATE-SORT TO EXPECT-DATE-L1.
+           IF POSHIP-DATE-SORT  NOT = SPACES
+             IF POSHIP-DATE-SORT IS NUMERIC
+               MOVE POSHIP-DATE-SORT TO DATE-VALIDATE-IN
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT   TO SHIP-DATE-L1
+             ELSE
+                MOVE POSHIP-DATE-SORT TO SHIP-DATE-L1.
+      *****MOVE VIA-SORT TO VIA-L1.
+           MOVE FOB-SORT TO FOB-L1.
+           MOVE BUYER-SORT TO BUYER-L1.
+           MOVE NON-RCV-SORT TO NON-RCV-L1.
+           PERFORM 961-FIND-VENDOR-NAME.
+           WRITE PRT-REC FROM DETAIL-LINE1 AFTER
+               ADVANCING 1 LINES.
+           ADD 1             TO LINE-CTR.
+
+           RETURN SORT-FILE AT END
+               MOVE "Y" TO ALL-RECORDS-WRITTEN-SW.
+
+       961-FIND-VENDOR-NAME.
+           MOVE SPACES             TO VEN-NAME-L1.
+           MOVE VENCODE-SORT       TO VEN-ARG.
+           MOVE "00" TO FILE-STATUS.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-I.
+           START DVENDOR-I KEY = VENCDE OF DVENDOR-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "NO VENDOR NAME LISTED" TO VEN-NAME-L1
+           ELSE
+               PERFORM 9611-GET-VENDOR-NAME.
+
+       9611-GET-VENDOR-NAME.
+           READ DVENDOR-I NEXT INTO BUF-DVENDOR
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF  FILE-STATUS NOT = "00" OR
+               VENCDE OF DVENDOR-REC-I NOT = VEN-ARG
+                   MOVE "NO VENDOR NAME LISTED" TO VEN-NAME-L1.
+           IF VEN-ITM-NO = "00"
+               MOVE VEN-NAME     TO VEN-NAME-L1.
+
+       97-MAIN.
+           IF LINE-CTR > 59
+               PERFORM 98-HEADINGS.
+
+           MOVE SPACES                 TO DETAIL-LINE1-R.
+           MOVE PONUM-SORT             TO PO-NUM-R.
+           MOVE BLANKET-SORT           TO PO-RLSE-R.
+           MOVE RECEIVER-SORT          TO PO-RCV-R.
+           MOVE "-"                    TO HYPH-1-R  HYPH-2-R.
+           MOVE  4                     TO DATE-MODE.
+           MOVE PO-DATE-SORT           TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT         TO PO-DATE-L1-R.
+           MOVE CORP-CODE-SORT TO CORP-CODE-L1-R.
+           MOVE ITEM-NUM-SORT TO ITEM-NUM-L1-R.
+           WRITE PRT-REC FROM DETAIL-LINE1-R AFTER
+               ADVANCING 1 LINES.
+           ADD 1             TO LINE-CTR.
+
+           RETURN SORT-FILE AT END
+               MOVE "Y" TO ALL-RECORDS-WRITTEN-SW.
+
+       98-HEADINGS.
+           MOVE 0             TO LINE-CTR.
+           MOVE SPACES TO PRT-REC.
+           IF D-REPORT = "A"
+               MOVE "PURCHASE ORDERS FROM:" TO H1-TITLE
+           ELSE
+               MOVE "RECEIVING SLIPS FROM:" TO H1-TITLE.
+           WRITE PRT-REC FROM HEADING-1   AFTER ADVANCING NEW-PAGE.
+           MOVE SPACES TO PRT-REC.
+           IF D-REPORT = "A"
+               WRITE PRT-REC FROM HEADING-2   AFTER ADVANCING 2 LINES
+           ELSE
+               WRITE PRT-REC FROM HEADING-2-R   AFTER ADVANCING 2 LINES.
+           MOVE SPACES TO PRT-REC.
+           WRITE PRT-REC AFTER ADVANCING 2 LINES.
+           ADD 3 TO LINE-CTR.
+
+       COPY OVRPFCALL OF COPYLIB.
+

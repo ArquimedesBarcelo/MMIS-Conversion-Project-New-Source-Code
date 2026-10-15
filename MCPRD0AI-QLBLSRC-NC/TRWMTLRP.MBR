@@ -1,0 +1,911 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.                       TRWMTLRP.
+       AUTHOR.                           ANNETTE TREUDLER.
+       DATE-WRITTEN.                     APRIL 8, 1988.
+       DATE-COMPILED.
+
+      *C   09/04/1996    CA YODER
+      *C     RE-COMPILED PROGRAM TO PICK UP CENTURY DATABASE CHANGES.
+      *C
+      *C  11/25/97    JEFF BUNGO   REQ #97-017
+      *C     ADD USAGE FIELDS FOR DIRECT DELIVERY.  DD USAGE
+      *C     TO BE STORED IN ADDITIONAL FIELD AND TOTAL USAGE.
+      *C     STORE ISSUE USAGE CALCULATED BY TOTAL USAGE - DD USAGE.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.          I-O-FEEDBACK     IS I-O-FEEDBACK-AREA
+                               LOCAL-DATA       IS LOCAL-DATA-AREA
+                               C01 IS NEW-PAGE.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT RAWMTL-FILE            ASSIGN TO DISK-DRAWMTL.
+           SELECT STOCK-FILE             ASSIGN TO DISK-DSTCKVAL.
+           SELECT SORT-FILE       ASSIGN TO DISK-SORT.
+           SELECT PRINT-FILE ASSIGN TO PRINTER-MCPRT.
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+           SELECT MSTORERM-CD-I
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+           SELECT DRCVITEM-CD-I
+               ASSIGN TO DATABASE-MCFLCS1202
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+           SELECT USAGEFIL-CD-I
+               ASSIGN TO DATABASE-MCFLCSUSAG
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+      *------ FOR IBM ONLY ------*
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MSTORERM-CD-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DRCVITEM-CD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-CD-REC-I.
+           COPY DDS-MCRPCS1200  OF MCFLCS1202.
+
+       FD  USAGEFIL-CD-I
+           LABEL RECORDS ARE STANDARD.
+       01  USAGEFIL-CD-REC-I.
+           COPY DDS-MCRPCSUSAG  OF MCFLCSUSAG.
+      *------ FOR IBM ONLY ------*
+
+       FD  PRINT-FILE
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC                PIC X(132).
+
+
+       FD  RAWMTL-FILE
+           DATA RECORD IS RAWMTL-REC
+           RECORD CONTAINS 16 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  RAWMTL-REC.
+           05  RAWMTL-CODE               PIC X(8).
+           05  RAWMTL-LBS                PIC 9(8).
+
+       FD  STOCK-FILE
+           DATA RECORD IS STOCK-REC
+           RECORD CONTAINS 9 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  STOCK-REC.
+           05  FNSHD-STOCK-VALUE         PIC 9(9).
+
+       SD  SORT-FILE
+           DATA RECORD IS SORT-REC
+           RECORD CONTAINS 70 CHARACTERS.
+       01  SORT-REC.
+           05  SORT-CLASS                PIC X(4).
+           05  SORT-CODE                 PIC X(8).
+           05  SORT-KW                   PIC X(20).
+           05  SORT-ADJ                  PIC X(30).
+           05  SORT-LBS                  PIC 9(8).
+
+       WORKING-STORAGE SECTION.
+      **************************************************************
+      *                PROGRAM  VARIABLES                         **
+      **************************************************************
+       77  HANDLE-BLOWUP-FLAG            PIC X(1)   VALUE "Y".
+       77  FATAL-ERR-SW                  PIC X(1)   VALUE SPACES.
+       77  EOJ-SW                        PIC X(1)   VALUE SPACES.
+       77  LINE-CTR                      PIC 99      VALUE 0.
+       77  PAGE-CTR                      PIC 9(4)    VALUE 0.
+       01  CLASS-START-SW                PIC X(1)    VALUE "N".
+           88  START-CLASS                           VALUE "Y".
+       01  SORT-EOF                      PIC X(1)    VALUE "N".
+           88  END-OF-SORT                           VALUE "Y".
+       01  RAWMTL-EOF                    PIC X(1)    VALUE "N".
+           88  ALL-RECORDS-READ                      VALUE "Y".
+       01  NO-RECORDS                    PIC X(133)  VALUE
+           " NO ITEMS QUALIFIED FOR THE REPORT".
+       01  SAVE-CODE                     PIC X(8)    VALUE SPACES.
+       01  SAVE-CLASS                    PIC X(4)    VALUE SPACES.
+       01  DE-CODE                       PIC X(8)    VALUE SPACES.
+       01  COMPANY-SAVE                  PIC X(4)    VALUE SPACES.
+       01  DATE-CHK.
+           05  CHK-YY                    PIC 99.
+           05  CHK-MM                    PIC 99.
+           05  CHK-DD                    PIC 99.
+9406CK 01  SCOPE   PIC X.
+
+      *************************************************************
+      **              A C C U M U L A T O R S                    **
+      *************************************************************
+
+       01  INV-VALUE                     PIC S9(9)V99  VALUE 0.
+       01  DAYS-ON-HAND                  PIC S9(6)V99  VALUE 0.
+       01  ACCT-DAYS                     PIC S9(6)V99  VALUE 0.
+       01  MTD-RECEIPTS                  PIC S9(9)     VALUE 0.
+       01  STR-RCV-QTY                   PIC S9(8)V9(4) VALUE 0.
+
+       01  CLASS-TOTALS.
+           05  CLASS-LBS                 PIC S9(9)      VALUE 0.
+           05  CLASS-ONHAND              PIC S9(9)      VALUE 0.
+           05  CLASS-ONORDER             PIC S9(9)      VALUE 0.
+           05  CLASS-INV-VALUE           PIC S9(9)V99   VALUE 0.
+           05  CLASS-24HR-USAGE          PIC S9(9)      VALUE 0.
+           05  CLASS-MTD-USAGE           PIC S9(9)      VALUE 0.
+           05  CLASS-MTD-RECEIPTS        PIC S9(9)      VALUE 0.
+           05  CLASS-DAYS-ON-HAND        PIC S9(6)V99   VALUE 0.
+
+       01  GRAND-TOTALS.
+           05  GRAND-LBS                 PIC S9(11)     VALUE 0.
+           05  GRAND-ONHAND              PIC S9(11)     VALUE 0.
+           05  GRAND-ONORDER             PIC S9(11)     VALUE 0.
+           05  GRAND-INV-VALUE           PIC S9(9)V99   VALUE 0.
+           05  GRAND-24HR-USAGE          PIC S9(11)     VALUE 0.
+           05  GRAND-MTD-USAGE           PIC S9(11)     VALUE 0.
+           05  GRAND-MTD-RECEIPTS        PIC S9(11)     VALUE 0.
+           05  GRAND-DAYS-ON-HAND        PIC S9(6)V99   VALUE 0.
+
+      *************************************************************
+      **          C A L L E D    S U B P R O G R A M S           **
+      *************************************************************
+
+       COPY THDPRT     IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY SONORDER   IN COPYLIB.
+       COPY CDESC      IN COPYLIB.
+       COPY CDLTF      IN COPYLIB.
+      *******************************************************
+      **           TERMINAL I/O DATA AREA                  **
+      *******************************************************
+
+       01  ROUTE-LINE                   PIC X(80).
+
+      *******************************************************
+      **               ESCAPE SEQUENCE INFO                **
+      *******************************************************
+
+       COPY ESCNAM2 IN COPYLIB.
+
+       01  ESC-INFO.
+           05  COMPRESS-PRINT           PIC X(8).
+           05  NORMAL-PRINT             PIC X(8).
+           05  EXPAND-PRINT             PIC X(8).
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+      *
+      * FILE STATUS DEFINITION FOR AS/400 DB CALLS OR HP KSAM CALLS
+      *
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16)  VALUE SPACES.
+           05  DSET-MSTORERM             PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-DRCVITEM             PIC X(16)  VALUE "DRCVITEM;".
+           05  DSET-MPLTINFO             PIC X(16)  VALUE "MPLTINFO;".
+
+       COPY DATAB      IN COPYLIB.
+       COPY MSTORERM   IN COPYLIB.
+       COPY DRCVITEM   IN COPYLIB.
+       COPY MPLT0      IN COPYLIB.
+       COPY MPLTP01    IN COPYLIB.
+       COPY USAGEFIL   IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS                 PIC XX     VALUE "@;".
+           05  CORP-SEARCH               PIC X(16)  VALUE "CORP-CODE;".
+
+       01 ARG-VALUES.
+           05  CODE-ARG                  PIC X(8).
+           05  PLT-ARG                   PIC X(4).
+
+      *************************************************************
+      *************************************************************
+      **                                                         **
+      **                    KSAM WORK AREA                       **
+      **                                                         **
+      *************************************************************
+      *************************************************************
+
+      ************************************************************
+      **           R E P O R T   P R I N T   L I N E S          **
+      ************************************************************
+
+       01  HEADER-1.
+           05  FILLER                    PIC X      VALUE SPACES.
+           05  FILLER                    PIC X(34)
+               VALUE "TRWMTLRP".
+           05  FILLER                    PIC X(30)
+               VALUE "       RAW MATERIAL INVENTORY ".
+           05  FILLER                    PIC X(54)
+               VALUE " POSITION REPORT ".
+           05  FILLER                    PIC X(6)   VALUE "PLANT ".
+           05  PLANT-H1                  PIC X(3)   VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+
+       01  HEADER-2.
+           05  FILLER                    PIC X      VALUE SPACES.
+           05  H2-DATE                   PIC X(8)   VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  H2-TIME                   PIC X(8)   VALUE SPACES.
+           05  FILLER                    PIC X(95)  VALUE SPACES.
+           05  H2-PAGE                   PIC X(6)   VALUE "PAGE :".
+           05  H2-PAGE-NO                PIC Z,ZZ9  VALUE ZEROS.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+
+       01  HEADER-3.
+           05  FILLER                    PIC X(27)  VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "DAILY".
+           05  FILLER                    PIC X(30)  VALUE SPACES.
+           05  FILLER                    PIC X(4)   VALUE "DAYS".
+           05  FILLER                    PIC X(66)  VALUE SPACES.
+
+       01  HEADER-4.
+           05  FILLER                    PIC X(9)   VALUE " CLASS".
+           05  FILLER                    PIC X(2)   VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE "CORP CODE".
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  FILLER                    PIC X(11)  VALUE "REQUIREMENT".
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE "INVENTORY".
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  FILLER                    PIC X(2)   VALUE "UM".
+           05  FILLER                    PIC X(7)   VALUE SPACES.
+           05  FILLER                    PIC X(7)   VALUE "ON HAND".
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  FILLER                    PIC X(8)   VALUE "ON ORDER".
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  FILLER                   PIC X(12)  VALUE "AVERAGE COST".
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE "INVENTORY".
+           05  FILLER                    PIC X(7)   VALUE " VALUE".
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  FILLER                    PIC X(9)   VALUE "ACCT DAYS".
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+
+       01  HEADER-5.
+           05  FILLER                    PIC X(80)  VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "24 HR".
+           05  FILLER                    PIC X(13)  VALUE SPACES.
+           05  FILLER                    PIC X(3)   VALUE "MTD".
+           05  FILLER                    PIC X(16)  VALUE SPACES.
+           05  FILLER                    PIC X(3)   VALUE "MTD".
+           05  FILLER                    PIC X(12)  VALUE SPACES.
+
+       01  HEADER-6.
+           05  FILLER                    PIC X(18)  VALUE SPACES.
+           05  FILLER                    PIC X(11)  VALUE "DESCRIPTION".
+           05  FILLER                    PIC X(51)  VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "USAGE".
+           05  FILLER                    PIC X(12)  VALUE SPACES.
+           05  FILLER                    PIC X(5)   VALUE "USAGE".
+           05  FILLER                    PIC X(13)  VALUE SPACES.
+           05  FILLER                    PIC X(8)   VALUE "RECEIPTS".
+           05  FILLER                    PIC X(2)   VALUE SPACES.
+
+       01  BLANK-LINE                    PIC X(133)   VALUE SPACES.
+
+       01  DASH-LINE                     PIC X(133)   VALUE ALL "-".
+
+       01  DETAIL-LINE.
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  DL1-CLASS                 PIC X(4).
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  DL1-CODE                  PIC X(8).
+           05  FILLER                    PIC X(6)   VALUE SPACES.
+           05  DL1-DLY-REQ               PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  DL1-INVENTORY             PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  DL1-UM                    PIC XX.
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  DL1-DAYS-OH               PIC ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  DL1-ON-ORDER              PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  DL1-AVG-COST              PIC ZZZ,ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  DL1-INV-VALUE             PIC ZZZ,ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  DL1-ACCT-DAYS             PIC ZZZ,ZZZ.99.
+
+       01  DETAIL-LINE2.
+           05  FILLER                    PIC X(18)  VALUE SPACES.
+           05  DL2-KW                    PIC X(20).
+           05  DL2-ADJ                   PIC X(30).
+           05  FILLER                    PIC X(6)   VALUE SPACES.
+           05  DL2-24HR-USAGE            PIC ---,---,--9.
+           05  FILLER                    PIC X(6)   VALUE SPACES.
+           05  DL2-MTD-USAGE             PIC ---,---,--9.
+           05  FILLER                    PIC X(10)  VALUE SPACES.
+           05  DL2-MTD-RECEIPTS          PIC ZZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(7)   VALUE SPACES.
+
+       01  CLASS-LINE-DASH.
+           05  FILLER                    PIC X(24)  VALUE SPACES.
+           05  FILLER                    PIC X(109) VALUE ALL "-".
+
+       01  CLASS-LINE.
+           05  FILLER                    PIC X(10)  VALUE
+               "  * CLASS ".
+           05  CL1-CLASS                 PIC X(4).
+           05  FILLER                    PIC X(11) VALUE
+               " TOTAL * ".
+           05  CL1-DLY-REQ               PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  CL1-INVENTORY             PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  CL1-UM                    PIC XX.
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  CL1-DAYS-OH               PIC ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  CL1-ON-ORDER              PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(22)  VALUE SPACES.
+           05  CL1-INV-VALUE             PIC ZZZ,ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  CL1-ACCT-DAYS             PIC ZZZ,ZZZ.99.
+
+       01  CLASS-LINE2.
+           05  FILLER                    PIC X(74)  VALUE SPACES.
+           05  CL2-24HR-USAGE            PIC ---,---,--9.
+           05  FILLER                    PIC X(6)   VALUE SPACES.
+           05  CL2-MTD-USAGE             PIC ---,---,--9.
+           05  FILLER                    PIC X(10)  VALUE SPACES.
+           05  CL2-MTD-RECEIPTS          PIC ZZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(8)   VALUE SPACES.
+
+       01  GRAND-LINE.
+           05  FILLER                    PIC X(25)  VALUE
+               "  **** GRAND TOTAL ****".
+           05  GL1-DLY-REQ               PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  GL1-INVENTORY             PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  GL1-UM                    PIC XX.
+           05  FILLER                    PIC X(4)   VALUE SPACES.
+           05  GL1-DAYS-OH               PIC ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(3)   VALUE SPACES.
+           05  GL1-ON-ORDER              PIC ZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(22)  VALUE SPACES.
+           05  GL1-INV-VALUE             PIC ZZZ,ZZZ,ZZZ.99.
+           05  FILLER                    PIC X(5)   VALUE SPACES.
+           05  GL1-ACCT-DAYS             PIC ZZZ,ZZZ.99.
+
+       01  GRAND-LINE2.
+           05  FILLER                    PIC X(74)  VALUE SPACES.
+           05  GL2-24HR-USAGE            PIC ---,---,--9.
+           05  FILLER                    PIC X(6)   VALUE SPACES.
+           05  GL2-MTD-USAGE             PIC ---,---,--9.
+           05  FILLER                    PIC X(10)  VALUE SPACES.
+           05  GL2-MTD-RECEIPTS          PIC ZZZ,ZZZ,ZZ9.
+           05  FILLER                    PIC X(8)   VALUE SPACES.
+
+       01  FNSHD-STOCK-LINE.
+           05  FILLER                    PIC X(34)  VALUE
+               "  **** FINISHED STOCK VALUE ****  ".
+           05  FSL-VALUE                 PIC ZZZ,ZZZ,ZZ9.
+
+      **************************************************************
+      **##########################################################**
+      **************************************************************
+      **                                                          **
+      **          P R O C E D U R E     D I V I S I O N           **
+      **                                                          **
+      **************************************************************
+      **##########################################################**
+      **************************************************************
+
+       PROCEDURE DIVISION.
+
+       PROC-DIV SECTION 01.
+
+       START-HERE.
+           PERFORM 1-HSK                 THRU  1-HSK-X.
+
+           PERFORM 3-GET-PARMS           THRU  3-GP-X.
+
+           PERFORM 6-MAIN                THRU  6-MAIN-X.
+
+           PERFORM 2-EOJ                 THRU  2-EOJ-X.
+
+           GOBACK.
+
+       1-HSK.
+9406CK     MOVE "C" TO SCOPE.
+9406CK     CALL "MCXCBLERR" USING SCOPE.
+
+           PERFORM 9999-OPENS.
+
+      **************************************************
+      *                                                *
+      *   GET CO. AND PRIME FROM MPLTINFO              *
+      *   USING 'P 01' AS THE ARGUMENT                 *
+      *                                                *
+      **************************************************
+
+           MOVE "P 01"  TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF NO-ENTRY
+               MOVE "GETKEY MPLTINFO 1-HSK P 01"  TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG              TO  BU-DISPLAY-FLD (1)
+               GO TO 2100-BLOWUP.
+           MOVE MPLTINFO-COMPANY         TO  COMPANY-SAVE,
+                                             PLANT-H1.
+
+      *----- SET PARAMETERS FOR CALL TO 'CDESC'
+           MOVE "K" TO CDESC-DESC-OPTION.
+           MOVE 1 TO CDESC-LINES-TO-GET.
+
+       1-HSK-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE RAWMTL-FILE, STOCK-FILE.
+           MOVE "RMACTIVE" TO DLTF-FILE-NAME.
+           CALL "CDLTF" USING DLTF-FILE-NAME.
+
+           IF NOT PAPER-IS-132-COLS
+               WRITE PRINT-REC FROM NORMAL-PRINT
+                   AFTER ADVANCING 0 LINES.
+
+           PERFORM 9999-CLOSES THRU 9999-CLOSES-EXIT.
+
+       2-EOJ-X.
+            EXIT.
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2100-BLOWUP.
+           MOVE "TRWMTLRP"               TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2100-BLOWUP-X.
+           EXIT.
+
+       3-GET-PARMS.
+      *------------- GET PARMS FOR REPORT
+           ACCEPT HD-ROUTE-DATA.
+           DISPLAY HD-ROUTE-DATA.
+
+           OPEN OUTPUT PRINT-FILE.
+
+           PERFORM 9999-GETFNUM.
+           MOVE "DHDRWMTL.PUB"   TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM,
+               HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+               MOVE "THDPRT2 ERROR * RWMTLRP" TO BU-DISPLAY-MSG
+               MOVE "HD-RET-CODE = "         TO BU-DISPLAY-FLD (1)
+               MOVE HD-RET-CODE              TO BU-DISPLAY-FLD9 (1)
+               GO TO 2100-BLOWUP.
+
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI             TO COMPRESS-PRINT.
+           MOVE CHAR-10PI               TO NORMAL-PRINT.
+           MOVE CHAR-5PI                TO EXPAND-PRINT.
+
+           IF NOT PAPER-IS-132-COLS
+               WRITE PRINT-REC FROM COMPRESS-PRINT
+                   AFTER ADVANCING 0 LINES.
+
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-FORMATTED-TIME-OUT TO H2-TIME.
+           MOVE DATE-SLASH-OUT          TO H2-DATE.
+           MOVE DATE-YMD-OUT             TO DATE-CHK.
+
+       3-GP-X.
+           EXIT.
+
+
+      **************************************************
+      *                                                *
+      *               6 - M A I N                      *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+
+           SORT SORT-FILE  ON ASCENDING KEY SORT-CLASS
+                                            SORT-ADJ
+                                            SORT-CODE
+               INPUT  PROCEDURE IS 7-PROCESS-SORT
+               OUTPUT PROCEDURE IS 8-WRITE-REPORT.
+
+       6-MAIN-X.
+           EXIT.
+
+       9999-GETFNUM.
+      * DUMMY COPYLIB MEMBER ON AS/400
+
+       9999-OPENS.
+           OPEN INPUT MPLTINFO-PK-I
+                      MSTORERM-CD-I
+                      DRCVITEM-CD-I
+                      USAGEFIL-CD-I.
+
+       9999-CLOSES.
+           CLOSE      MPLTINFO-PK-I
+                      MSTORERM-CD-I
+                      DRCVITEM-CD-I
+                      USAGEFIL-CD-I.
+       9999-CLOSES-EXIT.
+           EXIT.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MSTORERM-CD-I.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-I.
+           READ MSTORERM-CD-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MSTORERM-CD-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DRCVITEM-CD-I.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF DRCVITEM-CD-REC-I.
+           START DRCVITEM-CD-I KEY = CORPCDE OF DRCVITEM-CD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DRCVITEM-CD-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETNEXT-DRCVITEM-CD-I.
+           MOVE 0 TO COND-WORD.
+           READ DRCVITEM-CD-I NEXT INTO BUF-DRCVITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DRCVITEM-CD-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF CORPCDE OF DRCVITEM-CD-REC-I NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+
+       9999-GETKEY-USAGEFIL-CD-I.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF USAGEFIL-CD-REC-I.
+           READ USAGEFIL-CD-I INTO BUF-USAGEFIL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+
+      **************************************************************
+      **            I N P U T    P R O C E D U R E                **
+      **************************************************************
+
+       7-PROCESS-SORT  SECTION.
+       7-PSS.
+           OPEN INPUT RAWMTL-FILE.
+           PERFORM 73-READ-CODES.
+           IF ALL-RECORDS-READ
+               GO TO 79-EXIT.
+           PERFORM 71-PROCESS-CODES THRU 73-READ-CODES
+               UNTIL ALL-RECORDS-READ.
+
+      **********************************************
+      *   TRANSFER CONTROL TO LAST STATEMENT IN    *
+      *   INPUT PROCEDURE FOR SORTING OF RECORDS.  *
+      **********************************************
+
+           GO TO 79-EXIT.
+
+       71-PROCESS-CODES.
+           MOVE RAWMTL-CODE              TO CODE-ARG,
+                                            DE-CODE.
+
+           PERFORM 9999-GETKEY-MSTORERM-CD-I.
+           IF NO-ENTRY
+             GO TO 73-READ-CODES.
+
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+               BU-DISPLAY-MSG, DE-CODE, CDESC-DATA.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+       72-RELEASE-SORT.
+           MOVE SPACES                   TO SORT-REC.
+           MOVE RAWMTL-CODE              TO SORT-CODE.
+           MOVE RAWMTL-LBS               TO SORT-LBS.
+           MOVE STR-CLASS                TO SORT-CLASS.
+           MOVE CDESC-KEYWORD  (1)       TO SORT-KW.
+           MOVE CDESC-MODIFIER (1)       TO SORT-ADJ.
+           RELEASE SORT-REC.
+
+       73-READ-CODES.
+           READ RAWMTL-FILE AT END MOVE "YES" TO RAWMTL-EOF.
+
+       79-EXIT.
+
+      **************************************************************
+      **            O U T P U T    P R O C E D U R E              **
+      **************************************************************
+       8-WRITE-REPORT SECTION.
+       8-WRS.
+           OPEN INPUT STOCK-FILE.
+           READ STOCK-FILE AT END
+               MOVE "*** NO FINISHED STOCK VALUE FIGURE FOUND ***"
+                   TO PRINT-REC
+               WRITE PRINT-REC AFTER ADVANCING 2 LINES
+               GO TO 89-EXIT.
+
+           PERFORM 89-NEW-PAGE.
+           PERFORM 84-READ-SORT-FILE.
+           IF END-OF-SORT
+               MOVE "** NO RECORDS AVAILABLE AT THIS TIME **"
+                       TO PRINT-REC
+               WRITE PRINT-REC AFTER ADVANCING 2 LINES
+               GO TO 89-EXIT
+           ELSE
+               MOVE "Y"                  TO CLASS-START-SW.
+
+           PERFORM 81-PROCESS-SORT-RECS THRU 84-READ-SORT-FILE
+               UNTIL END-OF-SORT.
+
+           PERFORM 89-CLASS-BREAK.
+           PERFORM 85-REPORT-TOTALS.
+
+           GO TO 89-EXIT.
+
+       81-PROCESS-SORT-RECS.
+           IF SORT-CLASS NOT = SAVE-CLASS AND NOT START-CLASS
+               PERFORM 89-CLASS-BREAK.
+
+           MOVE SORT-CODE                TO CODE-ARG.
+
+           PERFORM 9999-GETKEY-MSTORERM-CD-I.
+           IF NO-ENTRY
+             GO TO 84-READ-SORT-FILE.
+
+           IF START-CLASS
+               MOVE SORT-CLASS           TO DL1-CLASS,
+                                            SAVE-CLASS
+               MOVE "N"                  TO CLASS-START-SW
+           ELSE
+               MOVE SPACES               TO DL1-CLASS.
+
+           MOVE SORT-CODE                TO DL1-CODE.
+           MOVE SORT-LBS                 TO DL1-DLY-REQ.
+           MOVE STR-ONHAND               TO DL1-INVENTORY.
+           MOVE STR-UM                   TO DL1-UM.
+           MOVE STR-AVG-COST             TO DL1-AVG-COST.
+      *----- CALCULATE TOTAL ONORDER
+           MOVE ZEROS                    TO SONORDER-TOTAL-ONORDER,
+                                            SONORDER-STR-ONORDER,
+                                            SONORDER-DIR-ONORDER.
+           CALL "SONORDER" USING BASE, CODE-ARG, SONORDER-PARMS,
+               COMPANY-SAVE, STATUS-AREA, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+
+           MOVE SONORDER-TOTAL-ONORDER   TO DL1-ON-ORDER.
+           ADD  SONORDER-TOTAL-ONORDER   TO CLASS-ONORDER.
+
+      *------ CALCULATE 'DAYS ON HAND'
+           COMPUTE DAYS-ON-HAND ROUNDED = STR-ONHAND / SORT-LBS
+           MOVE DAYS-ON-HAND             TO DL1-DAYS-OH.
+
+      *------ CALCULATE 'INVENTORY VALUE'
+           COMPUTE INV-VALUE ROUNDED = STR-AVG-COST * STR-ONHAND.
+           MOVE INV-VALUE                TO DL1-INV-VALUE.
+           ADD  INV-VALUE                TO CLASS-INV-VALUE.
+
+      *------ CALCULATE 'ACCT DAYS'
+           COMPUTE ACCT-DAYS ROUNDED = INV-VALUE / FNSHD-STOCK-VALUE.
+           MOVE ACCT-DAYS                TO DL1-ACCT-DAYS.
+
+
+           MOVE SORT-KW                  TO DL2-KW.
+           MOVE SORT-ADJ                 TO DL2-ADJ.
+
+      *------ GET USAGE FIGURES FOR 24 HR AND MTD
+           PERFORM 9999-GETKEY-USAGEFIL-CD-I.
+           IF NO-ENTRY
+               MOVE "GETKEY USAGEFIL" TO BU-DISPLAY-MSG
+               MOVE CODE-ARG TO BU-DISPLAY-FLD (1)
+               PERFORM 2100-BLOWUP.
+
+           MOVE K-MTH-USAGE (14)         TO DL2-24HR-USAGE.
+           ADD  K-MTH-USAGE (14)         TO CLASS-24HR-USAGE.
+
+           MOVE K-MTH-USAGE (13)         TO DL2-MTD-USAGE.
+           ADD  K-MTH-USAGE (13)         TO CLASS-MTD-USAGE.
+
+           PERFORM 9999-CHAINHD-DRCVITEM-CD-I.
+
+       82-CHAINED-READ-DRCVITEM.
+           PERFORM 9999-GETNEXT-DRCVITEM-CD-I.
+           IF END-OF-CHAIN
+             MOVE MTD-RECEIPTS TO DL2-MTD-RECEIPTS
+             ADD MTD-RECEIPTS TO CLASS-MTD-RECEIPTS
+             MOVE ZEROS TO MTD-RECEIPTS
+             GO TO 83-PRINT-LINE.
+
+           IF RCV-YY-RCVD = CHK-YY
+               IF RCV-MM-RCVD = CHK-MM
+                   IF RCV-ITEM-UM = STR-UM
+                       ADD RCV-QTY-DLVR  TO MTD-RECEIPTS
+                   ELSE
+                   IF RCV-ITEM-UM = STR-UM1
+                       COMPUTE STR-RCV-QTY =
+                              RCV-QTY-DLVR * STR-UM1-CF
+                       ADD STR-RCV-QTY  TO MTD-RECEIPTS
+                   ELSE
+                   IF RCV-ITEM-UM = STR-UM2
+                       COMPUTE STR-RCV-QTY =
+                              RCV-QTY-DLVR * STR-UM2-CF
+                       ADD STR-RCV-QTY  TO MTD-RECEIPTS.
+
+           GO TO 82-CHAINED-READ-DRCVITEM.
+
+       83-PRINT-LINE.
+           ADD SORT-LBS                  TO CLASS-LBS.
+           ADD STR-ONHAND                TO CLASS-ONHAND.
+
+           IF LINE-CTR > 56
+               PERFORM 89-NEW-PAGE
+               MOVE SORT-CLASS           TO DL1-CLASS.
+
+           WRITE PRINT-REC  FROM DETAIL-LINE  AFTER ADVANCING 2 LINES.
+           WRITE PRINT-REC  FROM DETAIL-LINE2 AFTER ADVANCING 1 LINES.
+           ADD 3 TO LINE-CTR.
+
+       84-READ-SORT-FILE.
+           RETURN SORT-FILE
+               AT END MOVE "YES" TO SORT-EOF.
+
+       85-REPORT-TOTALS.
+           IF LINE-CTR > 58
+               PERFORM 89-NEW-PAGE.
+
+           MOVE GRAND-LBS                TO GL1-DLY-REQ
+           MOVE GRAND-ONHAND             TO GL1-INVENTORY.
+           MOVE GRAND-ONORDER            TO GL1-ON-ORDER.
+           MOVE GRAND-INV-VALUE          TO GL1-INV-VALUE.
+           MOVE "LB"                     TO GL1-UM.
+           MOVE GRAND-24HR-USAGE         TO GL2-24HR-USAGE.
+           MOVE GRAND-MTD-USAGE          TO GL2-MTD-USAGE.
+           MOVE GRAND-MTD-RECEIPTS       TO GL2-MTD-RECEIPTS.
+
+      *------ CALCULATE 'DAYS ON HAND'
+           COMPUTE GRAND-DAYS-ON-HAND ROUNDED =
+               GRAND-ONHAND / GRAND-LBS.
+           MOVE GRAND-DAYS-ON-HAND       TO GL1-DAYS-OH.
+
+      *------ CALCULATE 'ACCT DAYS'
+           COMPUTE ACCT-DAYS ROUNDED =
+               GRAND-INV-VALUE / FNSHD-STOCK-VALUE.
+           MOVE ACCT-DAYS                TO GL1-ACCT-DAYS.
+
+           WRITE PRINT-REC  FROM GRAND-LINE  AFTER ADVANCING 2 LINES.
+           WRITE PRINT-REC  FROM GRAND-LINE2 AFTER ADVANCING 1 LINES.
+
+           MOVE FNSHD-STOCK-VALUE        TO FSL-VALUE.
+           WRITE PRINT-REC FROM FNSHD-STOCK-LINE
+             AFTER ADVANCING 2 LINES.
+
+       89-CLASS-BREAK.
+           MOVE SAVE-CLASS               TO CL1-CLASS.
+           MOVE CLASS-LBS                TO CL1-DLY-REQ.
+           MOVE CLASS-ONHAND             TO CL1-INVENTORY.
+           MOVE CLASS-INV-VALUE          TO CL1-INV-VALUE.
+           MOVE CLASS-ONORDER            TO CL1-ON-ORDER.
+           MOVE "LB"                     TO CL1-UM.
+           MOVE CLASS-24HR-USAGE         TO CL2-24HR-USAGE.
+           MOVE CLASS-MTD-USAGE          TO CL2-MTD-USAGE.
+           MOVE CLASS-MTD-RECEIPTS       TO CL2-MTD-RECEIPTS.
+
+      *------ CALCULATE 'DAYS ON HAND'
+           COMPUTE CLASS-DAYS-ON-HAND ROUNDED =
+               CLASS-ONHAND / CLASS-LBS.
+           MOVE CLASS-DAYS-ON-HAND       TO CL1-DAYS-OH.
+
+      *------ CALCULATE 'ACCT DAYS'
+           COMPUTE ACCT-DAYS ROUNDED =
+               CLASS-INV-VALUE / FNSHD-STOCK-VALUE.
+           MOVE ACCT-DAYS                TO CL1-ACCT-DAYS.
+
+           WRITE PRINT-REC  FROM CLASS-LINE-DASH
+                                           AFTER ADVANCING 2 LINES.
+           WRITE PRINT-REC  FROM CLASS-LINE  AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC  FROM CLASS-LINE2 AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC  FROM CLASS-LINE-DASH
+                                           AFTER ADVANCING 1 LINES.
+           ADD 5 TO LINE-CTR.
+
+      *------ ACCUMULATE GRAND TOTALS
+           ADD  CLASS-LBS                TO GRAND-LBS.
+           ADD  CLASS-ONHAND             TO GRAND-ONHAND.
+           ADD  CLASS-ONORDER            TO GRAND-ONORDER.
+           ADD  CLASS-INV-VALUE          TO GRAND-INV-VALUE.
+           ADD  CLASS-24HR-USAGE         TO GRAND-24HR-USAGE.
+           ADD  CLASS-MTD-USAGE          TO GRAND-MTD-USAGE.
+           ADD  CLASS-MTD-RECEIPTS       TO GRAND-MTD-RECEIPTS.
+
+      *------- RESET CLASS TOTALS
+           MOVE ZEROS TO CLASS-TOTALS.
+           MOVE "Y" TO CLASS-START-SW.
+
+       89-NEW-PAGE.
+           WRITE PRINT-REC FROM HEADER-1 AFTER ADVANCING NEW-PAGE.
+           ADD  1                       TO PAGE-CTR.
+           MOVE PAGE-CTR                TO H2-PAGE-NO.
+           WRITE PRINT-REC FROM HEADER-2 AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC FROM HEADER-3 AFTER ADVANCING 2 LINES.
+           WRITE PRINT-REC FROM HEADER-4 AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC FROM HEADER-5 AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC FROM HEADER-6 AFTER ADVANCING 1 LINES.
+           WRITE PRINT-REC FROM BLANK-LINE AFTER ADVANCING 1 LINES.
+           MOVE 8                       TO LINE-CTR.
+
+       89-EXIT.
+           EXIT.
+

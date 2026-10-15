@@ -1,0 +1,969 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    SPODELT.
+000500 AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+
+      *****************************************************************
+      **                       S P O D E L T
+      *****************************************************************
+
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+      *    07/12/96  CA YODER                                         *
+      *      RE-COMPILED TO PICK UP CENTURY DATABASE CHANGES.         *
+      ***------------------------------------------------------------***
+      *    10/23/96  CA YODER                                         *
+      *      REMOVED ASCII ESCAPE SEQUENCES FROM REPORT.              *
+      ***------------------------------------------------------------***
+      *    04/30/98  CA YODER                                         *
+      *      ADDED VENDOR CODE TO PARAMETERS PASSED TO "SEDIPOLG."    *
+      ***------------------------------------------------------------***
+      *    12/27/02  DCR  DAN RAUCH                                   *
+      *      ADDED CODE TO PREVENT DELETION OF ARIBA BUYER PO'S       *
+      ***------------------------------------------------------------***
+      *     @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  *
+      *     1/03/03  DAN RAUCH       DCR01                       *
+      *     === TEMPORARY ==> TURNED OFF THE ABOVE MOD PER DAVE PLUM  *
+      *     === TURN THIS MOD BACK ON   -- 11-03-2003                 *
+      *     @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  *
+      ***------------------------------------------------------------***
+      *   04/01/2003    DAN RAUCH     DCR02
+      *   ADDED LOGIC FOR PO LOGGING
+      *****************************************************************
+       ENVIRONMENT DIVISION.
+009100 CONFIGURATION SECTION.
+009200 SOURCE-COMPUTER.  IBM-AS400.
+009300 OBJECT-COMPUTER.  IBM-AS400.
+009400
+009500 SPECIAL-NAMES.
+009600     C01 IS NEWPAGE
+           I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+009700
+009800 INPUT-OUTPUT SECTION.
+009900 FILE-CONTROL.
+010000     SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPURORD-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPORCV-I
+                  ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DINVRCD-I
+                  ASSIGN TO DATABASE-MCFLCS2502
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+010200 DATA DIVISION.
+010300 FILE SECTION.
+010400
+010500 FD  ONLINE-PRT
+010600     LABEL RECORDS ARE OMITTED
+010700     RECORD CONTAINS 80 CHARACTERS
+010800     DATA RECORD IS PRINT-RCD.
+010900 01  PRINT-RCD.
+011000     05  PRINT-LINE        PIC X(80).
+011100
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC           PIC X(2000).
+      *    COPY DD-PODELT1-O OF ZPURORD.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  MPORCV-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DINVRCD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DINVRCD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2502.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0701.
+011200****************************************************************
+011300**     W O R K I N G   S T O R A G E   S E C T I O N
+011400***************************************************************
+011500
+011600 WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+029900
+011800 77  ERR-SW                      PIC X       VALUE "N".
+012000 77  VEN-SUB                     PIC S9(4)   VALUE ZEROS  COMP-4.
+012100 77  LINE-ADV                    PIC 9(4)    VALUE ZEROS  COMP-4.
+012300 77  COMPANY-SAVE                PIC X(3)    VALUE SPACES.
+012500 77  RCV-NO-SAVE                 PIC 9(3)    VALUE ZEROS.
+012600
+016500 01  RCVR-SW                  PIC X  VALUE "N".
+016600     88  RECEIVED-AGAINST            VALUE "Y".
+012700**************************************************************
+012800**
+012900**        DATABASE I/O WORK AREA
+013000**
+013100**************************************************************
+013200
+013300 COPY MPORCV IN COPYLIB.
+013400
+013500 COPY DPORECD IN COPYLIB.
+013600
+013700 COPY DPOITEM IN COPYLIB.
+013800
+013900 COPY DVENDOR IN COPYLIB.
+014000
+014100 COPY MPLTINFO IN COPYLIB.
+014200
+014300
+014400*********************
+014500*                   *
+014600*   DATA SET NAMES  *
+014700*                   *
+014800*********************
+014900
+015000 01  DSET-NAMES.
+015100     05  DSET-MPORCV            PIC X(16)  VALUE "MPORCV;".
+015200     05  DSET-DPORECD           PIC X(16)  VALUE "DPORECD;".
+015300     05  DSET-DPOITEM           PIC X(16)  VALUE "DPOITEM;".
+015400     05  DSET-DVENDOR           PIC X(16)  VALUE "DVENDOR;".
+015500     05  DSET-MPLTINFO          PIC X(16)  VALUE "MPLTINFO;".
+015600     05  DSET-DINVRCD           PIC X(16)  VALUE "DINVRCD;".
+015700
+016000 COPY DBSTAT IN COPYLIB.
+016100
+016200 01 ITEMS-LISTING.
+016300     05  ALL-ITEMS              PIC XX    VALUE "@;".
+016400     05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+016500     05  VEN-SEARCH             PIC X(10) VALUE "VEN-CODE;".
+016600
+016700 01 ARG-VALUES.
+016800     05  PO-ARG                 PIC X(14) VALUE SPACES.
+016900     05  VEN-ARG                PIC X(10) VALUE SPACES.
+017000     05  PLT-ARG                PIC X(4)  VALUE SPACES.
+017500
+017600 01  BUILD-VENDOR-PRINT.
+017700     05  VEN-WRKAREA OCCURS 9 TIMES.
+017800         10  FILLER             PIC X(5).
+017900         10  ORDFRM-VEN-INFO.
+018000             15  ORDFRM-CITY    PIC X(24).
+018100             15  FILLER         PIC X.
+018200             15  ORDFRM-ST      PIC XX.
+018300             15  FILLER         PIC X.
+018400             15  ORDFRM-PROV    PIC X(4).
+018500             15  FILLER         PIC XX.
+018600
+018700 01  BUILD-COUNTRY-ZIP-LINE.
+018800     05  BUILD-COUNTRY          PIC X(18)   VALUE SPACES.
+018900     05  FILLER                 PIC X(6)    VALUE SPACES.
+019000     05  BUILD-ZIP              PIC X(9)    VALUE SPACES.
+019100
+       COPY OVRPFDATA IN COPYLIB.
+
+       COPY CCHKOBJ IN COPYLIB.
+
+019200*************************
+019300*                       *
+019400*      PRINT FIELDS     *
+019500*                       *
+019600*************************
+019700
+019800 01  PRINT-LINES.
+019900     05  PRINT-HDR1.
+020000         10  FILLER   PIC X(19) VALUE SPACES.
+020100         10  FILLER   PIC X(8)  VALUE SPACES.
+020200         10  PO-HEAD  PIC X(18) VALUE SPACES.
+020300         10  FILLER   PIC X(8)  VALUE SPACES.
+020400         10  FILLER   PIC X(5)  VALUE SPACES.
+020500         10  FILLER   PIC X(14) VALUE "PAGE   1 OF  1".
+020600
+020700     05  PRINT-HDR2.
+020800         10  FILLER       PIC X(19) VALUE SPACES.
+020900         10  HDR2-DATA    PIC X(50) VALUE SPACES.
+021000
+021100     05  PRINT-HDR3.
+021200         10  FILLER       PIC X(19) VALUE SPACES.
+021300         10  HDR3-DATA    PIC X(50) VALUE SPACES.
+021400
+021500     05  PRINT-HDR4.
+021600         10  FILLER       PIC X(19) VALUE SPACES.
+021700         10  HDR4-DATA    PIC X(50) VALUE SPACES.
+021800
+021900     05  PRINT-HDR5.
+022000         10  FILLER       PIC X(19) VALUE SPACES.
+022100         10  HDR5-DATA    PIC X(50) VALUE SPACES.
+022200
+022300     05  PRINT-HDR6.
+022400         10  FILLER            PIC X(62).
+022500         10  P-PO-NO           PIC X(7).
+022600         10  P-HYPHEN          PIC X.
+022700         10  P-PO-REL          PIC XXX.
+022800
+022900     05  PRINT-HDR7.
+023000         10  FILLER            PIC X(59)  VALUE SPACES.
+023100         10  P-VENDOR-CD       PIC X(7).
+023200         10  FILLER            PIC X  VALUE SPACES.
+023300         10  P-ORD-VEND        PIC X(3).
+023400
+023500     05  PRINT-HDR-CANCEL.
+023600         10  FILLER           PIC X(8)    VALUE SPACES.
+023700         10  FILLER           PIC X(15) VALUE " D E L E T E D ".
+               10  FILLER           PIC X(4)  VALUE SPACES.
+023800         10  FILLER           PIC X(15) VALUE " D E L E T E D ".
+023900         10  FILLER           PIC X(8) VALUE SPACES.
+024000
+024100     05  PRINT-HDR-REASON.
+024200         10  FILLER       PIC X(10) VALUE "  REASON -".
+024300         10  PRT-REASON   PIC X(70) VALUE SPACES.
+024400
+024500 01  PO-HEADING                   PIC X(18)  VALUE SPACES.
+024600 01  INTERNAL-HEADING             PIC X(18)  VALUE SPACES.
+024700
+024800 01  BUILD-PO-NUM.
+024900     05  BLD-PO-LIT         PIC X    VALUE "P".
+025000     05  BLD-PO-NO          PIC X(7) VALUE SPACES.
+025100     05  BLD-PO-RLS         PIC X(3) VALUE SPACES.
+025200     05  BLD-PO-RCVR        PIC 9(3) VALUE ZEROS.
+
+DCR02 *==============================================================
+DCR02  01  WS-Z000-EXTRA-FLDS.
+DCR02      03  WS-Z000-PGM         PIC X(10)   VALUE "SPODELT".
+DCR02 *==============================================================
+
+DCR02      COPY POLOGSUBWS  IN COPYLIB.
+
+025500**************************************************************
+025600**************************************************************
+025700**                                                          **
+025800**             TERMINAL I/O DATA AREA                       **
+025900**                                                          **
+026000**************************************************************
+026100**************************************************************
+026200
+026300 01  SCREEN-1.
+026400     05  SCREEN-COMPANY-CODE      PIC X(3).
+026500     05  SCREEN-PO                PIC X(7).
+026600     05  SCREEN-RLSE              PIC X(3).
+026700     05  SCREEN-DLET-REASON       PIC X(70).
+026800     05  SCREEN-NO-PRINT-DESIRED  PIC X.
+           05  SCREEN-COMMAND-LINE      PIC X(79).
+           05  SCREEN-MESSAGE-LINE      PIC X(79).
+026900
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+027000
+027100 01  MESSAGE-BUFFER.
+027200     05  MSG-TEXT              PIC X(68)    VALUE SPACE.
+027300     05  MSG-FLD               PIC X(8)     VALUE SPACE.
+027400     05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC ZZZZZZZ9.
+027500
+028000 01  FIELD-NUMBER              PIC S9(4)    VALUE 1    COMP-4.
+028100
+       COPY CATREAD IN COPYLIB.
+028200
+028300**    ITEM     ! HAS         ! ON ORDER CANNOT DELETE
+028400**    THIS PO
+028500 01  PO-ERR-AREA.
+028600     05  FILLER                   PIC X(10).
+028700     05  PO-ERR-ITM               PIC Z(4)  VALUE ZEROS.
+028800     05  FILLER                   PIC X(7).
+028900     05  PO-ERR-QTY               PIC Z(8)9 VALUE ZEROS.
+029000     05  FILLER                   PIC X(46).
+029100
+029200**   ITEM     ! HAS         ! ON DOCK NOT STORED CAN'T
+029300**   DELETE THIS PO
+029400 01  RCVR-ERR-AREA.
+029500     05  FILLER                   PIC X(10).
+029600     05  RCVR-ERR-ITM             PIC Z(4)  VALUE ZEROS.
+029700     05  FILLER                   PIC X(7).
+029800     05  RCVR-ERR-QTY             PIC Z(8)9 VALUE ZEROS.
+029900     05  FILLER                   PIC X(46).
+030200
+030300 01  DATES-AND-TIMES.
+030400     05  HP-CUR-DATE.
+030500         10  MM                 PIC XX.
+030600         10  FILLER             PIC X.
+030700         10  DD                 PIC XX.
+030800         10  FILLER             PIC X.
+030900         10  YY                 PIC XX.
+031000     05  CUR-DATE.
+031100         10  YY                 PIC XX.
+031200         10  MM                 PIC XX.
+031300         10  DD                 PIC XX.
+031400
+031500 COPY TBLOWUP IN COPYLIB.
+031600
+      *****************************************
+      *   PARAMETERS FOR CALLING SEDIPOLG
+      *****************************************
+
+       01  SEDIPOLG-PARMS.
+           05  PO-NUMBER-EDI      PIC X(14) VALUE SPACES.
+           05  VENDOR-CODE-EDI    PIC X(10) VALUE SPACES.
+           05  FLAGS-EDI.
+               10  FLAG-EDI-A     PIC X     VALUE SPACE.
+               10  FLAG-EDI-M     PIC X     VALUE SPACE.
+               10  FLAG-EDI-D     PIC X     VALUE SPACE.
+               10  FLAG-EDI-SEND  PIC X     VALUE SPACE.
+               10  FILLER         PIC XX    VALUE SPACES.
+           05  PO-ITEM-NO-EDI     PIC X(4)  VALUE SPACES.
+           05  CALLING-PGM-EDI    PIC X(8)  VALUE SPACES.
+
+      *****************************************
+      *   PARAMETERS FOR CALLING 'SEDIVNCK'
+      *   WHICH IS THE ROUTINE TO DETERMINE
+      *   IF VENDOR IS EDI OR NOT
+      *****************************************
+
+       COPY SEDIVNCK IN COPYLIB.
+031700
+031800 LINKAGE SECTION.
+031900
+032000 01  BASE                         PIC X(10).
+032100
+032200 COPY VCOMLINK IN COPYLIB.
+032300
+032400**************************************
+032500*                                    *
+032600*  PRINTCNTL IS SET TO 1 THIS CAUSES *
+032700*  THE FIELD ON A SCREEN PRINTOUT    *
+032800*  TO BE UNDERLINED                  *
+032900*                                    *
+033000*  PAGECNTL IS SET TO 49 (OCTAL 61)  *
+033100*  THIS CAUSE THE LP TO EJECT AFTER  *
+033200*  THE SCREEN IS PRINTED             *
+033300*                                    *
+033400**************************************
+033500
+033600 01  SCREEN-PRINT-PARMS.
+033700     05  PRINTCNTL             PIC S9(4)    COMP-4.
+033800     05  PAGECNTL              PIC S9(4)    COMP-4.
+033900     05  SPOOLFIL-OPEN-SW      PIC X.
+034000
+034100 01  PASSED-SPOOL-PRT          PIC S9(2)    COMP-4.
+034200
+034300 01  PASSED-PO-PRINT-NUM       PIC S9(2)    COMP-4.
+034400
+034500 COPY LANGSUB IN COPYLIB.
+034600
+034700 COPY ESCNAME IN COPYLIB.
+034800
+034900 COPY ITPARMS IN COPYLIB.
+035000
+035100**************************************************************
+035200**
+035300**              P R O C E D U R E   D I V I S I O N
+035400**
+035500**************************************************************
+035600
+035700 PROCEDURE DIVISION USING  BASE,
+035800                           VIEW-COMAREA,
+035900                           SCREEN-PRINT-PARMS,
+036000                           PASSED-SPOOL-PRT,
+036100                           PASSED-PO-PRINT-NUM,
+036200                           LANGUAGE-PARMS,
+036300                           ESC-NAME,
+036400                           INTERNAL-ORDER-PARMS.
+036500
+036600 PO-DELETE SECTION 16.
+036700
+036800 BEGIN-HERE.
+           OPEN INPUT DPOITEM-I, MPORCV-I, MPLTINFO-I, DPORECD-I,
+                      DINVRCD-I, DVENDOR-I.
+           OPEN I-O DISPLAY-FILE.
+
+036900     PERFORM 1-HSK THRU 1-H-X.
+037000     PERFORM 6-MAIN THRU 6-M-X.
+
+           CLOSE DPOITEM-I, MPORCV-I, MPLTINFO-I, DPORECD-I,
+                 DINVRCD-I, DVENDOR-I, DISPLAY-FILE.
+037100     GOBACK.
+037200
+037300 1-HSK.
+
+DCR02 *****************************************************
+DCR02 *   MAKE SURE PO LOGGING IS TURNED ON FOR THIS PLANT
+DCR02 *****************************************************
+DCR02
+DCR02      SET  Z000-POLG-ACTIVE-NO TO TRUE.
+DCR02
+DCR02      MOVE WS-Z000-POLG-KEY   TO PLT-ARG.
+DCR02      MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+DCR02      READ MPLTINFO-I INTO BUF-MPLTINFO.
+DCR02      IF FILE-STATUS = "00"
+DCR02         IF  PLTINFODTA OF MPLTINFO-REC-I(1:1) = "Y"
+DCR02             SET  Z000-POLG-ACTIVE-YES TO TRUE
+DCR02         END-IF
+DCR02      END-IF.
+
+
+           MOVE "P 00"                  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+038500         MOVE "GET MPLTINFO P 00"  TO  BU-DISPLAY-MSG
+038600         GO TO 2-BLOWUP.
+038700     MOVE MPLTINFO-DATA  TO  HDR2-DATA.
+
+038800     MOVE "P 01"  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+039200         MOVE "GET MPLTINFO P 01"  TO  BU-DISPLAY-MSG
+039300         GO TO 2-BLOWUP.
+
+039400     MOVE MPLTINFO-COMPANY        TO  COMPANY-SAVE.
+DCR02      MOVE MPLTINFO-COMPANY        TO  WS-Z000-PLANT-CODE.
+039500     MOVE MPLTINFO-PLT-NAME       TO  HDR3-DATA.
+
+039600     MOVE "P 10"                  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+040000         MOVE "GET MPLTINFO P 10"  TO  BU-DISPLAY-MSG
+040100         GO TO 2-BLOWUP.
+040200     MOVE MPLTINFO-DATA           TO  HDR4-DATA.
+040300     MOVE "P 11"                  TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+040700         MOVE "GET MPLTINFO P 11"  TO  BU-DISPLAY-MSG
+040800         GO TO 2-BLOWUP.
+040900     MOVE MPLTINFO-DATA           TO  HDR5-DATA.
+041000
+041100     MOVE   9                     TO LANG-SETNUM.
+041200     MOVE  35                     TO LANG-MSGNUM.
+041300     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+041400     MOVE MESSAGE-BUFFER TO PO-ERR-AREA.
+041500     MOVE   9                     TO LANG-SETNUM.
+041600     MOVE  36                     TO LANG-MSGNUM.
+041700     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+041800     MOVE MESSAGE-BUFFER          TO RCVR-ERR-AREA.
+041900     MOVE  55                     TO LANG-SETNUM.
+042000     MOVE  1                      TO LANG-MSGNUM.
+042100     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+042200     MOVE MESSAGE-BUFFER          TO PO-HEADING.
+042300     MOVE  55                     TO LANG-SETNUM.
+042400     MOVE  6                      TO LANG-MSGNUM.
+042500     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+042600     MOVE MESSAGE-BUFFER          TO INTERNAL-HEADING.
+042700
+042900     ACCEPT CUR-DATE FROM DATE.
+043000
+043100     IF INTERNAL-ORDER-PRT-NO-1 = "  " OR "00"
+043200         MOVE PASSED-PO-PRINT-NUM   TO  INTERNAL-ORDER-PRT-NO-1.
+043300
+DCR02 *---------------------------------------------------------
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          PERFORM Z001-SETUP-PO-LOGGING  THRU Z001-EXIT
+DCR02          PERFORM Z110-RMV-USER-TRIGGER  THRU Z110-EXIT
+DCR02      END-IF.
+DCR02 *---------------------------------------------------------
+043400 1-H-X.
+043500     EXIT.
+043600
+043700
+043800******************************************************
+043900**                                                  **
+044000**   BLOWUP ROUTINE                                 **
+044100**                                                  **
+044200******************************************************
+044300
+044400 2-BLOWUP.
+044500     MOVE "SPODELT"  TO  BU-PGM-NAME.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS TO COND-WORD.
+044600     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+044700         VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+044800             BU-DISPLAY-FLDS.
+044900
+047800
+047900 4-PGM-ERROR.
+           MOVE B"1" TO IND (FIELD-NUMBER), IND (99).
+           MOVE MESSAGE-BUFFER TO SCREEN-MESSAGE-LINE.
+048700
+048800 4-PGM-ERROR-X.
+048900     EXIT.
+051100
+051200 6-MAIN.
+051300     MOVE "PODELT1"   TO  VIEW-NFNAME.
+051800
+051900     MOVE SPACES                  TO  SCREEN-1
+                                            SEDIVNCK-PARMS.
+052000     MOVE COMPANY-SAVE            TO  SCREEN-COMPANY-CODE.
+           MOVE ZEROS                   TO  SCREEN-RLSE.
+           MOVE SPACES                  TO  PO-ARG.
+053400
+053500 6-SHOWFORM-SCREEN-1.
+053600     MOVE "N"  TO  ERR-SW.
+           MOVE SCREEN-1       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-1.
+055400
+055500     IF VIEW-LASTKEY = 3
+055600         GO TO 6-M-X
+055700     ELSE
+057100     IF VIEW-LASTKEY = 1 OR
+057200        VIEW-LASTKEY = 2 OR
+057300        VIEW-LASTKEY = 4 OR
+057400        VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+057500        VIEW-LASTKEY = 7 OR
+057600        VIEW-LASTKEY = 8
+057800*        *** INVALID FUNCTION KEY ENTERED ***
+057900         MOVE   9 TO LANG-SETNUM
+058000         MOVE  10 TO LANG-MSGNUM
+058100         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+058200         MOVE 1  TO  FIELD-NUMBER
+058300         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+058400         GO TO 6-SHOWFORM-SCREEN-1.
+058500
+           IF SCREEN-PO = SPACES
+      *------ YOU MUST ENTER PURCHASE ORDER NUMBER
+               MOVE 44037 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 6-SHOWFORM-SCREEN-1.
+060400
+060500     MOVE SCREEN-PO               TO  BLD-PO-NO.
+060600     MOVE SCREEN-RLSE             TO  BLD-PO-RLS.
+060700     MOVE ZEROS                   TO  BLD-PO-RCVR.
+060800**** IF BUILD-PO-NUM  NOT = PO-ARG
+060900****     MOVE "N"                 TO  RCV-EDIT-SW.
+061000     MOVE BUILD-PO-NUM            TO  PO-ARG,
+                                            SEDIVNCK-PO-NUMBER,
+061100                                      BU-DISPLAY-FLD (1).
+061200
+061300****************************************
+061400**  CHECK TO MAKE SURE PO EXISTS
+061500****************************************
+061600
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+062100*            *** P.O. DOES NOT EXIST ***
+062200             MOVE  16 TO LANG-SETNUM
+062300             MOVE  45 TO LANG-MSGNUM
+062400             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+062500             MOVE 1    TO  FIELD-NUMBER
+062600             PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+062700             GO TO 6-SHOWFORM-SCREEN-1
+               ELSE
+062900             MOVE "FIND DPORECD * 6-GB1"  TO  BU-DISPLAY-MSG
+063000             GO TO 2-BLOWUP.
+063100
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" OR
+              PORCVNO OF DPORECD-REC-I NOT = PO-ARG
+063500         MOVE "GET DPORECD * 6-GB1"  TO  BU-DISPLAY-MSG
+063600         GO TO 2-BLOWUP.
+063700
+DCR01**==============================================================
+DCR01**= DONT ALLOW DELETE IF OWNED BY ARIBA BUYER
+DCR01**==============================================================
+DCR01      IF  PO-BUYER-CODE = "ARBA"
+DCR01 **   CAN NOT MAKE CHANGES TO THIS PO - OWNED BY ARIBA BUYER
+DCR01          MOVE 03    TO LANG-SETNUM
+DCR01          MOVE 218   TO LANG-MSGNUM
+DCR01          PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+DCR01          MOVE 1    TO  FIELD-NUMBER
+DCR01          PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+DCR01          GO TO 6-SHOWFORM-SCREEN-1
+DCR01       END-IF.
+DCR01**==============================================================
+DCR01
+DCR01
+063800***************************************************
+      **   CALL SEDIVNCK TO DETERMINE IS PO IS FOR
+      **   AN EDI VENDOR OR NOT
+063800***************************************************
+           CALL "SEDIVNCK" USING BASE,
+                                 SEDIVNCK-PARMS.
+
+063800***************************************************
+063900**   IF THE USER CAN ONLY CREATE INTERNAL ORDERS
+064000**   CHECK TO MAKE SURE THE ORDER THEY WISH TO DELETE
+064100**   IS AN INTERNAL ORDER (DPORECD IT-INDIC)
+064200***************************************************
+064300
+064400     IF INTERNAL-ORDER-ONLY
+064500         IF PO-INTERNAL-ORDER-INDIC = "X"
+064600             NEXT SENTENCE
+064700         ELSE
+064800***          CAN ONLY CREATE/ACCESS INTERNAL ORDERS
+064900             MOVE 3   TO LANG-SETNUM
+065000             MOVE 113 TO LANG-MSGNUM
+065100             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+065200             MOVE 1   TO FIELD-NUMBER
+065300             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+065400             GO TO 6-SHOWFORM-SCREEN-1.
+065500
+065600*************************************************
+065700**  CHECK FOR INVOICES LINKED TO THE PURCHASE
+065800**  ORDER.  CANNOT DELETE A PO THAT HAS INVOICES
+065900**  USING THIS PROGRAM
+066000*************************************************
+066100
+           MOVE PO-ARG TO PORCVNO OF DINVRCD-REC-I.
+           START DINVRCD-I KEY = PORCVNO OF DINVRCD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+066500             MOVE "GET DINVRCD * 6-GB1" TO BU-DISPLAY-MSG
+066600             GO TO 2-BLOWUP
+066700     ELSE
+066900*        *** PO HAS BEEN INVOICED CANNOT DELETE ***
+067000         MOVE  16 TO LANG-SETNUM
+067100         MOVE  50 TO LANG-MSGNUM
+067200         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+067300         MOVE 1  TO  FIELD-NUMBER
+067400         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+067500         GO TO 6-SHOWFORM-SCREEN-1.
+067600
+067700********************************************************
+067800** CHECK TO MAKE SURE THE PO DOESNT HAVE ANY ACTIVE
+067900** RECEIVING SLIPS (QTY DLVR >0)
+068100********************************************************
+068200 6-CHECK-FOR-RCVRS.
+           MOVE SPACES TO RCVR-SW.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-I.
+           READ MPORCV-I INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+068700         MOVE "GET MPORCV * 6-CFR"  TO  BU-DISPLAY-MSG
+068800         GO TO 2-BLOWUP
+068900     ELSE
+069000         IF M-PO-LAST-RCVR-X NUMERIC
+069100             PERFORM 62-CHECK-FOR-RCVR-QTY  THRU 62-CFRQ-X.
+069200
+069300     IF RECEIVED-AGAINST
+      *------- PO HAS BEEN RECEIVED AGAINST CANT DELETE
+069800             MOVE 16              TO  LANG-SETNUM
+069900             MOVE 119             TO  LANG-MSGNUM
+070000             PERFORM 999-CATREAD  THRU  999-CATREAD-EXIT
+070100             MOVE 1               TO  FIELD-NUMBER
+070200             PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+070300             GO TO 6-SHOWFORM-SCREEN-1.
+070400
+071600*   *** PROCESSING PURCHASE ORDER DELETE  ***
+071700     MOVE  16 TO LANG-SETNUM.
+071800     MOVE  52 TO LANG-MSGNUM.
+071900     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE B"1" TO IND (98).
+           MOVE MESSAGE-BUFFER TO SCREEN-COMMAND-LINE.
+072100     PERFORM 998-WRITE-SCREEN.
+073400
+073500***********************************************************
+073600**  CALL 'SDELTPO' TO DO THE ACTUAL PO DELETION.
+073700***********************************************************
+073800
+073900 6-CALL-SDELTPO.
+074000     CALL "SDELTPO" USING BASE,
+074100                          PO-ARG,
+074200                          COMPANY-SAVE.
+
+
+DCR02 **------------------------------------------------------------
+DCR02      IF  Z000-POLG-ACTIVE-YES
+DCR02          PERFORM Z100-PROCESS-PO-LOGGING  THRU Z100-EXIT
+DCR02      END-IF.
+DCR02 **------------------------------------------------------------
+
+
+           IF SEDIVNCK-EDI-IND = "Y"
+                MOVE SPACES              TO SEDIPOLG-PARMS
+                MOVE PO-ARG              TO PO-NUMBER-EDI
+                MOVE PO-VEN-CODE         TO VENDOR-CODE-EDI
+                MOVE "X"                 TO FLAG-EDI-D
+                MOVE "0000"              TO PO-ITEM-NO-EDI
+                MOVE "SPODELT"           TO CALLING-PGM-EDI
+                CALL "SEDIPOLG" USING BASE,
+                                      SEDIPOLG-PARMS,
+                                      LANGUAGE-PARMS.
+
+
+074400     IF SCREEN-NO-PRINT-DESIRED = "X"
+074500         GO TO 6-ENTER-NEXT-PO.
+074600
+074700
+074800 6-PRINT-PO.
+074900     PERFORM 63-LOAD-VENDOR-PRINT  THRU 63-LVP-X.
+075000
+075100     IF PO-INTERNAL-ORDER-INDIC = "X"
+075200         MOVE INTERNAL-ORDER-PRT-NO-1  TO  OVRPRTF-TOFILE-NUM
+075300     ELSE
+075400         MOVE PASSED-PO-PRINT-NUM      TO  OVRPRTF-TOFILE-NUM.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+
+076000     OPEN OUTPUT ONLINE-PRT.
+076100
+076200     PERFORM 65-PRINT-DELT-PO THRU 65-PDP-X.
+076300
+077000     CLOSE ONLINE-PRT.
+077100
+077200 6-ENTER-NEXT-PO.
+077300*    *** ENTER ANOTHER P.O. FOR DELETION OR 'f3' TO END ***
+077400     MOVE   5 TO LANG-SETNUM.
+077500     MOVE  23 TO LANG-MSGNUM.
+077600     PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+077700     MOVE MESSAGE-BUFFER TO SCREEN-COMMAND-LINE.
+           MOVE B"1" TO IND (98).
+077900
+078000     MOVE SPACES                  TO  SCREEN-PO,
+078200                                      SCREEN-DLET-REASON.
+           MOVE ZEROS                   TO  SCREEN-RLSE.
+079000     GO TO 6-SHOWFORM-SCREEN-1.
+079100
+079200 6-M-X.
+079300     EXIT.
+079400
+079500***********************************************************
+079600**  THIS ROUTINE CHECKS THAT QUANTITY DELIVERED IS
+079700**  ZERO FOR ALL ITEMS.
+079900***********************************************************
+080000
+080100 62-CHECK-FOR-RCVR-QTY.
+           MOVE SPACES TO RCVR-SW.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY = PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 62-CFRQ-X
+               ELSE
+080500             MOVE "FIND DPOITEM * 62-CFRQ" TO BU-DISPLAY-MSG
+080600             GO TO 2-BLOWUP.
+080700
+080800 62-GET-DPOITEM-LOOP.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   GO TO 62-CFRQ-X
+               ELSE
+081500             MOVE "GET DPOITEM * 62-CFRQ" TO BU-DISPLAY-MSG
+081600             GO TO 2-BLOWUP.
+           IF PORCVNO OF DPOITEM-REC-I NOT = PO-ARG
+               GO TO 62-CFRQ-X
+081700     ELSE
+081800         IF ITM-QTY-DLVR = ZERO
+081900             GO TO 62-GET-DPOITEM-LOOP
+082000         ELSE
+082100             MOVE "Y" TO RCVR-SW.
+084600
+084700 62-CFRQ-X.
+084800     EXIT.
+084900
+085000
+085100
+085200******************************************
+085300*                                        *
+085400*  THIS PARAGRAPH GETS VENDOR NAME AND   *
+085500*   AND ADDRESS FOR PRINT PURPOSES       *
+085600*   LOAD DATA INTO A BUFFER              *
+085700*                                        *
+085800******************************************
+085900
+086000 63-LOAD-VENDOR-PRINT.
+086100     MOVE ZERO                    TO  VEN-SUB.
+086200     MOVE SPACES                  TO  BUILD-VENDOR-PRINT.
+086300     MOVE PO-VEN-CODE1-7          TO  P-VENDOR-CD.
+086400     MOVE PO-VEN-CODE8-10         TO  P-ORD-VEND.
+086500     MOVE PO-VEN-CODE             TO  VEN-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-I.
+           START DVENDOR-I KEY = VENCDE OF DVENDOR-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+087000             GO TO 63-LVP-X
+               ELSE
+087200             MOVE "FIND DVENDOR 63-LVP" TO BU-DISPLAY-MSG
+087300             GO TO 2-BLOWUP.
+087400
+087500 63-GET-DVENDOR-PRINT.
+087600     ADD +1                       TO VEN-SUB.
+           READ DVENDOR-I NEXT INTO BUF-DVENDOR
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   GO TO 63-LVP-X
+               ELSE
+088300             MOVE "GET DVENDOR 63-GDP" TO BU-DISPLAY-MSG
+088400             GO TO 2-BLOWUP.
+           IF VENCDE OF DVENDOR-REC-I NOT = VEN-ARG
+               GO TO 63-LVP-X.
+088500     IF VEN-ITM-NO = 7
+088600         MOVE VEN-ZIP         TO BUILD-ZIP
+088700         MOVE SPACES          TO VEN-ZIP.
+088800     IF VEN-ITM-NO < 8
+088900         MOVE VEN-ITM-DATA    TO ORDFRM-VEN-INFO (VEN-SUB)
+089000         GO TO 63-GET-DVENDOR-PRINT.
+089100     IF VEN-ITM-NO = 8
+089200         MOVE VEN-COUNTRY     TO BUILD-COUNTRY
+089300     ELSE
+089400         MOVE SPACES          TO BUILD-COUNTRY.
+089500     MOVE BUILD-COUNTRY-ZIP-LINE  TO ORDFRM-VEN-INFO (VEN-SUB).
+089600
+089700 63-LVP-X.
+089800     EXIT.
+089900
+090000***********************************************
+090100**                                           **
+090200**   PRINT ROUTINE                           **
+090300**                                           **
+090400***********************************************
+090500
+090600 65-PRINT-DELT-PO.
+090700     MOVE SPACES                  TO  PRINT-LINE.
+090900     IF PO-INTERNAL-ORDER-INDIC = "X"
+091000         MOVE INTERNAL-HEADING    TO  PO-HEAD
+091100     ELSE
+091200         MOVE PO-HEADING          TO  PO-HEAD.
+091300     MOVE PRINT-HDR1              TO  PRINT-LINE.
+091400     MOVE 1                       TO  LINE-ADV.
+091500     PERFORM 651-PRINTALINE.
+091600     MOVE PRINT-HDR2              TO  PRINT-LINE.
+091700     MOVE 1                       TO  LINE-ADV.
+091800     PERFORM 651-PRINTALINE.
+091900     MOVE PRINT-HDR3              TO  PRINT-LINE.
+092000     MOVE 1                       TO  LINE-ADV.
+092100     PERFORM 651-PRINTALINE.
+092200     MOVE PRINT-HDR4              TO  PRINT-LINE.
+092300     MOVE 1                       TO  LINE-ADV.
+092400     PERFORM 651-PRINTALINE.
+092500     MOVE PRINT-HDR5              TO  PRINT-LINE.
+092600     MOVE 2                       TO  LINE-ADV.
+092700     PERFORM 651-PRINTALINE.
+092800     MOVE 2                       TO  LINE-ADV.
+092900     MOVE SPACES                  TO  PRINT-HDR6.
+093000     MOVE BLD-PO-NO               TO  P-PO-NO.
+093100     IF BLD-PO-RLS = ZERO
+093200         NEXT SENTENCE
+093300     ELSE
+093400         MOVE "-"                 TO  P-HYPHEN
+093500         MOVE BLD-PO-RLS          TO  P-PO-REL.
+093600     MOVE PRINT-HDR6              TO  PRINT-LINE.
+093700     PERFORM 651-PRINTALINE.
+093800     MOVE PRINT-HDR-CANCEL        TO  PRINT-LINE.
+093900     PERFORM 651-PRINTALINE.
+094000     MOVE PRINT-HDR-CANCEL        TO  PRINT-LINE.
+094100     PERFORM 651-PRINTALINE.
+094200     MOVE 5                       TO  LINE-ADV.
+094300     MOVE PRINT-HDR7              TO  PRINT-LINE.
+094400     PERFORM 651-PRINTALINE.
+094500     MOVE ZEROS                   TO  VEN-SUB.
+094600     MOVE 1                       TO LINE-ADV.
+094700
+094800 65-PRINT-VENDOR.
+094900     ADD 1                        TO  VEN-SUB.
+095000     IF (VEN-SUB > 9) OR
+095100          (VEN-WRKAREA (VEN-SUB)) = SPACES
+095200        NEXT SENTENCE
+095300     ELSE
+095400         MOVE VEN-WRKAREA (VEN-SUB) TO PRINT-LINE
+095500         PERFORM 651-PRINTALINE
+095600         GO TO 65-PRINT-VENDOR.
+095700     MOVE 6                       TO  LINE-ADV.
+095800     MOVE SPACES                  TO  PRINT-LINE.
+095900     PERFORM 651-PRINTALINE.
+096000     IF SCREEN-DLET-REASON = SPACES
+096100       GO TO 65-PDP-X.
+096200     MOVE SCREEN-DLET-REASON      TO  PRT-REASON.
+096300     MOVE PRINT-HDR-REASON        TO  PRINT-LINE.
+096400     PERFORM 651-PRINTALINE.
+096500
+096600 65-PDP-X.
+096700     EXIT.
+096800
+096900 651-PRINTALINE.
+097000     WRITE PRINT-RCD BEFORE ADVANCING LINE-ADV.
+097100
+       COPY OVRPFCALL IN COPYLIB.
+
+       COPY DISPCALL IN COPYLIB.
+097200
+097300 999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+098900
+099000 999-CATREAD-EXIT.
+099100     EXIT.
+
+DCR02  COPY POLOGSUBR  IN COPYLIB.
+

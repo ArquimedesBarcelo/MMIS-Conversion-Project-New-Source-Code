@@ -1,0 +1,751 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          SVENLABL.
+       AUTHOR.              BK DISMUKES.
+       DATE-WRITTEN.        JAN 12, 1993.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *D REMARKS.             PRINTS VENDOR LABELS DEFINED BY
+      *D                      TVENLABL.
+      *C
+      *C APR 15, 1994   CR KALMAN
+      *C THIS PROGRAM WAS NOT LINING UP THE LABELS PROPERLY.
+      *C THE PROGRAM NOW ASSUMES THAT THE MCPRT FILE IS SET UP
+      *C FOR 8 LINES PER INCH AND 96 LINES PER PAGE. CHANGED THE
+      *C CODE SO THAT THE ADDRESS LINES ARE NOW LINED UP AND
+      *C DON'T CREEP ANYMORE. (NO CHANGES WERE MADE TO THE HP
+      *C VERSION.)  ALSO REPLACED THE UNNEEDED COPYLIB CALLS
+      *C WITH THE ACTUAL CODE.
+      *C
+      *C JUNE 8, 1999   CA YODER
+      *C CHANGED CODE FOR LABEL SIZE 1 X 3.5 TO PRINT 5 LINES
+      *C PER LABEL.  UNION CITY REPORTED PROBLEM WITH LABELS
+      *C NOT LINING UP PROPERLY.
+      *C
+      *C OCTOBER 8, 2003   CA YODER
+      *C FIXED PROBLEM WITH START OF DVENDOR.  WAS STARTING FILE
+      *C EQUAL TO VEN-ARG OF "0000000000".  HOWEVER, IF THIS V/C
+      *C DIDN'T EXIST, THE PROGRAM WOULDN'T RUN.  CHANGED START
+      *C TO >= INSTEAD OF = VEN-ARG.
+      *C
+      *C OCTOBER 14, 2003  CA YODER
+      *C FIXED PROBLEM CERTAIN VENDOR CODES BEING SKIPPED.  CHANGED
+      *C START OF DVENDOR TO VEN-ARG OF SPACES INSTEAD OF ALL ZEROES.
+      *C THIS WAY, VENDOR CODES THAT START WITH ALPHABETIC CHARACTERS
+      *C WILL NOT BE SKIPPED.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  AS-400.
+       OBJECT-COMPUTER.  AS-400.
+       SPECIAL-NAMES.          I-O-FEEDBACK     IS I-O-FEEDBACK-AREA
+                               LOCAL-DATA       IS LOCAL-DATA-AREA
+                               C01 IS NEW-PAGE.
+
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT SORT-FILE ASSIGN TO DISK-SORT.
+           SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+
+           SELECT DVENDOR-VN-I
+               ASSIGN TO DATABASE-MCFLCS0701
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       SD  SORT-FILE
+           RECORD CONTAINS 15 CHARACTERS.
+       01  SORT-RCD.
+           05  SORT-DETAIL.
+               10  SORT-CODE          PIC X(10).
+               10  SORT-ZIP           PIC X(5).
+
+       FD  ONLINE-PRT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC               PIC X(132).
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  DVENDOR-VN-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-VN-REC-I.
+           COPY DDS-MCRPCS0700  OF MCFLCS0701.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+
+       77  SUB                        PIC 9(2)  VALUE 0.
+       77  SUB2                       PIC 9(2)  VALUE 0.
+       77  VEN-SUB                    PIC 9(2)  VALUE 0.
+       77  LABEL-COUNT                PIC S9(9) VALUE 0.
+       77  LABEL-SIZE                 PIC S9(2) VALUE 0.
+       77  AVAIL-LINES                PIC S9(2) VALUE 0.
+       77  LABEL-LINE                 PIC S9(2) VALUE 0.
+       77  ADDR-LINE                  PIC S9(2) VALUE 0.
+       77  FIND-NEXT                  PIC S9(1) VALUE 0.
+       77  PRESENT-VEND               PIC X(10) VALUE SPACES.
+
+       01  STAT-BUFF.
+           05  FILLER                 PIC X(3).
+           05  STAT-BUFF-2            PIC X(1).
+           05  FILLER                 PIC X(6).
+
+       01  TERM-TYPE                  PIC X(5).
+
+       COPY ESCNAM2 IN COPYLIB.
+
+       01  NO-PERF                      PIC X(8)  VALUE SPACES.
+
+       01  PERF-BACK                    PIC X(8)  VALUE SPACES.
+
+      **************************************************************
+      **                                                          **
+      **             D A T E / T I M E   A R E A S                **
+      **                                                          **
+      **************************************************************
+
+       01  MDY-DATE.
+           05  MM-IN          PIC XX.
+           05  FILLER         PIC X.
+           05  DD-IN          PIC XX.
+           05  FILLER         PIC X.
+           05  YY-IN          PIC XX.
+
+       01  YMD-SHORT.
+           05  YY-SHORT      PIC XX.
+           05  MM-SHORT      PIC XX.
+           05  DD-SHORT      PIC XX.
+
+       01  TIME-SAVE.
+           05  HRS-SAVE       PIC XX.
+           05  MIN-SAVE       PIC XX.
+           05  SEC-SAVE       PIC XX.
+
+      **************************************************************
+      **                                                          **
+      **         E R R O R   M E S S A G E   A R E A S            **
+      **                                                          **
+      **************************************************************
+
+       COPY TBLOWUP  IN COPYLIB.
+       COPY COMMAND  IN COPYLIB.
+       COPY CCHKOBJ  IN COPYLIB.
+       COPY OVRPFDAT IN COPYLIB.
+
+      **************************************************************
+      **                                                          **
+      **       C O M M U N I C A T I O N S   A R E A S            **
+      **                                                          **
+      **************************************************************
+
+       01  SPOOLER-AREA.
+           05  SPOOL-STAT           PIC S9     VALUE ZEROS BINARY.
+           05  SPOOL-PRT            PIC S9(2)  VALUE ZEROS BINARY.
+           05  SPOOL-COPIES         PIC S9(2)  VALUE 1 BINARY.
+           05  SPOOL-PRIOR          PIC S9     VALUE ZEROS BINARY.
+           05  SPOOL-MSG            PIC X(75)  VALUE SPACES.
+
+       01  SPOOL-LIMIT          PIC S9(8) BINARY VALUE 60000.
+       01  SPOOL-FEQ-NAME       PIC X(8)  VALUE "SXXXXXXX".
+
+
+       01  VIEW-COMAREA.
+           05  FILLER                PIC X(118) VALUE ALL "0".
+           05  FILLER                PIC S9(4) BINARY VALUE 9999.
+
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   W O R K                      **
+      **                                                          **
+      **************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       COPY DATAB IN COPYLIB.
+
+       01  DB-DATASETS.
+           05  DSET-NAME           PIC X(16)  VALUE SPACES.
+           05  DSET-DVENDOR        PIC X(16)  VALUE "DVENDOR;".
+
+       01  ITEM-LISTS.
+           05  ALL-ITEM-LIST          PIC XX   VALUE "@;".
+           05  CODE-SEARCH            PIC X(10) VALUE "CORP-CODE;".
+
+      *
+      * FIELDS USED BY 920-FIND-POSITION PARAGRAPH
+      *
+       01  TOTAL-LENGTH                  PIC S9(3) VALUE 44 BINARY.
+       01  FIND-POSITION.
+           05  CHAR-POS OCCURS 44 TIMES  PIC X.
+
+       01  PRINT-POSITION                PIC S9(3) BINARY.
+
+      *
+      * SAVE FIELDS USED IN PRINTING VENDOR ADDRESS
+      *
+       01 SAVE-VENDOR-CODE               PIC X(10).
+       01  SAVE-ZIP-LOC-FLAG             PIC X.
+           88  SAVE-ZIP-BEFORE-CITY    VALUE "1".
+           88  SAVE-ZIP-AFTER-COUNTRY  VALUE "2".
+       01  SAVE-ZIP                      PIC X(09).
+       01  SAVE-STATE-CODE               PIC X(02).
+       01  SAVE-PROV-CODE                PIC X(04).
+      *
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   B U F F E R S                **
+      **                                                          **
+      **************************************************************
+
+       COPY DVENDOR OF COPYLIB.
+
+
+      **************************************************************
+      **                                                          **
+      **               K S A M   W O R K                          **
+      **                                                          **
+      **************************************************************
+
+       01  VEN-ARG                       PIC X(10) VALUE SPACES.
+       01  KEY-LOC                       PIC S9(4) BINARY VALUE 3.
+       01  KEY-LENGTH                    PIC S9(4) BINARY VALUE 8.
+       01  RECSIZE                       PIC S9(4) BINARY VALUE 66.
+       01  RELATIONAL-OPERATOR           PIC S9(4) BINARY VALUE 2.
+       01  RESULT                        PIC 9(4)  VALUE ZEROS.
+
+
+      ***************************************************************
+      **                                                           **
+      **               D A T A   L I S T                           **
+      **                                                           **
+      ***************************************************************
+       01  DATA-LINE-1.
+           05  DATA1-PRINT-OPTION      PIC X(2).
+           05  DATA1-FORM-SIZE         PIC X.
+           05  DATA1-SORT-OPTION       PIC X.
+           05  DATA1-SELECT-OPTION     PIC X.
+           05  DATA1-LOW-VALUE         PIC X(12).
+           05  DATA1-HIGH-VALUE        PIC X(12).
+
+       01  ACCEPT-VEND-CODE.
+           05  A-CODE                  PIC X(10).
+           05    FILLER                PIC X(70).
+
+       01  TABLE-VEND-CODE.
+           05  ITEM-ENTRIES  OCCURS 48 TIMES.
+               10  VEND-CODE-ITEM      PIC X(10).
+
+      **************************************************************
+      **                                                          **
+      **       H E A D E R   &   D E T A I L   L I N E S          **
+      **                                                          **
+      **************************************************************
+
+       01  PRINT-VENDOR-LABEL.
+           05  VENDOR-INFO       OCCURS 9 TIMES.
+             10  PRT-VEND-INFO       PIC X(44) VALUE SPACES.
+           05  BLANK-LINE            PIC X(44) VALUE SPACES.
+
+
+
+       PROCEDURE DIVISION.
+       1-HOUSEKEEP SECTION.
+       1-HOUSEKEEPING.
+           MOVE "10" TO BU-DISPLAY-PARA.
+           CALL "TESCSEQ" USING ESC-NAME.
+
+           MOVE PERF-SKIP-ON TO PERF-BACK.
+           MOVE PERF-SKIP-OFF TO NO-PERF.
+
+           PERFORM 9999-OPEN-STUFF.
+
+           DISPLAY
+           "INPUT PRT OPT, FORM SIZE, SORT OPT, SELECT, LOW, HIGH".
+           DISPLAY "PPFSSLLLLLLLLLLLLHHHHHHHHHHHH".
+           ACCEPT DATA-LINE-1.
+           DISPLAY "PRINT-OPTION  = ", DATA1-PRINT-OPTION.
+           DISPLAY "FORM-SIZE     = ", DATA1-FORM-SIZE.
+           DISPLAY "SORT-OPTION   = ", DATA1-SORT-OPTION.
+           DISPLAY "SELECT-OPTION = ", DATA1-SELECT-OPTION.
+           DISPLAY "LOW-VALUE     = ", DATA1-LOW-VALUE.
+           DISPLAY "HIGH-VALUE    = ", DATA1-HIGH-VALUE.
+           IF DATA1-SELECT-OPTION = "3"
+               PERFORM 4-VEND-CODE-INPUT THRU 4-VCI-X.
+
+           MOVE "14" TO BU-DISPLAY-PARA.
+           IF DATA1-SORT-OPTION = "1"
+                   SORT SORT-FILE ON ASCENDING KEY SORT-ZIP
+                                                   SORT-CODE
+                        INPUT PROCEDURE IS 6-INPUT-CODES
+                        OUTPUT PROCEDURE IS 8-WRITE-LABELS
+           ELSE
+           IF DATA1-SORT-OPTION  = "2"
+               IF DATA1-SELECT-OPTION = "3"
+                   SORT SORT-FILE ON ASCENDING KEY SORT-CODE
+                                                   SORT-ZIP
+                        INPUT PROCEDURE IS 6-INPUT-CODES
+                        OUTPUT PROCEDURE IS 8-WRITE-LABELS
+               ELSE
+                   PERFORM 10-CKREAD-LABELS THRU 10-CL-X
+           ELSE
+               MOVE "INVALID SORT KEY ENTERED" TO BU-DISPLAY-MSG
+               MOVE DATA1-SORT-OPTION          TO BU-DISPLAY-FLD (1)
+               GO TO 2100-BLOWUP.
+
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+
+       2100-BLOWUP.
+           MOVE "SVENLABL" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-AREA.
+
+       3-STOP-SPOOL.
+           WRITE PRINT-REC FROM PERF-BACK AFTER ADVANCING 0.
+           PERFORM 9971-STOPSPOOL.
+           CLOSE ONLINE-PRT.
+
+       4-VEND-CODE-INPUT.
+           MOVE "12" TO BU-DISPLAY-PARA.
+           MOVE ZERO TO SUB2.
+           PERFORM UNTIL SUB2 > 48 OR A-CODE = "0000000000"
+               ADD 1 TO SUB2
+               DISPLAY "INPUT VEND CODE, '0000000000' TO END"
+               ACCEPT ACCEPT-VEND-CODE
+               IF A-CODE NOT = "0000000000"
+                   MOVE A-CODE TO VEND-CODE-ITEM (SUB2)
+                   DISPLAY "ADDING ", A-CODE, " TO TABLE"
+               END-IF
+           END-PERFORM.
+           MOVE ZERO TO SUB2.
+       4-VCI-X.
+           EXIT.
+
+       5-PRINT-LABEL.
+           MOVE "60" TO BU-DISPLAY-PARA.
+
+           IF DATA1-FORM-SIZE = "1"
+               MOVE 6  TO LABEL-SIZE
+               MOVE 5  TO AVAIL-LINES
+           ELSE
+           IF DATA1-FORM-SIZE = "3" OR "4"
+9404CK         MOVE 16 TO LABEL-SIZE
+9404CK         MOVE 15 TO AVAIL-LINES
+           ELSE
+9404CK         MOVE 8 TO LABEL-SIZE
+9404CK         MOVE 7 TO AVAIL-LINES.
+
+9404CK     MOVE 0 TO LABEL-LINE, ADDR-LINE.
+  .        PERFORM UNTIL ADDR-LINE = 9
+  .          OR ADDR-LINE = AVAIL-LINES
+  .             ADD 1 TO ADDR-LINE
+  .             IF PRT-VEND-INFO (ADDR-LINE) NOT = SPACES
+  .                WRITE PRINT-REC FROM PRT-VEND-INFO (ADDR-LINE)
+  .                      AFTER ADVANCING 1
+  .                ADD 1 TO LABEL-LINE
+  .             END-IF
+  .        END-PERFORM.
+  .        PERFORM UNTIL LABEL-LINE = LABEL-SIZE
+  .            ADD 1 TO LABEL-LINE
+  .            WRITE PRINT-REC FROM BLANK-LINE AFTER ADVANCING 1
+  .        END-PERFORM.
+  .
+  .   *    ADD 1  TO  LABEL-COUNT.
+  .   *    IF LABEL-COUNT = 20
+9404CK*        WRITE PRINT-REC FROM NO-PERF AFTER ADVANCING 0.
+
+           MOVE SPACES    TO PRINT-VENDOR-LABEL.
+
+       5-PL-X.
+           EXIT.
+
+       6-INPUT-CODES.
+           MOVE 0 TO COND-WORD.
+      *****MOVE "0000000000"  TO VEN-ARG.
+           MOVE SPACES        TO VEN-ARG.
+           IF DATA1-SELECT-OPTION = "3"
+               ADD 1 TO SUB2.
+           PERFORM 60-FIND-DATA THRU 6-IC-X.
+
+       60-FIND-DATA.
+           IF DATA1-SELECT-OPTION = "3"
+               MOVE SPACES TO VEN-ARG
+               PERFORM UNTIL (VEN-ARG NOT = SPACES) OR (SUB2 > 48)
+                   IF VEND-CODE-ITEM (SUB2) NOT = SPACES
+                       MOVE VEND-CODE-ITEM (SUB2) TO VEN-ARG
+                   END-IF
+                   ADD 1 TO SUB2
+               END-PERFORM
+               IF (SUB2 > 48) OR (VEN-ARG = "0000000000")
+                   GO TO 6-IC-X
+               END-IF
+           ELSE
+           IF DATA1-SELECT-OPTION = "2"
+              IF DATA1-LOW-VALUE NOT = SPACES
+                 MOVE DATA1-LOW-VALUE TO VEN-ARG.
+
+           PERFORM 9999-CHAINHD-DVENDOR-VN-I.
+      *    CALL "DBFIND" USING BASE, DSET-DVENDOR, MODE1,
+      *           STATUS-AREA, VEN-SEARCH, VEN-ARG.
+
+       60-MOVE-DATA.
+           MOVE SPACES TO    SORT-CODE, SORT-ZIP.
+           MOVE 0 TO COND-WORD.
+           PERFORM 9999-GETNEXT-DVENDOR-VN-I.
+           IF NOT GOOD-CALL
+               GO TO 6-IC-X.
+
+           IF DATA1-SELECT-OPTION = "2"
+               IF VEN-VEN-CODE > DATA1-HIGH-VALUE
+                   GO TO 6-IC-X.
+
+           IF VEN-ITM-NO = 7
+               MOVE VEN-ZIP             TO SORT-ZIP
+               MOVE VEN-VEN-CODE        TO SORT-CODE
+               RELEASE SORT-RCD
+               MOVE 0 TO COND-WORD
+               IF DATA1-SELECT-OPTION = "3"
+                   GO TO 60-FIND-DATA.
+
+           GO TO 60-MOVE-DATA.
+
+       6-IC-X.
+           EXIT.
+
+       8-WRITE-LABELS SECTION.
+       8-START-SPOOL.
+           MOVE "40" TO BU-DISPLAY-PARA.
+           MOVE DATA1-PRINT-OPTION TO SPOOL-PRT.
+           PERFORM 9970-STARTSPOOL.
+
+           OPEN OUTPUT ONLINE-PRT.
+           WRITE PRINT-REC FROM NO-PERF AFTER ADVANCING 0.
+       81-RETURN-SORT.
+           RETURN SORT-FILE AT END
+               PERFORM 3-STOP-SPOOL
+               GO TO 8-WL-X.
+
+       82-FIND-VENDOR.
+           MOVE SORT-CODE TO VEN-ARG.
+           PERFORM 9999-CHAINHD-DVENDOR-VN-I.
+      *    CALL "DBFIND" USING BASE, DSET-DVENDOR, MODE1, STATUS-AREA,
+      *           VEN-SEARCH, VEN-ARG.
+           IF NOT GOOD-CALL
+               GO TO 81-RETURN-SORT.
+           DISPLAY "VENDOR CODE -" VEN-ARG
+           MOVE 0 TO VEN-SUB.
+
+       82-GET-LABEL-LOOP.
+           ADD 1 TO VEN-SUB.
+           IF VEN-SUB > 9
+               MOVE SPACES TO PRINT-VENDOR-LABEL
+               GO TO 81-RETURN-SORT.
+           MOVE 0 TO COND-WORD.
+           PERFORM 9999-GETNEXT-DVENDOR-VN-I.
+      *    CALL "DBGET" USING BASE, DSET-DVENDOR, MODE5, STATUS-AREA,
+      *        ALL-ITEMS, BUF-DVENDOR, VEN-ARG.
+           IF NOT GOOD-CALL
+               GO TO 81-RETURN-SORT.
+           IF VEN-ITM-NO = 0
+               MOVE 1 TO VEN-SUB.
+           IF VEN-ITM-NO < 7
+               MOVE VEN-ITM-DATA TO PRT-VEND-INFO (VEN-SUB)
+               GO TO 82-GET-LABEL-LOOP
+           ELSE
+           IF VEN-ITM-NO = 7
+               DISPLAY "PRINTED VENDOR CODE -" VEN-VEN-CODE
+      *
+      * 920-FIND-POSITION RETURNS THE POSITION TO PRINT THE NEXT ITEM
+      * IN PRINT-POSITION
+      *
+                   IF ZIP-BEFORE-CITY
+
+      *
+      * ZIP CITY
+      *
+                     SET SAVE-ZIP-BEFORE-CITY TO TRUE
+                     MOVE VEN-ZIP TO FIND-POSITION
+                     PERFORM 920-FIND-POSITION
+                     STRING VEN-CITY
+                       DELIMITED BY SIZE INTO FIND-POSITION
+                       WITH POINTER PRINT-POSITION
+                     MOVE VEN-STATE-CODE TO SAVE-STATE-CODE
+                     MOVE VEN-PROV-CODE TO SAVE-PROV-CODE
+
+                   ELSE
+
+      *
+      * CITY STATE PROVINCE
+      *
+                     SET SAVE-ZIP-AFTER-COUNTRY TO TRUE
+                     MOVE VEN-CITY TO FIND-POSITION
+                     PERFORM 920-FIND-POSITION
+                     STRING VEN-STATE-CODE
+                       DELIMITED BY SIZE INTO FIND-POSITION
+                       WITH POINTER PRINT-POSITION
+                     PERFORM 920-FIND-POSITION
+                     STRING VEN-PROV-CODE
+                       DELIMITED BY SIZE INTO FIND-POSITION
+                       WITH POINTER PRINT-POSITION
+                     MOVE VEN-ZIP TO SAVE-ZIP
+
+                   END-IF
+                   MOVE FIND-POSITION TO PRT-VEND-INFO (VEN-SUB)
+                   GO TO 82-GET-LABEL-LOOP
+
+           ELSE
+           IF VEN-ITM-NO > 7
+             IF SAVE-ZIP-BEFORE-CITY
+
+      *
+      * STATE PROV COUNTRY
+      *
+               MOVE SAVE-STATE-CODE TO FIND-POSITION
+               PERFORM 920-FIND-POSITION
+               STRING SAVE-PROV-CODE
+                 DELIMITED BY SIZE INTO FIND-POSITION
+                 WITH POINTER PRINT-POSITION
+               PERFORM 920-FIND-POSITION
+               STRING VEN-COUNTRY
+                 DELIMITED BY SIZE INTO FIND-POSITION
+                 WITH POINTER PRINT-POSITION
+
+             ELSE
+
+      *
+      * COUNTRY ZIP
+      *
+               MOVE VEN-COUNTRY TO FIND-POSITION
+               PERFORM 920-FIND-POSITION
+               STRING SAVE-ZIP DELIMITED BY SIZE
+                 INTO FIND-POSITION WITH POINTER PRINT-POSITION
+
+             END-IF
+           MOVE FIND-POSITION TO PRT-VEND-INFO (VEN-SUB)
+           PERFORM 5-PRINT-LABEL THRU 5-PL-X
+           GO TO 81-RETURN-SORT.
+
+       8-WL-X.
+           EXIT.
+
+
+       10-CKREAD-LABELS SECTION.
+       10-CKREAD-LABELS-PARA.
+      **************************************************************
+      **   NOTE THAT THE "SPOOL2631STRT2" SUBROUTINE IS USED      **
+      **   INSTEAD OF "SPOOL2631START".  THE "STRT2" ALLOWS US    **
+      **   TO SPECIFY A FILE LIMIT FOR THE SPOOL-FILE, WHICH      **
+      **   NORMALLY HAS A LIMIT OF 5000 RECORDS.  SINCE THIS      **
+      **   REPORT COULD PRINT OVER 5000 RECORDS, WE USE "STRT2"   **
+      **   TO SPECIFY A HIGHER LIMIT (40,000 RECORDS).            **
+      **************************************************************
+
+           MOVE "70" TO BU-DISPLAY-PARA.
+           MOVE DATA1-PRINT-OPTION TO SPOOL-PRT.
+           PERFORM 9970-STARTSPOOL.
+           OPEN OUTPUT ONLINE-PRT.
+
+           WRITE PRINT-REC FROM NO-PERF AFTER ADVANCING 0.
+
+      *****MOVE "0000000000"   TO VEN-ARG, PRESENT-VEND.
+           MOVE SPACES         TO VEN-ARG, PRESENT-VEND.
+           IF DATA1-SELECT-OPTION = "2"
+              IF DATA1-LOW-VALUE NOT = SPACES
+                 MOVE DATA1-LOW-VALUE TO VEN-ARG.
+
+           PERFORM 9999-CHAINHD-DVENDOR-VN-I.
+       101-CKREAD-LOOP.
+           MOVE "72" TO BU-DISPLAY-PARA.
+           MOVE 0 TO COND-WORD.
+           IF FIND-NEXT = 1
+               PERFORM UNTIL VEN-ITM-NO = 0
+                   PERFORM 9999-GETNEXT-DVENDOR-VN-I
+                   IF NOT GOOD-CALL
+                       GO TO 104-SPOOL-STOP
+                   END-IF
+               END-PERFORM
+               MOVE 0         TO FIND-NEXT
+           ELSE
+               PERFORM 9999-GETNEXT-DVENDOR-VN-I
+               IF NOT GOOD-CALL
+                   GO TO 104-SPOOL-STOP.
+
+           IF VEN-VEN-CODE = "0000000000"
+               GO TO 101-CKREAD-LOOP.
+
+           IF VEN-VEN-CODE NOT = PRESENT-VEND
+               MOVE 0            TO VEN-SUB
+               MOVE SPACES       TO PRINT-VENDOR-LABEL
+               MOVE VEN-VEN-CODE TO PRESENT-VEND.
+
+           ADD 1 TO VEN-SUB.
+           IF VEN-SUB > 9
+               MOVE 1 TO FIND-NEXT
+               GO TO 101-CKREAD-LOOP.
+
+           IF DATA1-SELECT-OPTION = "2"
+               IF VEN-VEN-CODE > DATA1-HIGH-VALUE
+                   GO TO 104-SPOOL-STOP.
+
+           IF VEN-ITM-NO < 7
+               MOVE VEN-ITM-DATA TO PRT-VEND-INFO (VEN-SUB)
+               GO TO 101-CKREAD-LOOP
+           ELSE
+           IF VEN-ITM-NO = 7
+               DISPLAY "PRINTED VENDOR CODE -" VEN-VEN-CODE
+      *
+      * 920-FIND-POSITION RETURNS THE POSITION TO PRINT THE NEXT ITEM
+      * IN PRINT-POSITION
+      *
+                   IF ZIP-BEFORE-CITY
+
+      *
+      * ZIP CITY
+      *
+                     SET SAVE-ZIP-BEFORE-CITY TO TRUE
+                     MOVE VEN-ZIP TO FIND-POSITION
+                     PERFORM 920-FIND-POSITION
+                     STRING VEN-CITY
+                       DELIMITED BY SIZE INTO FIND-POSITION
+                       WITH POINTER PRINT-POSITION
+                     MOVE VEN-STATE-CODE TO SAVE-STATE-CODE
+                     MOVE VEN-PROV-CODE TO SAVE-PROV-CODE
+
+                   ELSE
+
+      *
+      * CITY STATE PROVINCE
+      *
+                     SET SAVE-ZIP-AFTER-COUNTRY TO TRUE
+                     MOVE VEN-CITY TO FIND-POSITION
+                     PERFORM 920-FIND-POSITION
+                     STRING VEN-STATE-CODE
+                       DELIMITED BY SIZE INTO FIND-POSITION
+                       WITH POINTER PRINT-POSITION
+                     PERFORM 920-FIND-POSITION
+                     STRING VEN-PROV-CODE
+                       DELIMITED BY SIZE INTO FIND-POSITION
+                       WITH POINTER PRINT-POSITION
+                     MOVE VEN-ZIP TO SAVE-ZIP
+
+                   END-IF
+                   MOVE FIND-POSITION TO PRT-VEND-INFO (VEN-SUB)
+                   GO TO 101-CKREAD-LOOP
+
+           ELSE
+           IF VEN-ITM-NO > 7
+             IF SAVE-ZIP-BEFORE-CITY
+      *
+      * STATE PROV COUNTRY
+      *
+               MOVE SAVE-STATE-CODE TO FIND-POSITION
+               PERFORM 920-FIND-POSITION
+               STRING SAVE-PROV-CODE
+                 DELIMITED BY SIZE INTO FIND-POSITION
+                 WITH POINTER PRINT-POSITION
+               PERFORM 920-FIND-POSITION
+               STRING VEN-COUNTRY
+                 DELIMITED BY SIZE INTO FIND-POSITION
+                 WITH POINTER PRINT-POSITION
+
+             ELSE
+      *
+      * COUNTRY ZIP
+      *
+               MOVE VEN-COUNTRY TO FIND-POSITION
+               PERFORM 920-FIND-POSITION
+               STRING SAVE-ZIP DELIMITED BY SIZE
+                 INTO FIND-POSITION WITH POINTER PRINT-POSITION
+
+             END-IF
+             MOVE FIND-POSITION TO PRT-VEND-INFO (VEN-SUB)
+             PERFORM 5-PRINT-LABEL THRU 5-PL-X
+             MOVE 1 TO FIND-NEXT
+             GO TO 101-CKREAD-LOOP.
+
+       104-SPOOL-STOP.
+           PERFORM 3-STOP-SPOOL.
+       10-CL-X.
+           EXIT.
+
+      *
+      * PARAGRAPH TO FIND THE POSITION TO PRINT THE NEXT ITEM IN
+      *
+       920-FIND-POSITION.
+           MOVE TOTAL-LENGTH TO PRINT-POSITION.
+           PERFORM UNTIL PRINT-POSITION < 1 OR
+                         CHAR-POS(PRINT-POSITION) NOT EQUAL SPACE
+             SUBTRACT 1 FROM PRINT-POSITION
+           END-PERFORM.
+           IF PRINT-POSITION < 1
+             MOVE 1 TO PRINT-POSITION
+           ELSE
+             ADD 2 TO PRINT-POSITION
+           END-IF.
+
+       9999-DB-CALLS SECTION.
+       996-OVERRIDE-PRINT-FILE.
+      *****************************************************************
+      * OVERRIDE THE PRINT FILE TO PASSED PRINT FILE NUM. IF THAT
+      * DOESNT EXIST, USE DEFAULT OUTQ FROM LOCAL DATA AREA. IF THE
+      * OUTQ DOESN'T EXIST, DEFAULT TO 'MCPRT' PRINT FILE (OUTQ=*JOB)
+      ********************************************************
+           CALL "COVRPRT" USING OVRPRTF-PARMS.
+           CALL "QCMDEXC" USING OVRPRTF-PARM1, OVRPRTF-PARM2.
+
+       9930-LOCK.
+       9940-UNLOCK.
+       9970-STARTSPOOL.
+           MOVE "*YES"    TO OVRPRTF-SHARED.
+           MOVE SPOOL-PRT TO OVRPRTF-TOFILE-NUM.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+
+       9971-STOPSPOOL.
+            MOVE "DLTOVR FILE(MCPRT)" TO COMMAND.
+            CALL "QCMDEXC" USING COMMAND-WORK, COMMAND-LEN.
+
+       9999-OPEN-STUFF.
+           OPEN INPUT DVENDOR-VN-I.
+
+       9999-CLOSE-STUFF.
+           CLOSE      DVENDOR-VN-I.
+
+       9999-CHAINHD-DVENDOR-VN-I.
+           MOVE 0 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-VN-REC-I.
+      *--------- START >= INSTEAD OF = VEN-ARG.
+           START DVENDOR-VN-I KEY >= VENCDE OF DVENDOR-VN-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+                MOVE "CHAINHD ERR 9999-CHAINHD-DVENDOR-VN-I"
+                    TO BU-MSG-AREA
+                PERFORM 2100-BLOWUP.
+
+       9999-GETNEXT-DVENDOR-VN-I.
+           MOVE 0 TO COND-WORD.
+           READ DVENDOR-VN-I NEXT INTO BUF-DVENDOR
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   MOVE "GETNEXT ERR 9999-GETNEXT-DVENDOR-VN-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP
+               END-IF
+           END-IF.
+

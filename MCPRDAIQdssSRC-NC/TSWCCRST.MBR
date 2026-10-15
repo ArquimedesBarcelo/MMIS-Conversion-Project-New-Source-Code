@@ -1,0 +1,151 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TSWCCRSTCK.
+       AUTHOR.                 BARAONA.
+       DATE-WRITTEN.           08/31/21.
+       DATE-COMPILED.
+      *INSTALLATION.           GOODYEAR TIRE AND RUBBER - AKRON.
+      *REMARKS.
+      *****************************************************************
+      ** This program reads input-output file PZFPMMCC0,
+      ** taking each record that has the process flag = Y,
+      ** and either restricting or unrestricting that user's ability to
+      ** make storeroom withdrawals.  The process flag = N when completed.
+      **
+      ** File PZFPMMCC0 can be loaded manually or by the user uploading
+      ** a .CSV file through the mfg webpage. The records are retained for
+      ** historical purposes. Only records with a Y are processed.
+      **
+      ** This is part of the conversion to PM from MMIS.
+      **
+      ** Input -  PZFPMMCC0 (data loaded from webpage) or manually.
+      ** Update - MCFPMM0300 Personnel file.
+      **
+      ** RFC 1122593  CD 5106272  CPPI 2020-01196736
+      *****************************************************************
+      *
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    IBM-AS400.
+       OBJECT-COMPUTER.    IBM-AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+      *PZFPMMCC0  MMIS Restrict Storeroom Users.Physical table. (I-O) UPDATE
+           SELECT MMRESTRICC
+                  ASSIGN TO DATABASE-PZFPMMCC0
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+
+      *MCFLMM0301 PERSONNEL FILE WITH CC#, NAME AND USER ID    (I-O) UPDATE
+           SELECT PER-PERSON-PC-I
+               ASSIGN TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MMRESTRICC
+           RECORD CONTAINS 30 CHARACTERS.
+
+       01  PZFPMMCC0-REC.
+           05  MMCLOCKNUM           PIC X(10).
+           05  RESTRICTYN           PIC X(01).
+           05  PRODDATE    COMP-3   PIC S9(07).
+           05  PRODTIME    COMP-3   PIC S9(06).
+           05  USERID               PIC X(10).
+           05  PROCESSYN            PIC X(01).
+
+       FD  PER-PERSON-PC-I
+           LABEL RECORDS ARE STANDARD.
+       01  PER-PERSON-PC-REC-I.
+           COPY DDS-MCRPMM0300  OF MCFLMM0301.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+       01  PERPAD-BREAKDOWN.
+           05  FILLER                   PIC X(02) VALUE SPACES.
+      *      Storeroom restriction flag. Can't withdraw if set to 'Y'.
+           05  SW-RESTRCT-FLAG          PIC X(01) VALUE SPACES.
+           05  FILLER                   PIC X(01) VALUE SPACES.
+
+      **************************************************************
+       PROCEDURE DIVISION.
+      **************************************************************
+       000-MAIN.
+           OPEN I-O     MMRESTRICC
+                        PER-PERSON-PC-I.
+
+      * Position to beginning of MMRESTRICC (Clock cards to be restricted).
+           MOVE SPACES TO MMCLOCKNUM.
+
+           READ MMRESTRICC NEXT RECORD
+               AT END CONTINUE.
+
+           PERFORM 200-PROCESS-FILE
+               UNTIL FILE-STATUS NOT = "00".
+
+       999-EOJ.
+           CLOSE MMRESTRICC
+                 PER-PERSON-PC-I.
+           STOP RUN.
+
+      *   Read PZFPMMCC0 (MMRESTRICC) then use the clockcard # to
+      *       restrict that record in MCFLMM0300.
+
+       200-PROCESS-FILE.
+      *    Should this record be processed? Yes-get matching MM0300 record
+           IF PROCESSYN = "Y"
+               MOVE MMCLOCKNUM TO PERCCNUM OF PER-PERSON-PC-I
+               PERFORM 400-READ-PERSONNEL
+               IF FILE-STATUS = "00"
+      *            Set the 3rd char. of perpad to Y for restricted from
+      *            storeroom withdrawals. N or blank allows them to withdraw.
+
+                   MOVE PERPAD TO PERPAD-BREAKDOWN
+                   PERFORM 210-RESTRICT-YES-NO
+                   MOVE PERPAD-BREAKDOWN TO PERPAD
+      *            Write the Y or N to MM0300
+
+                   PERFORM 510-UPDATE-PERSONNEL
+                   MOVE "N" TO PROCESSYN
+      *            N indicates this record was processed.
+
+                   PERFORM 500-UPDATE-PZFPMMCC0
+               ELSE
+                   DISPLAY "CLOCK CARD TO UPDATE NOT FOUND " MMCLOCKNUM
+                   MOVE "N" TO PROCESSYN
+                   PERFORM 500-UPDATE-PZFPMMCC0.
+
+           READ MMRESTRICC NEXT RECORD
+               AT END CONTINUE.
+
+       210-RESTRICT-YES-NO.
+      *See if user is to be restricted (Y) or unrestricted (N).
+           IF RESTRICTYN = "Y"
+               MOVE "Y" TO SW-RESTRCT-FLAG
+           ELSE
+               IF RESTRICTYN = "N"
+                   MOVE "N" TO SW-RESTRCT-FLAG.
+
+       400-READ-PERSONNEL.
+           READ PER-PERSON-PC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       500-UPDATE-PZFPMMCC0.
+      *    This record has been processed.
+           REWRITE PZFPMMCC0-REC.
+
+       510-UPDATE-PERSONNEL.
+      * This user can/cannot process a storeroom withdrawal.
+                   REWRITE PER-PERSON-PC-REC-I
+                       INVALID KEY
+                           DISPLAY "BAD REWRITE OF PERSONNEL" MMCLOCKNUM
+                           DISPLAY "MM0300 F-STS= " FILE-STATUS
+                           MOVE FILE-STATUS TO FILE-STATUS.

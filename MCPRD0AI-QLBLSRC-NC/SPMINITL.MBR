@@ -1,0 +1,1291 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             SPMINITL.
+       AUTHOR.                 J. BUNGO.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.           **** THIS PROGRAM WILL INITIATE OR SIMULATE
+      *                        SCHEDULES FOR A PIECE OF EQUIPMENT.
+      *                        IF INITIATING, RECORDS WILL BE WRITTEN
+      *                        TO PM-SCHEDULE(LIVE SCHEDULE).  IF
+      *                        SIMULATING, RECORDS WILL BE WRITTEN
+      *                        TO PM-SIMULATOR.  THE PASSED FLAG
+      *                        'INIT-SIM-FLAG' WILL DETERMINE WHICH
+      *                        DATASET TO WRITE INTO.
+      *                        ****.
+      **************************************************************
+      *C 11/19/93   J. BUNGO
+      *C    CHANGED CODE TO WRITE PR RECORDS BEFORE NORMAL SCHEDULE
+      *C    RECORDS.
+      **************************************************************
+      *C 12/17/93   WDR
+      *C    ADDED AUTOMATIC RE-INITIATE CODE FOR THOSE SCHEDULES
+      *C    WHICH ARE FLAGGED FOR IT.
+      **************************************************************
+      *C 06/07/94   WDR
+      *C    CHANGED JULIAN DATE CALCULATIONS TO USE LARGER FIELD
+      *C    SIZE SO LONG CYCLE TIMES WOULD NOT GET TRUNCATED.
+      *C    --  ADDED FIELD JUL-SIGN PIC S9(06).
+      **************************************************************
+      *C 1/28/98    WDR
+      *C    REPAIRED PROGRAM TO CLOSE EXISTING "PR" WORKORDERS WHEN
+      *C    ACTIVE SCHEDULE IS RE-INITIATED.
+      **************************************************************
+      *C 10/20/00   JIM COFFMAN
+      *C    ADDED CODE TO CORRECT A PROBLEM WITH THE DATE CALCULATION
+      *C    WHEN THE CURRENT YEAR WAS A LEAP YEAR. WHEN THE SCHEDULE
+      *C    IS EXTENDED, THE DAY SCHEDULED WAS GETTING BUMPED BY 1
+      *C    DAY. THE PROBLEM WAS DISCOVERED BY STEVE PHIPPEN TESTING
+      *C    AT DANVILLE.
+      **************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PM-MSTR-SCHED
+                  ASSIGN       TO DATABASE-MCFLMM4301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-SCHEDULE
+                  ASSIGN       TO DATABASE-MCFLMM4403
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-SIMULATOR
+                  ASSIGN       TO DATABASE-MCFLMM4503
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED2
+                  ASSIGN       TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PMQ-WORKORDER
+                  ASSIGN       TO DATABASE-MCFLMM3901
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PMQ-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM3902
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-MASTER-FILE
+                  ASSIGN       TO DATABASE-MCFLMM4701
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PM-MSTR-SCHED
+           LABEL RECORDS       ARE STANDARD.
+       01  PMS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4301.
+
+       FD  PM-SCHEDULE
+           LABEL RECORDS       ARE STANDARD.
+       01  SCH-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4403.
+
+       FD  PM-SIMULATOR
+           LABEL RECORDS       ARE STANDARD.
+       01  SIM-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4503.
+
+       FD  WO-PLANNED
+           LABEL RECORDS       ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  WO-PLANNED2
+           LABEL RECORDS       ARE STANDARD.
+       01  PWO-REC2.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  PMQ-WORKORDER
+           LABEL RECORDS       ARE STANDARD.
+       01  PMQ-WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM3901.
+
+       FD  PMQ-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  PMQ-EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM3902.
+
+       FD  PM-MASTER-FILE
+           LABEL RECORDS       ARE STANDARD
+           DATA RECORD         IS PMREC.
+       01  PMREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4701.
+
+       WORKING-STORAGE SECTION.
+       77  FIND-SW             PIC S9(4)  VALUE 0      COMP.
+       77  EQUIP-KEY           PIC X(06)  VALUE SPACES.
+       77  WO-KEY              PIC X(10)  VALUE SPACES.
+       77  SCHED-KEY           PIC X(10)  VALUE SPACES.
+       77  MAX-FIX-DAYS        PIC S9(4)  VALUE 400.
+       77  RE-INIT-VALUE       PIC S9(4)  VALUE 0.
+       77  SIMULATE-COMPLETE   PIC X(01)  VALUE "N".
+       77  TRUE-VAL            PIC 1      VALUE B"1".
+       77  BASE                PIC X(16)  VALUE "  MMISA;".
+       77  CNUM-KEY            PIC X(04).
+       77  HOLD-REL-YRMO       PIC 9(06).
+       77  HOLD-PREREL-DATE    PIC 9(08).
+       77  HOLD-RELEASE-DATE   PIC 9(08).
+       77  FIXDYN-SW           PIC 9        VALUE 0.
+           88  FIXED                        VALUE 1.
+       77  LOCK-SW             PIC 9        VALUE 0.
+           88  LOCK-SW-IS-ON                VALUE 1.
+       77  TABLE-IDX           PIC S9(02).
+       77  LEVEL1              PIC S9(02).
+       77  LEVEL2              PIC S9(02).
+       77  LEVEL3              PIC S9(02).
+       77  HIGHEST-LEVEL       PIC S9(02).
+       77  CURR-LEVEL          PIC S9(02).
+       77  CHECK-LEVEL         PIC S9(02).
+       77  WRITE-LEVEL         PIC S9(02).
+       77  D-PARM              PIC X.
+       77  L-PARM              PIC X.
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X(1).
+           05  FILE-STAT-2     PIC X(1).
+
+       01  CURRENTDATE.
+           05  CD-CT           PIC 99.
+           05  CD-YMD.
+             10  CD-YY         PIC 99.
+             10  CD-MM         PIC 99.
+             10  CD-DD         PIC 99.
+
+       01  CURRENTDATE2        REDEFINES CURRENTDATE.
+           05  CD-YYYY         PIC 9(04).
+           05  FILLER          PIC 9(04).
+
+       01  CURR-DATE.
+           05  CURR-DATE-YYYY.
+               10  CURR-DATE-CT PIC 99.
+               10  CURR-DATE-YY PIC 99.
+           05  CURR-DATE-MM     PIC 99.
+           05  CURR-DATE-DD     PIC 99.
+
+       01  TODAYS-DATE.
+           05  TD-YYYY.
+               10  TD-CT       PIC 99.
+               10  TD-YY       PIC 99.
+           05  TD-MM           PIC 99.
+           05  TD-DD           PIC 99.
+
+       01  TIME-BUF.
+           05  TIME-HHMM       PIC 9(04).
+           05  TIME-REST       PIC 9(04).
+
+       01  STOP-DATE.
+           05  STOP-YYYY.
+               10  STOP-CT     PIC 99.
+               10  STOP-YY     PIC 99.
+           05  STOP-MM         PIC 99.
+           05  STOP-DD         PIC 99.
+
+       01  LA-DATE.
+           05  LA-DATE-YYYY.
+               10  LA-DATE-CT  PIC 99.
+               10  LA-DATE-YY  PIC 99.
+           05  LA-DATE-MM      PIC 99.
+           05  LA-DATE-DD      PIC 99.
+
+       01  AUDIT-INIT-MSG.
+           05  FILLER          PIC X(20) VALUE "WORKORDER INITIATED ".
+           05  AMSG-YY         PIC XXXX.
+           05  FILLER          PIC X     VALUE "/".
+           05  AMSG-MM         PIC XX.
+           05  FILLER          PIC X     VALUE "/".
+           05  AMSG-DD         PIC XX.
+
+       01  LOOK-AHEAD.
+           05  LOOK-AHEAD-YYYY.
+               10  LOOK-AHEAD-CT PIC 99.
+               10  LOOK-AHEAD-YY PIC 99.
+           05  LOOK-AHEAD-MM     PIC 99.
+           05  LOOK-AHEAD-DD     PIC 99.
+
+       01  WS-REINIT-DATE.
+           05  WS-REINIT-YRMO.
+               10  RI-DATE-CT  PIC 99.
+               10  RI-DATE-YY  PIC 99.
+               10  RI-DATE-MM  PIC 99.
+           05  RI-DATE-DD      PIC 99.
+
+       01  WS-DATE.
+           05  WS-DATE-CT      PIC 99.
+           05  WS-DATE-YYMMDD.
+               10  WS-DATE-YY  PIC 99.
+               10  WS-DATE-MM  PIC 99.
+               10  WS-DATE-DD  PIC 99.
+
+       01  WS-DATE2            REDEFINES WS-DATE.
+           05  WS-DATE-YYYY    PIC 9999.
+           05  FILLER          PIC 9999.
+
+       01  GREG-DATE.
+           05  G-YEAR          PIC XXXX.
+           05  G-MONTH         PIC XX.
+           05  G-DAY           PIC XX.
+
+       01  JUL-SIGN            PIC S9(06).
+       01  JUL-DATE            PIC  X(07).
+       01  JULIAN-DATE         REDEFINES JUL-DATE
+                               PIC  9(07).
+       01  FILLER              REDEFINES JUL-DATE.
+           05  J-YEAR          PIC 9999.
+           05  J-DAY           PIC 999.
+
+       01  CLEAR-DATE.
+           05  CLEAR-DATE-9    PIC 9(7).
+           05  FILLER          PIC X(3).
+
+       01  RETURN-ERROR.
+           05  ERROR-TEXT      PIC X(68).
+           05  ERROR-NUM       PIC X(08).
+           05  ERROR-CODE      REDEFINES ERROR-NUM
+                               PIC ZZZZZZZ9.
+
+       01  LEVEL-TABLE.
+           05  L-ENTRY         OCCURS 12 TIMES.
+               10  L-MASTER.
+                   15  L-SCHED-KEY     PIC X(10).
+                   15  L-LEVEL         PIC 9(02).
+                   15  L-CYCLE         PIC 9(04).
+                   15  L-CRITICAL      PIC 9(04).
+                   15  L-LA            PIC 9(04).
+                   15  L-PRE-REL       PIC 9(04).
+                   15  L-PRTY.
+                       20  L-PRTY-FILL PIC 9(01).
+                       20  L-PRIORITY  PIC 9(01).
+                   15  L-REC-TYP       PIC X(02).
+                   15  L-CREATOR       PIC X(04).
+                   15  L-CHANGED-BY    PIC X(04).
+                   15  L-CHANGED-DATE  PIC X(08).
+                   15  FILLER          PIC X(10).
+               10  L-WRITTEN           PIC X(01).
+               10  L-DATE.
+                   15  L-DATE-YYYY.
+                       20  L-DATE-CT   PIC 9(02).
+                       20  L-DATE-YY   PIC 9(02).
+                   15  L-DATE-MM       PIC 9(02).
+                   15  L-DATE-DD       PIC 9(02).
+
+       01  DYNMAS-DATA.
+           05  DYNMAS-DATE     PIC X(08).
+           05  DYNMAS-YRMO     PIC X(06).
+           05  REC-TYPE-DM     PIC X(04).
+           05  EQUIP-NUM-DM    PIC X(06).
+           05  WO-NUM-DM       PIC X(10).
+           05  ZONE-DM         PIC X(04).
+           05  FILLER-DM       PIC X(44).
+
+       01  REINIT-DATA.
+           05  REINIT-DATE     PIC 9(08).
+           05  REINIT-YRMO     PIC 9(06).
+           05  REC-TYPE-RI     PIC X(04).
+           05  EQUIP-NUM-RI    PIC X(06).
+           05  WO-NUM-RI       PIC X(10).
+           05  FILLER-RI       PIC X(30).
+           05  INIT-DATE-RI    PIC X(08).
+           05  SCHED-RI        PIC X(10).
+
+       01  REINIT-MSG-DATA     REDEFINES REINIT-DATA.
+           05  MSG-DATE        PIC 9(08).
+           05  MSG-DATE-YRMO   PIC 9(06).
+           05  REC-TYPE-M      PIC X(04).
+           05  EQUIP-NUM-M     PIC X(06).
+           05  WO-NUM-M        PIC X(10).
+           05  MSG-M           PIC X(48).
+
+       01  WS-PR-ID.
+           05  WS-PR-DAY       PIC 9(03).
+           05  WS-PR-TIME.
+             10  WS-PR-TIME-9  PIC 9(07).
+       01  WS-LAST-PR-TIME     PIC 9(07).
+
+           COPY TBLOWUP        IN COPYLIB.
+
+           COPY DBSTAT         IN COPYLIB.
+
+       01  EQP-EQUIP-DATA.     COPY MEQPFILE IN COPYLIB.
+
+       01  WO-PLANNED-DATA.    COPY DWOPLAN  IN COPYLIB.
+
+       01  WO-TRACK-DATA.      COPY DWOTRACK IN COPYLIB.
+
+       01  PM-MSCHED-DATA.     COPY DPMMSTSC IN COPYLIB.
+
+       01  PM-SCHED-DATA.      COPY DPMSCHED IN COPYLIB.
+
+       01  PMQ-DATA.           COPY DPMOPENQ IN COPYLIB.
+
+       01  PM-MASTER-DATA.     COPY DPMMASTR IN COPYLIB.
+
+       01  PM-AUDIT-DATA.      COPY DPMAUDIT IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS  IN COPYLIB.
+
+           COPY VCOMLINK       IN COPYLIB.
+
+           COPY LANGSUB        IN COPYLIB.
+
+       01  INIT-SIM-FLAG       PIC X(01).
+           88  INITIATOR       VALUE "I".
+           88  SIMULATOR       VALUE "S".
+
+       01  INIT-PARMS.
+           05  INIT-EQUIP      PIC X(06).
+           05  INIT-WONUM.
+               10  INIT-WO     PIC X(07).
+               10  INIT-SUF    PIC X(03).
+           05  INIT-SCHED      PIC X(10).
+           05  INIT-DATE.
+               10  ID-YYYY.
+                   15  ID-CT   PIC XX.
+                   15  ID-YY   PIC XX.
+               10  ID-MM       PIC XX.
+               10  ID-DD       PIC XX.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               VIEW-COMAREA
+                               LANGUAGE-PARMS
+                               INIT-SIM-FLAG
+                               INIT-PARMS.
+       BEGIN-PROC.
+           OPEN INPUT          WO-PLANNED
+                               EQP-EQUIPMENT
+                               PM-MSTR-SCHED.
+           OPEN I-O            WO-PLANNED2
+                               PMQ-WORKORDER
+                               PMQ-EQUIPMENT.
+           IF INITIATOR
+               OPEN INPUT      PM-MASTER-FILE
+               OPEN I-O        PM-SCHEDULE
+           ELSE
+               OPEN I-O        PM-SIMULATOR
+           END-IF.
+
+           ACCEPT CD-YMD       FROM DATE.
+           IF CD-YY > 60
+               MOVE 19         TO CD-CT
+           ELSE
+               MOVE 20         TO CD-CT
+           END-IF.
+
+           MOVE LOW-VALUES     TO STATUS-AREA.
+           MOVE SPACES         TO LEVEL-TABLE
+                                  DYNMAS-DATA
+                                  REINIT-DATA.
+           MOVE 1              TO TABLE-IDX.
+           MOVE CD-CT          TO TD-CT.
+           MOVE CD-YY          TO TD-YY.
+           MOVE CD-MM          TO TD-MM.
+           MOVE CD-DD          TO TD-DD.
+           MOVE 400            TO MAX-FIX-DAYS.
+           PERFORM CALC-SIMCLEAR-DATE
+                               THRU CALC-SIMCLEAR-DATE-EXIT.
+
+       INITIATE-LOOP.
+           MOVE INIT-EQUIP     TO EQUIP-KEY.
+           MOVE INIT-WONUM     TO WO-KEY.
+           MOVE INIT-DATE      TO CURR-DATE.
+
+           MOVE WO-KEY         TO WONUM OF WO-PLANNED.
+           READ WO-PLANNED     INTO WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+           END-READ.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ WORKORDER ERROR" TO BU-DISPLAY-MSG
+               MOVE WO-KEY     TO BU-DISPLAY-FLD(2)
+               PERFORM 999-BLOWUP.
+
+           MOVE INIT-SCHED     TO SCHED-KEY.
+           MOVE PLANNER-P      TO CNUM-KEY.
+           IF INITIATOR
+               IF PLANNER-P NOT = SPACES
+                   PERFORM LOOKUP-REINIT THRU LR-EXIT.
+
+           PERFORM CALC-STOP-DATE
+                               THRU CALC-STOP-DATE-EXIT.
+
+       INITIATE-SCHEDULE.
+           IF INITIATOR
+               MOVE EQUIP-KEY  TO PMEQPNUM OF PM-SCHEDULE
+               START PM-SCHEDULE KEY = PMEQPNUM OF PM-SCHEDULE
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+           ELSE
+               MOVE EQUIP-KEY  TO PMEQPNUM OF PM-SIMULATOR
+               START PM-SIMULATOR KEY = PMEQPNUM OF PM-SIMULATOR
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+           END-IF.
+
+           IF FILE-STAT NOT = "00"
+               GO TO GET-MASTER.
+
+       PURGE-LOOP.
+           IF INITIATOR
+               READ PM-SCHEDULE NEXT INTO PM-SCHED-DATA
+                   AT END      MOVE FILE-STAT TO FILE-STAT
+           ELSE
+               READ PM-SIMULATOR NEXT INTO PM-SCHED-DATA
+                   AT END      MOVE FILE-STAT TO FILE-STAT
+           END-IF.
+
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO GET-MASTER
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE "READ NEXT, PURGE-LOOP" TO BU-DISPLAY-MSG
+               IF INITIATOR
+                   MOVE "PM-SCHEDULE" TO BU-DISPLAY-FLD(2)
+               ELSE
+                   MOVE "PM-SIMULATOR" TO BU-DISPLAY-FLD(2)
+               END-IF
+               MOVE EQUIP-KEY  TO BU-DISPLAY-FLD(3)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP
+           END-IF.
+
+           IF SCH-EQUIP-NUM NOT = EQUIP-KEY
+               GO TO GET-MASTER.
+
+           IF SCH-WO NOT = INIT-WO
+               GO TO PURGE-LOOP.
+
+           IF SCH-REC-TYP = "CL"
+               GO TO PURGE-LOOP.
+
+           IF INITIATOR
+               DELETE PM-SCHEDULE
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+           ELSE
+               DELETE PM-SIMULATOR
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+           END-IF.
+
+           IF FILE-STAT NOT = "00"
+               MOVE "DELETE ERROR, PURGE-LOOP" TO BU-DISPLAY-MSG
+               IF INITIATOR
+                   MOVE "PM-SCHEDULE" TO BU-DISPLAY-FLD(2)
+               ELSE
+                   MOVE "PM-SIMULATOR" TO BU-DISPLAY-FLD(2)
+               END-IF
+               MOVE EQUIP-KEY  TO BU-DISPLAY-FLD(3)
+               MOVE SCH-WO-NUM TO BU-DISPLAY-FLD(4)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP
+           END-IF.
+
+           IF INITIATOR
+             IF SCH-PR-ID NOT = SPACES AND SCH-REC-PR = SPACES
+               MOVE SPACES     TO PMQ-DATA
+               PERFORM FIND-PMQ-RECORD THRU FIND-PMQ-RECORD-EXIT
+               IF SCH-PR-ID = PMQ-PR-ID
+                 MOVE PMQ-WO-NUM     TO WONUM OF WO-PLANNED2
+                 READ WO-PLANNED2    INTO WO-PLANNED-DATA
+                     INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+                 END-READ
+                 IF FILE-STAT = "00"
+                     MOVE SPACES     TO WO-TRACK-DATA
+                     MOVE PMQ-WO-NUM TO WO-NUM-TRACK
+                     MOVE CURRENTDATE TO DATE-STAMP-CN DATE-COMP-P-CN
+                     ACCEPT TIME-STAMP FROM TIME
+                     MOVE TIME-STAMP TO TIME-COMP-P
+                     MOVE "STOP SCH" TO USER-NAME
+                     MOVE "SPMINITL" TO PROGRAM-NAME
+                     MOVE WO-STATUS-P TO WO-STATUS-TRACK
+                     MOVE "CW"       TO WO-STATUS-P TRANS-STATUS
+                     MOVE "AR"       TO WO-START-STATUS WO-TYPE-STATUS
+                     PERFORM WO-UPDATE THRU WO-UPDATE-EXIT
+                     CALL "TWOTRACK" USING WO-TRACK-DATA
+                     PERFORM WRITE-CW-AUDIT THRU WCWA-EXIT
+                     PERFORM PMQ-DELETE THRU PMQ-DELETE-EXIT
+                 END-IF
+               END-IF
+             END-IF
+           END-IF.
+
+           GO TO PURGE-LOOP.
+
+       GET-MASTER.
+           IF INITIATOR
+               PERFORM PMQ-REINIT-MSG-DEL
+                               THRU PMQ-REINIT-MSG-DEL-EXIT.
+
+           MOVE SPACES         TO LEVEL-TABLE.
+           MOVE 1              TO TABLE-IDX.
+           MOVE 0              TO FIXDYN-SW LOCK-SW.
+           MOVE SCHED-KEY      TO PMSCHEDKEY OF PM-MSTR-SCHED.
+           START PM-MSTR-SCHED KEY = PMSCHEDKEY OF PM-MSTR-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "START MASTER, GET-MASTER" TO BU-DISPLAY-MSG
+               MOVE SCHED-KEY  TO BU-DISPLAY-FLD(2)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP.
+
+       GET-MASTER-LOOP.
+           READ PM-MSTR-SCHED  NEXT INTO PM-MSCHED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               IF PMS-SCHED-KEY = SCHED-KEY
+                   MOVE PM-MSCHED-DATA TO L-MASTER(TABLE-IDX)
+                   MOVE "N"    TO L-WRITTEN(TABLE-IDX)
+                   PERFORM CALC-INIT-DATE THRU CALC-INIT-DATE-EXIT
+                   IF PMS-REC-TYP = "FX"
+                       MOVE 1  TO FIXDYN-SW
+                       IF PMS-LOCK = "FL"
+                           MOVE 1  TO LOCK-SW
+                       END-IF
+                   END-IF
+                   ADD 1       TO TABLE-IDX
+                   GO TO GET-MASTER-LOOP
+               ELSE
+                   SUBTRACT 1  FROM TABLE-IDX GIVING HIGHEST-LEVEL
+           ELSE
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   SUBTRACT 1  FROM TABLE-IDX GIVING HIGHEST-LEVEL
+               ELSE
+                   MOVE "READ ERROR, GET-MASTER" TO BU-DISPLAY-MSG
+                   MOVE SCHED-KEY  TO BU-DISPLAY-FLD(2)
+                   MOVE FILE-STAT  TO COND-WORD
+                   PERFORM 999-BLOWUP.
+
+       SIMULATE-LOOP.
+           PERFORM CALC-CURR-DATE THRU CALC-CURR-DATE-EXIT.
+           PERFORM CALC-LA-DATE THRU CALC-LA-DATE-EXIT.
+           MOVE HIGHEST-LEVEL  TO CURR-LEVEL.
+
+       LEVEL-LOOP.
+           IF LA-DATE NOT < L-DATE(CURR-LEVEL)
+               MOVE CURR-LEVEL TO LEVEL1
+               IF CURR-LEVEL NOT = HIGHEST-LEVEL
+      *-------- DO LOOK AHEAD  UNTIL HIGHEST LEVEL TO RELEASE FOUND
+                   ADD 1         TO LEVEL1 GIVING LEVEL2
+                   PERFORM CALC-LOOK-AHEAD THRU CALC-LOOK-AHEAD-EXIT
+                   PERFORM UNTIL LEVEL1 = HIGHEST-LEVEL OR
+                               LOOK-AHEAD < L-DATE(LEVEL2)
+                       ADD 1       TO LEVEL1 LEVEL2
+                       PERFORM CALC-LOOK-AHEAD THRU CALC-LOOK-AHEAD-EXIT
+                   END-PERFORM
+               END-IF
+
+      *-------- IF THIS IS A FIXED SCHEDULE THEN LET THE HIGHER LEVEL
+      *--------   BE THE BOSS IN DETERMINING HOW THE LEVELS SHOULD BE
+      *--------   SHIFTED.  THIS WILL CAUSE LOWER LEVELS TO BE PULLED
+      *--------   UP/BACK TO WHEN THE HIGHER LEVEL IS ORIGINALLY DUE.
+               IF L-REC-TYP(LEVEL1) = "FX" OR
+                 (L-REC-TYP(LEVEL1) = "DN" AND
+                  L-DATE(LEVEL1) < CURR-DATE)
+                   MOVE L-DATE(LEVEL1) TO CURR-DATE
+               END-IF
+
+      *-------- SET RELEASE DATE FOR LEVEL TO BE RELEASED
+               MOVE CURR-DATE  TO L-DATE(LEVEL1)
+      *-------- CHECK TO WRITE TO THE SCHEDULE/SIMULATOR
+               IF CURR-DATE NOT < TODAYS-DATE
+                   IF L-WRITTEN(LEVEL1) NOT = "Y"  OR
+                      L-REC-TYP(LEVEL1) NOT = "DN" OR SIMULATOR
+                        PERFORM WRITE-SCHEDULE THRU WRITE-SCHEDULE-EXIT
+                        PERFORM VARYING WRITE-LEVEL FROM 1 BY 1
+                          UNTIL WRITE-LEVEL > LEVEL1
+                            MOVE "Y" TO L-WRITTEN(WRITE-LEVEL)
+                        END-PERFORM
+                   END-IF
+               END-IF
+
+      *-------- SET THE NEXT RELEASE DATE FOR RELEASED LEVEL AND ALL LOWER
+               MOVE LEVEL1     TO LEVEL3
+               PERFORM CALC-NEXT-DATE THRU CALC-NEXT-DATE-EXIT
+                 LEVEL1 TIMES
+           ELSE
+               SUBTRACT 1      FROM CURR-LEVEL
+               IF CURR-LEVEL NOT = 0
+                   GO TO LEVEL-LOOP
+               END-IF
+           END-IF.
+
+      *---- CHECK IF SIMULATION HAS COMPLETED AND ALL SCH RECORDS WRITTEN
+           IF L-REC-TYP(1) NOT = "DN" OR SIMULATOR
+               IF CURR-DATE < STOP-DATE
+                   GO TO SIMULATE-LOOP
+               END-IF
+           ELSE
+               MOVE "Y"        TO SIMULATE-COMPLETE
+               MOVE 0          TO CHECK-LEVEL
+               PERFORM HIGHEST-LEVEL TIMES
+                   ADD 1       TO CHECK-LEVEL
+                   IF L-WRITTEN(CHECK-LEVEL) NOT = "Y"
+                      MOVE "N" TO SIMULATE-COMPLETE
+                   END-IF
+               END-PERFORM
+               IF SIMULATE-COMPLETE = "N"
+                   GO TO SIMULATE-LOOP
+               END-IF
+           END-IF.
+
+       INITIATE-COMPLETE.
+           IF NOT SIMULATOR
+             IF FIXED
+               IF REINIT-DATA NOT = SPACES
+                   WRITE SCH-REC FROM REINIT-DATA
+                       INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                   END-WRITE
+                   IF FILE-STAT NOT = "00"
+                       MOVE "WRITE REINIT RECORD ERROR"
+                               TO BU-DISPLAY-MSG
+                       MOVE REINIT-DATA TO BU-DISPLAY-FLD(2)
+                       PERFORM 999-BLOWUP
+                   END-IF.
+
+           IF NOT SIMULATOR
+             IF DYNMAS-DATA NOT = SPACES
+               WRITE SCH-REC   FROM DYNMAS-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-WRITE
+               IF FILE-STAT NOT = "00"
+                   MOVE "WRITE DYNMAS RECORD ERROR"
+                               TO BU-DISPLAY-MSG
+                   MOVE DYNMAS-DATA TO BU-DISPLAY-FLD(2)
+                   PERFORM 999-BLOWUP.
+
+           GO TO END-OF-JOB.
+
+       LOOKUP-REINIT.
+           MOVE CNUM-KEY       TO PERCCNUM OF PM-MASTER-FILE.
+           READ PM-MASTER-FILE INTO PM-MASTER-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+               GO TO LR-EXIT.
+
+           IF FILE-STAT NOT = "00"
+               MOVE "READ PM MASTER ERROR" TO BU-DISPLAY-MSG
+               MOVE CNUM-KEY   TO BU-DISPLAY-FLD(2)
+               PERFORM 999-BLOWUP.
+
+           IF INIT-VALUE = "750 "
+               MOVE 750        TO MAX-FIX-DAYS.
+
+           IF REINIT-VALUE = "000 "
+               MOVE 300        TO RE-INIT-VALUE
+               IF MAX-FIX-DAYS = 750
+                   MOVE 650        TO RE-INIT-VALUE
+               END-IF
+               GO TO WRITE-REINIT-MSG.
+
+           IF REINIT-VALUE = "200 "
+               MOVE 200        TO RE-INIT-VALUE
+           ELSE
+           IF REINIT-VALUE = "300 "
+               MOVE 300        TO RE-INIT-VALUE
+           ELSE
+           IF REINIT-VALUE = "375 "
+               MOVE 375        TO RE-INIT-VALUE
+           ELSE
+           IF REINIT-VALUE = "650 "
+               MOVE 650        TO RE-INIT-VALUE
+           ELSE
+               GO TO LR-EXIT.
+
+           MOVE "RI  "         TO REC-TYPE-RI.
+           MOVE INIT-EQUIP     TO EQUIP-NUM-RI.
+           MOVE INIT-WONUM     TO WO-NUM-RI.
+           MOVE INIT-DATE      TO INIT-DATE-RI.
+           MOVE INIT-SCHED     TO SCHED-RI.
+
+           PERFORM CALC-REINIT-DATE THRU CALC-REINIT-DATE-EXIT.
+           MOVE WS-REINIT-DATE TO REINIT-DATE.
+           MOVE WS-REINIT-YRMO TO REINIT-YRMO.
+           GO TO LR-EXIT.
+
+       WRITE-REINIT-MSG.
+           IF MSGSW6 = "XX"
+               NEXT SENTENCE
+           ELSE
+               GO TO LR-EXIT.
+
+           MOVE "MS  "         TO REC-TYPE-M.
+           MOVE INIT-EQUIP     TO EQUIP-NUM-M.
+           MOVE INIT-WONUM     TO WO-NUM-M.
+           MOVE "WORKORDER SCHEDULE WILL EXPIRE IN 100 DAYS."
+                               TO MSG-M.
+
+           PERFORM CALC-REINIT-DATE THRU CALC-REINIT-DATE-EXIT.
+           MOVE WS-REINIT-DATE TO MSG-DATE.
+           MOVE WS-REINIT-YRMO TO MSG-DATE-YRMO.
+
+       LR-EXIT.                EXIT.
+
+       WO-UPDATE.
+           REWRITE PWO-REC2    FROM WO-PLANNED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "REWRITE ERR, WO-PLANNED2" TO BU-DISPLAY-MSG
+               MOVE SCH-WO-NUM TO BU-DISPLAY-FLD(3)
+               MOVE WO-STATUS-P TO BU-DISPLAY-FLD(4)
+               MOVE WO-START-STATUS TO BU-DISPLAY-FLD(5)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP.
+
+       WO-UPDATE-EXIT.         EXIT.
+
+       FIND-PMQ-RECORD.
+           MOVE SCH-EQUIP-NUM  TO EQPNUM OF PMQ-EQUIPMENT.
+           START PMQ-EQUIPMENT KEY = EQPNUM OF PMQ-EQUIPMENT
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO FIND-PMQ-RECORD-EXIT.
+
+       FIND-PMQ-RECORD-CONT.
+           READ PMQ-EQUIPMENT  NEXT INTO PMQ-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO FIND-PMQ-RECORD-EXIT.
+
+           IF SCH-EQUIP-NUM NOT = PMQ-EQUIP-NUM
+               GO TO FIND-PMQ-RECORD-EXIT.
+
+           IF SCH-PR-ID = PMQ-PR-ID
+               GO TO FIND-PMQ-RECORD-EXIT.
+
+           GO TO FIND-PMQ-RECORD-CONT.
+
+       FIND-PMQ-RECORD-EXIT.   EXIT.
+
+       PMQ-DELETE.
+           DELETE PMQ-EQUIPMENT
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DELETE ERR, PMQ-EQUIPMENT" TO BU-DISPLAY-MSG
+               MOVE SCH-WO-NUM TO BU-DISPLAY-FLD(3)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP.
+
+       PMQ-DELETE-EXIT.        EXIT.
+
+       PMQ-REINIT-MSG-DEL.
+           MOVE WO-KEY         TO WONUM OF PMQ-WORKORDER.
+           READ PMQ-WORKORDER  INTO PMQ-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO PMQ-REINIT-MSG-DEL-EXIT.
+
+           DELETE PMQ-WORKORDER
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "DELETE ERR2, PMQ-WORKORDER" TO BU-DISPLAY-MSG
+               MOVE WO-KEY     TO BU-DISPLAY-FLD(3)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP.
+
+       PMQ-REINIT-MSG-DEL-EXIT. EXIT.
+
+       WRITE-SCHEDULE.
+           MOVE SPACES               TO PM-SCHED-DATA.
+           MOVE L-DATE-CT(LEVEL1)    TO SCH-REL-CT.
+           MOVE L-DATE-YY(LEVEL1)    TO SCH-REL-YR.
+           MOVE L-DATE-MM(LEVEL1)    TO SCH-REL-MO  SCH-REL-YRMO-MO.
+           MOVE L-DATE-DD(LEVEL1)    TO SCH-REL-DAY.
+           MOVE L-DATE-YYYY(LEVEL1)  TO SCH-REL-YRMO-YR.
+           MOVE L-REC-TYP(LEVEL1)    TO SCH-REC-TYP.
+           MOVE EQUIP-NUM-P          TO SCH-EQUIP-NUM.
+           MOVE INIT-WONUM           TO SCH-WO-NUM.
+           MOVE ZONE-PRIORITY-P      TO SCH-ZONE-PRI.
+           MOVE L-LEVEL(LEVEL1)      TO SCH-LEVEL.
+           MOVE L-CRITICAL(LEVEL1)   TO SCH-CRITICAL.
+           MOVE L-CYCLE(LEVEL1)      TO SCH-CYCLE.
+           MOVE L-LA(LEVEL1)         TO SCH-LOOK-AHEAD.
+           MOVE L-PRE-REL(LEVEL1)    TO SCH-PRE-REL.
+           MOVE L-PRTY(LEVEL1)       TO SCH-PRIORITY.
+           IF LOCK-SW-IS-ON
+               MOVE "L"              TO SCH-REST-1.
+
+           IF DYNMAS-DATA = SPACES AND SCH-REC-TYP = "DN"
+               MOVE INIT-DATE            TO DYNMAS-DATE DYNMAS-YRMO
+               MOVE "DM  "               TO REC-TYPE-DM
+               MOVE ZONE-PRIORITY-P      TO ZONE-DM
+               MOVE EQUIP-NUM-P          TO EQUIP-NUM-DM
+               MOVE INIT-WONUM           TO WO-NUM-DM.
+
+           IF L-PRE-REL(LEVEL1) NOT = ZEROS
+               PERFORM CALC-PRER-DATE THRU CALC-PRER-DATE
+               PERFORM CALC-PR-ID    THRU CALC-PR-ID-EXIT
+               MOVE WS-PR-ID         TO SCH-PR-ID
+           END-IF.
+
+      *-----USE THE SIMULATION PR-ID FIELD FOR A CLEAR DATE
+           IF SIMULATOR
+               MOVE CLEAR-DATE TO SCH-PR-ID
+           END-IF.
+
+      *-----CHECK FOR PRE RELEASE TO WRITE FIRST
+           IF L-PRE-REL(LEVEL1) NOT = ZEROS
+               MOVE "PR"       TO SCH-REC-PR
+               MOVE SCH-RELEASE-YRMO TO HOLD-REL-YRMO
+               MOVE SCH-PREREL-DATE  TO WS-DATE HOLD-PREREL-DATE
+               MOVE SCH-RELEASE-DATE TO SCH-PREREL-DATE
+                                        HOLD-RELEASE-DATE
+               MOVE WS-DATE-CT TO SCH-REL-CT
+               MOVE WS-DATE-YY TO SCH-REL-YR
+               MOVE WS-DATE-MM TO SCH-REL-MO  SCH-REL-YRMO-MO
+               MOVE WS-DATE-DD TO SCH-REL-DAY
+               MOVE WS-DATE-YYYY TO SCH-REL-YRMO-YR
+               IF INITIATOR
+                   WRITE SCH-REC FROM PM-SCHED-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               ELSE
+                   WRITE SIM-REC FROM PM-SCHED-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-IF
+               IF FILE-STAT NOT = "00"
+                   MOVE "WRITE ERR, WRITE-SCHEDULE" TO BU-DISPLAY-MSG
+                   IF INITIATOR
+                       MOVE "PM-SCHEDULE" TO BU-DISPLAY-FLD(2)
+                   ELSE
+                       MOVE "PM-SIMULATOR" TO BU-DISPLAY-FLD(2)
+                   END-IF
+                   MOVE WO-KEY    TO BU-DISPLAY-FLD(3)
+                   MOVE SCHED-KEY TO BU-DISPLAY-FLD(4)
+                   MOVE FILE-STAT TO COND-WORD
+                   PERFORM 999-BLOWUP
+               END-IF
+               MOVE SPACES            TO SCH-REC-PR
+               MOVE HOLD-REL-YRMO     TO SCH-RELEASE-YRMO
+               MOVE HOLD-PREREL-DATE  TO SCH-PREREL-DATE
+               MOVE HOLD-RELEASE-DATE TO SCH-RELEASE-DATE
+           END-IF.
+
+           IF INITIATOR
+               WRITE SCH-REC   FROM PM-SCHED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+           ELSE
+               WRITE SIM-REC   FROM PM-SCHED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+           END-IF.
+
+           IF FILE-STAT NOT = "00"
+               MOVE "WRITE ERR, WRITE-SCHEDULE" TO BU-DISPLAY-MSG
+               IF INITIATOR
+                   MOVE "PM-SCHEDULE" TO BU-DISPLAY-FLD(2)
+               ELSE
+                   MOVE "PM-SIMULATOR" TO BU-DISPLAY-FLD(2)
+               END-IF
+               MOVE WO-KEY     TO BU-DISPLAY-FLD(3)
+               MOVE SCHED-KEY  TO BU-DISPLAY-FLD(4)
+               MOVE FILE-STAT  TO COND-WORD
+               PERFORM 999-BLOWUP
+           END-IF.
+
+       WRITE-SCHEDULE-EXIT.    EXIT.
+
+       CALC-INIT-DATE.
+           MOVE INIT-DATE      TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD L-CYCLE(TABLE-IDX) TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO L-DATE(TABLE-IDX).
+
+       CALC-INIT-DATE-EXIT.    EXIT.
+
+       CALC-STOP-DATE.
+           MOVE TODAYS-DATE    TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD MAX-FIX-DAYS    TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO STOP-DATE.
+
+       CALC-STOP-DATE-EXIT.    EXIT.
+
+       CALC-REINIT-DATE.
+           MOVE TODAYS-DATE    TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD RE-INIT-VALUE   TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO WS-REINIT-DATE.
+
+       CALC-REINIT-DATE-EXIT.  EXIT.
+
+       CALC-CURR-DATE.
+           MOVE CURR-DATE      TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD L-CYCLE(1)      TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO CURR-DATE.
+
+       CALC-CURR-DATE-EXIT.    EXIT.
+
+       CALC-LA-DATE.
+           MOVE CURR-DATE      TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD L-LA(1)         TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO LA-DATE.
+
+       CALC-LA-DATE-EXIT.      EXIT.
+
+       CALC-LOOK-AHEAD.
+           MOVE CURR-DATE      TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD L-LA(LEVEL1)    TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO LOOK-AHEAD.
+
+       CALC-LOOK-AHEAD-EXIT.   EXIT.
+
+       CALC-NEXT-DATE.
+           MOVE CURR-DATE      TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           ADD L-CYCLE(LEVEL3) TO JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO L-DATE(LEVEL3).
+           SUBTRACT 1          FROM LEVEL3.
+
+       CALC-NEXT-DATE-EXIT.    EXIT.
+
+       CALC-PRER-DATE.
+           MOVE L-DATE(LEVEL1) TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO JUL-SIGN.
+           SUBTRACT L-PRE-REL(LEVEL1) FROM JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN NOT > 366
+               SUBTRACT 365    FROM JUL-SIGN
+               ADD 1           TO   J-YEAR
+               IF L-PARM = "Y"
+                   IF JUL-SIGN > 1
+                       SUBTRACT 1  FROM JUL-SIGN
+                   END-IF
+               END-IF
+           END-PERFORM.
+
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE GREG-DATE      TO SCH-PREREL-DATE.
+
+       CALC-PRER-DATE-EXIT.    EXIT.
+
+       CALC-PR-ID.
+           MOVE TODAYS-DATE    TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE J-DAY          TO WS-PR-DAY.
+           ACCEPT WS-PR-TIME   FROM TIME.
+           IF WS-PR-TIME-9 NOT > WS-LAST-PR-TIME
+               ADD 1           TO WS-LAST-PR-TIME GIVING WS-PR-TIME-9.
+           MOVE WS-PR-TIME-9   TO WS-LAST-PR-TIME.
+
+       CALC-PR-ID-EXIT.        EXIT.
+
+       CALC-SIMCLEAR-DATE.
+           MOVE SPACES         TO CLEAR-DATE.
+           MOVE TODAYS-DATE    TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+
+           MOVE JUL-DATE       TO CLEAR-DATE-9.
+
+       CALC-SIMCLEAR-DATE-EXIT. EXIT.
+
+       999-BLOWUP.
+           MOVE "SPMINITL"     TO BU-PGM-NAME.
+           MOVE VIEW-NFNAME    TO BU-DISPLAY-FLD(1).
+           CALL "TBLOWUP"      USING BASE, BU-PGM-NAME, STATUS-AREA,
+                               VIEW-COMAREA, FILE-STAT,
+                               BU-DISPLAY-MSG, BU-DISPLAY-FLDS.
+
+       END-OF-JOB.
+           CLOSE               PM-MSTR-SCHED
+                               EQP-EQUIPMENT
+                               WO-PLANNED
+                               WO-PLANNED2
+                               PMQ-WORKORDER
+                               PMQ-EQUIPMENT.
+           IF INITIATOR
+               CLOSE           PM-SCHEDULE
+                               PM-MASTER-FILE
+               PERFORM WRITE-INIT-AUDIT THRU WIA-EXIT
+           ELSE
+               CLOSE           PM-SIMULATOR
+           END-IF.
+           GOBACK.
+
+       WRITE-INIT-AUDIT.
+           MOVE SPACES         TO  PM-AUDIT-DATA RETURN-ERROR.
+           MOVE TODAYS-DATE    TO  AUDIT-DATE AUDIT-YRMO.
+           ACCEPT TIME-BUF     FROM TIME.
+           MOVE TIME-HHMM      TO  AUDIT-TIME.
+           MOVE "IN"           TO  AUDIT-TRANS AUDIT-WO-STATUS.
+           MOVE INIT-EQUIP     TO  AUDIT-EQUIP-NUM.
+           MOVE INIT-WONUM     TO  AUDIT-WO-NUM.
+           MOVE "  "           TO  AUDIT-PM-LEVEL-X.
+           MOVE ID-YYYY        TO  AMSG-YY.
+           MOVE ID-MM          TO  AMSG-MM.
+           MOVE ID-DD          TO  AMSG-DD.
+           MOVE AUDIT-INIT-MSG TO  AUDIT-DESC.
+
+           CALL "SPMAUDIT"     USING PM-AUDIT-DATA
+                               DBPARAMETERS
+                               RETURN-ERROR.
+           IF RETURN-ERROR NOT = SPACES
+                DISPLAY RETURN-ERROR.
+
+       WIA-EXIT.               EXIT.
+
+       WRITE-CW-AUDIT.
+           MOVE SPACES         TO  PM-AUDIT-DATA RETURN-ERROR.
+           MOVE TODAYS-DATE    TO  AUDIT-DATE AUDIT-YRMO.
+           ACCEPT TIME-BUF     FROM TIME.
+           MOVE TIME-HHMM      TO  AUDIT-TIME.
+           MOVE "CW"           TO  AUDIT-TRANS AUDIT-WO-STATUS.
+           MOVE INIT-EQUIP     TO  AUDIT-EQUIP-NUM.
+           MOVE PMQ-WO-NUM     TO  AUDIT-WO-NUM.
+           MOVE "  "           TO  AUDIT-PM-LEVEL-X.
+           MOVE "WO CLOSED INCOMPLETE BY REINIT"
+                               TO  AUDIT-DESC.
+
+           CALL "SPMAUDIT"     USING PM-AUDIT-DATA
+                               DBPARAMETERS
+                               RETURN-ERROR.
+           IF RETURN-ERROR NOT = SPACES
+                DISPLAY RETURN-ERROR.
+
+       WCWA-EXIT.              EXIT.
+

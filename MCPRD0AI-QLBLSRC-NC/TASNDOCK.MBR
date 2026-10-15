@@ -1,0 +1,826 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TASNDOCK.
+       AUTHOR.        JEFF BUNGO.
+      *INSTALLATION.  GOODYEAR.
+       DATE-WRITTEN.  APRIL 1997.
+       DATE-COMPILED.
+      *REMARKS.
+      *
+      *D   MAIN PROGRAM FOR ASN DOCK USERS.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    AS400.
+       OBJECT-COMPUTER.    AS400.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DFREIGHT
+               ASSIGN TO DATABASE-MCFLCS2405
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZUDCDOCK-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS SFL-PTR
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+           SELECT USER-FILE    ASSIGN TO DATABASE-VALIDRCV
+                               FILE STATUS IS MPLTINFO-STATUS.
+           SELECT MPLTINFO
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS MPLTINFO-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DFREIGHT
+           LABEL RECORDS ARE STANDARD.
+       01  DFREIGHT-REC.
+           COPY DDS-MCRPCS2400  OF MCFLCS2405.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC          PIC X(2000).
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+
+       FD  USER-FILE
+           RECORD CONTAINS 12 CHARACTERS.
+       01  USER-RCD                   PIC X(12).
+
+       WORKING-STORAGE SECTION.
+      ************************************************************
+      *            W O R K I N G   S T O R A G E                 *
+      ************************************************************
+
+       01  RELATIVE-RECNO         PIC 9(9).
+       01  SFL-PTR                PIC 9(4) VALUE 0.
+
+       01  FILE-STATUS            PIC X(2).
+           88  EOF                          VALUE "10".
+
+      *------ WS CONTROL AREA
+       01  MAJOR-MINOR                 PIC XXXX.
+       01  WS-CONTROL.
+           02  FUNCTION-NUM            PIC XX.
+                   88  EXIT-KEY-F8-USED                     VALUE "08". LVW000LS
+                   88  REFRESH-KEY-F4-USED                  VALUE "04". LVW000LS
+                   88  ENTER-KEY-USED                       VALUE "00". LVW000LS
+                   88  F1-KEY-USED                          VALUE "01". LVW000LS
+                   88  F2-KEY-USED                          VALUE "02". LVW000LS
+                   88  F3-KEY-USED                          VALUE "03". LVW000LS
+                   88  F4-KEY-USED                          VALUE "04". LVW000LS
+                   88  F5-KEY-USED                          VALUE "05". LVW000LS
+                   88  F6-KEY-USED                          VALUE "06". LVW000LS
+                   88  F7-KEY-USED                          VALUE "07". LVW000LS
+                   88  F8-KEY-USED                          VALUE "08". LVW000LS
+           02 FUN-KEY REDEFINES FUNCTION-NUM PIC XX.
+           02 TERMINAL-ID PIC X(10).
+           02 FORMAT-NAME PIC X(10).
+
+       01  DISPLAY-STATUS              PIC X(2).
+           88  NO-MODIFIED-RECORD                VALUE "12".
+           88  NO-SFLREC-FOUND                   VALUE "23".
+           88  LAST-SFLREC-WRITTEN               VALUE "9M".
+
+       01  SRF-INDICATORS.
+           05  IND OCCURS 99 TIMES   PIC 1 INDICATOR 01.
+               88  IND-OFF                        VALUE B"0".
+               88  IND-ON                         VALUE B"1".
+
+       COPY IOFEEDBACK OF COPYLIB.
+       01  PLANT-TYPE                PIC 9        VALUE ZERO.
+           88  AKRON                              VALUE 1.
+
+       01  DUMMY-CODE                PIC X(8)     VALUE SPACES.
+
+      *----------  THE FOLLOWING VARIABLES ARE PASSED TO PO REPRINT PGM
+       01  PO-PASS            PIC X(14)    VALUE "P             ".
+       01  SWITCH-PARAMETERS.
+           05  FILLER                PIC X        VALUE SPACE.
+           05  COMPANY-SAVE          PIC X(3)     VALUE SPACES.
+      *----------  END OF PO REPRINT VARIABLES
+
+      ***********************************************************
+      *                    T A B L E S                          *
+      ***********************************************************
+
+      *----------  VALID RECEIVING DEPARTMENTS AND SPOOLER NUMBERS
+       01  USER-AREA                 PIC X(2400).
+       01  USER-AREA-RD  REDEFINES USER-AREA.
+           02  USER-DATA    OCCURS 200 TIMES
+                            INDEXED BY U-X.
+               05  USER-NAME-UA      PIC X(8).
+               05  RCV-DPT-UA        PIC X(4).
+
+      *----------  DIRECT DELIVERY ITEMS FOR SUBPLANTS
+       01  DIRDEL-AREA                PIC X(60).
+       01  DIRDEL-TABLE REDEFINES DIRDEL-AREA.
+           02  PLANT-AREA OCCURS 6 TIMES.
+               03  DIRDEL-STR-DEPT    PIC X(4).
+               03  DIRDEL-DATE        PIC X(6).
+
+       01  AUTOSTORE-AREA             PIC X(12).
+       01  AUTOSTORE-TABLE REDEFINES AUTOSTORE-AREA.
+           02  AUTOSTR-AREA OCCURS 4 TIMES.
+               03  AUTOSTORE-GRP      PIC X(2).
+               03  AUTOSTORE-SW       PIC X.
+       01  P-A                        PIC 9  VALUE ZERO.
+
+       01  SEARCH-FOR.
+           05  SEARCH-FOR-X OCCURS 12 TIMES PIC X(1).
+       01  SEARCH-CHECK.
+           05  SEARCH-CHK-X OCCURS 12 TIMES PIC X(1).
+
+      **********************************************************
+      *                 S U B S C R I P T S                    *
+      **********************************************************
+       01  P-X                       PIC S9(2)    VALUE ZERO  COMP-4.
+       01  SSUB                      PIC S9(2)    VALUE ZERO  COMP-4.
+
+      **************************************************************
+      *                 C A L L E D  R O U T I N E S               *
+      **************************************************************
+      *----------  WHO CALL RETURNS USER INFORMATION
+       COPY TSPLPRT  IN COPYLIB.
+       COPY CSWITCHF IN COPYLIB.
+       COPY CINFO202 IN COPYLIB.
+       COPY CATREAD  IN COPYLIB.
+       01  MESSAGE-BUFFER            PIC X(76)    VALUE SPACES.
+       01  MESSAGE-BUFFER-RD REDEFINES MESSAGE-BUFFER.
+           05  MSG-BUFFER            PIC X(68).
+           05  MSG-VALUE             PIC X(8).
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76    COMP-4.
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE 0     COMP-4.
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1     COMP-4.
+
+      *---------- VPRINTFORM
+       01  SCREEN-PRINT-PARMS.
+           05  PRINT-CTL             PIC S9(4)    VALUE 1     COMP-4.
+           05  PAGE-CTL              PIC S9(4)    VALUE 49    COMP-4.
+           05  SPOOL-FIL-OPEN-SW     PIC X        VALUE "Y".
+
+       COPY TBLOWUP IN COPYLIB.
+       01 DOCK-OVERSHIPMENT.
+          05  CODED-OVERSHIPMENT     PIC 99       VALUE ZERO.
+          05  NONCODED-OVERSHIPMENT  PIC 99       VALUE ZERO.
+          05  CODED-RAW-OVERSHIPMENT PIC 99       VALUE ZERO.
+          05  RAW-MATERIAL-GROUP.
+              07  RM-GROUP OCCURS 6 TIMES PIC X(2).
+
+       01  PASS-SPOOL             PIC S9(2)   VALUE ZERO COMP.
+       01  BASE-BUDGET            PIC X(24)   VALUE SPACES.
+       01  REQ-PLANT.
+           05  REQ-PLANT-CODE     PIC X(3)    VALUE SPACES.
+           05  FILLER             PIC X(1)    VALUE SPACES.
+       01  REQI-RET-CODE          PIC S9(4)   COMP VALUE ZEROS.
+
+       COPY REQGLOBS IN COPYLIB.
+
+       COPY SMREQINQ IN COPYLIB.
+
+       01 SDSCINQ-PARMS.
+          05  SDSCINQ-COMPANY        PIC X(3)     VALUE SPACES.
+          05  SDSCINQ-DDESC-LANG     PIC X(3)     VALUE SPACES.
+          05  SDSCINQ-DDESC2-LANG    PIC X(3)     VALUE SPACES.
+
+       COPY TDATECHK IN COPYLIB.
+
+      **************************************************************
+      *                    D A T A  B A S E                        *
+      **************************************************************
+       01  MPLTINFO-STATUS           PIC X(2).
+       01  VALIDRCV-STATUS           PIC X(2).
+
+
+       01  MPLTINFO-ARG              PIC X(4)     VALUE "P 01".
+
+       COPY DBSTAT   IN COPYLIB.
+       COPY DBSTHIST IN COPYLIB.
+       COPY MPLTINFO IN COPYLIB.
+       COPY DFREIGHT IN COPYLIB.
+       COPY VCOMAREA IN COPYLIB.
+
+       01  SCREEN-BUFFER                 PIC X(2000).
+
+       01  FORM-NAMES.
+           05  ASNSHIPMNT            PIC X(10)    VALUE "ASNSHIPMNT".
+
+      **********************************************************
+      *               S C R E E N   B U F F E R                *
+      **********************************************************
+       01  DISPLAY-SCREEN.
+           05  SHIPMENT-NUMBER      PIC X(12).
+           05  DE-COMMAND-LINE      PIC X(79).
+           05  DE-MESSAGE-LINE      PIC X(79).
+
+       01  DISPLAY-SFL.
+           05  BUF-SHIPMENT-NUMBER      PIC X(12).
+           05  BUF-SFL.
+               10  BUF-SELECT           PIC X(1).
+               10  BUF-RS-NUMBER.
+                   15  BUF-PO-NUM       PIC X(7).
+                   15  BUF-PO-RLSE      PIC X(3).
+                   15  BUF-PO-RS        PIC X(3).
+
+       01  SEARCH-SFL.
+           05  SEARCH-SELECT            PIC X(1).
+           05  SEARCH-SHIPMENT          PIC X(12).
+           05  SEARCH-DATE              PIC X(8).
+           05  SEARCH-RS-NUMBER.
+               10  SEARCH-PO-NUM        PIC X(7).
+               10  SEARCH-PO-RLSE       PIC X(3).
+               10  SEARCH-PO-RS         PIC X(3).
+
+       01  DISPLAY-FUNC.
+           05  FUNC1                    PIC X(79).
+           05  FUNC2                    PIC X(79).
+
+      ******************************************************
+      *   MISCELLANEOUS DATA TO PASS TO SUBPROGRAMS        *
+      ******************************************************
+       01  BASE-MMISA               PIC X(24)  VALUE SPACES.
+       COPY DOCKMISC IN COPYLIB.
+       COPY LANGUAGE IN COPYLIB.
+       COPY ESCNAM2 IN COPYLIB.
+       COPY ITPARMS IN COPYLIB.
+
+       01  ASN-RECEIVER.
+           05  FILLER              PIC X(1)   VALUE "P".
+           05  ASN-RS              PIC X(13).
+
+      **************************************************************
+      *                                                            *
+      *        P R O C E D U R E        D I V I S I O N            *
+      *                                                            *
+      **************************************************************
+       PROCEDURE DIVISION.
+       00-CONTROL SECTION 00.
+       00-RCVEXEC-MAIN.
+           PERFORM 100-OPEN-ALL THRU 109-EXIT.
+
+           PERFORM 130-INITIALIZATION THRU 139-EXIT.
+
+           PERFORM 200-DOCK-MENU-SCREEN THRU 299-EXIT.
+
+           PERFORM 110-CLOSE-ALL THRU 119-EXIT.
+
+           GOBACK.
+      *************************************************************
+      *              O P E N   A L L   F I L E S                  *
+      *************************************************************
+       100-OPEN-ALL.
+           OPEN INPUT MPLTINFO.
+           OPEN INPUT DFREIGHT.
+           OPEN I-O DISPLAY-FILE.
+           MOVE SPACES TO MISCELLANEOUS-DATA.
+           MOVE "MGR     " TO MISC-USER-NAME.
+       109-EXIT.  EXIT.
+      ***********************************************************
+      *         CLOSE ALL FILES AND INITIALIZE USER KEYS        *
+      ***********************************************************
+       110-CLOSE-ALL.
+           CLOSE MPLTINFO, DISPLAY-FILE DFREIGHT.
+       119-EXIT.  EXIT.
+
+       130-INITIALIZATION.
+      *----------  FIND THE USER AND SPOOLER NUMBERS
+           CALL "TSPLPRT" USING SP-RET-CODE, SP-AREA.
+           IF SP-RET-CODE = "NF"
+              MOVE "SPOOL KEY NOT FOUND * RCVEXEC" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 990-EXIT
+           ELSE
+           IF SP-RET-CODE NOT = "00"
+              MOVE "TSPLPRT ERROR * RCVEXEC" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 990-EXIT.
+
+           MOVE SP-USERNAME        TO MISC-USER-NAME.
+           MOVE SP-SPOOL-NO (1)    TO SPOOL-PRT-NO.
+           MOVE SP-SPOOL-NO (2)    TO ACCTG-PRT-NO.
+           MOVE SP-SPOOL-NO (3)    TO PRINT-PRT-NO.
+
+      *------------ MOVE SPACES TO INTERNAL-ORDER-PARMS USED BY PO
+      *------------ PRINT SUB. 'TPOPRTSL'
+           MOVE SPACES                  TO  INTERNAL-ORDER-PARMS.
+
+      *----------  FIND THE PLANT NUMBER AND PASS IT TO SUBROUTINES
+           MOVE 0 TO COND-WORD.
+           MOVE MPLTINFO-ARG TO PLTINFOKEY  OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+                 MOVE "DBGET MPLTINFO - TASNDOCK " TO BU-DISPLAY-MSG
+                 PERFORM 990-BLOWUP THRU 990-EXIT.
+           MOVE MPLTINFO-COMPANY TO PLT-NUMBER-PASS, COMPANY-SAVE.
+           IF TELLS-WHICH-PLANT = "11"
+              MOVE 1 TO PLANT-TYPE
+           ELSE
+              MOVE 0 TO PLANT-TYPE.
+           MOVE SPACES TO USER-AREA, DIRDEL-AREA, AUTOSTORE-AREA.
+
+      *-------  FIND THE CAPITAL ITEM PRINTER AND RAW MATERIAL PRTR&P
+           MOVE "POPT" TO MPLTINFO-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO   INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+                 MOVE "DBGET MPLTINFO2 - TASNDOCK " TO BU-DISPLAY-MSG
+                 PERFORM 990-BLOWUP THRU 990-EXIT.
+           MOVE MPLTINFO-CAP-ITEM-PRT TO MISC-CAPITAL-SPOOLER.
+           IF MPLTINFO-CAP-ITEM-PRT = "00"
+              MOVE "N" TO MISC-PRINT-CAP-ITEMS
+           ELSE
+              MOVE "Y" TO MISC-PRINT-CAP-ITEMS.
+
+           MOVE MPLTINFO-RAWMAT-PRT-NO TO RAW-MAT-SPOOLER.
+
+      *-------  FIND P326 SWITCH TO PASS TO SUBROUTINES
+           MOVE "P326" TO MPLTINFO-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               MOVE "N" TO MISC-P326-SW
+           ELSE
+               MOVE MPLTINFO-P326-SW TO MISC-P326-SW.
+
+      *-------  FIND OVERSHIPMENT PERCENTAGES AND RAW MATERIAL MAJOR GROUPS
+           MOVE "OVSH" TO MPLTINFO-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+                 MOVE "DBGET MPLTINFO2 - TASNDOCK " TO BU-DISPLAY-MSG
+                 PERFORM 990-BLOWUP THRU 990-EXIT.
+           MOVE MPLTINFO-CODED-OVSH-VALUE TO CODED-OVERSHIPMENT.
+           MOVE MPLTINFO-NCODED-OVSH-VALUE TO NONCODED-OVERSHIPMENT.
+           MOVE MPLTINFO-CODED-RM-OVSH-VALUE TO CODED-RAW-OVERSHIPMENT.
+           MOVE MPLTINFO-RM-MAJOR-GROUP TO RAW-MATERIAL-GROUP.
+           IF MPLTINFO-DOCK-SPECIAL-PRINT = SPACES
+               MOVE "Y" TO DOCK-SPECIAL-PRINT
+           ELSE
+               MOVE MPLTINFO-DOCK-SPECIAL-PRINT TO DOCK-SPECIAL-PRINT.
+
+      *----------  FIND CLASS IF TALLY NUMBER IS REQUIRED AT RECEIPT.
+           MOVE MPLTINFO-TALLY-CLASS TO TALLY-CLASS.
+
+      *----------  LOAD AUTOMATIC STORE SWITCH FOR RAW MATERIALS
+           MOVE 1 TO P-A.
+       132-LOAD-AUTOSTORE.
+           MOVE MPLTINFO-MJRGRP (P-A) TO AUTOSTORE-GRP (P-A).
+           MOVE MPLTINFO-STORE-SW (P-A) TO AUTOSTORE-SW (P-A).
+           ADD 1 TO P-A.
+           IF P-A < 5
+              GO TO 132-LOAD-AUTOSTORE.
+
+           SET U-X TO 1.
+           MOVE 1 TO P-A.
+      *----------  FIND THE STOREROOM DEPARTMENTS FOR DIRECT DELIVERY
+           MOVE "DSTR" TO MPLTINFO-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO INVALID KEY
+                MOVE 17 TO COND-WORD.
+           IF COND-WORD NOT = 0
+                 MOVE "DBGET MPLTINFO2 - TASNDOCK " TO BU-DISPLAY-MSG
+                 PERFORM 990-BLOWUP THRU 990-EXIT.
+           IF AKRON
+              OPEN INPUT USER-FILE
+              IF MPLTINFO-STATUS NOT = "00"
+                  GO TO 137-READ-DIRDEL-FILE
+              ELSE
+                  GO TO 135-READ-USER-FILE
+           ELSE
+              GO TO 137-READ-DIRDEL-FILE.
+
+       135-READ-USER-FILE.
+           READ USER-FILE INTO USER-DATA (U-X)
+                AT END CLOSE USER-FILE
+                GO TO 139-EXIT.
+           IF MPLTINFO-STATUS NOT = "00"
+               GO TO 139-EXIT.
+           SET U-X UP BY 1.
+           GO TO 135-READ-USER-FILE.
+       137-READ-DIRDEL-FILE.
+           MOVE MPLTINFO-DEPT-STR (P-A)  TO DIRDEL-STR-DEPT (P-A).
+           IF P-A = 6
+              GO TO 139-EXIT.
+           ADD 1 TO P-A.
+           GO TO 137-READ-DIRDEL-FILE.
+       139-EXIT.  EXIT.
+
+       200-DOCK-MENU-SCREEN.
+           MOVE ASNSHIPMNT TO VIEW-NFNAME.
+
+       205-DISPLAY-SCREEN.
+           MOVE DISPLAY-SCREEN  TO SCREEN-BUFFER.
+           MOVE SCREEN-BUFFER TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS VIEW-NFNAME
+              INDIC ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           READ  DISPLAY-FILE FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           MOVE DISPLAY-REC TO SCREEN-BUFFER.
+           MOVE SPACES TO DE-MESSAGE-LINE.
+
+      *------ A BAD STATUS MAY MEAN USER TURNED OFF TERMINAL.
+      *------ IF SO, SIMULATE THE F3 KEY TO EXIT PROGRAM.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+           IF VIEW-LASTKEY EQUAL 2 OR
+              VIEW-LASTKEY EQUAL 4 OR
+              VIEW-LASTKEY EQUAL 5 OR
+              VIEW-LASTKEY EQUAL 6 OR
+              VIEW-LASTKEY EQUAL 7 OR
+              VIEW-LASTKEY EQUAL 8
+              MOVE 9 TO LANG-SETNUM
+              MOVE 10 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 205-DISPLAY-SCREEN.
+           MOVE SCREEN-BUFFER TO DISPLAY-SCREEN.
+           IF VIEW-LASTKEY EQUAL 3
+              GO TO 299-EXIT.
+           IF VIEW-LASTKEY EQUAL 1
+              MOVE "SEARCHING..." TO DE-COMMAND-LINE
+              MOVE DISPLAY-SCREEN TO SCREEN-BUFFER
+              MOVE SCREEN-BUFFER TO DISPLAY-REC
+              WRITE DISPLAY-REC FORMAT IS VIEW-NFNAME
+                INDIC ARE SRF-INDICATORS
+              END-WRITE
+              MOVE SHIPMENT-NUMBER TO FRTPACKSLP OF DFREIGHT-REC
+              START DFREIGHT KEY NOT < EXTERNALLY-DESCRIBED-KEY
+                INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+              END-START
+              IF FILE-STATUS NOT = "00"
+      *         DOES NOT EXIST
+                MOVE 30 TO LANG-SETNUM
+                MOVE 1 TO LANG-MSGNUM
+                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                MOVE 1 TO FIELD-NUMBER
+                PERFORM 940-VSETERROR THRU 949-EXIT
+                GO TO 205-DISPLAY-SCREEN
+              END-IF
+              PERFORM 901-CLEAR-SEARCH-SFL THRU 901-CLEAR-SEARCH-SFL
+              MOVE 0 TO SFL-PTR
+              PERFORM 303-SHIPMENT-SEARCH THRU 303-SHIPMENT-SEARCH-X
+              IF EOF AND SFL-PTR = 0
+      *         DOES NOT EXIST
+                 MOVE 30 TO LANG-SETNUM
+                 MOVE 1 TO LANG-MSGNUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE 1 TO FIELD-NUMBER
+                 PERFORM 940-VSETERROR THRU 949-EXIT
+                 GO TO 205-DISPLAY-SCREEN
+              END-IF
+              IF SHIPMENT-NUMBER = SPACES
+                 GO TO 205-DISPLAY-SCREEN.
+
+      *------VERIFY SHIPMENT NUMBER FROM DPOFREIGHT
+           MOVE SHIPMENT-NUMBER TO FRTPACKSLP OF DFREIGHT-REC.
+           READ DFREIGHT INTO BUF-DPOFREIGHT
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+           END-READ.
+           IF FILE-STATUS NOT = "00"
+      *         DOES NOT EXIST
+              MOVE 30 TO LANG-SETNUM
+              MOVE 1 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE 1 TO FIELD-NUMBER
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 205-DISPLAY-SCREEN.
+
+      *------LIST PURCHASE ORDERS ON THIS SHIPMENT NUMBER
+           PERFORM 900-CLEAR-SUBFILE THRU 900-CLEAR-SUBFILE-X.
+
+           MOVE SHIPMENT-NUMBER TO FRTPACKSLP OF DFREIGHT-REC.
+           START DFREIGHT
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+      *         DOES NOT EXIST
+              MOVE 30 TO LANG-SETNUM
+              MOVE 1 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE 1 TO FIELD-NUMBER
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 205-DISPLAY-SCREEN.
+           MOVE ZEROS TO SFL-PTR.
+           PERFORM 301-GET-SHIPMENT THRU 301-GET-SHIPMENT-X
+              UNTIL EOF.
+           IF EOF AND SFL-PTR = 0
+      *         DOES NOT EXIST
+              MOVE 30 TO LANG-SETNUM
+              MOVE 1 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              MOVE 1 TO FIELD-NUMBER
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 205-DISPLAY-SCREEN.
+
+       SHOW-SUBFILE.
+           WRITE SUBFILE DISPLAY-REC FROM DISPLAY-FUNC
+              FORMAT IS "ASNSHIP"
+              INDICATORS ARE SRF-INDICATORS.
+           MOVE SHIPMENT-NUMBER TO BUF-SHIPMENT-NUMBER.
+           SET IND-ON(70) TO TRUE.
+           SET IND-ON(71) TO TRUE.
+           SET IND-OFF(72) TO TRUE.
+           SET IND-ON(73) TO TRUE.
+           WRITE SUBFILE DISPLAY-REC FROM DISPLAY-SFL
+              FORMAT IS "ASNSHPSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "ERROR ON SHOW SFL WRITE" TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 990-BLOWUP THRU 990-EXIT.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           SET IND-ON(70) TO TRUE.
+           SET IND-ON(71) TO TRUE.
+           SET IND-OFF(72) TO TRUE.
+           SET IND-ON(73) TO TRUE.
+           READ DISPLAY-FILE
+              FORMAT IS "ASNSHPSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 03 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+           IF VIEW-LASTKEY = 3
+               GO TO 200-DOCK-MENU-SCREEN.
+           IF VIEW-LASTKEY EQUAL 1 OR
+              VIEW-LASTKEY EQUAL 2 OR
+              VIEW-LASTKEY EQUAL 4 OR
+              VIEW-LASTKEY EQUAL 5 OR
+              VIEW-LASTKEY EQUAL 6 OR
+              VIEW-LASTKEY EQUAL 7 OR
+              VIEW-LASTKEY EQUAL 8
+              MOVE 9 TO LANG-SETNUM
+              MOVE 10 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 205-DISPLAY-SCREEN.
+
+           PERFORM 920-PROCESS-SFL THRU 920-PROCESS-SFL-X
+              UNTIL NO-MODIFIED-RECORD.
+
+           GO TO 200-DOCK-MENU-SCREEN.
+
+       299-EXIT.  EXIT.
+
+       301-GET-SHIPMENT.
+           READ DFREIGHT NEXT INTO BUF-DPOFREIGHT
+             AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               SET EOF TO TRUE
+               GO TO 301-GET-SHIPMENT-X.
+           IF FRT-PACK-SLIP NOT = SHIPMENT-NUMBER
+               SET EOF TO TRUE
+               GO TO 301-GET-SHIPMENT-X.
+           IF FRT-ASN-INDIC = "X"
+               MOVE FRT-PO-NUM TO BUF-PO-NUM
+               MOVE FRT-PO-RLSE TO BUF-PO-RLSE
+               MOVE FRT-PO-RS  TO BUF-PO-RS
+               PERFORM 910-WRITE-SFL-REC THRU 910-WRITE-SFL-REC-X
+           END-IF.
+       301-GET-SHIPMENT-X.
+           EXIT.
+
+       302-RECEIVE-ASN.
+           MOVE BUF-RS-NUMBER TO ASN-RS.
+           CALL "SRCVEXEC" USING BASE-MMISA,
+                                 MISCELLANEOUS-DATA,
+                                 VIEW-COMAREA,
+                                 DSET-ARRAY,
+                                 USER-AREA,
+                                 DIRDEL-AREA,
+                                 AUTOSTORE-AREA,
+                                 LANGUAGE-PARMS,
+                                 ESC-NAME
+                                 DOCK-OVERSHIPMENT
+                                 ASN-RECEIVER.
+       302-RECEIVE-ASN-X.
+           EXIT.
+
+       303-SHIPMENT-SEARCH.
+           MOVE "00" TO FILE-STATUS.
+           MOVE SHIPMENT-NUMBER TO SEARCH-FOR.
+           PERFORM 401-GET-SEARCH THRU 401-GET-SEARCH-X
+             UNTIL EOF.
+           IF EOF AND SFL-PTR = 0
+               GO TO 303-SHIPMENT-SEARCH-X.
+           WRITE DISPLAY-REC FROM DISPLAY-FUNC
+              FORMAT IS "ASNSEARCH"
+              INDICATORS ARE SRF-INDICATORS.
+           SET IND-ON(70) TO TRUE.
+           SET IND-ON(71) TO TRUE.
+           SET IND-OFF(72) TO TRUE.
+           SET IND-ON(73) TO TRUE.
+           WRITE SUBFILE DISPLAY-REC FROM SEARCH-SFL
+              FORMAT IS "ASNSRCSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "ERROR ON SHOW SFL WRITE" TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 990-BLOWUP THRU 990-EXIT.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           SET IND-ON(70) TO TRUE.
+           SET IND-ON(71) TO TRUE.
+           SET IND-OFF(72) TO TRUE.
+           SET IND-ON(73) TO TRUE.
+           READ DISPLAY-FILE
+              FORMAT IS "ASNSRCSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 03 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+           IF VIEW-LASTKEY = 3
+               MOVE SPACES TO SHIPMENT-NUMBER
+               GO TO 303-SHIPMENT-SEARCH-X.
+           IF VIEW-LASTKEY EQUAL 1 OR
+              VIEW-LASTKEY EQUAL 2 OR
+              VIEW-LASTKEY EQUAL 4 OR
+              VIEW-LASTKEY EQUAL 5 OR
+              VIEW-LASTKEY EQUAL 6 OR
+              VIEW-LASTKEY EQUAL 7 OR
+              VIEW-LASTKEY EQUAL 8
+              MOVE 9 TO LANG-SETNUM
+              MOVE 10 TO LANG-MSGNUM
+              PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+              PERFORM 940-VSETERROR THRU 949-EXIT
+              GO TO 303-SHIPMENT-SEARCH.
+
+           PERFORM 921-PROCESS-SEARCH THRU 921-PROCESS-SEARCH-X
+              UNTIL NO-MODIFIED-RECORD.
+       303-SHIPMENT-SEARCH-X.
+           EXIT.
+
+       401-GET-SEARCH.
+           READ DFREIGHT NEXT INTO BUF-DPOFREIGHT
+             AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               SET EOF TO TRUE
+               GO TO 401-GET-SEARCH-X.
+           MOVE FRT-PACK-SLIP TO SEARCH-CHECK.
+           PERFORM VARYING SSUB FROM 1 BY 1
+             UNTIL EOF OR SSUB > 12
+               IF SEARCH-FOR-X(SSUB) > SPACES
+                 IF SEARCH-FOR-X(SSUB) < SEARCH-CHK-X(SSUB) OR
+                    SEARCH-FOR-X(SSUB) > SEARCH-CHK-X(SSUB)
+                     SET EOF TO TRUE
+                 END-IF
+               END-IF
+           END-PERFORM.
+           IF NOT EOF
+             IF FRT-ASN-INDIC = "X"
+               MOVE FRT-PACK-SLIP TO SEARCH-SHIPMENT
+               MOVE FRT-DATE-RCVD TO DATE-VALIDATE-IN
+               MOVE 4 TO DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT TO SEARCH-DATE
+               MOVE FRT-PO-NUM TO SEARCH-PO-NUM
+               MOVE FRT-PO-RLSE TO SEARCH-PO-RLSE
+               MOVE FRT-PO-RS  TO SEARCH-PO-RS
+               PERFORM 911-WRITE-SFL-REC THRU 911-WRITE-SFL-REC-X
+             END-IF
+           END-IF.
+       401-GET-SEARCH-X.
+           EXIT.
+
+       900-CLEAR-SUBFILE.
+           SET IND-ON (71) TO TRUE.
+           SET IND-ON (72) TO TRUE.
+           SET IND-OFF(73) TO TRUE.
+           WRITE SUBFILE DISPLAY-REC FROM DISPLAY-SFL
+              FORMAT IS "ASNSHPSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "PROBLEM ON INIT SFL WRITE " TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 990-BLOWUP THRU 990-EXIT.
+           SET IND-OFF(72) TO TRUE.
+       900-CLEAR-SUBFILE-X.
+           EXIT.
+
+       901-CLEAR-SEARCH-SFL.
+           SET IND-OFF(70) TO TRUE.
+           SET IND-ON (71) TO TRUE.
+           SET IND-ON (72) TO TRUE.
+           SET IND-OFF(73) TO TRUE.
+           WRITE SUBFILE DISPLAY-REC FROM SEARCH-SFL
+              FORMAT IS "ASNSRCSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "PROBLEM ON INIT SEARCH SFL WRITE" TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 990-BLOWUP THRU 990-EXIT.
+           SET IND-OFF(72) TO TRUE.
+           SET IND-ON(71) TO TRUE.
+       901-CLEAR-SEARCH-SFL-X.
+           EXIT.
+
+       910-WRITE-SFL-REC.
+           ADD 1 TO SFL-PTR.
+           WRITE SUBFILE DISPLAY-REC
+                 FROM BUF-SFL
+                 FORMAT IS "ASNSHPSFL"
+                 INDICATORS ARE SRF-INDICATORS.
+       910-WRITE-SFL-REC-X.
+           EXIT.
+
+       911-WRITE-SFL-REC.
+           ADD 1 TO SFL-PTR.
+           WRITE SUBFILE DISPLAY-REC
+                 FROM SEARCH-SFL
+                 FORMAT IS "ASNSRCSFL"
+                 INDICATORS ARE SRF-INDICATORS.
+       911-WRITE-SFL-REC-X.
+           EXIT.
+
+       920-PROCESS-SFL.
+           READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+              INTO BUF-SFL
+              FORMAT IS "ASNSHPSFL"
+              INDICATORS ARE SRF-INDICATORS.
+           IF NO-MODIFIED-RECORD
+               NEXT SENTENCE
+           ELSE
+               IF DISPLAY-STATUS NOT = "00"
+                   SET NO-MODIFIED-RECORD TO TRUE
+               ELSE
+                   IF BUF-SELECT NOT = SPACES
+                       PERFORM 302-RECEIVE-ASN THRU 302-RECEIVE-ASN-X.
+       920-PROCESS-SFL-X.
+           EXIT.
+
+       921-PROCESS-SEARCH.
+           READ SUBFILE DISPLAY-FILE NEXT MODIFIED RECORD
+              INTO SEARCH-SFL
+              FORMAT IS "ASNSRCSFL"
+              INDICATORS ARE SRF-INDICATORS.
+           IF NO-MODIFIED-RECORD
+               NEXT SENTENCE
+           ELSE
+               IF DISPLAY-STATUS NOT = "00"
+                   SET NO-MODIFIED-RECORD TO TRUE
+               ELSE
+                   IF SEARCH-SELECT NOT = SPACES
+                       MOVE SPACES TO SEARCH-SELECT
+                       MOVE SEARCH-SHIPMENT TO SHIPMENT-NUMBER.
+       921-PROCESS-SEARCH-X.
+           EXIT.
+
+      *****************************************************************
+      *               E R R O R   R O U T I N E S                     *
+      *****************************************************************
+       940-VSETERROR.
+           MOVE B"1" TO IND (99).
+           MOVE B"1" TO IND (FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER TO DE-MESSAGE-LINE.
+
+       949-EXIT.  EXIT.
+      ************************************************************
+      *                    B L O W U P                           *
+      *     CHECK FOR IMAGE, VIEW, OR SPOOL ERROR.  CLOSE        *
+      *     FILES, GET OUT OF BLOCK MODE, AND DISPLAY            *
+      *     APPROPRIATE ERROR MESSAGE ON SCREEN.                 *
+      *                                                          *
+      *     ALSO APPENDS THE ERROR MESSAGE TO A FILE CALLED      *
+      *     BLOWUP.PUB.  TO READ THIS FILE, RUN "XBLPRT.OBJECT". *
+      *                                                          *
+      *         |||  PROGRAM IS ABORTED IN TBLOWUP  |||          *
+      ************************************************************
+       990-BLOWUP.
+           MOVE "TASNDOCK" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-FLDS.
+           GOBACK.
+       990-EXIT.  EXIT.
+
+       999-CATREAD.
+           MOVE LANG-SETNUM TO CATREAD-MSG-SET.
+           MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

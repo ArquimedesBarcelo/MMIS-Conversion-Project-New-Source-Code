@@ -1,0 +1,460 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TVBWOGEN.
+       AUTHOR.                 CA YODER.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      ****************************************************************
+      *                                                              *
+      *  THIS PROGRAM AUTOMATICALLY GENERATES VERBAL WORKORDERS.     *
+      *  IT READS THE FILE VERBWOFL FOR THE WORKORDER INFORMATION.   *
+      *                                                              *
+      *****************************************************************
+      **                MODIFICATION   HISTORY
+      *****************************************************************
+      *C 12/1/00   JEC COFFMAN
+      *C  ADDED THE ABILITY TO GENERATE WORK ORDERS AUTOMATICALLY
+      *C  BASED ON THE FREQUENCY INDICATOR LOADED VIA PROGRAM TWOMAINT.
+      *C  THE FREQUENCY INDICATOR IS 'D'- DAILY, 'W'-WEEKLY AND 'M' -
+      *C  MONTHLY.
+      *----------------------------------------------------------------
+      *C 01/08/2004    GEISER
+      *C  FIXED MONTHLY AND WEEKLY FREQUENCY LOGIC.
+      *C
+      *----------------------------------------------------------------
+      *    JAN 19 2005  D. RAUCH     DCR01      REQUEST# 2004-25457
+      *    1)  ADDED PROCESSING FOR FREQ VALUE OF "Q" FOR QUARTERLY
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+      *SPECIAL-NAMES.          REQUESTOR IS WORK-STATION
+      *                        SYSTEM-CONSOLE IS CONSOLE
+      *                        LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT EQP-EQUIPMENT
+                  ASSIGN       TO DATABASE-MCFLMM0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-CRAFTS-REQD
+                  ASSIGN       TO DATABASE-MCFLMM0601
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT VERBWOFL-I
+                  ASSIGN TO DATABASE-VERBWOFL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  EQP-EQUIPMENT
+           LABEL RECORDS       ARE STANDARD.
+       01  EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+
+       FD  WO-CRAFTS-REQD
+           LABEL RECORDS ARE STANDARD.
+       01  CFT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0601.
+
+       FD  VERBWOFL-I
+           DATA RECORD IS VERBWOFL-REC-I
+           RECORD CONTAINS 200 CHARACTERS
+           LABEL RECORDS ARE STANDARD.
+       01  VERBWOFL-REC-I             PIC X(200).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO                     PIC 9999  VALUE 1.
+       77  SUB                        PIC 99    VALUE 0.
+       77  SUBT                       PIC 99    VALUE 0.
+       77  ERROR-SW                   PIC 9     VALUE 0.
+       77  CONDIT-CODE                PIC X     VALUE SPACE.
+       77  QUEUE-PRTY                 PIC 9     VALUE ZEROS.
+       77  QUEUE-SW                   PIC X.
+       77  QUEUE-ERROR                PIC X(76).
+       77  MSG-HOLD                   PIC X(50).
+       77  ERROR-SWITCH               PIC S9(4)        COMP-4.
+       77  WORK-ORDER-NUMBER          PIC X(10).
+       77  CFT-HOLD                   PIC XX.
+       77  FILE-STAT                  PIC XX.
+       77  TRUE-VAL                   PIC 1     VALUE B"1".
+       77  NEG-VAL                    PIC 1     VALUE B"0".
+       77  RECNO                      PIC 9999  VALUE 0.
+
+       01  BUILD-YEAR.
+           05  BUILD-CC               PIC 9(2).
+           05  BUILD-YY               PIC 9(2).
+
+       01  JULIAN-DDD                 PIC 9(3).
+
+       01  VERBWOFL-EOF-SW            PIC X     VALUE "N".
+
+       01  WORKORDER-COUNT            PIC 9(3)  VALUE 0.
+
+       01  PASSED-YEAR                PIC 9(4).
+       01  PASSED-DDD                 PIC 9(3).
+       01  RETURN-DOW                 PIC X(2).
+
+       01  TIME-BUFFER.
+           05  CUR-TIME.
+               10  CUR-HRS            PIC XX.
+               10  CUR-MINS           PIC XX.
+           05  CUR-SECS               PIC XXXX.
+
+       01  TODAYS-DATE.
+           05  DATE-BUF-CT            PIC XX.
+           05  DATE-BUFFER.
+               10  DATE-BUF-YY        PIC XX.
+               10  DATE-BUF-MM        PIC XX.
+               10  DATE-BUF-DD        PIC XX.
+
+       01  WS-DATE.
+           03  WS-DATE-CT             PIC 99.
+           03  WS-DATE-YYMMDD.
+               05  WS-DATE-YY         PIC 99.
+               05  WS-DATE-MM         PIC 99.
+               05  WS-DATE-DD         PIC 99.
+
+DCR01 *----------------------------------------------------------------
+DCR01  01  WS-MY-MISC-FLDS.
+DCR01      03  WS-QTRLY-SW            PIC X              VALUE SPACE.
+DCR01          88  CREAT-QTRLY-WOS-NO                    VALUE "N".
+DCR01          88  CREAT-QTRLY-WOS-YES                   VALUE "Y".
+
+DCR01 *----------------------------------------------------------------
+DCR01 *-- QUARTERLY DATES
+DCR01 *----------------------------------------------------------------
+DCR01      03  WS-EOQ-1               PIC X(04)        VALUE "0101".
+DCR01      03  WS-EOQ-2               PIC X(04)        VALUE "0401".
+DCR01      03  WS-EOQ-3               PIC X(04)        VALUE "0701".
+DCR01      03  WS-EOQ-4               PIC X(04)        VALUE "1001".
+
+DCR01      03  WS-CUR-DATE.
+DCR01          05  WS-CUR-CC          PIC XX           VALUE SPACE.
+DCR01          05  WS-CUR-YY          PIC XX           VALUE SPACE.
+DCR01          05  WS-CUR-MMDD.
+DCR01              10  WS-CUR-MM      PIC XX           VALUE SPACE.
+DCR01              10  WS-CUR-DD      PIC XX           VALUE SPACE.
+
+DCR01 *----------------------------------------------------------------
+
+       01  WO-NUM-TRIM.
+           05  WO-F7                  PIC X(07).
+           05  WO-L3                  PIC X(03).
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  EQUIPMENT-DATA.
+           COPY MEQPFILE       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-QUEUE-DATA.
+           COPY DWOOPENQ       IN COPYLIB.
+
+       01  WO-CRAFT-DATA.
+           COPY MWOCRAFT       IN COPYLIB.
+
+       01  WO-TRACK-DATA.
+           COPY DWOTRACK       IN COPYLIB.
+
+       COPY DATAB              IN COPYLIB.
+
+       COPY VERBWOFL           IN COPYLIB.
+
+       COPY TBLOWUP            IN COPYLIB.
+
+       PROCEDURE DIVISION.
+
+       1-BEGIN.
+
+           PERFORM 1-HSK.
+           IF VERBWOFL-EOF-SW = "N"
+               PERFORM 6-MAIN UNTIL VERBWOFL-EOF-SW = "Y"
+               DISPLAY "*** NUMBER OF WORKORDERS GENERATED:  ",
+                              WORKORDER-COUNT, " ***"
+           ELSE
+               DISPLAY "** FILE EMPTY--NO WORKORDERS GENERATED **".
+           PERFORM 2-END.
+           GOBACK.
+
+      *---------------------------------------------------------------*
+      *                  H O U S E K E E P I N G                      *
+      *---------------------------------------------------------------*
+
+       1-HSK.
+           OPEN INPUT          EQP-EQUIPMENT
+                               WO-CRAFTS-REQD
+                               VERBWOFL-I.
+
+           ACCEPT DATE-BUFFER FROM DATE.
+           IF DATE-BUF-YY < 80
+               MOVE 20      TO DATE-BUF-CT
+           ELSE
+           MOVE 19          TO DATE-BUF-CT.
+
+DCR01      MOVE TODAYS-DATE  TO WS-CUR-DATE.
+DCR01      SET  CREAT-QTRLY-WOS-NO   TO TRUE.
+
+DCR01      IF  WS-CUR-MMDD = WS-EOQ-1
+DCR01      OR  WS-CUR-MMDD = WS-EOQ-2
+DCR01      OR  WS-CUR-MMDD = WS-EOQ-3
+DCR01      OR  WS-CUR-MMDD = WS-EOQ-4
+DCR01          SET  CREAT-QTRLY-WOS-YES  TO TRUE
+DCR01      END-IF.
+
+
+           MOVE DATE-BUF-CT  TO BUILD-CC.
+           MOVE DATE-BUF-YY  TO BUILD-YY.
+           MOVE BUILD-YEAR   TO PASSED-YEAR.
+
+           MOVE ZEROS   TO JULIAN-DDD.
+           CALL "CJULIAN"  USING PASSED-YEAR, DATE-BUF-MM, DATE-BUF-DD,
+                             JULIAN-DDD.
+           CALL "CDAYOFWK"  USING PASSED-YEAR, JULIAN-DDD, RETURN-DOW.
+
+           DISPLAY "JULIAN DATE IS - " PASSED-YEAR JULIAN-DDD.
+           DISPLAY "DAY OF WEEK IS - " RETURN-DOW.
+
+
+           READ VERBWOFL-I INTO BUF-VERBWOFL
+              AT END MOVE "Y" TO VERBWOFL-EOF-SW.
+
+      *---------------------------------------------------------------*
+      *                  E N D   O F   J O B                          *
+      *---------------------------------------------------------------*
+
+       2-END.
+           CLOSE               EQP-EQUIPMENT
+                               WO-CRAFTS-REQD
+                               VERBWOFL-I.
+
+      *---------------------------------------------------------------*
+      *                 M A I N   P A R A G R A P H                   *
+      *---------------------------------------------------------------*
+
+       6-MAIN.
+           PERFORM 60-VALIDATE-DATA.
+      *  CREATE MONTHLY WO IF FIRST DAY OF THE MONTH
+           IF V-FREQ-IND = "M"
+               IF DATE-BUF-DD = "01"
+                   PERFORM 61-WRITE-WO
+               ELSE
+               NEXT SENTENCE
+           ELSE
+      *  CREATE WEEKLY WO IF DAY OF WEEK IS MONDAY
+           IF V-FREQ-IND = "W"
+               IF RETURN-DOW = "MO"
+                   PERFORM 61-WRITE-WO
+               ELSE
+               NEXT SENTENCE
+           ELSE
+DCR01      IF V-FREQ-IND = "Q"
+DCR01          IF CREAT-QTRLY-WOS-YES
+DCR01              PERFORM 61-WRITE-WO
+DCR01          ELSE
+DCR01          NEXT SENTENCE
+DCR01      ELSE
+      *  ALWAYS CREATE DAILY WORK ORDERS
+           IF V-FREQ-IND = "D"
+               PERFORM 61-WRITE-WO.
+
+           READ VERBWOFL-I INTO BUF-VERBWOFL
+              AT END MOVE "Y" TO VERBWOFL-EOF-SW.
+
+      *---------------------------------------------------------------*
+      *                 V A L I D A T E   D A T A                     *
+      *---------------------------------------------------------------*
+
+       60-VALIDATE-DATA.
+
+      *----- EQUIPMENT NUMBER VALIDATION
+
+           IF V-EQUIP-NUM = SPACES
+               MOVE "EQUIPMENT NUMBER IS MISSING"
+                                  TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+           MOVE V-EQUIP-NUM       TO  EQPNUM OF EQP-EQUIPMENT.
+           READ EQP-EQUIPMENT  INTO EQUIPMENT-DATA
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "EQUIPMENT NUMBER DOES NOT EXIST"
+                                  TO  BU-DISPLAY-MSG
+               MOVE V-EQUIP-NUM   TO  BU-DISPLAY-FLD (1)
+               PERFORM 9999-BLOWUP.
+
+           IF EQP-SAFETY-FLG = "X"
+               MOVE "CANNOT CREATE WORKORDER AGAINST SAFETY EQUIPMENT"
+                                  TO  BU-DISPLAY-MSG
+               MOVE V-EQUIP-NUM   TO  BU-DISPLAY-FLD (1)
+               PERFORM 9999-BLOWUP.
+
+      *----- SKILL VALIDATION
+
+           IF V-SKILL-REQ (1) = SPACES AND V-SKILL-REQ (2) = SPACES
+                                       AND V-SKILL-REQ (3) = SPACES
+               MOVE "CRAFT (SKILL) IS MISSING"
+                                  TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 3
+               MOVE V-SKILL-REQ (SUB) TO  CRAFTREQD OF WO-CRAFTS-REQD
+               READ WO-CRAFTS-REQD INTO WO-CRAFT-DATA
+                   INVALID KEY     MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT NOT = "00"
+                   MOVE "CRAFT (SKILL) DOES NOT EXIST"
+                                      TO  BU-DISPLAY-MSG
+                   MOVE V-SKILL-REQ (SUB)   TO  BU-DISPLAY-FLD (1)
+                   PERFORM 9999-BLOWUP
+               END-IF
+           END-PERFORM.
+
+      *----- DESCRIPTION VALIDATION
+
+           IF V-WO-DESCRIP = SPACES
+               MOVE "DESCRIPTION IS MISSING"
+                                  TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+      *----- REQUESTOR VALIDATION
+
+           IF V-REQUESTOR = SPACES
+               MOVE "REQUESTOR IS MISSING"
+                                  TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+           IF V-FREQ-IND = SPACES
+               MOVE "D"           TO V-FREQ-IND.
+
+DCR01 *****IF V-FREQ-IND = "D" OR "W" OR "M"
+           IF V-FREQ-IND = "D" OR "W" OR "M" OR "Q"
+               NEXT SENTENCE
+           ELSE
+               MOVE "FREQ INDICATOR INVALID"
+                                  TO  BU-DISPLAY-MSG
+               MOVE V-FREQ-IND    TO  BU-DISPLAY-FLD (1)
+               PERFORM 9999-BLOWUP.
+
+      *---------------------------------------------------------------*
+      *            W R I T E   W O R K   O R D E R                    *
+      *---------------------------------------------------------------*
+
+       61-WRITE-WO.
+
+           ACCEPT TIME-BUFFER  FROM TIME.
+           ACCEPT DATE-BUFFER  FROM DATE.
+           CALL "TNEWWONU"     USING DBPARAMETERS
+                               STATUS-AREA
+                               WORK-ORDER-NUMBER
+                               ERROR-SWITCH.
+           IF ERROR-SWITCH NOT = 0
+               MOVE "ERROR WHEN CALLING TNEWWONU"
+                                  TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+           MOVE SPACES            TO  WO-BASIC-DATA.
+           MOVE WORK-ORDER-NUMBER TO  WO-NUM.
+           MOVE "N"               TO  EQUIP-DOWN.
+           MOVE "OO"              TO  WO-STATUS.
+           MOVE DATE-BUF-MM       TO  DATE-RECD-MM.
+           MOVE DATE-BUF-DD       TO  DATE-RECD-DD.
+           MOVE DATE-BUF-YY       TO  DATE-RECD-YY.
+           IF DATE-BUF-YY > "70"
+               MOVE "19"          TO  DATE-RECD-CC
+           ELSE
+           MOVE "20"              TO  DATE-RECD-CC.
+           MOVE CUR-TIME          TO  TIME-RECD.
+           MOVE "A"               TO  APPROVAL-CODE.
+           MOVE V-REQUESTOR       TO  REQUESTER-B.
+           MOVE V-EQUIP-NUM       TO  EQUIP-NUM.
+           MOVE EQP-EQUIP-NAME    TO  EQUIP-NAME.
+           MOVE EQP-TYPE          TO  TYPE-NUM.
+           MOVE EQP-DEPT          TO  DEPT.
+           MOVE EQP-EXP-CLASS     TO  EXP-CLASS.
+           MOVE EQP-MAINT-ZONE    TO  ZONE.
+           MOVE V-SKILL-REQ (1)   TO  CRAFTS-REQD-1.
+           MOVE V-SKILL-REQ (2)   TO  CRAFTS-REQD-2.
+           MOVE V-SKILL-REQ (3)   TO  CRAFTS-REQD-3.
+           MOVE "1 "              TO  PRIORITY.
+           MOVE V-WO-DESCRIP      TO  DESCRIPTION-1.
+           MOVE V-ADDL-INFO       TO  DESCRIPTION-2.
+           MOVE EQP-LOCATION      TO  LOCATION.
+           MOVE "VV"              TO  WO-STRT-STATUS.
+
+           CALL "TADDWO"       USING DBPARAMETERS
+                               WO-BASIC-DATA
+                               CONDIT-CODE
+                               ERROR-SWITCH.
+
+           IF ERROR-SWITCH NOT = 0
+               MOVE "ERROR WHILE ADDING WORK ORDER"
+                                        TO  BU-DISPLAY-MSG
+               MOVE V-EQUIP-NUM         TO  BU-DISPLAY-FLD (1)
+               MOVE WORK-ORDER-NUMBER   TO  BU-DISPLAY-FLD (2)
+               PERFORM 9999-BLOWUP.
+
+           DISPLAY "-- WO #  ", WORK-ORDER-NUMBER, " GENERATED --".
+           ADD 1                  TO  WORKORDER-COUNT.
+
+           PERFORM 610-WRITE-TRACKING.
+           PERFORM 611-WRITE-QUEUE.
+
+      *---------------------------------------------------------------*
+      *              W R I T E   T R A C K I N G                      *
+      *---------------------------------------------------------------*
+
+       610-WRITE-TRACKING.
+           MOVE SPACES            TO T-WO-DATA T-STATUS-DATA.
+           MOVE "TVBWOGEN"        TO PROGRAM-NAME.
+           MOVE WO-NUM            TO WO-NUM-TRACK.
+           MOVE DATE-RECD         TO DATE-STAMP.
+           MOVE TIME-RECD         TO TIME-STAMP.
+           MOVE WO-STRT-STATUS    TO WO-TYPE-STATUS.
+           MOVE "AUTO"            TO USER-ID.
+           MOVE WO-STATUS         TO WO-STATUS-TRACK.
+           MOVE "OO"              TO TRANS-STATUS.
+           CALL "TWOTRACK"     USING WO-TRACK-DATA.
+
+      *---------------------------------------------------------------*
+      *                W R I T E   Q U E U E                          *
+      *---------------------------------------------------------------*
+
+       611-WRITE-QUEUE.
+           MOVE SPACES            TO WO-QUEUE-DATA.
+           MOVE ZONE              TO Q-ZONE.
+           MOVE PRIORITY          TO Q-PRTY.
+           MOVE WO-NUM            TO Q-WO-NUM.
+           MOVE "N"               TO Q-EQP-DOWN.
+           MOVE "9999"            TO Q-CC-NUM.
+           MOVE V-EQUIP-NUM       TO Q-EQUIP-NUM.
+           MOVE V-WO-DESCRIP      TO Q-DESCRIPTION.
+           MOVE V-SKILL-REQ (1)   TO Q-SKILL-1.
+           MOVE V-SKILL-REQ (2)   TO Q-SKILL-2.
+           MOVE V-SKILL-REQ (3)   TO Q-SKILL-3.
+           MOVE 9                 TO QUEUE-PRTY.
+           COMPUTE QUEUE-FACTOR = RIME-NO * QUEUE-PRTY.
+           MOVE "A"               TO QUEUE-SW.
+           CALL "TQUPDATE"     USING DBPARAMETERS
+                               WO-QUEUE-DATA
+                               QUEUE-SW
+                               QUEUE-ERROR.
+
+      *---------------------------------------------------------------*
+      *                 B L O W U P   R O U T I N E                   *
+      *---------------------------------------------------------------*
+
+       9999-BLOWUP.
+           MOVE "TVBWOGEN" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              DUMMY-VIEW-AREA, FILE-STAT, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+

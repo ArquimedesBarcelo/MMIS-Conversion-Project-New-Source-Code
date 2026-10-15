@@ -1,0 +1,268 @@
+       IDENTIFICATION DIVISION.
+
+       PROGRAM-ID.     TARBPURGE.
+       AUTHOR.         EXLTECH, INC - DAN RAUCH
+      *****************************************************************
+      **                    T A R B P U R G E
+      *****************************************************************
+      ** THIS PROGRAM WILL PURGE LOG FILES BASED ON PO DELETE NUMBER
+      ** OF MTHS FOUND IN MPLTINFO KEY = PODL. THE NUMBER OF MTHS IS
+      ** IS CONVERTED INTO A PURGE DATE TO BE COMPARED WITH LOG RECORD
+      ** DATETIME STAMP FIELD. AN SQL DELETE STMT IS CREATED USING THE
+      ** FILENAME, PURGE DATE AND DATETIME STAMP FIELD NAME. THIS SQL
+      ** STATEMENT IS PASSED TO CLP "RUNSQLCL" AS REQUEST DATA FOR
+      ** A "RUNSQL" COMMAND. THE WORKING STORAGE FILE NAME TABLE
+      ** CONTAINS THE FILE NAMES CURRENTLY BEING PURGED. FUTURE FILES
+      ** TO BE PURGED MUST BE ADDED TO THIS TABLE.
+      **
+      **   -----------------------------------------------------
+      **             FILES CURRENTLY BEING PURGED
+      **   -----------------------------------------------------
+      **       MCFPAB0200   ==>  ARIBA PO PUSH AUDIT FILE
+      **       MCFPAB0400   ==>  ARIBA PO PUSH RSLTS FILE
+      **       MCFPAB0800   ==>  REQUISITION PUSH AUDIT FILE
+      **       MCFPAB1400   ==>  ARIBA CATALOG LOAD RSLTS FILE
+      **       MCFPAB1800   ==>  RECEIVING LOG FILE
+      **       MCFPCS7600   ==>  PO LOGGING
+      *****************************************************************
+
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+
+      ***------------------------------------------------------------***
+      *   MARCH 25 2004      DAN RAUCH
+      *   INITIAL AUTHOR   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      *   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      ***------------------------------------------------------------***
+      *   MONTH DD CCYY      XXXXXXXXXX
+      *   XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  'G
+      ***------------------------------------------------------------***
+                                                                       *
+      *================================================================
+       ENVIRONMENT DIVISION.
+      *===============================================================
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.       IBM-AS400.
+       OBJECT-COMPUTER.       IBM-AS400.
+       SPECIAL-NAMES.         LOCAL-DATA IS LDA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+      *================================================================
+       DATA DIVISION.
+      *================================================================
+       FILE SECTION.
+
+      *----------------------------------------------------------------
+       WORKING-STORAGE SECTION.
+      *----------------------------------------------------------------
+       COPY DTSPARMS2  IN COPYLIB.
+       COPY ZMPLTWS    IN COPYLIB.
+
+       01  WS-FILE-NAME-TABLE-STUFF.
+           03  FNTSUB                PIC 9(03)   VALUE ZERO.
+           03  FNTSUB-MAXX           PIC 9(03)   VALUE 20.
+           03  WS-FILE-NAME-TAB.
+               05  FILLER     PIC X(20)   VALUE "MCFPAB0200DATETIME14".
+               05  FILLER     PIC X(20)   VALUE "MCFPAB0400DATETIME14".
+               05  FILLER     PIC X(20)   VALUE "MCFPAB0800POORDID   ".
+               05  FILLER     PIC X(20)   VALUE "MCFPAB1400DATETIME14".
+               05  FILLER     PIC X(20)   VALUE "MCFPAB1800DATETIME14".
+               05  FILLER     PIC X(20)   VALUE "MCFPCS7600DATETIME14".
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+               05  FILLER     PIC X(20)   VALUE HIGH-VALUES.
+           03  WS-FILE-NAME-TABLE   REDEFINES WS-FILE-NAME-TAB
+                                    OCCURS 20 TIMES.
+               05  WS-FILE-NAME     PIC X(10).
+               05  WS-DATE-FLDN     PIC X(10).
+
+           03  WS-PODL-KEY           PIC X(04)       VALUE "PODL".
+
+           03  WS-DATE-IN            PIC X(08)   VALUE SPACE.
+           03  WS-DATE-OUT.
+               05  WS-DATE-OUT-MM    PIC X(02)           VALUE SPACE.
+               05  WS-DATE-OUT-DD    PIC X(02)           VALUE SPACE.
+               05  WS-DATE-OUT-YY    PIC X(02)           VALUE SPACE.
+               05  FILLER            PIC X(04)           VALUE SPACE.
+
+           03  WS-SEARCH-SW          PIC X       VALUE "N".
+               88  END-OF-SEARCH-NO              VALUE "N".
+               88  END-OF-SEARCH-YES             VALUE "Y".
+
+           03  WS-HOLD-MTHS          PIC 9(02)   VALUE ZERO.
+           03  WS-DAYS               PIC S9(05)  COMP-3  VALUE +0.
+           03  WS-STAR-TODAY         PIC X(08)   VALUE "*TODAY".
+           03  WS-DATE-PGM           PIC X(10)   VALUE "ADDDATCL".
+
+           03  WS-DATETIME-DBFLD     PIC X(10)   VALUE SPACE.
+
+           03  WS-DATETIME-AREA.
+               05  WS-DATETIME-DATE.
+                   10  WS-DATETIME-DATE-CC  PIC X(02)   VALUE SPACE.
+                   10  WS-DATETIME-DATE-YY  PIC X(02)   VALUE SPACE.
+                   10  WS-DATETIME-DATE-MM  PIC X(02)   VALUE SPACE.
+                   10  WS-DATETIME-DATE-DD  PIC X(02)   VALUE SPACE.
+               05  WS-DATETIME-TIME  PIC X(06)   VALUE "999999".
+
+           03  WS-RUNSQL-CL          PIC X(10)    VALUE "RUNSQLCL".
+      *================================================================
+      *== FORMAT AN SQL DELETE STATEMENT AS THE "REQUEST DATA"
+      *== PORTION A RUNSQL COMMAND. PASS "REQUEST DATA" TO A CL
+      *================================================================
+           03  WS-REQUEST-AREA.
+               05  FILLER            PIC X(12)   VALUE
+                  "DELETE FROM ".
+               05  WS-REQUEST-FILE   PIC X(10)   VALUE SPACE.
+               05  FILLER            PIC X(07)   VALUE
+                  " WHERE ".
+               05  WS-REQUEST-FIELD  PIC X(10)   VALUE SPACE.
+               05  FILLER            PIC X(05)   VALUE
+                  " <= '".
+               05  WS-REQUEST-VALUE  PIC X(14)   VALUE SPACE.
+               05  FILLER            PIC X(01)   VALUE
+                  "'".
+               05  FILLER            PIC X(197)   VALUE SPACE.
+
+
+           03  WS-PODL-MSG.
+               05  FILLER            PIC X(37)   VALUE
+                  "PODL KEY - MONTHS/DAYS TO DELETE ==> ".
+               05  WS-DSPY-MTHS      PIC 9(02)   VALUE ZEROS.
+               05  FILLER            PIC X       VALUE "/".
+               05  WS-DSPY-DAYS      PIC 9(03)   VALUE ZEROS.
+
+           03  WS-NFND-MSG.
+               05  FILLER            PIC X(75)   VALUE
+                  "ERROR - PODL DAYS TO DELETE NFND !!".
+
+      *================================================================
+      *=          P R O C E D U R E    D I V I S I O N
+      *================================================================
+       PROCEDURE DIVISION.
+       0000-PROGRAM-ENTRY.
+
+           PERFORM 0010-INITIALIZE          THRU 0010-EXIT.
+
+           IF  WS-HOLD-MTHS > ZERO
+               PERFORM 1000-MAIN-LOGIC-ROUTINE  THRU 1000-EXIT
+                       UNTIL END-OF-SEARCH-YES
+           ELSE
+               DISPLAY WS-NFND-MSG
+           END-IF.
+
+       0000-PROGRAM-END.
+           GOBACK.
+
+      *****************************************************************
+      *** 1ST TIME PROCESSING ROUTINE
+      *****************************************************************
+       0010-INITIALIZE.
+
+           SET END-OF-SEARCH-NO TO TRUE.
+           MOVE ZERO            TO  FNTSUB  WS-HOLD-MTHS.
+
+           CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+
+      ***  FROM MPLTINFO GET DAYS TO DELETE USING KEY = PODL
+           MOVE WS-PODL-KEY  TO  WS-ZMPLT-KEY.
+           PERFORM ZMPLT-GET-MPLTINFO   THRU ZMPLT-EXIT.
+           IF  WS-ZMPLT-PLTINFODTA(1:2) NUMERIC
+               MOVE WS-ZMPLT-PLTINFODTA(1:2)  TO WS-HOLD-MTHS
+               MOVE WS-ZMPLT-PLTINFODTA(1:2)  TO WS-DSPY-MTHS
+               COMPUTE  WS-DSPY-DAYS = (WS-DSPY-MTHS * 30)
+               DISPLAY  WS-PODL-MSG
+               PERFORM 0011-CALC-PURGE-DATE   THRU 0011-EXIT
+           END-IF.
+
+       0010-EXIT.
+            EXIT.
+
+      *****************************************************************
+      *** CALC PURGE DATE
+      *****************************************************************
+       0011-CALC-PURGE-DATE.
+
+           MOVE WS-STAR-TODAY       TO WS-DATE-IN.
+           MOVE SPACE               TO WS-DATE-OUT.
+
+           COMPUTE WS-DAYS  =  ((WS-HOLD-MTHS * 30) * -1).
+
+      *** BUILD A TIMESTAMP "WS-DAYS" AGO
+           CALL  WS-DATE-PGM  USING WS-DAYS
+                                    WS-DATE-OUT
+                                    WS-DATE-IN.
+
+      *** DATE RETURNS AS MDY - BUILD CCYYMM00
+           MOVE WS-SYSTEM-DATE2-CEN    TO WS-DATETIME-DATE-CC.
+           MOVE    WS-DATE-OUT-YY      TO WS-DATETIME-DATE-YY.
+           MOVE    WS-DATE-OUT-MM      TO WS-DATETIME-DATE-MM.
+           MOVE    ZERO                TO WS-DATETIME-DATE-DD.
+
+           DISPLAY "PURGE DATE IS < OR = " WS-DATETIME-DATE.
+
+       0011-EXIT.
+            EXIT.
+
+      *****************************************************************
+      ***  MAIN PROCESSING LOOP ROUTINE
+      *****************************************************************
+       1000-MAIN-LOGIC-ROUTINE.
+
+           ADD 1 TO FNTSUB.
+           IF  FNTSUB > FNTSUB-MAXX
+               SET END-OF-SEARCH-YES  TO TRUE
+               GO TO 1000-EXIT
+           END-IF.
+
+           IF  WS-FILE-NAME(FNTSUB) = HIGH-VALUES
+               SET END-OF-SEARCH-YES  TO TRUE
+               GO TO 1000-EXIT
+           END-IF.
+
+           PERFORM 1100-PROCESS-FILE-NAME  THRU 1100-EXIT.
+
+       1000-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  CALL THE RUNSQL CL
+      *****************************************************************
+       1100-PROCESS-FILE-NAME.
+
+      ***  PURGE FILE BY DATETIME STAMP
+           MOVE    WS-FILE-NAME(FNTSUB)  TO WS-REQUEST-FILE.
+           MOVE    WS-DATE-FLDN(FNTSUB)  TO WS-REQUEST-FIELD.
+           MOVE    WS-DATETIME-AREA      TO WS-REQUEST-VALUE.
+           PERFORM 1110-CALL-RUNSQL-CL    THRU 1110-EXIT.
+
+       1100-EXIT.
+            EXIT.
+      *****************************************************************
+      ***  CALL THE RUNSQL CL
+      *****************************************************************
+       1110-CALL-RUNSQL-CL.
+
+           CALL  WS-RUNSQL-CL USING WS-REQUEST-AREA.
+
+       1110-EXIT.
+            EXIT.
+
+       COPY ZMPLTSUBR  IN COPYLIB.
+      *****************************************************************
+      ***                  E N D   O F    S O U R C E
+      *****************************************************************

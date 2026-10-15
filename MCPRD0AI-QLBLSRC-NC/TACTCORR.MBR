@@ -1,0 +1,605 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TACTCORR.
+       AUTHOR. KURT MOVSESIAN.
+      *REMARKS.
+      **************************************************************
+      *                                                            *
+      *   T A C T C O R R   CORPORATE STORES ACCOUNTING SYSTEM     *
+      *    ACCOUNTING ADJUSTMENT/CORRECTION PROGRAM.  THIS         *
+      *    PROGRAM WILL MAKE ACCOUNTING ADJUSTMENTS TO UNITS       *
+      *    OR DOLLARS FOR A PARTICULAR STORES CODE.                *
+      *                                                            *
+      **************************************************************
+      *                                                            *
+      *   C O M M E N T S                                          *
+      *                                                            *
+      *   10/17/1994     C A ZUBEK                                 *
+      *   -ADDED A CALL TO THE SUBROUTINE "TALTKEY" TO ALLOW THE   *
+      *    USER TO TYPE IN AN ALTERNATE KEY.  THE VALUE OF THE     *
+      *    CORPORATE CODE CORRESPONDING TO THE ALTERNATE KEY IS    *
+      *    RETURNED FROM THE SUBROUTINE.                           *
+      *                                                            *
+      *   -ALSO INCREASED THE SIZE OF THE ENTRY SCREEN MATERIAL    *
+      *    CODE FIELD TO ALLOW FOR THE 12-BYTE ALTERNATE KEY FIELD.*
+      *                                                            *
+      *C  12SEP1996      DAVE PLUM                                 *
+      *C    REVISED FOR CENTURY DATABASE CHANGES.                  *
+      *C                                                           *
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       SPECIAL-NAMES.        I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZACTCORR-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MATLACUM-I
+                  ASSIGN TO DATABASE-MCFLCA0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCHTACCTS-I
+                  ASSIGN TO DATABASE-MCFLCA0301
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-O
+                  ASSIGN TO DATABASE-MCFLCA0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC           PIC X(2000).
+
+       FD  MATLACUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MATLACUM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0601.
+
+       FD  MCHTACCTS-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCHTACCTS-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0301.
+
+       FD  DTRANS-O
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-O.
+           COPY DDS-ALL-FORMATS OF MCFLCA0701.
+
+       WORKING-STORAGE SECTION.
+       77  FATAL-ERR-SW                 PIC X(1)   VALUE SPACES.
+       77  EOJ-SW                       PIC X(1)   VALUE SPACES.
+       77  VALUE-SIGNED                 PIC S9(12)V99  VALUE 0.
+       77  QTY-SIGNED                   PIC S9(10)     VALUE 0.
+       77  RET-CODE-TALTKEY             PIC X(2)   VALUE "00".
+       77  BASE-TALTKEY                 PIC X(20).
+       77  ALT-KEY-ARG                  PIC X(40).
+       77  ALT-CORP-CODE                PIC X(8).
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X          VALUE SPACES.
+           05  FILE-STATUS-2            PIC X          VALUE SPACES.
+
+      **********************************************************
+      **   VIEW PARAMETERS                                    **
+      **********************************************************
+
+       COPY VCOMAREA IN COPYLIB.
+
+       01  FORMFILE.
+           05  FORM-FNAME                PIC X(8)  VALUE "FACTCORR".
+           05  FILLER                    PIC X     VALUE ".".
+           05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(64)    VALUE SPACE.
+           05  MSG-FLD               PIC X(12)    VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(11)9.
+
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76   COMP-4.
+
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE ZERO COMP-4.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1    COMP-4.
+
+       01  SAVE-VIEW-LASTKEY         PIC S9(4)    VALUE ZERO COMP-4.
+
+       01  FORM-NAMES.
+           05  UPD-HEADER               PIC X(8)  VALUE "CORRHDR".
+           05  UPD-DTL                  PIC X(8)  VALUE "CORRUPDT".
+
+      ***************************************************************
+      **   SCREEN PRINTER PARAMETERS                               **
+      ***************************************************************
+
+       01  PASSED-SPOOL-PRT          PIC S9(2)    VALUE ZEROS   COMP.
+
+       01  SCREEN-PRINT-PARMS.
+           05  PRINTCNTL             PIC S9(4)    VALUE ZERO    COMP.
+           05  PAGECNTL              PIC S9(4)    VALUE 49      COMP.
+           05  SPOOLFIL-OPEN-SW      PIC X        VALUE "N".
+
+      *************************************************************
+      **    PARAMETER AREA FOR SCREEN DISPLAY                    **
+      *************************************************************
+       COPY DISPDATA   IN COPYLIB.
+       01  COMMAND-AREA.
+           05  OVERRIDE-ZACTCORR      PIC X(34) VALUE
+               "OVRDSPF FILE(ZACTCORR) SHARE(*YES)".
+           05  OVERRIDE-PARM2         PIC S9(10)V9(5) COMP-3 VALUE 34.
+
+      **************************************************************
+      **                                                          **
+      **             TERMINAL I/O DATA AREA                       **
+      **                                                          **
+      **************************************************************
+
+       01  SCREEN-1.
+           05  DE1-MATL-CODE            PIC X(12).
+           05  DE1-CMDLINE              PIC X(79).
+           05  DE1-MSGLINE              PIC X(79).
+
+       01  SCREEN-2.
+           05  DE2-DATE                 PIC X(8).
+           05  DE2-TIME                 PIC X(8).
+           05  DE2-MATL-CODE            PIC X(7).
+           05  DE2-CLASS                PIC X(3).
+           05  DE2-CODE-DESC            PIC X(79).
+           05  DE2-DOLLAR-CORRECTION    PIC 9(12)V9(2).
+           05  DE2-DOLLAR-SIGN          PIC X(1).
+           05  DE2-UNIT-CORRECTION      PIC 9(10).
+           05  DE2-UNIT-SIGN            PIC X(1).
+           05  DE2-DEPT-CHGD            PIC X(4).
+           05  DE2-EXPCODE-CHGD         PIC X(6).
+           05  DE2-EXPLAIN-LINE1        PIC X(79).
+           05  DE2-EXPLAIN-LINE2        PIC X(79).
+           05  DE2-CMDLINE              PIC X(79).
+           05  DE2-MSGLINE              PIC X(79).
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+      ************************
+      **  MMATL-ACCUM       **
+      ************************
+
+       COPY MATLACUM  IN COPYLIB.
+
+      ************************
+      **   DTRANS           **
+      ************************
+
+       COPY DTRANS    IN COPYLIB.
+
+      *************************
+      **   MCHT-ACCTS        **
+      *************************
+
+       COPY MCHTACCT  IN COPYLIB.
+
+      *************************
+      **   DBSTAT            **
+      *************************
+      *
+      ** 10/19/94  C A ZUBEK
+      ** REMOVED BECAUSE OF CONFLICT WITH "DATAB" MEMBER.
+      *
+      *COPY DBSTAT    IN COPYLIB.
+
+      *******************************************************
+      **               D A T A    B A S E                  **
+      *******************************************************
+
+       COPY DBCSACCT  IN COPYLIB.
+
+       COPY DATAB     IN COPYLIB.
+
+       01 ARG-VALUES.
+           05  MMATL-CODE-ARG           PIC X(8)   VALUE SPACES.
+           05  DEPT-ARG                 PIC X(6)  VALUE SPACES.
+
+      *******************************
+      **  PARAMETERS FOR CALLING
+      **  'CDESC'
+      *******************************
+
+       COPY CDESC IN COPYLIB.
+
+       01  RET-CODE                     PIC X(2)  VALUE SPACES.
+
+      ********************************
+      **   PARAMETERS FOR CALLING   **
+      **   'TDATECHK'               **
+      ********************************
+
+       COPY TDATECHK IN COPYLIB.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY CATREAD  IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+      ********************************************************
+
+       PROCEDURE DIVISION.
+
+       PROC-DIV SECTION 01.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           PERFORM 2-EOJ  THRU 2-EOJ-X.
+
+           GOBACK.
+
+       1-HSK.
+           CALL "QCMDEXC" USING OVERRIDE-ZACTCORR, OVERRIDE-PARM2.
+           OPEN I-O DISPLAY-FILE.
+
+           OPEN INPUT MATLACUM-I, MCHTACCTS-I.
+           OPEN OUTPUT DTRANS-O.
+
+       1-H-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE MATLACUM-I, MCHTACCTS-I, DTRANS-O.
+           CLOSE DISPLAY-FILE.
+
+       2-EOJ-X.
+            EXIT.
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "TACTCORR"              TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING ACCTG-BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND(FIELD-NUMBER), IND(99).
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+           PERFORM 61-PROCESS-SCREEN-1  THRU  61-PS1-X.
+           IF EOJ-SW = "Y"
+               GO TO 6-M-X.
+
+           PERFORM 62-PROCESS-SCREEN-2  THRU  62-PS2-X.
+           IF EOJ-SW = "Y"
+               NEXT SENTENCE
+           ELSE
+               GO TO 6-MAIN.
+
+       6-M-X.
+           EXIT.
+
+
+       61-PROCESS-SCREEN-1.
+           MOVE UPD-HEADER              TO  VIEW-NFNAME.
+
+       61-PUT-BUFFER-1.
+           MOVE SPACES                  TO  SCREEN-1.
+
+       61-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-1.
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO  EOJ-SW
+               GO TO 61-PS1-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE1-MSGLINE
+               MOVE 1  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-1.
+
+       61-FIELD-EDITS.
+           IF DE1-MATL-CODE = SPACES
+      **** MATERIAL CODE IS REQUIRED
+               MOVE 66328 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE1-MSGLINE
+               MOVE 1     TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-1.
+
+       61-EDIT-CODE.
+           MOVE DE1-MATL-CODE           TO MMATL-CODE-ARG,
+                                           BU-DISPLAY-FLD (1)
+                                           ALT-KEY-ARG.
+
+      *-----------------------------------------------------------*
+      *  10/18/94           C A ZUBEK                             *
+      *  LOGIC TO CALL THE SUBROUTINE "TALTKEY" TO SEE IF USER    *
+      *  ENTERED AN ALTERNATE KEY.  IF SO, THE CORPORATE CODE     *
+      *  WILL BE RETURNED.                                        *
+      *-----------------------------------------------------------*
+
+           CALL "TALTKEY" USING RET-CODE-TALTKEY,
+                                BASE-TALTKEY,
+                                STATUS-AREA,
+                                ALT-KEY-ARG,
+                                ALT-CORP-CODE.
+           IF RET-CODE-TALTKEY NOT EQUAL "00"
+               MOVE "TALTKEY ERROR 61-GC" TO BU-DISPLAY-MSG
+               MOVE ALT-CORP-CODE         TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+           MOVE ALT-CORP-CODE             TO MMATL-CODE-ARG.
+
+           MOVE MMATL-CODE-ARG TO MATLCODE OF MATLACUM-REC-I.
+           READ MATLACUM-I INTO BUF-MATLACUM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+      *            "MATERIAL CODE DOES NOT EXIST - CORRECT AND REENTER"
+                   MOVE  13 TO LANG-SETNUM
+                   MOVE  56 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE MMATL-CODE-ARG  TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER  TO  DE1-MSGLINE
+                   MOVE 1       TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-SHOWFORM-SCREEN-1
+           ELSE
+           IF FILE-STATUS NOT = "00"
+                   MOVE "GET MMATL-ACCUM * 61-EC"  TO  BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       61-PS1-X.
+           EXIT.
+
+       62-PROCESS-SCREEN-2.
+           MOVE UPD-DTL                 TO  VIEW-NFNAME.
+
+           MOVE SPACES                  TO SCREEN-2.
+           MOVE MATL-STORES-CODE        TO DE2-MATL-CODE.
+           MOVE MATL-CLASS              TO DE2-CLASS.
+           MOVE "+"                     TO DE2-DOLLAR-SIGN,
+                                           DE2-UNIT-SIGN.
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT          TO DE2-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT TO DE2-TIME.
+      **************************************************
+      **  CALL CDESC FOR DESCRIPTION LINES. (CODED)   **
+      **************************************************
+           MOVE 1                       TO  CDESC-LINES-TO-GET.
+           MOVE "N"                     TO  CDESC-LOCAL-DESC-OPTION.
+           CALL "CDESC" USING RET-CODE,
+                              BASE,
+                              STATUS-AREA,
+                              BU-DISPLAY-MSG,
+                              MMATL-CODE-ARG,
+                              CDESC-DATA.
+           IF BU-DISPLAY-MSG-1  NOT = SPACES
+               GO TO 2-BLOWUP.
+
+           IF CDESC-LINES-GOT  =  0
+      *        *** NO DESCRIPTION ON FILE ***
+               MOVE  14 TO LANG-SETNUM
+               MOVE   3 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO DE2-CODE-DESC
+           ELSE
+               MOVE CDESC (1)           TO DE2-CODE-DESC.
+
+           MOVE ZEROS                   TO DE2-DOLLAR-CORRECTION,
+                                           DE2-UNIT-CORRECTION.
+      *                                    DE2-EXPCODE-CHGD.
+
+       62-SHOWFORM-SCREEN-2.
+           MOVE SCREEN-2                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-2.
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO EOJ-SW
+               GO TO 62-PS2-X
+           ELSE
+           IF VIEW-LASTKEY = 7
+               GO TO 62-PS2-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE 4  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU 4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+
+       62-FIELD-EDITS.
+           IF DE2-DEPT-CHGD = SPACES
+      **** DEPARTMENT TO CHARGE IS REQUIRED
+               MOVE 66329 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE 11    TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+           IF DE2-EXPCODE-CHGD = SPACES
+      **** ACCOUNT TO CHARGE IS REQUIRED
+               MOVE 66330 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE 12    TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+           IF DE2-EXPLAIN-LINE1 = SPACES
+      **** EXPLANATION FOR ADJUSTMENT IS REQUIRED
+               MOVE 66331 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+               MOVE  8    TO FIELD-NUMBER
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-2.
+
+       62-EDIT-DEPT.
+           MOVE DE2-DEPT-CHGD           TO DEPT-ARG.
+           MOVE DEPT-ARG TO DEPT OF MCHTACCTS-REC-I.
+           READ MCHTACCTS-I INTO BUF-MCHTACCTS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+      *            "INVALID DEPARTMENT NUMBER"
+                   MOVE   9 TO LANG-SETNUM
+                   MOVE  65 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE DEPT-ARG  TO  MSG-FLD
+                   MOVE MESSAGE-BUFFER TO DE2-MSGLINE
+                   MOVE 11      TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 62-SHOWFORM-SCREEN-2
+           ELSE
+           IF FILE-STATUS NOT = "00"
+                   MOVE "DBGET MCHT-ACCTS * 62-ED" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+      ***************************************************************
+      **   IF THE ADJUSTMENT QUANTITY IS ZERO DONT ALLOW THE       **
+      **   DEPARTMENT CHARGED TO BE A PROCESS DEPT (PR).  ZERO     **
+      **   QTY. ADJUSTMENTS SHOULD BE MADE TO VARIANCE.            **
+      ***************************************************************
+
+           IF DE2-UNIT-CORRECTION = ZEROS
+               IF MCHT-DEPT-TYPE = "PR"
+      *            "CANNOT CREATE A ZERO QTY. ADJ. TO A PROCESS DEPT.
+                   MOVE 3    TO LANG-SETNUM
+                   MOVE 180  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO   DE2-MSGLINE
+                   MOVE 11      TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 62-SHOWFORM-SCREEN-2.
+
+       62-PROCESS-ADJUSTMENT.
+           MOVE DE2-DOLLAR-CORRECTION   TO VALUE-SIGNED.
+           IF DE2-DOLLAR-SIGN = "-"
+               COMPUTE VALUE-SIGNED = VALUE-SIGNED * -1.
+           MOVE DE2-UNIT-CORRECTION     TO QTY-SIGNED.
+           IF DE2-UNIT-SIGN = "-"
+               COMPUTE QTY-SIGNED = QTY-SIGNED * -1.
+           PERFORM 621-PUT-DTRANS.
+
+           COMPUTE MATL-ACCTG-DOLLAR-CORR = MATL-ACCTG-DOLLAR-CORR +
+                                            VALUE-SIGNED.
+           COMPUTE MATL-ACCTG-UNIT-CORR = MATL-ACCTG-UNIT-CORR +
+                                          QTY-SIGNED.
+           PERFORM 621-UPDATE-MMATL-ACCUM.
+
+      *    CALL "CPRTSCRN".
+
+       62-PS2-X.
+           EXIT.
+
+       621-PUT-DTRANS.
+           MOVE SPACES                  TO BUF-DTRANS.
+           MOVE MATL-STORES-CODE        TO TRANS-STORES-CODE.
+           MOVE MATL-CLASS              TO TRANS-CLASS.
+           MOVE DE2-DEPT-CHGD           TO TRANS-DEPT.
+           MOVE DE2-EXPCODE-CHGD        TO TRANS-ACCT.
+           MOVE "AADJ"                  TO TRANS-CODE.
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-YMD-OUT            TO TRANS-DATE.
+
+           IF TRANS-YY > "70"
+               MOVE "19"                TO TRANS-DATE-CC
+           ELSE
+               MOVE "20"                TO TRANS-DATE-CC.
+
+           MOVE DATE-UNFORMATTED-TIME-OUT TO TRANS-TIME.
+           MOVE QTY-SIGNED              TO TRANS-QTY.
+           MOVE VALUE-SIGNED            TO TRANS-VALUE.
+           MOVE MATL-UNIT-MEASURE       TO TRANS-UNIT-MEASURE.
+           MOVE 0                       TO TRANS-BALANCE-QTY.
+           WRITE DTRANS-REC-O FROM BUF-DTRANS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBPUT DTRANS * 621-PD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       621-UPDATE-MMATL-ACCUM.
+           CALL "SUPDMATL" USING ACCTG-BASE,
+                                 BUF-MATLACUM,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-AREA,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               GO TO 2-BLOWUP.
+
+       COPY DISPCALL IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

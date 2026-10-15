@@ -1,0 +1,607 @@
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.          CEAFIXPH.
+000400 AUTHOR.              C HILLES/JIM COFFMAN (MAINTAINER).
+000500 DATE-WRITTEN.        11/1/88.
+000600 DATE-COMPILED.
+000700*INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+000800*SECURITY.
+000900*REMARKS.
+001000*D   THIS SUBPROGRAM USES A TABLE OF ALL DREQQUE ENTRIES FOR A
+001100*D   REQ TO FIX THE REQ PATH.  IT RE-QUEUES THE REQ, THEN EDITS
+001200*D   EACH QUEUE AND APPROVE DATE TO WHATEVER DATA EXISTED BEFORE.
+      *C
+      *C   05/05/94  JE COFFMAN  WRITTEN REQUEST 94-001/SLS REQ 6487
+      *C     ADDED THE ABILITY TO ALLOW 'SS' STATUS REQUISITIONS
+      *C     THAT HAVE THE AUTHORIZATION FLAG SET VIA MP1 TO BE
+      *C     FIXED.
+      *C
+      *C   08/14/96  JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     INCLUDE THE CENTURY FOR APPROVAL AND QUEUED DATES.
+      *C
+      *C   08JUN2001  DAVE PLUM
+      *C     REVISED TABLE HANDLING LOGIC TO HANDLE 20 ENTRIES (UP
+      *C     FROM 12) TO MATCH A CHANGE MADE TO CEACHKPH.
+      *C
+      *C   08JUN2001  DAVE PLUM
+      *C     REVERTED BACK TO 12 ENTRIES.
+001400
+001500 ENVIRONMENT DIVISION.
+001600 CONFIGURATION SECTION.
+001700 SOURCE-COMPUTER.  HP-3000.
+001800 OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQQUE-RQ-O
+               ASSIGN TO DATABASE-MCFLCS4401
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+001900
+002000 DATA DIVISION.
+       FILE SECTION.
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DREQQUE-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQQUE-RQ-REC-O.
+           COPY DDS-MCRPCS4400  OF MCFLCS4401.
+
+       FD  MREQ-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-RQ-REC-O.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+002100 WORKING-STORAGE SECTION.
+002200
+       77  QUE-COUNT                     PIC 9(2)  VALUE 0.
+       77  SUB                           PIC 9(4)  VALUE 0.
+       77  I                             PIC 9(4)  VALUE 0.
+       77  J                             PIC 9(4)  VALUE 0.
+       77  APPROVALS-LEFT-COUNT          PIC 9(4)  VALUE 0.
+       77  FOUND-LEVEL-FLAG              PIC X(1)  VALUE "N".
+       77  SAVE-REQ-APPROVALS-LEFT       PIC 9(4)  VALUE 0.
+003000
+       01  WORK-LINE                     PIC X(132) VALUE SPACES.
+       COPY TDATECHK IN COPYLIB.
+
+003100**************************************************************
+003200**                                                          **
+003300**            D A T A B A S E   W O R K                     **
+003400**                                                          **
+003500**************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+003600
+003700 01  DSET-NAMES.
+           05  DSET-NAME                 PIC X(16) VALUE SPACES.
+           05  DSET-MPATH                PIC X(16) VALUE "MPATH;".
+           05  DSET-DREQQUE              PIC X(16) VALUE "DREQQUE;".
+           05  DSET-MREQ                 PIC X(16) VALUE "MREQ;".
+           05  DSET-MLEVEL               PIC X(16) VALUE "MLEVEL;".
+           05  DSET-DPATHDEF             PIC X(16) VALUE "DPATHDEF;".
+           05  DSET-MPLTINFO             PIC X(16) VALUE "MPLTINFO;".
+004500
+004600 01  MODE-AREA.
+004700     05  DB-MODE                   PIC S9(4)   COMP       VALUE 0.
+004800     05  MODE1                     PIC S9(4)   COMP       VALUE 1.
+004900     05  MODE2                     PIC S9(4)   COMP       VALUE 2.
+005000     05  MODE3                     PIC S9(4)   COMP       VALUE 3.
+005100     05  MODE5                     PIC S9(4)   COMP       VALUE 5.
+005200     05  MODE7                     PIC S9(4)   COMP       VALUE 7.
+005300
+       01  ALL-ITEMS                     PIC X(2)  VALUE "@;".
+       01  LEVEL-SEARCH                  PIC X(10) VALUE "LEVEL-NUM;".
+       01  LEVEL-ARG                     PIC X(2).
+       01  PATH-SEARCH                   PIC X(16) VALUE "PATH-NUM;".
+       01  EMPLOYEE-ARG                  PIC X(4).
+005900 01  PATH-ARG.
+           05  PATH-ARG-PREFIX           PIC X(1)  VALUE SPACES.
+           05  PATH-ARG-NUMBER           PIC 9(3)  VALUE 0.
+       01  REQ-ARG                       PIC X(12).
+       01  REQ-SEARCH                    PIC X(16) VALUE "REQ-NUMBER;".
+       01  PLT-ARG                       PIC X(4).
+006500
+006600 01  MULTI-LOCK.
+           05  NUMBER-OF-DSETS-LOCKED    PIC S9(4) BINARY VALUE 2.
+006800     05  LOCK1.
+               10  LENGTH-1              PIC S9(4) BINARY VALUE 24.
+               10  DSET-NAME-1           PIC X(16)  VALUE "MREQ;".
+007100         10  ITEM-LIST-1        PIC X(16)  VALUE "REQ-NUMBER;".
+               10  REL-OP-1              PIC XX     VALUE "= ".
+               10  LOCK-VALUE-1          PIC X(12)  VALUE SPACES.
+007400     05  LOCK2.
+               10  LENGTH-2              PIC S9(4) BINARY VALUE 24.
+               10  DSET-NAME-2           PIC X(16)  VALUE "DREQQUE;".
+007700         10  ITEM-LIST-2        PIC X(16)  VALUE "REQ-NUMBER;".
+               10  REL-OP-2              PIC XX     VALUE "= ".
+               10  LOCK-VALUE-2          PIC X(12)  VALUE SPACES.
+008000
+008100 COPY  REQGLOBS  IN COPYLIB.
+008200 COPY  ESCNAM2  IN COPYLIB.
+008300 01  FORMFILE.
+           05  FORM-FNAME                PIC X(8)  VALUE "DUMMY  ".
+           05  FILLER                    PIC X     VALUE ".".
+008600     05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+009000
+009100 COPY  LANGUAGE  IN COPYLIB.
+009200 COPY  VCOMAREA  IN COPYLIB.
+009300
+009400******************************************************************
+009500**                                                              **
+009600**          S U B P R O G R A M   A R E A S                     **
+009700**                                                              **
+009800******************************************************************
+009900 COPY CEAQUE     IN COPYLIB.
+010000 COPY CEARQPH    IN COPYLIB.
+010100 COPY CEAQNEXT   IN COPYLIB.
+010200 COPY SREQPRNT   IN COPYLIB.
+       01  BU-DISPLAY-AREA               PIC X(110) VALUE ALL "0".
+010400 01  BU-DISPLAY-FLDS REDEFINES BU-DISPLAY-AREA.
+010500     05  BU-DISPLAY-LINE OCCURS 5 TIMES.
+               10  BU-DISPLAY-FLD        PIC X(14).
+               10  BU-DISPLAY-FLD9       PIC S9(8).
+010800
+010900**************************************************************
+011000**                                                          **
+011100**           D A T A B A S E   B U F F E R S                **
+011200**                                                          **
+011300**************************************************************
+011400
+011500 COPY MPATH      IN COPYLIB.
+011600 COPY DREQQUE    IN COPYLIB.
+011700 COPY MPLT0      IN COPYLIB.
+011800 COPY MPLTRQGB   IN COPYLIB.
+011900 COPY MPLTPOPT   IN COPYLIB.
+012000 COPY MPLTP01   IN COPYLIB.
+012100
+       01  BASE-MMISA                    PIC X(24) VALUE SPACES.
+012300**************************************************************
+012400**                                                          **
+012500**            L I N K A G E   S E C T I O N                 **
+012600**                                                          **
+012700**************************************************************
+012800
+012900 LINKAGE SECTION.
+       01  BASE                          PIC X(10).
+013100 COPY DBSTAT     IN COPYLIB.
+013200 COPY CEACHKPH   IN COPYLIB.
+013300 COPY MREQ       IN COPYLIB.
+       COPY BUMSG      IN COPYLIB.
+013700
+013800 PROCEDURE DIVISION USING          BASE
+013900                                   STATUS-AREA,
+014000                                   CHKPH-RET-CODE,
+014100                                   SAVE-DREQQUE-TABLE,
+014200                                   BUF-MREQ,
+014300                                   BU-DISPLAY-MSG.
+014400
+       1000-START.
+           MOVE ZERO                     TO  CHKPH-SUB.
+           MOVE SPACES                   TO  CHKPH-DISP-LINES.
+           PERFORM 9999-OPEN-STUFF.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE FILE-STATUS              TO  BU-SUBPROG-MSG-LAST.
+           GOBACK.
+
+014500 6000-MAIN.
+           MOVE "01"                     TO  BU-DISPLAY-PARA.
+           MOVE ZERO TO QUE-COUNT, SUB, I, J, APPROVALS-LEFT-COUNT,
+             SAVE-REQ-APPROVALS-LEFT.
+           MOVE "N"                      TO  FOUND-LEVEL-FLAG.
+           MOVE "OK"                     TO  CHKPH-RET-CODE.
+014800     IF REQ-STATUS = "SS"
+               IF REQ-AUTH-CODE-FLAG = "X"
+                   NEXT SENTENCE
+               ELSE
+014900         GO TO 6990-MAIN-X.
+015000
+           MOVE REQ-APPROVALS-LEFT       TO  SAVE-REQ-APPROVALS-LEFT.
+           MOVE MREQ-NUMBER              TO  REQ-ARG.
+015300
+           MOVE "RQGB"                   TO  PLT-ARG.
+           PERFORM 9999-DBGET7-MPLTINFO-PK-I.
+015700     IF NO-ENTRY
+               MOVE "Y"                  TO  PRINT-WO-REQPK
+               MOVE "N"                  TO  WOAP-TO-CUT-REQ
+               MOVE "N"                  TO  WOAP-TO-APP-REQ
+               MOVE "N"                  TO  DISP-WO-AMTS
+016200     ELSE
+               MOVE MPLTINFO-RQGB        TO  REQ-GLOBALS.
+016900
+017000*------ FIRST DELETE ALL THE DREQQUE ENTRIES FOR THAT REQ
+           MOVE "DREQQUE;"               TO  DSET-NAME.
+017200     PERFORM 9930-LOCK.
+           PERFORM 9999-DBFIND-DREQQUE-RQ-O.
+           MOVE ZERO                     TO  COND-WORD.
+           PERFORM UNTIL NOT GOOD-CALL
+               PERFORM 9999-DBGET5-DREQQUE-RQ-O
+               IF GOOD-CALL
+                   PERFORM 9999-DBDELETE-DREQQUE-RQ-O
+               END-IF
+           END-PERFORM.
+017700     PERFORM 9940-UNLOCK.
+017800
+017900*------ NOW RE-QUEUE THE REQ.
+018000     PERFORM 9931-MULTI-LOCK.
+018100
+           MOVE "R"                      TO  RQPH-PATH-TYPE.
+           MOVE REQ-SUB                  TO  RQPH-CLASS.
+           MOVE REQ-SUBD                 TO  RQPH-DEPARTMENT.
+           MOVE REQ-REQ-DEPT             TO  RQPH-REQ-DEPT.
+           MOVE REQ-ADDTL-DATA           TO  RQPH-EXPENSE-CLASS.
+           MOVE REQ-BUDGET-AMT           TO  RQPH-VALUE.
+           MOVE SPACES                   TO  RQPH-WO-APPROVED.
+           MOVE REQ-BUDGET-NO            TO  RQPH-BUDGET-NUMBER.
+018900
+019000     CALL "CEARQPH" USING          BASE,
+019100                                   STATUS-AREA,
+019200                                   RQPH-AREA,
+019300                                   BU-DISPLAY-MSG.
+019400     IF BU-DISPLAY-MSG-1 NOT = SPACES
+019500         GO TO 6990-MAIN-X.
+019600
+           MOVE SPACES                   TO  WORK-LINE.
+019700     STRING  "NEW PATH FOR REQ ", MREQ-NUMBER, " = ",
+019800       RQPH-RET-PATH-NUM DELIMITED BY SIZE
+             INTO WORK-LINE.
+           ADD 1                         TO  CHKPH-SUB.
+           MOVE WORK-LINE                TO  CHKPH-LINE (CHKPH-SUB).
+019900
+020000 6210-CALL-CEAQUE.
+           MOVE "02"                     TO  BU-DISPLAY-PARA.
+           MOVE MREQ-NUMBER              TO  EAQ-REQ-NUMBER.
+           MOVE RQPH-RET-PATH            TO  EAQ-PATH-ARG.
+           MOVE RQPH-RET-PATH2           TO  EAQ-PATH-ARG2.
+           MOVE REQ-ORIGINATOR           TO  EAQ-ORIG-EMPL.
+           MOVE "R"                      TO  EAQ-QUEUE-TYPE.
+           MOVE "RE-QUEUED BY TEACHECK"  TO  EAQ-REASON-1.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO  EAQ-REASON-2.
+           IF REQ-AUTH-CODE-FLAG = "X"
+               MOVE "X"                  TO  EAQ-AUTH-FLAG.
+020800
+020900     CALL "CEAQUE" USING           BASE,
+021000                                   STATUS-AREA,
+021100                                   EAQ-AREA,
+021200                                   REQ-GLOBALS,
+021300                                   BUF-MREQ,
+021400                                   BU-DISPLAY-MSG.
+021500     IF BU-DISPLAY-MSG-1 NOT = SPACES
+021600         GO TO 6990-MAIN-X.
+021700
+021800     PERFORM 9940-UNLOCK.
+021900
+022000
+022100*------ NOW THE REQ IS TOTALLY RE-QUEUED: EACH APPROVER WOULD
+022200*------ HAVE TO RE-APPROVE.  TO AVOID THIS, WE UPDATE THE
+022300*------ APPROVALS SO THAT ANY LEVEL THAT HAD BEEN PREVIOUSLY
+022400*------ APPROVED RETAINS THE OLD APPROVAL DATES.
+           MOVE "THE FIXED PATH IS..."   TO  WORK-LINE.
+           ADD 1                         TO  CHKPH-SUB.
+           MOVE WORK-LINE                TO  CHKPH-LINE (CHKPH-SUB).
+           PERFORM 9999-DBFIND-DREQQUE-RQ-O.
+023100
+023200 6310-FIX-QUEUE-LOOP.
+           MOVE "03"                     TO  BU-DISPLAY-PARA.
+           PERFORM 9999-DBGET5-DREQQUE-RQ-O.
+023500     IF END-OF-CHAIN
+023600         GO TO 6320-UPDATE-MREQ.
+024100
+024200     PERFORM 7700-SCAN-FOR-LEVEL THRU 7750-SFL-X.
+024300     IF FOUND-LEVEL-FLAG = "N"
+               MOVE SPACES               TO  WORK-LINE
+024400         STRING  "                     ", DRQQ-LEVEL-NUM,
+024500           "  ", DRQQ-EMPL-QUEUED, "  ", DRQQ-QUEUED-DATE-CN
+024600           "  ", DRQQ-APPROVE-DATE-CN DELIMITED BY SIZE
+                 INTO WORK-LINE
+               ADD 1                     TO  CHKPH-SUB
+               MOVE WORK-LINE            TO  CHKPH-LINE (CHKPH-SUB)
+024700         GO TO 6310-FIX-QUEUE-LOOP.
+024800
+           MOVE SRQ-QUEUED-DATE-CN (I)      TO  DRQQ-QUEUED-DATE-CN.
+025000     IF SRQ-APPROVE-DATE-CN (I) NUMERIC
+025100     AND (DRQQ-APPROVE-DATE-CN NOT NUMERIC)
+025200         SUBTRACT 1                FROM REQ-APPROVALS-LEFT-9.
+025300     IF SRQ-APPROVE-DATE-CN (I) NUMERIC
+               MOVE SRQ-APPROVE-DATE-CN (I) TO  DRQQ-APPROVE-DATE-CN.
+025500
+           MOVE SPACES                   TO  WORK-LINE.
+025600     STRING  "                     ", DRQQ-LEVEL-NUM,
+025700       "  ", DRQQ-EMPL-QUEUED, "  ", DRQQ-QUEUED-DATE-CN
+025800       "  ", DRQQ-APPROVE-DATE-CN DELIMITED BY SIZE
+             INTO WORK-LINE.
+           ADD 1                         TO  CHKPH-SUB.
+           MOVE WORK-LINE                TO  CHKPH-LINE (CHKPH-SUB).
+025900
+026000     PERFORM 7010-UPDATE-DREQQUE.
+026100
+026200     GO TO 6310-FIX-QUEUE-LOOP.
+026300
+026400 6320-UPDATE-MREQ.
+           MOVE "04"                     TO  BU-DISPLAY-PARA.
+026500     IF REQ-APPROVALS-LEFT-9 = 0 AND REQ-RELEASE-STAT = "  "
+               MOVE "X "                 TO  REQ-RELEASE-STAT
+026700         PERFORM 7000-UPDATE-MREQ
+026800         PERFORM 8400-REPRINT
+026900     ELSE
+027000         PERFORM 7000-UPDATE-MREQ.
+027100
+027200     PERFORM 9931-MULTI-LOCK.
+           MOVE 0                        TO  QNEXT-REC-NO.
+027400     CALL "CEAQNEXT" USING BASE, STATUS-AREA, REQ-GLOBALS,
+027500       BUF-MREQ, BUF-DREQQUE, QNEXT-PARMS, BU-DISPLAY-MSG.
+027600     IF BU-DISPLAY-MSG-1 NOT = SPACES
+027700         GO TO 6990-MAIN-X.
+027800     PERFORM 9940-UNLOCK.
+027900
+028000*------ THE ABOVE ROUTINES DO AN UPDATE, SO THEY CAN'T CORRECTLY
+028100*------ UPDATE THE EQ AND EO STATS, WHICH ARE SEARCH ITEMS
+028200     PERFORM 8500-RESET-STAT THRU 8590-RS-X.
+028300
+028400 6990-MAIN-X.
+           EXIT.
+028600
+028700 7000-UPDATE-MREQ.
+           MOVE "MREQ;"                  TO  DSET-NAME.
+028900     PERFORM 9930-LOCK.
+           PERFORM 9999-DBUPDATE-MREQ-RQ-O.
+029600     PERFORM 9940-UNLOCK.
+029700
+029800 7010-UPDATE-DREQQUE.
+           MOVE "DREQQUE;"               TO  DSET-NAME.
+030000     PERFORM 9930-LOCK.
+           PERFORM 9999-DBUPDATE-DREQQUE-RQ-O.
+030600     PERFORM 9940-UNLOCK.
+030700
+030800
+030900 7700-SCAN-FOR-LEVEL.
+           MOVE 0                        TO  I.
+           MOVE "N"                      TO  FOUND-LEVEL-FLAG.
+031200
+031300 7710-SCAN-FOR-LEVEL-LOOP.
+           ADD 1                         TO  I.
+      *------- CHANGED FROM "IF I > 12" TO "IF I > 20" TO
+      *------- ACCOMODATE CHANGE TO TABLE USED IN CEACHKPH.
+      *------- CHANGED BACK TO 12 TABLE ENTRIES.
+031500     IF I > 12
+031600         GO TO 7750-SFL-X.
+031700
+031800     IF SRQ-LEVEL-NUM (I) = DRQQ-LEVEL-NUM
+               MOVE "Y"                  TO  FOUND-LEVEL-FLAG
+032000         GO TO 7750-SFL-X.
+032100
+032200     GO TO 7710-SCAN-FOR-LEVEL-LOOP.
+032300
+032400 7750-SFL-X.
+032500     EXIT.
+032600
+032700 8400-REPRINT.
+           MOVE "*** REPRINTING ***"     TO  WORK-LINE.
+           ADD 1                         TO  CHKPH-SUB.
+           MOVE WORK-LINE                TO  CHKPH-LINE (CHKPH-SUB).
+           PERFORM 9999-REPRINT-OPENS.
+034800*------ PRINT AT THE BLANK FORM PO PRINTER, IF THE KEY
+034900*------ DOES NOT EXIST IN DATABASE, PRINT TO LOCAL PRINTER
+           MOVE "POPT"                   TO  PLT-ARG.
+           PERFORM 9999-DBGET7-MPLTINFO-PK-I.
+035400     IF COND-WORD = 17
+               MOVE 99                   TO  REQ-SPOOL-PRT
+035600     ELSE
+035700     IF COND-WORD = 0
+               MOVE MPLTINFO-REQ-PRT-NO  TO  REQ-SPOOL-PRT.
+036300
+           MOVE "P 01"                   TO  PLT-ARG.
+           PERFORM 9999-DBGET7-MPLTINFO-PK-I.
+037200
+           MOVE SPACES                   TO  REQ-REPRINT-INDIC.
+           MOVE MREQ-NUMBER              TO  REQ-NUMBER.
+           MOVE MPLTINFO-COMPANY         TO  REQ-COMPANY-SAVE.
+           MOVE SPACES                   TO  REQ-FREE-VERB-LINE (1).
+           MOVE SPACES                   TO  REQ-FREE-VERB-LINE (2).
+037800     CALL "SREQPRNT" USING BASE, BASE-MMISA, SREQPRNT-PARMS,
+037900       ESC-NAME, LANGUAGE-PARMS, STATUS-AREA,
+038000       BU-DISPLAY-MSG, BU-DISPLAY-FLDS, VIEW-COMAREA.
+038100     IF BU-DISPLAY-MSG-1 NOT = SPACES
+038200         DISPLAY BU-DISPLAY-MSG
+038300         GOBACK.
+038400
+           PERFORM 9999-REPRINT-CLOSES.
+
+038700 8500-RESET-STAT.
+038800 8510-DBFIND-LOOP.
+           PERFORM 9999-DBFIND-DREQQUE-RQ-O.
+039500 8520-DBGET-LOOP.
+           PERFORM 9999-DBGET5-DREQQUE-RQ-O.
+039800     IF END-OF-CHAIN
+039900         GO TO 8590-RS-X.
+040400
+040500     IF DRQQ-LEVEL-NUM = "00"
+040600         IF REQ-RELEASE-STAT = "XX" OR "X "
+040700             IF DRQQ-EO-ST = "X "
+040800                 GO TO 8520-DBGET-LOOP
+040900             ELSE
+041000                 NEXT SENTENCE
+041100         ELSE
+041200             IF DRQQ-EO-ST = "  "
+041300                 GO TO 8520-DBGET-LOOP
+041400             ELSE
+041500                 NEXT SENTENCE
+041600     ELSE
+041700     IF DRQQ-APPROVE-DATE-CN NUMERIC AND DRQQ-EQ-ST = "X "
+041800         GO TO 8520-DBGET-LOOP
+041900     ELSE
+042000     IF (DRQQ-APPROVE-DATE-CN NOT NUMERIC) AND DRQQ-EQ-ST = "  "
+042100         GO TO 8520-DBGET-LOOP.
+042200
+042300     IF DRQQ-LEVEL-NUM = "00"
+042400         IF REQ-RELEASE-STAT = "XX" OR "X "
+                   MOVE "X "             TO  DRQQ-EQ-ST,
+042600                                        DRQQ-EO-ST
+042700         ELSE
+042800         IF DRQQ-APPROVE-DATE-CN NUMERIC
+                   MOVE "X "             TO  DRQQ-EQ-ST
+                   MOVE SPACES           TO  DRQQ-EO-ST
+043100         ELSE
+                   MOVE SPACES           TO  DRQQ-EQ-ST,
+043300                                        DRQQ-EO-ST
+043400     ELSE
+043500     IF DRQQ-APPROVE-DATE-CN NUMERIC
+               MOVE "X "                 TO  DRQQ-EQ-ST,
+043700                                        DRQQ-EO-ST
+043800     ELSE
+               MOVE SPACES               TO  DRQQ-EQ-ST,
+044000                                        DRQQ-EO-ST.
+044100
+           MOVE "DREQQUE;"               TO  DSET-NAME.
+044300     PERFORM 9930-LOCK.
+           PERFORM 9999-DBDELETE-DREQQUE-RQ-O.
+           PERFORM 9999-DBPUT-DREQQUE-RQ-O.
+045600     PERFORM 9940-UNLOCK.
+045700
+045800     GO TO 8510-DBFIND-LOOP.
+045900
+046000 8590-RS-X.
+046100     EXIT.
+046200
+       9930-LOCK.
+       9931-MULTI-LOCK.
+       9940-UNLOCK.
+       9999-DBGET7-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAFIXPH DBGET7 ERR 9999-DBGET7-MPLTINFO-PK-I"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP
+               GOBACK.
+
+       9999-DBFIND-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY = REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE "CEAFIXPH DBFIND ERR 9999-DBFIND-DREQQUE-RQ-O"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP
+               GOBACK.
+
+       9999-DBGET5-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQQUE-RQ-O NEXT INTO BUF-DREQQUE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQQUE-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE "CEAFIXPH DBGET5 ERR 9999-DBGET5-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   MOVE 99 TO COND-WORD
+                   PERFORM 2100-BLOWUP
+                   GOBACK
+           ELSE
+           IF REQNO OF DREQQUE-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQQUE-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQQUE-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY > REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-DBUPDATE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE DREQQUE-RQ-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAFIXPH DBUPDATE ERR 9999-DBUPDATE-DREQQUE-RQ-O"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP
+               GOBACK.
+
+       9999-DBDELETE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DREQQUE-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAFIXPH DBDELETE ERR 9999-DBDELETE-DREQQUE-RQ-O"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP
+               GOBACK.
+
+       9999-DBPUT-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DREQQUE-RQ-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAFIXPH DBPUT ERR 9999-DBPUT-DREQQUE-RQ-O"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP
+               GOBACK.
+
+       9999-DBUPDATE-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MREQ-RQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CEAFIXPH DBUPDATE ERR 9999-DBUPDATE-MREQ-RQ-O"
+                   TO BU-MSG-AREA
+               MOVE 99 TO COND-WORD
+               PERFORM 2100-BLOWUP
+               GOBACK.
+
+       9999-REPRINT-OPENS.
+       9999-REPRINT-CLOSES.
+
+       9999-OPEN-STUFF.
+           OPEN INPUT MPLTINFO-PK-I                              .
+           OPEN I-O   DREQQUE-RQ-O          MREQ-RQ-O            .
+
+       9999-CLOSE-STUFF.
+           CLOSE      MPLTINFO-PK-I         DREQQUE-RQ-O
+                      MREQ-RQ-O.

@@ -1,0 +1,289 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             CSWITCHDB.
+       AUTHOR.                 J.S. BUNGO.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.
+      *           THIS PROGRAM ALLOWS TO SWITCH BETWEEN CSIS/MMIS
+      *           DATABASES WHEN MORE THAN ONE CSIS/MMIS DATABASE
+      *           IS DEFINED IN GLOBAL MENU SYSTEM.  THIS IS DONE
+      *           BY CHANGING THE *LIBL TO THE SELECTED SYSTEM AND
+      *           THE GLOBAL MENU *LDA VALUES.  IF ONLY ONE SYSTEM
+      *           IS AUTHORIZED, SKIP ANY SWITCHES.  IF ONLY TWO
+      *           SYSTEMS ARE AUTHORIZED, MAKE SWITCH WITHOUT FORCING
+      *           A SELECTION.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT GLOBSI
+                  ASSIGN TO DATABASE-UTFLMSI1
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS SI-STATUS.
+           SELECT GLOBUS
+                  ASSIGN TO DATABASE-UTFLMUS1
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS US-STATUS.
+           SELECT GLOBDS
+                  ASSIGN TO DATABASE-UTFLMDS1
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS DS-STATUS.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZSWITCHDB-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  GLOBSI
+           LABEL RECORDS ARE STANDARD.
+       01  SI-REC.
+           COPY DDS-ALL-FORMATS OF UTFLMSI1.
+       FD  GLOBUS
+           LABEL RECORDS ARE STANDARD.
+       01  US-REC.
+           COPY DDS-ALL-FORMATS OF UTFLMUS1.
+       FD  GLOBDS
+           LABEL RECORDS ARE STANDARD.
+       01  DS-REC.
+           COPY DDS-ALL-FORMATS OF UTFLMDS1.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC          PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  SUB                 PIC 99.
+       77  CHGLIBL-FLAG        PIC X(1) VALUE "N".
+       77  AUTH                PIC X(1) VALUE "N".
+       77  UPDATE-FLAG         PIC X(1) VALUE "N".
+       77  CLOSE-FLAG          PIC X(10) VALUE "****      ".
+       77  PLT-COUNT           PIC 9(2) VALUE ZERO.
+
+       01  SI-STATUS           PIC X(2) VALUE "00".
+       01  US-STATUS           PIC X(2) VALUE "00".
+       01  MD-STATUS           PIC X(2) VALUE "00".
+       01  DS-STATUS           PIC X(2) VALUE "00".
+
+       01  CHGLIBL-CMD.
+           05 FILLER           PIC X(13) VALUE "CHGLIBL LIBL(".
+           05 CHGLIBL-LIBL     PIC X(275) VALUE SPACES.
+           05 FILLER           PIC X(1)  VALUE ")".
+       01  CHGLIBL-LEN         PIC S9(10)V9(5) COMP-3 VALUE 289.
+
+       01  CHGCURLIB-CMD.
+           05 FILLER           PIC X(22) VALUE "CHGCURLIB CURLIB(MCPRD".
+           05 CHGCURLIB-LIB    PIC X(1)  VALUE SPACES.
+           05 FILLER           PIC X(1)  VALUE ")".
+       01  CHGCURLIB-LEN       PIC S9(10)V9(5) COMP-3 VALUE 24.
+
+       01  WS-CONTROL.
+           02  FUNCTION-NUM            PIC XX.
+           02  TERMINAL-ID             PIC X(10).
+           02  FORMAT-NAME             PIC X(10).
+
+           COPY UTC9001X.
+
+       01  DISPLAY-STATUS              PIC X(2).
+       01  SRF-INDICATORS.
+           05  IND OCCURS 99 TIMES   PIC 1 INDICATOR 01.
+
+       01  SYSTEM-TABLE.
+           05  SCREEN-TABLE.
+               10  SCREEN-REC OCCURS 10 TIMES.
+                   15  SELECTION   PIC X(1).
+                   15  SYSID       PIC X(10).
+                   15  SYSTEXT     PIC X(50).
+           05  SYSINFO-RECORD OCCURS 10 TIMES.
+               10  SYSLIBL         PIC X(275).
+               10  SYSPGM          PIC X(10).
+               10  SYSPGM2         PIC X(10).
+
+       01  STATUS-SCREEN.
+           05  CLOSE-SYS           PIC X(10).
+           05  OPEN-SYS            PIC X(10).
+
+       PROCEDURE DIVISION.
+       BEGIN.
+           OPEN INPUT GLOBSI GLOBUS GLOBDS.
+           OPEN I-O DISPLAY-FILE.
+
+           MOVE "N" TO UPDATE-FLAG.
+           CALL "MCXGLOBLDA" USING UPDATE-FLAG SC-SYSTEMS-COMMON.
+
+           MOVE SPACES TO SYSTEM-TABLE.
+      *-----POSITION AT SYSTEMS STARTING WITH "CSISMMIS"
+           MOVE "CSISMMIS  " TO SISYS.
+           START GLOBSI KEY NOT < EXTERNALLY-DESCRIBED-KEY.
+           IF SI-STATUS NOT = "00"
+               GO TO END-OF-JOB.
+      *-----GET EACH "CSISMMIS*" SYSTEM
+           PERFORM VARYING SUB FROM 1 BY 1
+             UNTIL SI-STATUS NOT = "00" OR SUB > 10
+               READ GLOBSI NEXT
+               END-READ
+               IF SI-STATUS = "00"
+                   IF SISYS(1:8) = "CSISMMIS"
+                       MOVE SISYS TO SYSID (SUB)
+                       MOVE SILIBL TO SYSLIBL (SUB)
+                       MOVE SIPGM  TO SYSPGM (SUB)
+                       MOVE SIPGM2 TO SYSPGM2 (SUB)
+      *-----------------GET SYSTEM AUTHORITY FOR USER
+                       MOVE SISYS TO USSYS
+                       MOVE SC-USER TO USUSER
+                       READ GLOBUS
+                       END-READ
+                       IF US-STATUS = "00"
+                          MOVE "Y" TO AUTH
+                       ELSE
+                          MOVE SISYS TO USSYS
+                          MOVE SC-GROUP-USER TO USUSER
+                          READ GLOBUS
+                          END-READ
+                          IF US-STATUS = "00"
+                             MOVE "Y" TO AUTH
+                          ELSE
+                             MOVE "N" TO AUTH
+                          END-IF
+                       END-IF
+      *------------------GET SYSTEM DESCRIPTION
+                       IF AUTH = "Y"
+                           IF SISYS = SC-SYSTEM
+                               MOVE "*" TO SELECTION (SUB)
+                           END-IF
+                           MOVE SISYS TO DSSYS
+                           MOVE "****" TO DSMNTR
+                           MOVE "EN"   TO DSLANG
+                           READ GLOBDS
+                           END-READ
+                           IF DS-STATUS = "00"
+                               MOVE DSDESC TO SYSTEXT (SUB)
+                           ELSE
+                               MOVE SPACES TO SYSTEXT (SUB)
+                           END-IF
+                       ELSE
+                           MOVE SPACES TO SCREEN-REC (SUB)
+                                          SYSLIBL (SUB)
+                           SUBTRACT 1 FROM SUB
+                       END-IF
+                   ELSE
+                       MOVE "99" TO SI-STATUS
+                   END-IF
+               END-IF
+           END-PERFORM.
+           MOVE ZERO TO PLT-COUNT.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           PERFORM VARYING SUB FROM 1 BY 1
+              UNTIL SUB > 10
+               IF SYSID (SUB) = SPACES OR
+                  SYSID (SUB) = SC-SYSTEM
+                   MOVE B"1" TO IND(SUB)
+               ELSE
+                   ADD 1 TO PLT-COUNT
+               END-IF
+           END-PERFORM.
+
+      *-----IF ONLY AUTHORIZED TO ONE CSISMMIS* THEN SKIP
+           IF PLT-COUNT = 0
+               GO TO END-OF-JOB.
+
+      *-----IF ONLY AUTHORIZED TO TWO CSISMMIS*
+      *-----THEN SELECT OTHER ONE AUTOMATICALLY.
+           IF PLT-COUNT = 1
+               IF SELECTION (1) = "*"
+                   MOVE 2 TO SUB
+                   PERFORM MAKE-SWITCH THRU MAKE-SWITCH-EXIT
+               ELSE
+                   MOVE 1 TO SUB
+                   PERFORM MAKE-SWITCH THRU MAKE-SWITCH-EXIT
+               END-IF
+               GO TO END-OF-JOB
+           END-IF.
+
+       DISPLAY-LOOP.
+      *-----DISPLAY DATABASE SELECTION SCREEN
+           MOVE SCREEN-TABLE TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS "SELECTION"
+             INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              GO TO END-OF-JOB.
+
+           READ DISPLAY-FILE FORMAT IS "SELECTION"
+             INDICATORS ARE SRF-INDICATORS.
+           MOVE DISPLAY-REC TO SCREEN-TABLE.
+           IF DISPLAY-STATUS NOT = "00"
+              GO TO END-OF-JOB.
+           IF FUNCTION-NUM = "03"
+              GO TO END-OF-JOB.
+
+           MOVE "N" TO CHGLIBL-FLAG.
+      *-----PROCESS SELECTION
+           PERFORM VARYING SUB FROM 1 BY 1
+              UNTIL CHGLIBL-FLAG = "Y" OR SUB > 10
+                IF SELECTION (SUB) NOT = SPACES
+                 IF SELECTION (SUB) NOT = "*"
+                   IF SYSID (SUB) NOT = SPACES
+                       PERFORM MAKE-SWITCH THRU MAKE-SWITCH-EXIT
+                   ELSE
+                       MOVE SPACES TO SELECTION (SUB)
+                   END-IF
+                 END-IF
+                END-IF
+           END-PERFORM.
+           IF CHGLIBL-FLAG = "N"
+              GO TO DISPLAY-LOOP.
+
+       END-OF-JOB.
+           CLOSE GLOBSI GLOBUS GLOBDS DISPLAY-FILE.
+           GOBACK.
+
+       MAKE-SWITCH.
+      *-------DISPLAY STATUS SCREEN FOR CLOSING
+           MOVE SC-SYSTEM TO CLOSE-SYS.
+           MOVE SYSID (SUB) TO OPEN-SYS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           MOVE B"1" TO IND(1).
+           MOVE STATUS-SCREEN TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS "STATUS"
+             INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              GO TO END-OF-JOB.
+      *-------CLOSE ALL FILES AND DELETE ALL OVERRIDES
+           CALL "MCXOPNMENU" USING CLOSE-FLAG SC-MAIN-MENU-X.
+      *-------CHANGE LIBL WITH NEW SYSTEM LIBL
+           MOVE SYSLIBL (SUB) TO CHGLIBL-LIBL.
+           CALL "QCMDEXC" USING CHGLIBL-CMD CHGLIBL-LEN.
+      *-------CHANGE CURLIB FOR NEW SYSTEM
+           MOVE SYSID (SUB)(9:1) TO CHGCURLIB-LIB.
+           CALL "QCMDEXC" USING CHGCURLIB-CMD CHGCURLIB-LEN.
+      *-------CHANGE GLOBAL *LDA FOR NEW SYSTEM
+           MOVE SYSID (SUB) TO SC-SYSTEM.
+           MOVE SYSPGM (SUB) TO SC-PROGRAM.
+           MOVE SYSPGM2 (SUB) TO SC-SYSTEM-PGM2.
+           MOVE "Y" TO UPDATE-FLAG.
+           CALL "MCXGLOBLDA" USING UPDATE-FLAG
+                                   SC-SYSTEMS-COMMON.
+      *-------DISPLAY STATUS SCREEN FOR OPENING
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           MOVE B"1" TO IND(2).
+           MOVE STATUS-SCREEN TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT IS "STATUS"
+             INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              GO TO END-OF-JOB.
+      *-------OVERRIDE AND OPEN FILES FOR NEW SYSTEM
+           CALL "MCXOPNALL".
+           MOVE "Y" TO CHGLIBL-FLAG.
+       MAKE-SWITCH-EXIT.
+           EXIT.

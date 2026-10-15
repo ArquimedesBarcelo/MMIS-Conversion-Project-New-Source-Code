@@ -1,0 +1,870 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.  TR3WOISS.
+       DATE-COMPILED.
+
+      ************************************************************
+      ** THIS PROGRAM READS THE SAP/R3 SYNERGY TEAM GENERATED   **
+      ** FILE SENT VIA SAPCOMM AND UPDATES THE MMIS WORK ORDER  **
+      ** PARTS FILE (MCFPMM1200) WITH ISSUES THAT NEED TO BE    **
+      ** CHARGED AGAINST WORK ORDERS. SUBPROGRAM ISSPARTS IS    **
+      ** CALLED TO ACTUALLY PROCESS THE ISSUE.                  **
+      ************************************************************
+
+      *****************************************************************
+      **          M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+DCR01 *  APR 05, 2005    DCR01     DAN RAUCH     REQUEST# 2005-05365
+DCR01 *     ADDED PRINTED AUDIT REPORT
+      *----------------------------------------------------------------
+      *  MMM DD, CCYY    XXX01     XXXNAMEXXXX   REQUEST# 200?-99999
+      *      XXXXXXXXXXXXXXXXXXXXXXDESCXXXXXXXXXXXXXXXXXXXXXXX
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       COPY SPECIALN IN COPYLIB.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MPLTINFO ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT R3ISS-REPORT  ASSIGN TO DATABASE-R3ISSRPF
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT SAP-FILE  ASSIGN TO DATABASE-R3WOISS
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-BASIC  ASSIGN TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-PARTS ASSIGN TO DATABASE-MCFLMM1201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT WO-PLANNED  ASSIGN TO DATABASE-MCFLMM1101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+DCR01      SELECT R3ISS-AUDIT-REPORT  ASSIGN TO FORMATFILE-XR3WOISS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MPLTINFO-REC.
+       01  MPLTINFO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0501.
+
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MSTORERM-REC.
+       01  MSTORERM-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+
+       FD  R3ISS-REPORT
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS R3ISS-RPT-REC.
+       01  R3ISS-RPT-REC.
+           05  R3ISS-CTL           PIC X(1).
+           05  R3ISS-LINE.
+               10  R3ISS-CTL-DATE  PIC X(6).
+               10  FILLER          PIC X(126).
+
+       FD  SAP-FILE
+           RECORD CONTAINS 146 CHARACTERS
+           DATA RECORD IS SAP-REC.
+       01  SAP-REC                 PIC X(146).
+
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WO-BASIC-REC.
+       01  WO-BASIC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  WO-PARTS
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WO-PARTS-REC.
+       01  WO-PARTS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1201.
+
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WO-PLANNED-REC.
+       01  WO-PLANNED-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+
+DCR01  FD  R3ISS-AUDIT-REPORT.
+DCR01  01  R3ISS-AUDIT-RPTREC.
+DCR01  COPY DDS-ALL-FORMATS OF XR3WOISS.
+
+       WORKING-STORAGE SECTION.
+       77  ERROR-SW                PIC X              VALUE SPACE.
+       77  EXPECTED-SEQ            PIC 9(5)           VALUE ZERO.
+       77  LINE-CTR                PIC 99             VALUE ZERO.
+       77  PAGE-CTR                PIC 999            VALUE ZERO.
+       77  RCDSIN-CTR              PIC 9(6)           VALUE ZERO.
+       77  SAVE-COMPANY            PIC X(3)           VALUE SPACE.
+       77  SAVE-PLANT              PIC X(4)           VALUE SPACE.
+
+       01  AVG-COST-WA.
+           05  AC-WA.
+               10  AC-WHOLE        PIC 9(11).
+               10  AC-1-2          PIC 9(2).
+               10  AC-3-4          PIC 9(2).
+           05  ACW REDEFINES AC-WA PIC S9(11)V9(4).
+
+       01  BLOWUP-BASE             PIC X(10).
+       01  BUDGET-MESSAGE          PIC X(80).
+       01  CUR-DATE-BUF.
+           05  CD-BUF-YY           PIC 99.
+           05  CD-BUF-MM           PIC 99.
+           05  CD-BUF-DD           PIC 99.
+
+       01  DB-BASE                 PIC X(13).
+
+       01  ERR-RPT-HDG-1.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  ERR-DATE-H1         PIC X(8)  VALUE SPACES.
+           05  FILLER              PIC X(38) VALUE SPACES.
+           05  FILLER              PIC X(33)
+               VALUE "R/3 PARTS ISSUED TO WORK ORDERS  ".
+           05  FILLER              PIC X(39) VALUE SPACES.
+           05  FILLER              PIC X(8)  VALUE "TR3WOISS".
+           05  FILLER              PIC X(3)  VALUE SPACES.
+
+       01  ERR-RPT-HDG-2.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  ERR-TIME-H2         PIC X(8)  VALUE SPACES.
+           05  FILLER              PIC X(49) VALUE SPACES.
+           05  FILLER              PIC X(6)  VALUE "SEQ # ".
+           05  ERR-SEQ-H2          PIC X(5)  VALUE SPACES.
+           05  FILLER              PIC X(50) VALUE SPACES.
+           05  FILLER              PIC X(5)  VALUE "PAGE ".
+           05  ERR-PG-H2           PIC Z99.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+
+       01  ERR-RPT-HDG-3.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  FILLER              PIC X(7)  VALUE "W/O    ".
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  FILLER              PIC X(5)  VALUE "ERROR".
+           05  FILLER              PIC X(75) VALUE SPACES.
+           05  FILLER              PIC X(40) VALUE SPACES.
+
+       01  ERR-RPT-HDG-4.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  FILLER              PIC X(7)  VALUE ALL "-".
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  FILLER              PIC X(110) VALUE ALL "-".
+           05  FILLER              PIC X(10) VALUE SPACES.
+
+       01  ERR-RPT-LINE.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  ERR-RPT-CODE        PIC X(7)  VALUE SPACES.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  ERR-WO-NUM          PIC X(10) VALUE SPACES.
+           05  FILLER              PIC X(3)  VALUE SPACES.
+           05  ERR-RPT-MSG         PIC X(97) VALUE SPACES.
+           05  FILLER              PIC X(10) VALUE SPACES.
+
+       01  HANDLE-BLOWUP-FLAG      PIC X(1)  VALUE "Y".
+
+       01  PLANT-ENTRIES.
+           05  FILLER              PIC X(7) VALUE "111N515".
+           05  FILLER              PIC X(7) VALUE "126N501".
+           05  FILLER              PIC X(7) VALUE "129N504".
+           05  FILLER              PIC X(7) VALUE "131N502".
+           05  FILLER              PIC X(7) VALUE "133N503".
+           05  FILLER              PIC X(7) VALUE "153N508".
+           05  FILLER              PIC X(7) VALUE "211N505".
+           05  FILLER              PIC X(7) VALUE "281N506".
+           05  FILLER              PIC X(7) VALUE "284N514".
+           05  FILLER              PIC X(7) VALUE "285N507".
+           05  FILLER              PIC X(7) VALUE "629N511".
+           05  FILLER              PIC X(7) VALUE "631N510".
+           05  FILLER              PIC X(7) VALUE "637N509".
+
+       01  PLANT-TABLE REDEFINES PLANT-ENTRIES.
+           05  PLANT-DATA-LINE  OCCURS 13 TIMES  INDEXED BY I.
+               10  CSIS-PLT-NO     PIC X(3).
+               10  SAP-PLT-NO      PIC X(4).
+
+       01  SAP-DETAIL-RECORD.
+           05  SAP-DATE            PIC X(8).
+           05  SAP-ITEM-NO         PIC X(4).
+           05  SAP-ACT-QTY         PIC X(8).
+           05  SAP-UNIT-MEASURE    PIC X(2).
+           05  SAP-CC-NUM          PIC X(4).
+           05  SAP-WO-NUM          PIC X(12).
+           05  SAP-PARTNO          PIC X(8).
+           05  SAP-UNIT-COST       PIC X(16).
+           05  SAP-DESC            PIC X(80).
+           05  SAP-COST-CTR        PIC X(4).
+
+       01  SAP-HEADER-RECORD.
+           05  SAP-H-ID            PIC X(7).
+           05  SAP-H-FILE-ID       PIC X(7).
+           05  SAP-H-LOC           PIC X(4).
+           05  SAP-H-CREATE-DATE   PIC X(8).
+           05  SAP-H-CREATE-TIME   PIC X(6).
+           05  SAP-H-FILE-SEQ      PIC 9(5).
+           05  SAP-H-PLANT         PIC X(4).
+           05  SAP-H-APPAREA       PIC X(20).
+           05  FILLER              PIC X(71).
+
+       01  SAP-RECORD.
+           05  SAP-RECORD-ID       PIC X(7).
+           05  FILLER              PIC X(139).
+
+       01  SAP-TRAILER-RECORD.
+           05  SAP-T-ID            PIC X(7).
+           05  SAP-T-FILE-ID       PIC X(7).
+           05  SAP-T-LOC           PIC X(4).
+           05  SAP-T-CREATE-DATE   PIC X(8).
+           05  SAP-T-CREATE-TIME   PIC X(6).
+           05  SAP-T-FILE-SEQ      PIC 9(5).
+           05  SAP-T-PLANT         PIC X(4).
+           05  SAP-T-RECORD-CTR    PIC 9(6).
+           05  FILLER              PIC X(85).
+
+       01  UNIT-COST-WA.
+           05  UC-WHOLE            PIC X(12).
+           05  UC-WHOLE-9 REDEFINES UC-WHOLE  PIC 9(12).
+           05  UC-DEC              PIC X.
+           05  UC-CENTS            PIC X(2).
+           05  UC-CENTS-9 REDEFINES UC-CENTS  PIC 9(2).
+           05  FILLER              PIC X.
+
+
+       COPY ZMPLTWS    IN COPYLIB.
+       COPY DTSPARMS2  IN COPYLIB.
+
+DCR01 ***@@@@@@********************************************************
+DCR01 ** MISCELLANEOUS FIELDS
+DCR01 *****************************************************************
+DCR01  01  WS-MISCELLANEOUS-FLDS.
+DCR01      03  WS-HTLINE         PIC X(132)         VALUE SPACE.
+DCR01      03  WS-PROGRAM-NAME   PIC X(10)          VALUE "TR3WOISS".
+DCR01      03  WS-SAVE-CMPHDG    PIC X(30)          VALUE SPACE.
+DCR01      03  WS-SAVE-SEQNO     PIC 9(05)          VALUE ZERO.
+DCR01      03  WS-PAGE-NBR       PIC 9(05)          VALUE ZERO.
+DCR01      03  WS-UPD-MSSG       PIC X(80)          VALUE
+DCR01          "R/3 Parts Issued to WorkOrder".
+
+DCR01      03  WS-PRINT-SW       PIC  X             VALUE SPACE.
+DCR01          88  PRINT-REPORT-DUMMY-YES           VALUE "0".
+DCR01          88  PRINT-HEADER-OR-TRAILER-YES      VALUE "1".
+DCR01          88  PRINT-REPORT-DETAIL-YES          VALUE "2".
+DCR01          88  PRINT-REPORT-TOTALS-YES          VALUE "3".
+DCR01          88  PRINT-REPORT-EOR-BANR-YES        VALUE "4".
+
+DCR01      03  WS-PRINT-HEADINGS-SW   PIC X         VALUE  SPACE.
+DCR01          88  PRINT-HEADINGS-NO                VALUE  "N".
+DCR01          88  PRINT-HEADINGS-YES               VALUE  "Y".
+
+DCR01      03  WS-RUN-DATE.
+DCR01          05  WS-RUN-MM     PIC XX             VALUE SPACE.
+DCR01          05  FILLER        PIC X              VALUE "-".
+DCR01          05  WS-RUN-DD     PIC XX             VALUE SPACE.
+DCR01          05  FILLER        PIC X              VALUE "-".
+DCR01          05  WS-RUN-CC     PIC XX             VALUE SPACE.
+DCR01          05  WS-RUN-YY     PIC XX             VALUE SPACE.
+
+DCR01      03  WS-RUN-TIME.
+DCR01          05  WS-RUN-HH     PIC XX             VALUE SPACE.
+DCR01          05  FILLER        PIC X              VALUE ":".
+DCR01          05  WS-RUN-MN     PIC XX             VALUE SPACE.
+DCR01          05  FILLER        PIC X              VALUE ":".
+DCR01          05  WS-RUN-SS     PIC XX             VALUE SPACE.
+
+DCR01 *****************************************************************
+DCR01 **** AUDIT REPORT FIELDS
+DCR01 *****************************************************************
+DCR01  01  WS-PRINT-LINE-FIELDS.
+DCR01      03  WS-HDG00-FLDS.
+DCR01          05  PRTPGM            PIC X(10)          VALUE SPACE.
+DCR01          05  HCMPNY            PIC X(30)          VALUE SPACE.
+DCR01          05  HPAGE             PIC 9(05)          VALUE ZERO.
+DCR01          05  HRDATE            PIC X(10)          VALUE SPACE.
+DCR01          05  HRTIME            PIC X(08)          VALUE SPACE.
+DCR01          05  HSEQNO            PIC 9(05)          VALUE ZERO.
+
+DCR01      03  WS-DTL00-FLDS.
+DCR01           05  DLWO              PIC X(12)          VALUE SPACE.
+DCR01           05  DLPART            PIC X(08)          VALUE SPACE.
+DCR01           05  DLITEM            PIC X(04)          VALUE SPACE.
+DCR01           05  DLQTY             PIC X(08)          VALUE SPACE.
+DCR01           05  DLUNCS            PIC X(16)          VALUE SPACE.
+DCR01           05  DLUOM             PIC X(02)          VALUE SPACE.
+DCR01           05  DLCLKC            PIC X(04)          VALUE SPACE.
+DCR01           05  DLCSTC            PIC X(04)          VALUE SPACE.
+DCR01           05  DLMSSG            PIC X(45)          VALUE SPACE.
+
+DCR01      03  WS-HTL00-FLDS.
+DCR01          05  HTDATA            PIC X(132)         VALUE SPACE.
+
+DCR01       03  WS-TOT00-FLDS.
+DCR01           05  TLTOT             PIC 9(05)          VALUE ZERO.
+
+      *****************************************************************
+      **                                                             **
+      **  S U B P R O G R A M   A R E A                              **
+      **                                                             **
+      *****************************************************************
+       COPY ISSPARTS   IN COPYLIB.
+       COPY LANGSUB    IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY TDATESUB   IN COPYLIB.
+       COPY VCOMAREA   IN COPYLIB.
+
+      *****************************************************************
+      **                                                             **
+      **  D A T A B A S E   W O R K                                  **
+      **                                                             **
+      *****************************************************************
+       01  BASE                  PIC X(10)  VALUE "  STORES;".
+       COPY FILESTAT   IN COPYLIB.
+       COPY DBSTAT     IN COPYLIB.
+
+      *****************************************************************
+      **                                                             **
+      **  D A T A B A S E   B U F F E R S                            **
+      **                                                             **
+      *****************************************************************
+       01  WO-BASIC-DATA.        COPY DWOBASIC IN COPYLIB.
+       01  WO-PARTS-DATA.        COPY DWOPARTS IN COPYLIB.
+       01  WO-PLANNED-DATA.      COPY DWOPLAN  IN COPYLIB.
+       COPY MPLTINFO   IN COPYLIB.
+       COPY MSTORERM   IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       START-PGM.
+
+           OPEN I-O   MPLTINFO.
+           OPEN INPUT MSTORERM.
+           OPEN INPUT SAP-FILE.
+           OPEN INPUT WO-BASIC.
+           OPEN I-O   WO-PARTS.
+           OPEN INPUT WO-PLANNED.
+           OPEN EXTEND R3ISS-REPORT.
+DCR01      OPEN OUTPUT R3ISS-AUDIT-REPORT.
+
+
+DCR01      SET  PRINT-HEADINGS-YES  TO TRUE.
+DCR01      CALL "GETDTSTMP2" USING WS-SYSTEM-DATE-TIME2.
+DCR01      MOVE WS-SYSTEM-DATE2-MON   TO  WS-RUN-MM.
+DCR01      MOVE "-"              TO  WS-RUN-DATE(3:1).
+DCR01      MOVE WS-SYSTEM-DATE2-DAY   TO  WS-RUN-DD.
+DCR01      MOVE "-"              TO  WS-RUN-DATE(6:1).
+DCR01      MOVE WS-SYSTEM-DATE2-CEN   TO  WS-RUN-CC.
+DCR01      MOVE WS-SYSTEM-DATE2-YEAR  TO  WS-RUN-YY.
+DCR01      IF WS-RUN-MM(1:1) = "0"
+DCR01         MOVE WS-RUN-DATE(2:9)   TO  WS-RUN-DATE(1:9)
+DCR01         MOVE SPACE              TO  WS-RUN-DATE(10:1)
+DCR01      END-IF.
+DCR01
+DCR01      MOVE WS-SYSTEM-TIME2-HRS   TO  WS-RUN-HH.
+DCR01      MOVE WS-SYSTEM-TIME2-MIN   TO  WS-RUN-MN.
+DCR01      MOVE WS-SYSTEM-TIME2-SEC   TO  WS-RUN-SS.
+DCR01      IF WS-RUN-HH(1:1) = "0"
+DCR01         MOVE SPACE              TO  WS-RUN-HH(1:1)
+DCR01      END-IF.
+
+
+           MOVE 0 TO LINE-CTR.
+           MOVE 1                TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT   TO  ERR-DATE-H1.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  ERR-TIME-H2.
+           MOVE SPACES           TO  R3ISS-RPT-REC.
+           MOVE "*"              TO  R3ISS-CTL.
+           MOVE DATE-YMD-OUT     TO  R3ISS-CTL-DATE.
+           WRITE R3ISS-RPT-REC.
+           MOVE 0                TO  R3ISS-CTL.
+           MOVE ERR-RPT-HDG-1    TO  R3ISS-LINE.
+           WRITE R3ISS-RPT-REC.
+           MOVE "P 01" TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+                AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES       TO  ERR-RPT-LINE
+               MOVE "ERROR READING 'P 01' RECORD IN MPLTINFO"
+                   TO ERR-RPT-MSG
+               MOVE "1"          TO  R3ISS-CTL
+               MOVE ERR-RPT-LINE TO  R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+
+DCR01      INITIALIZE  WS-DTL00-FLDS
+DCR01      MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01      PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               GO TO 2-EOJ
+           ELSE
+               MOVE MPLTINFO-COMPANY TO  SAVE-COMPANY
+           END-IF.
+
+
+           SET I TO 1.
+           SEARCH PLANT-DATA-LINE
+               AT END
+                   MOVE SPACES   TO  SAVE-PLANT
+               WHEN CSIS-PLT-NO (I) = SAVE-COMPANY
+                   MOVE SAP-PLT-NO (I) TO  SAVE-PLANT.
+
+DCR01 **---------------------------------------------------------------
+DCR01 ** GET REPORT HEADING
+DCR01 **---------------------------------------------------------------
+DCR01      MOVE "Z"             TO WS-ZMPLT-KEY(1:1).
+DCR01      MOVE SAVE-COMPANY    TO WS-ZMPLT-KEY(2:3).
+DCR01      PERFORM ZMPLT-GET-MPLTINFO   THRU ZMPLT-EXIT.
+DCR01      MOVE WS-ZMPLT-PLTINFODTA(1:30)   TO WS-SAVE-CMPHDG.
+
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+
+DCR01      SET  PRINT-REPORT-TOTALS-YES    TO TRUE.
+DCR01      MOVE RCDSIN-CTR   TO TLTOT  OF WS-TOT00-FLDS.
+DCR01      PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X.
+
+DCR01      SET  PRINT-REPORT-EOR-BANR-YES  TO TRUE.
+DCR01      PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X.
+
+       2-EOJ.
+           CLOSE MPLTINFO.
+           CLOSE MSTORERM.
+           CLOSE SAP-FILE.
+           CLOSE WO-BASIC.
+           CLOSE WO-PARTS.
+           CLOSE WO-PLANNED.
+           CLOSE R3ISS-REPORT.
+DCR01      CLOSE R3ISS-AUDIT-REPORT.
+           GOBACK.
+
+       2-BLOWUP.
+           MOVE "TR3WOISS" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+                            VIEW-COMAREA DUMMY-KSAM-STAT
+                            BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+           GOBACK.
+
+       6-MAIN.
+           READ SAP-FILE INTO SAP-RECORD
+               AT END    GO TO 6-MAIN-X.
+           ADD 1 TO RCDSIN-CTR.
+           DISPLAY "RECORD READ = " SAP-RECORD.
+DCR01      INITIALIZE  WS-DTL00-FLDS.
+           IF SAP-RECORD-ID = "HEADER "
+               MOVE SAP-RECORD TO SAP-HEADER-RECORD
+               IF SAP-H-FILE-SEQ = 00000
+                   MOVE 00001 TO SAP-H-FILE-SEQ
+               END-IF
+
+DCR01          MOVE SAP-H-FILE-SEQ     TO WS-SAVE-SEQNO
+DCR01          MOVE "HEADER RECORD ==>" TO WS-HTLINE(1:17)
+DCR01          MOVE SAP-HEADER-RECORD(1:80)  TO WS-HTLINE(20:80)
+DCR01          MOVE WS-HTLINE    TO HTDATA OF WS-HTL00-FLDS
+DCR01          SET  PRINT-HEADER-OR-TRAILER-YES TO TRUE
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               IF SAP-H-PLANT NOT = SAVE-PLANT
+                   MOVE "3"            TO R3ISS-CTL
+                   MOVE SPACES         TO ERR-RPT-LINE
+                   MOVE "*** FILE READ IS NOT THIS PLANT'S"
+                                       TO ERR-RPT-MSG
+
+DCR01          INITIALIZE  WS-DTL00-FLDS
+DCR01          MOVE SPACE TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+                   MOVE SAP-H-FILE-SEQ TO ERR-SEQ-H2
+                   MOVE ERR-RPT-LINE   TO R3ISS-LINE
+                   WRITE R3ISS-RPT-REC
+                   GO TO 6-MAIN-X
+               END-IF
+               PERFORM 6-SEQ-CHECK THRU 6-SC-X
+               IF ERROR-SW = "Y"
+                   MOVE "1"            TO R3ISS-CTL
+                   MOVE ERR-RPT-LINE   TO R3ISS-LINE
+                   WRITE R3ISS-RPT-REC
+                   GO TO 6-MAIN-X
+               ELSE
+               MOVE "1"                TO R3ISS-CTL
+               MOVE SAP-H-FILE-SEQ     TO ERR-SEQ-H2
+               MOVE ERR-RPT-HDG-2      TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+               GO TO 6-MAIN
+           ELSE
+           IF SAP-RECORD-ID = "TRAILER"
+
+               MOVE SAP-RECORD TO SAP-TRAILER-RECORD
+DCR01          MOVE "TRAILR RECORD ==>" TO WS-HTLINE(1:17)
+DCR01          MOVE SAP-TRAILER-RECORD(1:80)  TO WS-HTLINE(20:80)
+DCR01          MOVE WS-HTLINE     TO HTDATA OF WS-HTL00-FLDS
+DCR01          SET  PRINT-HEADER-OR-TRAILER-YES TO TRUE
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               IF RCDSIN-CTR = SAP-T-RECORD-CTR
+                   GO TO 6-MAIN-INCR-SEQ
+               ELSE
+               MOVE "NUMBER OF RECORDS DOES NOT MATCH"
+                   TO ERR-RPT-MSG
+
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               MOVE RCDSIN-CTR         TO ERR-RPT-CODE
+               MOVE SAP-T-RECORD-CTR   TO ERR-WO-NUM
+               MOVE ERR-RPT-LINE       TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+               GO TO 6-MAIN-X
+           ELSE
+           MOVE SAP-RECORD       TO SAP-DETAIL-RECORD.
+           MOVE SPACES           TO PART-WORKAREA.
+           MOVE SAP-WO-NUM       TO WO-NUMBER
+                                    WONUM OF WO-BASIC-REC
+                                    WONUM OF WO-PLANNED-REC.
+           PERFORM 6-GET-WO-DATA THRU 6-GWD-X.
+           MOVE SAP-PARTNO       TO STORES-CODE
+                                    CORPCDE OF MSTORERM-REC.
+           READ MSTORERM INTO BUF-MSTORERM
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE ST-CLASS         TO PART-SUB.
+           MOVE SAP-ACT-QTY      TO ISSUED-QTY.
+           MOVE SAP-UNIT-MEASURE TO UNIT-OF-MEAS.
+           MOVE SAP-UNIT-COST    TO UNIT-COST-WA.
+           MOVE UC-WHOLE-9       TO AC-WHOLE.
+           IF UC-CENTS = SPACES
+               MOVE ZEROES       TO AC-1-2
+                                    AC-3-4
+           ELSE
+           IF UC-CENTS NUMERIC
+               MOVE UC-CENTS-9   TO AC-1-2
+               MOVE 00           TO AC-3-4.
+
+           MOVE ACW              TO AVG-COST.
+           MOVE SAP-CC-NUM       TO EMPLOYEE-ID.
+           MOVE SAP-DESC         TO PART-DESC-1.
+           MOVE "120"            TO PART-PRIME.
+           MOVE SAP-COST-CTR     TO DEPT-CHARGED.
+           MOVE "TR3WOISS"       TO CALLING-PGM.
+           MOVE " "              TO CALLING-MODE.
+           DISPLAY "WO GOING TO ISSPARTS = " WO-NUMBER.
+
+           CALL "ISSPARTS" USING PART-WORKAREA,
+                                 DB-BASE,
+                                 LANGUAGE-PARMS,
+                                 BUDGET-MESSAGE.
+           IF RETURN-STATUS = "  "
+               DISPLAY "ISSUED " ISSUED-QTY " " UNIT-OF-MEAS
+                   "  AGAINST WORK ORDER " WO-NUMBER
+
+DCR01 *-------------------------------------------------------------
+DCR01 *-- WORK ORDER UPDATED
+DCR01 *-------------------------------------------------------------
+DCR01          MOVE SAP-WO-NUM   TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE SAP-PARTNO   TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SAP-ITEM-NO  TO DLITEM OF WS-DTL00-FLDS
+DCR01          MOVE SAP-ACT-QTY  TO DLQTY  OF WS-DTL00-FLDS
+DCR01          MOVE SAP-UNIT-MEASURE TO DLUOM OF WS-DTL00-FLDS
+DCR01          MOVE SAP-CC-NUM   TO DLCLKC OF WS-DTL00-FLDS
+DCR01          MOVE SAP-COST-CTR TO DLCSTC OF WS-DTL00-FLDS
+DCR01          MOVE SAP-UNIT-COST TO DLUNCS OF WS-DTL00-FLDS
+DCR01          MOVE WS-UPD-MSSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               GO TO 6-MAIN
+           ELSE
+           IF RETURN-STATUS = "WO"
+               MOVE SPACES       TO ERR-RPT-LINE
+               MOVE SAP-PARTNO   TO ERR-RPT-CODE
+               MOVE SAP-WO-NUM   TO ERR-WO-NUM
+               MOVE "WORK ORDER PASSED IS INVALID" TO ERR-RPT-MSG
+               MOVE "1"          TO R3ISS-CTL
+               MOVE ERR-RPT-LINE TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+
+DCR01          MOVE SAP-WO-NUM   TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE SAP-PARTNO   TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SAP-ITEM-NO  TO DLITEM OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+           ELSE
+           IF RETURN-STATUS = "WU"
+               MOVE SPACES       TO ERR-RPT-LINE
+               MOVE SAP-PARTNO   TO ERR-RPT-CODE
+               MOVE SAP-WO-NUM   TO ERR-WO-NUM
+               MOVE "WORK ORDER IS UNAPPROVED " TO ERR-RPT-MSG
+               MOVE "1"          TO R3ISS-CTL
+               MOVE ERR-RPT-LINE TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+
+DCR01          MOVE SAP-WO-NUM   TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE SAP-PARTNO   TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SAP-ITEM-NO  TO DLITEM OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+           ELSE
+           IF RETURN-STATUS = "ID"
+               MOVE SPACES       TO ERR-RPT-LINE
+               MOVE SAP-CC-NUM   TO ERR-RPT-CODE
+               MOVE "CLOCK CARD IS NOT IN MMIS DATABASE"
+                   TO ERR-RPT-MSG
+               MOVE "1"          TO R3ISS-CTL
+               MOVE ERR-RPT-LINE TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+
+DCR01          MOVE SAP-WO-NUM   TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE SAP-PARTNO   TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SAP-ITEM-NO  TO DLITEM OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+           ELSE
+           IF RETURN-STATUS = "NP"
+               MOVE SPACES       TO ERR-RPT-LINE
+               MOVE SAP-PARTNO   TO ERR-RPT-CODE
+               MOVE SAP-WO-NUM   TO ERR-WO-NUM
+               MOVE "QUANTITY PASSED < 0" TO ERR-RPT-MSG
+               MOVE "1"          TO R3ISS-CTL
+               MOVE ERR-RPT-LINE TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+
+DCR01          MOVE SAP-WO-NUM   TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE SAP-PARTNO   TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SAP-ITEM-NO  TO DLITEM OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X.
+
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 60
+               PERFORM 6999-HEADER
+           END-IF.
+
+           GO TO 6-MAIN.
+
+       6-GET-WO-DATA.
+           READ WO-BASIC INTO WO-BASIC-DATA
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 6-GWD-CONT.
+           MOVE DEPT        TO DEPT-CHARGED.
+           MOVE EXP-CLASS   TO EXP-CLASSIFICATION.
+           GO TO 6-GWD-X.
+       6-GWD-CONT.
+           READ WO-PLANNED INTO WO-PLANNED-DATA
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 6-GWD-X.
+           MOVE DEPT-P      TO DEPT-CHARGED.
+           MOVE EXP-CLASS-P TO EXP-CLASSIFICATION.
+       6-GWD-X.    EXIT.
+
+       6-MAIN-INCR-SEQ.
+           MOVE "R3SQ"        TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "3"          TO R3ISS-CTL
+               MOVE SPACES       TO ERR-RPT-LINE
+               MOVE "CANNOT UPDATE R3SQ KEY OF MPLTINFO "
+                                 TO ERR-RPT-MSG
+               MOVE ERR-RPT-LINE TO R3ISS-LINE
+               WRITE R3ISS-RPT-REC
+
+DCR01          MOVE SPACE        TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SPACE        TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               GO TO 6-MAIN-X.
+           ADD 1 TO MPLTINFO-MMSISS-SEQ.
+           REWRITE MPLTINFO-REC FROM BUF-MPLTINFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "3"          TO R3ISS-CTL
+               MOVE SPACES       TO ERR-RPT-LINE
+               MOVE "CANNOT UPDATE MMSISS SEQUENCE "
+                                 TO ERR-RPT-MSG
+               MOVE ERR-RPT-LINE TO R3ISS-LINE
+
+DCR01          MOVE SPACE        TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SPACE        TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+               WRITE R3ISS-RPT-REC.
+
+       6-MAIN-X.
+           EXIT.
+
+       6-SEQ-CHECK.
+           MOVE "R3SQ" TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES               TO ERR-RPT-LINE
+               MOVE "ERROR READING R3SQ RECORD"
+                                         TO ERR-RPT-MSG
+               MOVE "Y"                  TO ERROR-SW
+
+DCR01          MOVE SPACE        TO DLPART OF WS-DTL00-FLDS
+DCR01          MOVE SPACE        TO DLWO   OF WS-DTL00-FLDS
+DCR01          MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01          PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+               GO TO 6-SC-X
+           END-IF.
+
+           ADD 1 TO MPLTINFO-MMSISS-SEQ GIVING EXPECTED-SEQ.
+           IF SAP-H-FILE-SEQ = EXPECTED-SEQ
+               PERFORM 6-RELEASE-R3SQ-KEY
+           ELSE
+           MOVE SPACES                   TO ERR-RPT-LINE
+           MOVE "MPLT R3SQ SEQ# ERROR - EXPECTED SEQ# " TO ERR-RPT-MSG
+           MOVE EXPECTED-SEQ TO ERR-RPT-MSG(38:5)
+           MOVE SAP-H-FILE-SEQ           TO ERR-RPT-CODE
+           MOVE EXPECTED-SEQ             TO ERR-WO-NUM
+
+DCR01      MOVE SPACE        TO DLPART OF WS-DTL00-FLDS
+DCR01      MOVE SPACE        TO DLWO   OF WS-DTL00-FLDS
+DCR01      MOVE ERR-RPT-MSG  TO DLMSSG OF WS-DTL00-FLDS
+DCR01      PERFORM  7000-PRINT-AUDIT-REPORT  THRU 7000-PRINT-X
+
+           MOVE "Y"                      TO ERROR-SW.
+       6-SC-X.    EXIT.
+
+       6-RELEASE-R3SQ-KEY.
+           MOVE HIGH-VALUES TO PLTINFOKEY OF MPLTINFO-REC.
+           START MPLTINFO KEY > PLTINFOKEY OF MPLTINFO-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+
+       6999-HEADER.
+           MOVE "0"           TO R3ISS-CTL.
+           MOVE ERR-RPT-HDG-1 TO R3ISS-LINE.
+           WRITE R3ISS-RPT-REC.
+           MOVE "1"           TO R3ISS-CTL.
+           MOVE ERR-RPT-HDG-2 TO R3ISS-LINE.
+           WRITE R3ISS-RPT-REC.
+           MOVE "2"           TO R3ISS-CTL.
+           MOVE ALL "-"       TO R3ISS-LINE.
+           WRITE R3ISS-RPT-REC.
+           MOVE 4             TO LINE-CTR.
+
+
+DCR01 *****************************************************************
+DCR01 ** AUDIT REPORT PRINT ROUTINE
+DCR01 *****************************************************************
+DCR01  7000-PRINT-AUDIT-REPORT.
+
+DCR01      IF  PRINT-HEADINGS-YES
+DCR01          PERFORM 7100-PRINT-HEADINGS   THRU 7100-EXIT
+DCR01      END-IF.
+
+DCR01 ** PRINT REPORT DETAIL LINES (DEFAULT)
+DCR01      IF  PRINT-REPORT-DETAIL-YES
+DCR01          MOVE CORR WS-DTL00-FLDS   TO  DETAIL-O
+DCR01          WRITE R3ISS-AUDIT-RPTREC FORMAT "DETAIL"
+DCR01                AT EOP
+DCR01               SET PRINT-HEADINGS-YES  TO TRUE
+DCR01          END-WRITE
+DCR01      END-IF.
+
+DCR01 ** PRINT THE HEADER OR TRAILER RECORD
+DCR01      IF  PRINT-HEADER-OR-TRAILER-YES
+DCR01          MOVE CORR WS-HTL00-FLDS   TO  HTLINE-O
+DCR01          WRITE R3ISS-AUDIT-RPTREC FORMAT "HTLINE"
+DCR01                AT EOP
+DCR01               SET PRINT-HEADINGS-YES  TO TRUE
+DCR01          END-WRITE
+DCR01      END-IF.
+
+DCR01 ** PRINT THE TOTAL LINE
+DCR01      IF  PRINT-REPORT-TOTALS-YES
+DCR01          MOVE CORR WS-TOT00-FLDS   TO  TOTAL1-O
+DCR01          WRITE R3ISS-AUDIT-RPTREC FORMAT "TOTAL1"
+DCR01                AT EOP
+DCR01               SET PRINT-HEADINGS-YES  TO TRUE
+DCR01          END-WRITE
+DCR01      END-IF.
+
+DCR01 ** PRINT THE END OF REPORT BANNER
+DCR01      IF  PRINT-REPORT-EOR-BANR-YES
+DCR01          WRITE R3ISS-AUDIT-RPTREC FORMAT "EOR"
+DCR01                AT EOP
+DCR01               SET PRINT-HEADINGS-YES  TO TRUE
+DCR01          END-WRITE
+DCR01      END-IF.
+DCR01
+DCR01      SET  PRINT-REPORT-DETAIL-YES     TO TRUE.
+DCR01  7000-PRINT-X.
+DCR01       EXIT.
+
+DCR01 *****************************************************************
+DCR01 ** AUDIT REPORT HEADINGS
+DCR01 *****************************************************************
+DCR01  7100-PRINT-HEADINGS.
+
+DCR01      INITIALIZE  WS-HDG00-FLDS.
+
+DCR01      MOVE WS-PROGRAM-NAME  TO PRTPGM  OF WS-HDG00-FLDS.
+DCR01      MOVE WS-SAVE-CMPHDG   TO HCMPNY  OF WS-HDG00-FLDS.
+DCR01      ADD  1    TO WS-PAGE-NBR.
+DCR01      MOVE WS-PAGE-NBR      TO HPAGE   OF WS-HDG00-FLDS
+
+DCR01      MOVE CORR WS-HDG00-FLDS  TO HEAD01-O.
+DCR01      WRITE R3ISS-AUDIT-RPTREC FORMAT "HEAD01"
+DCR01      END-WRITE.
+
+DCR01      MOVE WS-RUN-DATE      TO HRDATE  OF WS-HDG00-FLDS.
+DCR01      MOVE WS-RUN-TIME      TO HRTIME  OF WS-HDG00-FLDS.
+DCR01      MOVE CORR WS-HDG00-FLDS  TO HEAD02-O.
+DCR01      WRITE R3ISS-AUDIT-RPTREC FORMAT "HEAD02"
+DCR01      END-WRITE.
+
+DCR01      MOVE WS-SAVE-SEQNO    TO HSEQNO  OF WS-HDG00-FLDS.
+DCR01      MOVE CORR WS-HDG00-FLDS  TO HEAD03-O.
+DCR01      WRITE R3ISS-AUDIT-RPTREC FORMAT "HEAD03"
+DCR01      END-WRITE.
+
+DCR01      IF  RCDSIN-CTR =  1
+DCR01      AND WS-PAGE-NBR = 1
+DCR01          MOVE CORR WS-HTL00-FLDS   TO  HTLINE-O
+DCR01          WRITE R3ISS-AUDIT-RPTREC FORMAT "HTLINE"
+DCR01                AT EOP
+DCR01               SET PRINT-HEADINGS-YES  TO TRUE
+DCR01          END-WRITE
+DCR01         SET  PRINT-REPORT-DUMMY-YES   TO TRUE
+DCR01      ELSE
+DCR01         SET  PRINT-REPORT-DETAIL-YES     TO TRUE
+DCR01      END-IF.
+DCR01
+DCR01      WRITE R3ISS-AUDIT-RPTREC FORMAT "HEAD04"
+DCR01      END-WRITE.
+DCR01
+DCR01      SET PRINT-HEADINGS-NO   TO TRUE.
+DCR01
+DCR01  7100-EXIT.
+DCR01       EXIT.
+
+DCR01  COPY ZMPLTSUBR  IN COPYLIB.

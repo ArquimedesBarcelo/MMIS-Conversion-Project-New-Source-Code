@@ -1,0 +1,1904 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             SPMLEVEL.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *REMARKS.                PREVENTIVE MAINTENANCE LEVEL FILE
+      *                        MAINTENANCE PROGRAM
+      *                        ****.
+      *C************************************************************************
+      *C 09/08/92   JEFF BUNGO
+      *C     CHANGED THIS PROGRAM FROM TPMLEVEL TO SPMLEVEL TO BE
+      *C     CALLED AS A SUBROUTINE FROM TPMMAINT.  ALSO CHANGED
+      *C     THE FORM FILE TO ZPMMAINT.
+      *C************************************************************************
+      *C 05/17/93   JEFF BUNGO
+      *C     CHANGED PROGRAM TO USE PM MASTER SCHEDULES WITH THE
+      *C     NEW G01 FILE PM-MSTR-SCHED.
+      *C************************************************************************
+      *C 10/18/93   JEFF BUNGO
+      *C     CHANGED PROGRAM TO CALL PROGRAM SPMSKSTP TO STOP
+      *C     A SCHEDULE FOR A MASTER WORKORDER INSTEAD OF DOING
+      *C     THE WORK IN THIS PROGRAM.
+      *C************************************************************************
+      *C***  ADDED CARRY-THROUGH FOR PERSONNEL INFORMATION FOR TPERPASS      ***
+      *C***  ADDITION OF MAIL FUNCTION NOW ALLOWS THIS                       ***
+      *C***                                WDR  DEC. 15, 1993                ***
+      *C************************************************************************
+      *C
+      *C   03/12/1998   CA YODER   REQ #97-1125
+      *C     CHANGED PASSWORD FROM 6 TO 8 FOR CALL TO "TPERPASS."
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PM-MSTR-SCHED
+                  ASSIGN       TO DATABASE-MCFLMM4301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-SCHEDULE-EQP
+                  ASSIGN       TO DATABASE-MCFLMM4403
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-SCHEDULE-WO
+                  ASSIGN       TO DATABASE-MCFLMM4404
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-SCHEDULE-WO2
+                  ASSIGN       TO DATABASE-MCFLMM4404
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED-SCHED
+                  ASSIGN       TO DATABASE-MCFLMM1107
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZPMLEVEL-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PM-MSTR-SCHED
+           LABEL RECORDS       ARE STANDARD.
+       01  PMS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4301.
+
+       FD  PM-SCHEDULE-EQP
+           LABEL RECORDS       ARE STANDARD.
+       01  PM-SCHED-EQP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4403.
+
+       FD  PM-SCHEDULE-WO
+           LABEL RECORDS       ARE STANDARD.
+       01  PM-SCHED-WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4404.
+
+       FD  PM-SCHEDULE-WO2
+           LABEL RECORDS       ARE STANDARD.
+       01  PM-SCHED-WO2-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4404.
+
+       FD  WO-PLANNED-SCHED
+           LABEL RECORDS       ARE STANDARD.
+       01  WO-SCHED-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1107.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9999         VALUE 1.
+       77  HELP-SW             PIC 9999         VALUE 0.
+       77  SAVE-SW             PIC S9(4) BINARY VALUE 1.
+       77  DEL-SW              PIC S9(4) BINARY VALUE 0.
+       77  SUB                 PIC S9(4) BINARY VALUE 0.
+       77  SUB1                PIC S9(4) BINARY VALUE 0.
+       77  SUBC                PIC S9(4) BINARY VALUE 0.
+       77  SUBE                PIC S9(4) BINARY VALUE 0.
+       77  LEVEL-COUNT         PIC S9(4) BINARY VALUE 0.
+       77  LA-SUB              PIC S9(4) BINARY VALUE 0.
+       77  LA-VALUE            PIC S9(4) BINARY VALUE 0.
+       77  CYCLE-CALC          PIC S9(4) BINARY VALUE 0.
+       77  RET-CODE            PIC XX           VALUE SPACES.
+       77  CRITICAL-1          PIC XXXX         VALUE SPACES.
+       77  FIX-1               PIC X            VALUE SPACES.
+       77  FIX-LIT             PIC XX           VALUE "FX".
+       77  DYN-LIT             PIC XX           VALUE "DN".
+       77  HOLD-DISP           PIC X(20)        VALUE SPACES.
+       77  HOLD-AREA           PIC X(42)        VALUE SPACES.
+       77  TRUE-VAL            PIC 1            VALUE B"1".
+       77  NEG-VAL             PIC 1            VALUE B"0".
+       77  SAVED               PIC X(05).
+       77  HOLD-DATA           PIC X(200)       VALUE SPACES.
+       77  CLEAR-MSG           PIC X(40)        VALUE
+               " PRESS F2 KEY TO RETURN TO DISPLAY MODE ".
+       77  MASTER-CREATOR      PIC X(04).
+       77  CONTINUE-CHANGE     PIC 9(04)        VALUE 0.
+       77  CRITICAL-CHANGE     PIC 9(04)        VALUE 0.
+       77  STOP-CALENDAR-SW    PIC X(01)        VALUE "N".
+       77  PM-QUEUE-MSG-SW     PIC X(01)        VALUE "Y".
+       77  BASE                PIC X(24).
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM PIC X(08) VALUE "TPMLEVEL".
+           05  PROGRAM-TYPE    PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC1  PIC X(30) VALUE
+                   "PRIMARY MODULE FOR PM FILE MAI".
+               10  PROG-DESC2  PIC X(30) VALUE
+                   "NTENANCE PROGRAMS.  ALLOWS    ".
+               10  PROG-DESC3  PIC X(30) VALUE
+                   "ENTRY, DELETION, AND MODIFICAT".
+               10  PROG-DESC4  PIC X(30) VALUE
+                   "IONS OF PM LEVEL ENTRIES IN   ".
+               10  PROG-FUNC1  PIC X(30) VALUE
+                   "THE DATASET PM-MSTR-SCHED'.   ".
+               10  PROG-FUNC2  PIC X(30) VALUE SPACES.
+           05  PASSWORD-FLAG   PIC X.
+
+       01  ENTRY-SCREEN.
+           05  MSTR-SCH-NAME   PIC X(10).
+           05  SCREEN-MSGS.
+               10  CMDMSGE     PIC X(79).
+               10  ERRMSGE     PIC X(79).
+
+       01  SCREEN-DATA.
+           05  MSTR-SCHED-NAME PIC X(10).
+           05  CREATOR-BUF     PIC X(04).
+           05  CHANGELIT1      PIC X(24).
+           05  CHANGER-BUF     PIC X(04).
+           05  CHANGELIT2      PIC X(02).
+           05  CHANGE-DATE-BUF PIC X(10).
+           05  TRANS           PIC X.
+           05  T-LEVEL         PIC XX VALUE "00".
+           05  T-LEV-9         REDEFINES T-LEVEL   PIC 99.
+           05  SAVE-DISP       PIC X(05).
+           05  INPUT-LEVEL.
+               10  TRAN-DISP   PIC X(08).
+               10  L-NUM       PIC XX.
+               10  L-NUM-9     REDEFINES L-NUM     PIC 99.
+               10  L-CYCLE     PIC X(04).
+               10  L-CYCLE-9   REDEFINES L-CYCLE   PIC 9999.
+               10  L-PRE-REL   PIC X(04).
+               10  L-PRE-9     REDEFINES L-PRE-REL PIC 9999.
+               10  L-CRIT      PIC X(04).
+               10  L-CRIT-9    REDEFINES L-CRIT    PIC 9999.
+               10  L-LOOK      PIC X(04).
+               10  L-LOOK-9    REDEFINES L-LOOK    PIC 9999.
+               10  L-PRTY      PIC X.
+               10  L-FIX       PIC X.
+           05  LEVEL-LIST      PIC X(240).
+           05  LIST-TABLE      REDEFINES LEVEL-LIST.
+               10  LIST        OCCURS 12 TIMES     PIC X(20).
+           05  SCREEN-MSGS.
+               10  CLRMSG      PIC X(40).
+               10  CMDMSG      PIC X(79).
+               10  ERRMSG      PIC X(79).
+
+       01  LEVEL-DISP.
+           05  LD-NUM          PIC Z9.
+           05  LD-NUM9         REDEFINES LD-NUM    PIC 99.
+           05  LD-CYCLE        PIC ZZZ9.
+           05  LD-PRE-REL      PIC ZZZ9.
+           05  LD-CRIT         PIC ZZZ9.
+           05  LD-LOOK         PIC ZZZ9.
+           05  LD-PRTY         PIC X.
+           05  LD-FIX          PIC X.
+
+       01  LEVEL-LESS-1.
+           05  LL-NUM          PIC 99   VALUE ZEROS.
+           05  LL-CYCLE        PIC 9999 VALUE ZEROS.
+           05  LL-PRE-REL      PIC 9999 VALUE ZEROS.
+           05  LL-CRIT         PIC 9999 VALUE ZEROS.
+           05  LL-LOOK         PIC 9999 VALUE ZEROS.
+           05  FILLER          PIC XX.
+
+       01  LEVEL-PLUS-1.
+           05  LP-NUM          PIC 99   VALUE ZEROS.
+           05  LP-CYCLE        PIC 9999 VALUE ZEROS.
+           05  LP-PRE-REL      PIC 9999 VALUE ZEROS.
+           05  LP-CRIT         PIC 9999 VALUE ZEROS.
+           05  LP-LOOK         PIC 9999 VALUE ZEROS.
+           05  LP-LOOZ         REDEFINES LP-LOOK   PIC ZZZ9.
+           05  FILLER          PIC XX.
+
+       01  LEVEL-TABLE.
+           05  L-ENTRY         OCCURS 12 TIMES     PIC X(58).
+
+       01  ORIG-LEVELS.
+           05  ORIG-ENTRY      OCCURS 12 TIMES.
+               10  ORIG-SCHED-KEY        PIC X(10).
+               10  ORIG-LEVEL            PIC 9(02).
+               10  ORIG-CYCLE            PIC 9(04).
+               10  ORIG-CRITICAL         PIC 9(04).
+               10  ORIG-LOOK-AHEAD       PIC 9(04).
+               10  ORIG-PRE-REL          PIC 9(04).
+               10  ORIG-PRTY.
+                   15  ORIG-PRTY-FILL    PIC X(01).
+                   15  ORIG-PRIORITY     PIC 9(01).
+               10  ORIG-REC-TYP          PIC X(02).
+               10  ORIG-CREATOR          PIC X(04).
+               10  ORIG-CHANGED-BY       PIC X(04).
+               10  ORIG-CHANGED-DATE     PIC X(08).
+               10  FILLER                PIC X(10).
+
+       01  ADJ-2.
+           05  F1              PIC X.
+           05  F2              PIC X.
+
+       01  ADJ-4.
+           05  F3              PIC X.
+           05  F4              PIC X.
+           05  F5              PIC X.
+           05  F6              PIC X.
+
+       01  FILE-STAT.
+           05 FILE-STAT-1      PIC X   VALUE "0".
+           05 FILE-STAT-2      PIC X   VALUE "0".
+
+           COPY SCREENIO       IN COPYLIB.
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF        PIC XXXX.
+           05  CNAM-BUF        PIC X(16).
+
+       01  PWORD-BUFFER.
+      *----------- CHANGED PASSWORD FROM 6 TO 8 CHARACTERS.
+      **** 05  PWORD-BUF       PIC X(06).
+           05  PWORD-BUF       PIC X(08).
+           05  PWD-X           PIC XX.
+           05  DATE-BUFF       REDEFINES PWD-X
+                               PIC 9(2).
+       01  PWORD-SWITCH        PIC X.
+
+       01  CD-YMD.
+           05  CD-YY           PIC 99.
+           05  CD-MM           PIC 99.
+           05  CD-DD           PIC 99.
+       01  DISPLAY-DATE.
+           05  DD-MM           PIC XX.
+           05  FILLER          PIC X  VALUE "/".
+           05  DD-DD           PIC XX.
+           05  FILLER          PIC X  VALUE "/".
+           05  DD-YYYY         PIC XXXX.
+       01  TEMP-DATE.
+           05  TEMP-YYYY.
+               10  TEMP-CT     PIC 99.
+               10  TEMP-YY     PIC 99.
+           05  TEMP-MM         PIC 99.
+           05  TEMP-DD         PIC 99.
+       01  CHANGE-DATE.
+           05  CHANGE-YYYY.
+               10  CHANGE-CT   PIC 99.
+               10  CHANGE-YY   PIC 99.
+           05  CHANGE-MM       PIC 99.
+           05  CHANGE-DD       PIC 99.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY TBLOWUP        IN COPYLIB.
+
+           COPY DBSTAT         IN COPYLIB.
+
+           COPY VCOMLINK       IN COPYLIB.
+
+       01  MESSAGE-FILE-DATA.
+           COPY ERRORLIN       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  LAST-WO-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  PMS-MSTR-SCHED.
+           COPY DPMMSTSC       IN COPYLIB.
+
+       01  PM-SCHED-DATA.
+           COPY DPMSCHED       IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               WO-PERS-DATA.
+       BEGIN.
+           OPEN I-O            PM-MSTR-SCHED
+                               PM-SCHEDULE-WO
+                               DISPLAY-FILE.
+           OPEN INPUT          WO-PLANNED-SCHED
+                               PM-SCHEDULE-WO2.
+           MOVE 1              TO DATE-FLAG-SW.
+
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               GO TO END-OF-JOB.
+
+           ACCEPT CD-YMD       FROM DATE.
+           IF CD-YY > 90
+               MOVE 19         TO CHANGE-CT
+           ELSE
+               MOVE 20         TO CHANGE-CT.
+           MOVE CD-YY          TO CHANGE-YY.
+           MOVE CD-MM          TO CHANGE-MM.
+           MOVE CD-DD          TO CHANGE-DD.
+
+      **********************************************************************
+      **    MESSAGE 045/052:
+      ** SAVED               << MAXIMUM OF 5 CHARACTERS >>
+      **********************************************************************
+           MOVE  45            TO CATREAD-MSG-SET.
+           MOVE  52            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO SAVED.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+
+      **********************************************************************
+      **    MESSAGE 042/151:
+      ** PRESS 'F2' TO END ADD MODE
+      **********************************************************************
+           MOVE  42            TO CATREAD-MSG-SET.
+           MOVE  151           TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO CLEAR-MSG.
+
+       MENU.
+           MOVE SPACES         TO ENTRY-SCREEN
+                                  SCREEN-BUFFER
+                                  LEVEL-TABLE.
+           MOVE "VPMLMENU"     TO SCREEN-NAME.
+           MOVE 1              TO HELP-SW.
+
+       SHOWFORM-MENU.
+           MOVE ENTRY-SCREEN   TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO ENTRY-SCREEN.
+
+           IF KEY-HIT = 3 OR 8
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT = 1
+               GO TO MAIN.
+
+           IF KEY-HIT = 4
+      *        MOVE SPACES     TO ENTRY-SCREEN
+               CALL "SPMCLNDR" USING
+                               DBPARAMETERS
+                               LAST-WO-USED-DATA
+      *        MOVE TRUE-VAL   TO IND(99)
+               GO TO MENU.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-MENU.
+
+           GO TO SHOWFORM-MENU.
+
+       MAIN.
+           MOVE PER-CC-NUM     TO CNUM-BUF.
+           MOVE PER-EMP-NAME   TO CNAM-BUF.
+           MOVE PER-PWORD      TO PWORD-BUFFER.
+           IF PERPASS-SW NOT = "ON"
+               MOVE "ON"       TO PERPASS-SW
+               CALL "TPERPASS" USING CNUM-BUF
+                               CNAM-BUF
+                               PWORD-BUFFER
+                               PWORD-SWITCH
+               IF PWORD-SWITCH = "N"
+                   MOVE "  "   TO PERPASS-SW
+                   GO TO MENU.
+
+       MAIN-FORM.
+           MOVE "VPMLEXEC"     TO SCREEN-NAME.
+           MOVE "O"            TO SCREEN-SW.
+           MOVE 1              TO HELP-SW.
+           MOVE SPACES         TO ENTRY-SCREEN
+                                  SCREEN-BUFFER
+                                  LEVEL-TABLE.
+
+       SHOWFORM-MAIN.
+           MOVE ENTRY-SCREEN   TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO ENTRY-SCREEN.
+
+           IF KEY-HIT = 3 OR 8
+               GO TO MENU.
+
+           IF KEY-HIT = 4
+               CALL "SPMCLNDR" USING
+                               DBPARAMETERS
+                               LAST-WO-USED-DATA
+      *        MOVE TRUE-VAL   TO IND(99)
+               GO TO MAIN-FORM.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-MAIN.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-MAIN.
+
+           IF MSTR-SCH-NAME = SPACES
+               GO TO SHOWFORM-MAIN.
+
+           MOVE "VPMLEVEL"     TO SCREEN-NAME.
+           MOVE SPACES         TO SCREEN-DATA.
+
+           MOVE MSTR-SCH-NAME  TO PMSCHEDKEY OF PM-MSTR-SCHED
+                                  MSTR-SCHED-NAME.
+           MOVE "01"           TO PMLEVEL OF PM-MSTR-SCHED.
+
+           READ PM-MSTR-SCHED  INTO PMS-MSTR-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE  CNUM-BUF  TO MASTER-CREATOR
+               MOVE  SPACES    TO CHANGER-BUF CHANGE-DATE-BUF
+                                  CHANGELIT1  CHANGELIT2 ORIG-LEVELS
+               GO TO ADD-MODE.
+           IF PMS-SCHED-KEY NOT = MSTR-SCHED-NAME
+               MOVE  CNUM-BUF  TO MASTER-CREATOR
+               MOVE  SPACES    TO CHANGER-BUF CHANGE-DATE-BUF
+                                  CHANGELIT1  CHANGELIT2 ORIG-LEVELS
+               GO TO ADD-MODE.
+
+           MOVE PMS-CREATOR    TO MASTER-CREATOR  CREATOR-BUF.
+           IF PMS-CHANGED-BY NOT = SPACES
+               MOVE "Schedule Last Changed By" TO  CHANGELIT1
+               MOVE "on"       TO CHANGELIT2
+               MOVE PMS-CHANGED-BY TO CHANGER-BUF
+               MOVE PMS-CHANGED-DATE TO TEMP-DATE
+               MOVE TEMP-YYYY  TO DD-YYYY
+               MOVE TEMP-MM    TO DD-MM
+               MOVE TEMP-DD    TO DD-DD
+               MOVE DISPLAY-DATE TO CHANGE-DATE-BUF
+           ELSE
+               MOVE SPACES     TO CHANGELIT1 CHANGELIT2
+                                  CHANGER-BUF CHANGE-DATE-BUF.
+
+           PERFORM READ-LOOP   THRU READ-EXIT.
+           IF RET-CODE NOT = SPACES
+               MOVE MESSAGE-BUFFER TO ERRMSGE
+               MOVE TRUE-VAL   TO IND(2) IND(99)
+               GO TO SHOWFORM-MAIN.
+
+           MOVE LEVEL-TABLE    TO ORIG-LEVELS.
+
+           MOVE SUB            TO LEVEL-COUNT.
+           PERFORM LOAD-SCREEN.
+           GO TO DISPLAY-MODE.
+
+       ADD-MODE.
+           MOVE "C"            TO SCREEN-SW.
+           MOVE 21             TO HELP-SW.
+           MOVE "  ADD:  "     TO TRAN-DISP.
+           MOVE "A"            TO TRANS.
+           MOVE TRUE-VAL       TO IND(4).
+           MOVE 0              TO SUB LEVEL-COUNT T-LEV-9.
+
+       LOADFORM-ADD.
+           ADD 1               TO SUB LEVEL-COUNT T-LEV-9.
+           IF LEVEL-COUNT > 12
+               MOVE 12         TO SUB LEVEL-COUNT
+               GO TO DISPLAY-MODE.
+           MOVE SPACES         TO INPUT-LEVEL.
+           MOVE T-LEVEL        TO L-NUM.
+           MOVE "  ADD:  "     TO TRAN-DISP.
+           MOVE TRUE-VAL       TO IND(4).
+           IF T-LEV-9 = 1
+               MOVE "D"        TO SCREEN-SW.
+
+           IF T-LEV-9 > 1 AND SCREEN-SW = "D"
+               MOVE "C"        TO SCREEN-SW.
+
+           IF T-LEV-9 > 1
+               MOVE CRITICAL-1 TO L-CRIT
+               MOVE FIX-1      TO L-FIX
+           END-IF.
+
+       SHOWFORM-ADD.
+           IF SCREEN-SW = "C" OR "D"
+               MOVE CLEAR-MSG  TO CLRMSG.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE SPACES         TO CLRMSG.
+
+           IF KEY-HIT = 3 OR 8
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 1
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+               GO TO MAIN-FORM.
+
+           IF KEY-HIT = 2
+               SUBTRACT 1      FROM LEVEL-COUNT
+               GO TO DISPLAY-MODE.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-ADD.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-ADD.
+
+           PERFORM EDIT-DATA   THRU EDIT-EXIT.
+           IF RET-CODE NOT = SPACES
+               GO TO SHOWFORM-ADD.
+
+           MOVE 0              TO SAVE-SW.
+           MOVE SPACES         TO SAVE-DISP.
+           MOVE SPACES         TO PMS-MSTR-SCHED.
+           MOVE MSTR-SCHED-NAME TO PMS-SCHED-KEY.
+           MOVE L-NUM          TO LD-NUM.
+           MOVE LD-NUM9        TO PMS-LEVEL.
+           MOVE L-PRE-REL      TO PMS-PRE-REL     LD-PRE-REL.
+           MOVE L-CYCLE        TO PMS-CYCLE       LD-CYCLE.
+           MOVE L-CRIT         TO PMS-CRITICAL    LD-CRIT.
+           MOVE L-LOOK         TO PMS-LOOK-AHEAD  LD-LOOK.
+           MOVE L-PRTY         TO PMS-PRIORITY    LD-PRTY.
+           MOVE L-FIX          TO LD-FIX.
+
+           IF LD-FIX = "F" OR "L"
+               MOVE FIX-LIT    TO PMS-REC-TYP
+           ELSE
+               MOVE DYN-LIT    TO PMS-REC-TYP
+           END-IF.
+
+           IF SUB = 1
+               MOVE L-CRIT     TO CRITICAL-1
+               MOVE L-FIX      TO FIX-1
+               MOVE 0          TO SUBC
+               MOVE LEVEL-DISP TO HOLD-DISP
+               MOVE PMS-MSTR-SCHED TO HOLD-AREA
+               PERFORM CRITICAL-FIX-FILL LEVEL-COUNT TIMES
+               MOVE HOLD-DISP  TO LEVEL-DISP
+               MOVE HOLD-AREA  TO PMS-MSTR-SCHED.
+
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB).
+           MOVE LEVEL-DISP     TO LIST(SUB).
+           GO TO LOADFORM-ADD.
+
+       DISPLAY-MODE.
+           MOVE "VPMLEVEL"     TO SCREEN-NAME.
+           MOVE "B"            TO SCREEN-SW.
+           MOVE 2              TO HELP-SW.
+           MOVE TRUE-VAL       TO IND(02).
+           MOVE SPACES         TO INPUT-LEVEL.
+           MOVE SPACES         TO TRANS T-LEVEL.
+
+       SHOWFORM-DISP.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE SPACES         TO CLRMSG.
+
+           IF KEY-HIT = 3 OR 8
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 1
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 4
+               PERFORM READ-LOOP THRU READ-EXIT
+               IF RET-CODE = "00"
+                   MOVE SPACES TO LEVEL-LIST LEVEL-TABLE
+                   GO TO ADD-MODE
+               ELSE
+               IF RET-CODE NOT = SPACES
+                   MOVE 2      TO FIELD-NUMBER
+                   PERFORM SET-ERROR
+                   GO TO SHOWFORM-DISP
+               ELSE
+                   MOVE 1      TO SAVE-SW
+                   MOVE SAVED  TO SAVE-DISP
+                   MOVE SUB    TO LEVEL-COUNT
+                   PERFORM LOAD-SCREEN
+                   GO TO SHOWFORM-DISP.
+
+           IF KEY-HIT = 5
+               IF LEVEL-LIST = SPACES AND DEL-SW = 0
+                   GO TO SHOWFORM-DISP
+               ELSE
+                   MOVE 0      TO CONTINUE-CHANGE
+                   PERFORM CHANGE-WARNING THRU CHANGE-WARNING-EXIT
+                   IF CONTINUE-CHANGE = 0
+                       GO TO MAIN-FORM
+                   ELSE
+                       PERFORM WRITE-LOOP THRU WRITE-EXIT
+                       IF RET-CODE NOT = SPACES
+                           MOVE 2  TO FIELD-NUMBER
+                           PERFORM SET-ERROR
+                           GO TO SHOWFORM-DISP
+                       ELSE
+                           MOVE 1     TO SAVE-SW
+                           MOVE SAVED TO SAVE-DISP
+                           GO TO SHOWFORM-DISP.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-DISP.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-DISP.
+
+           IF TRANS = "A" OR "C" OR "D" OR "I"
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 046/012:
+      ** TRANSACTION MUST BE `A', `C', `D', OR `I' ONLY
+      **********************************************************************
+               MOVE  46        TO CATREAD-MSG-SET
+               MOVE  12        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2          TO FIELD-NUMBER
+               PERFORM SET-ERROR
+               GO TO SHOWFORM-DISP.
+
+           IF TRANS = "A" AND T-LEVEL = SPACES
+               MOVE "C"        TO SCREEN-SW
+               MOVE 21         TO HELP-SW
+               MOVE "  ADD:  " TO TRAN-DISP
+               MOVE TRUE-VAL   TO IND(4)
+               MOVE LEVEL-COUNT TO SUB T-LEV-9
+               GO TO LOADFORM-ADD.
+
+           MOVE T-LEVEL        TO ADJ-2.
+           PERFORM ADJUST-2.
+           MOVE ADJ-2          TO T-LEVEL.
+
+           IF T-LEVEL NOT NUMERIC
+      **********************************************************************
+      **    MESSAGE 035/105:
+      ** INVALID ENTRY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE 105        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM SET-ERROR
+               GO TO SHOWFORM-DISP.
+
+           IF T-LEV-9 < 1  OR  > 12
+      **********************************************************************
+      **    MESSAGE 035/105:
+      ** INVALID ENTRY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE 105        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM SET-ERROR
+               GO TO SHOWFORM-DISP.
+
+           IF TRANS = "A"
+               IF LEVEL-COUNT > T-LEV-9
+                   MOVE "I"    TO TRANS.
+
+           IF TRANS = "I"
+               IF T-LEV-9 > LEVEL-COUNT
+                   MOVE "A"    TO TRANS.
+
+           IF TRANS = "C" OR "D"
+               IF T-LEV-9 > LEVEL-COUNT
+      **********************************************************************
+      **    MESSAGE 035/105:
+      ** INVALID ENTRY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE 105        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM SET-ERROR
+               GO TO SHOWFORM-DISP.
+
+           MOVE "C"            TO SCREEN-SW.
+
+       TRANSACTION-PARSER.
+           IF TRANS = "A"
+               MOVE 211        TO HELP-SW
+               PERFORM ADD-LEVEL THRU ADD-EXIT
+           ELSE
+           IF TRANS = "C"
+               MOVE 23         TO HELP-SW
+               PERFORM CHANGE-LEVEL THRU CHANGE-EXIT
+           ELSE
+           IF TRANS = "D"
+               MOVE 24         TO HELP-SW
+               PERFORM DELETE-LEVEL THRU DELETE-EXIT
+               IF DEL-SW = 2
+                   MOVE "C"    TO TRANS
+                   GO TO TRANSACTION-PARSER
+               ELSE
+                   GO TO DISPLAY-MODE
+           ELSE
+           IF TRANS = "I"
+               MOVE 22         TO HELP-SW
+               PERFORM INSERT-LEVEL THRU INSERT-EXIT.
+
+           GO TO DISPLAY-MODE.
+
+       ADD-LEVEL.
+           ADD 1               TO LEVEL-COUNT.
+           MOVE SPACES         TO INPUT-LEVEL.
+           MOVE LEVEL-COUNT    TO SUB T-LEV-9.
+           MOVE T-LEVEL        TO L-NUM.
+           MOVE "  ADD:  "     TO TRAN-DISP.
+           MOVE TRUE-VAL       TO IND(4).
+
+           IF T-LEV-9 = 1
+               MOVE "D"        TO SCREEN-SW.
+
+           IF T-LEV-9 > 1
+               MOVE CRITICAL-1 TO L-CRIT
+               MOVE FIX-1      TO L-FIX
+           END-IF.
+
+       SHOWFORM-ADDL.
+           IF SCREEN-SW = "C" OR "D"
+               MOVE CLEAR-MSG  TO CLRMSG.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE SPACES         TO CLRMSG.
+
+           IF KEY-HIT = 3 OR 8
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 1
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 2
+               SUBTRACT 1      FROM LEVEL-COUNT
+               GO TO DISPLAY-MODE.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-ADDL.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-ADDL.
+
+           PERFORM EDIT-DATA   THRU EDIT-EXIT.
+           IF RET-CODE NOT = SPACES
+               GO TO SHOWFORM-ADDL.
+
+           MOVE 0              TO SAVE-SW.
+           MOVE SPACES         TO SAVE-DISP.
+           MOVE SPACES         TO PMS-MSTR-SCHED.
+           MOVE MSTR-SCHED-NAME TO PMS-SCHED-KEY.
+           MOVE L-NUM          TO LD-NUM.
+           MOVE LD-NUM9        TO PMS-LEVEL.
+           MOVE L-PRE-REL      TO PMS-PRE-REL     LD-PRE-REL.
+           MOVE L-CYCLE        TO PMS-CYCLE       LD-CYCLE.
+           MOVE L-CRIT         TO PMS-CRITICAL    LD-CRIT.
+           MOVE L-LOOK         TO PMS-LOOK-AHEAD  LD-LOOK.
+           MOVE L-PRTY         TO PMS-PRIORITY    LD-PRTY.
+           MOVE L-FIX          TO LD-FIX.
+           IF LD-FIX = "F" OR "L"
+               MOVE FIX-LIT    TO PMS-REC-TYP
+           ELSE
+               MOVE DYN-LIT    TO PMS-REC-TYP
+           END-IF.
+           IF SUB = 1
+               MOVE L-CRIT     TO CRITICAL-1
+               MOVE L-FIX      TO FIX-1
+               MOVE 0          TO SUBC
+               MOVE LEVEL-DISP TO HOLD-DISP
+               MOVE PMS-MSTR-SCHED TO HOLD-AREA
+               PERFORM CRITICAL-FIX-FILL LEVEL-COUNT TIMES
+               MOVE HOLD-DISP  TO LEVEL-DISP
+               MOVE HOLD-AREA  TO PMS-MSTR-SCHED.
+
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB).
+           MOVE LEVEL-DISP     TO LIST(SUB).
+
+       ADD-EXIT.               EXIT.
+
+       CHANGE-LEVEL.
+           MOVE T-LEV-9        TO SUB.
+           MOVE SPACES         TO INPUT-LEVEL.
+           MOVE LIST(SUB)      TO LEVEL-DISP.
+           MOVE LD-NUM         TO L-NUM.
+           MOVE LD-PRE-REL     TO L-PRE-REL.
+           MOVE LD-CYCLE       TO L-CYCLE.
+           MOVE LD-CRIT        TO L-CRIT.
+           IF DEL-SW = 2 AND T-LEV-9 = 1
+               MOVE SPACES     TO L-CRIT.
+           MOVE LD-LOOK        TO L-LOOK.
+           MOVE LD-PRTY        TO L-PRTY.
+           MOVE LD-FIX         TO L-FIX.
+           MOVE "CHANGE: "     TO TRAN-DISP.
+           MOVE TRUE-VAL       TO IND(4).
+
+           IF T-LEV-9 = 1
+               MOVE "D"        TO SCREEN-SW.
+
+       SHOWFORM-CHANGE.
+           IF SCREEN-SW = "C" OR "D"
+               MOVE CLEAR-MSG  TO CLRMSG.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE SPACES         TO CLRMSG.
+
+           IF KEY-HIT = 3 OR 8
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 1
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 2
+               GO TO DISPLAY-MODE.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-CHANGE.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-CHANGE.
+
+           PERFORM EDIT-DATA   THRU EDIT-EXIT.
+           IF RET-CODE NOT = SPACES
+               GO TO SHOWFORM-CHANGE.
+
+           MOVE 0              TO SAVE-SW.
+           MOVE SPACES         TO SAVE-DISP.
+           MOVE SPACES         TO PMS-MSTR-SCHED.
+           MOVE MSTR-SCHED-NAME TO PMS-SCHED-KEY.
+           MOVE L-NUM          TO LD-NUM.
+           MOVE LD-NUM9        TO PMS-LEVEL.
+           MOVE L-PRE-REL      TO PMS-PRE-REL     LD-PRE-REL.
+           MOVE L-CYCLE        TO PMS-CYCLE       LD-CYCLE.
+           MOVE L-CRIT         TO PMS-CRITICAL    LD-CRIT.
+           MOVE L-LOOK         TO PMS-LOOK-AHEAD  LD-LOOK.
+           MOVE L-PRTY         TO PMS-PRIORITY    LD-PRTY.
+           MOVE L-FIX          TO LD-FIX.
+           IF LD-FIX = "F" OR "L"
+               MOVE FIX-LIT    TO PMS-REC-TYP
+           ELSE
+               MOVE DYN-LIT    TO PMS-REC-TYP
+           END-IF.
+           IF SUB = 1
+               MOVE L-CRIT     TO CRITICAL-1
+               MOVE L-FIX      TO FIX-1
+               MOVE 0          TO SUBC
+               MOVE LEVEL-DISP TO HOLD-DISP
+               MOVE PMS-MSTR-SCHED TO HOLD-AREA
+               PERFORM CRITICAL-FIX-FILL LEVEL-COUNT TIMES
+               MOVE HOLD-DISP  TO LEVEL-DISP
+               MOVE HOLD-AREA  TO PMS-MSTR-SCHED.
+
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB).
+           MOVE LEVEL-DISP     TO LIST(SUB).
+
+       CHANGE-EXIT.            EXIT.
+
+       DELETE-LEVEL.
+           MOVE T-LEV-9        TO SUB.
+           MOVE SPACES         TO INPUT-LEVEL.
+           MOVE LIST(SUB)      TO LEVEL-DISP.
+           MOVE LD-NUM         TO L-NUM.
+           MOVE LD-PRE-REL     TO L-PRE-REL.
+           MOVE LD-CYCLE       TO L-CYCLE.
+           MOVE LD-CRIT        TO L-CRIT.
+           MOVE LD-LOOK        TO L-LOOK.
+           MOVE LD-PRTY        TO L-PRTY.
+           MOVE LD-FIX         TO L-FIX.
+           MOVE "DELETE: "     TO TRAN-DISP.
+           MOVE TRUE-VAL       TO IND(4).
+
+      **********************************************************************
+      **    MESSAGE 042/059:
+      ** PRESS 'ENTER' TO DELETE RECORD, PRESS 'F2' TO CLEAR ENTRY
+      **********************************************************************
+           MOVE  42            TO CATREAD-MSG-SET.
+           MOVE  59            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+
+       SHOWFORM-DELETE.
+           IF SCREEN-SW = "C" OR "D"
+               MOVE CLEAR-MSG  TO CLRMSG.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE SPACES         TO CLRMSG.
+
+           IF KEY-HIT = 3 OR 8
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 1
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 2
+               GO TO DISPLAY-MODE.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-DELETE.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-DELETE.
+
+           MOVE 0              TO SAVE-SW DEL-SW.
+           IF T-LEV-9 = LEVEL-COUNT MOVE 3 TO DEL-SW.
+           MOVE SPACES         TO SAVE-DISP LIST(SUB) L-ENTRY(SUB).
+           PERFORM DELETE-LOOP.
+
+           IF LEVEL-COUNT = 0
+               MOVE 1          TO DEL-SW
+               GO TO DELETE-EXIT.
+
+           IF DEL-SW = 3
+               MOVE 0          TO DEL-SW
+               GO TO DELETE-EXIT.
+
+           MOVE 2              TO DEL-SW.
+
+       DELETE-EXIT.            EXIT.
+
+       INSERT-LEVEL.
+           MOVE T-LEV-9        TO SUB.
+           MOVE SPACES         TO INPUT-LEVEL.
+           MOVE T-LEVEL        TO L-NUM.
+           MOVE "INSERT: "     TO TRAN-DISP.
+           MOVE TRUE-VAL       TO IND(4).
+
+           IF T-LEV-9 = 1
+               MOVE "D"        TO SCREEN-SW.
+
+           IF T-LEV-9 > 1      MOVE CRITICAL-1 TO L-CRIT.
+
+       SHOWFORM-INSERT.
+           IF SCREEN-SW = "C" OR "D"
+               MOVE CLEAR-MSG  TO CLRMSG.
+
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE SPACES         TO CLRMSG.
+
+           IF KEY-HIT = 3 OR 8
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 1
+               IF SAVE-SW = 0
+                   PERFORM SAVE-FORM
+                   IF KEY-HIT = 3 OR 8
+                       GO TO MAIN-FORM
+                   ELSE
+                       GO TO DISPLAY-MODE
+               ELSE
+                   GO TO MAIN-FORM.
+
+           IF KEY-HIT = 2
+               GO TO DISPLAY-MODE.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SHOWFORM-INSERT.
+
+           IF KEY-HIT NOT = 0
+               GO TO SHOWFORM-INSERT.
+
+           PERFORM EDIT-DATA   THRU EDIT-EXIT.
+           IF RET-CODE NOT = SPACES
+               GO TO SHOWFORM-INSERT.
+
+           IF SUB < 12         PERFORM INSERT-LOOP.
+           MOVE 0              TO SAVE-SW.
+           MOVE SPACES         TO SAVE-DISP.
+           MOVE T-LEV-9        TO SUB.
+           MOVE SPACES         TO PMS-MSTR-SCHED.
+           MOVE MSTR-SCHED-NAME TO PMS-SCHED-KEY.
+           MOVE L-NUM          TO LD-NUM.
+           MOVE LD-NUM9        TO PMS-LEVEL.
+           MOVE L-PRE-REL      TO PMS-PRE-REL     LD-PRE-REL.
+           MOVE L-CYCLE        TO PMS-CYCLE       LD-CYCLE.
+           MOVE L-CRIT         TO PMS-CRITICAL    LD-CRIT.
+           MOVE L-LOOK         TO PMS-LOOK-AHEAD  LD-LOOK.
+           MOVE L-PRTY         TO PMS-PRIORITY    LD-PRTY.
+           MOVE L-FIX          TO LD-FIX.
+           IF LD-FIX = "F" OR "L"
+               MOVE FIX-LIT    TO PMS-REC-TYP
+           ELSE
+               MOVE DYN-LIT    TO PMS-REC-TYP
+           END-IF.
+           IF SUB = 1
+               MOVE L-CRIT     TO CRITICAL-1
+               MOVE L-FIX      TO FIX-1
+               MOVE 0          TO SUBC
+               MOVE LEVEL-DISP TO HOLD-DISP
+               MOVE PMS-MSTR-SCHED TO HOLD-AREA
+               PERFORM CRITICAL-FIX-FILL LEVEL-COUNT TIMES
+               MOVE HOLD-DISP  TO LEVEL-DISP
+               MOVE HOLD-AREA  TO PMS-MSTR-SCHED.
+
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB).
+           MOVE LEVEL-DISP     TO LIST(SUB).
+
+       INSERT-EXIT.            EXIT.
+
+       CRITICAL-FIX-FILL.
+           ADD 1               TO SUBC.
+           MOVE LIST(SUBC)     TO LEVEL-DISP.
+           MOVE L-ENTRY(SUBC)  TO PMS-MSTR-SCHED.
+           MOVE CRITICAL-1     TO LD-CRIT PMS-CRITICAL.
+           MOVE FIX-1          TO LD-FIX.
+           IF LD-FIX = "F" OR "L"
+               MOVE FIX-LIT    TO PMS-REC-TYP
+           ELSE
+               MOVE DYN-LIT    TO PMS-REC-TYP
+           END-IF.
+           MOVE LEVEL-DISP     TO LIST(SUBC).
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUBC).
+
+       EDIT-DATA.
+           MOVE SPACES         TO RET-CODE.
+           IF L-CYCLE = SPACES
+      **********************************************************************
+      **    MESSAGE 029/113:
+      ** CYCLE TIME IS REQUIRED
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE 113        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 4          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           MOVE L-CYCLE        TO ADJ-4.
+           PERFORM ADJUST-4.
+           MOVE ADJ-4          TO L-CYCLE.
+
+           IF L-CYCLE NOT NUMERIC
+      **********************************************************************
+      **    MESSAGE 035/068:
+      ** INVALID CYCLE TIME
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  68        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 4          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           MOVE L-CYCLE-9      TO CYCLE-CALC.
+           MOVE L-PRE-REL      TO ADJ-4.
+           PERFORM ADJUST-4.
+           MOVE ADJ-4          TO L-PRE-REL.
+
+           IF L-PRE-REL NOT NUMERIC
+      **********************************************************************
+      **    MESSAGE 035/090:
+      ** INVALID PRE-RELEASE TIME - MUST BE FROM 0 TO ONE-HALF CYCLE TIME
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  90        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           COMPUTE CYCLE-CALC = CYCLE-CALC / 2.
+           IF L-PRE-9 > CYCLE-CALC
+      **********************************************************************
+      **    MESSAGE 035/090:
+      ** INVALID PRE-RELEASE TIME - MUST BE FROM 0 TO ONE-HALF CYCLE TIME
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  90        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           IF L-NUM-9 > 1      GO TO EDIT-DATA-CONT.
+
+           IF L-CYCLE-9 = 1
+               MOVE "0001"     TO L-CRIT
+               GO TO EDIT-DATA-CONT.
+
+           IF L-CRIT = SPACES
+      **********************************************************************
+      **    MESSAGE 029/114:
+      ** CRITICAL TIME IS REQUIRED
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE 114        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 6          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           MOVE L-CRIT         TO ADJ-4.
+           PERFORM ADJUST-4.
+           MOVE ADJ-4          TO L-CRIT.
+
+           IF L-CRIT NOT NUMERIC
+      **********************************************************************
+      **    MESSAGE 035/069:
+      ** INVALID CRITICAL TIME
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  69        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 6          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           MOVE L-CYCLE-9      TO CYCLE-CALC.
+           ADD 1               TO CYCLE-CALC.
+           IF L-CRIT-9 < CYCLE-CALC
+      **********************************************************************
+      **    MESSAGE 029/119:
+      ** CRITICAL TIME MUST BE GREATER THAN CYCLE TIME
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE 119        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 6          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           MOVE L-CYCLE-9      TO CYCLE-CALC.
+           COMPUTE CYCLE-CALC = CYCLE-CALC * 1.5.
+           IF L-CRIT-9 > CYCLE-CALC
+      **********************************************************************
+      **    MESSAGE 029/120:
+      ** CRITICAL TIME MUST NOT BE GREATER THAN 1.5 TIMES CYCLE TIME
+      **********************************************************************
+               MOVE  29        TO CATREAD-MSG-SET
+               MOVE 120        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 6          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+       EDIT-DATA-CONT.
+           PERFORM ADJUST-LOOK-AHEAD.
+           IF L-PRTY = SPACES
+      **********************************************************************
+      **    MESSAGE 042/052:
+      ** PRIORITY REQUIRED
+      **********************************************************************
+               MOVE  42        TO CATREAD-MSG-SET
+               MOVE  52        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 8          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           IF L-PRTY NOT NUMERIC
+      **********************************************************************
+      **    MESSAGE 035/080:
+      ** INVALID PRIORITY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  80        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 8          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           IF L-PRTY = "1" OR "2" OR "3" OR "4" OR "5"
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 035/080:
+      ** INVALID PRIORITY
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  80        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 8          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           COMPUTE SUBE = SUB - 1.
+           IF SUBE = 0
+               MOVE ALL "0"    TO LEVEL-LESS-1
+           ELSE
+               MOVE LIST(SUBE) TO LEVEL-LESS-1.
+
+           COMPUTE SUBE = SUB + 1.
+           IF SUBE = 13
+               MOVE ALL "9"    TO LEVEL-PLUS-1
+               MOVE 13         TO LP-NUM
+           ELSE
+               MOVE LIST(SUBE) TO LEVEL-PLUS-1.
+
+           IF TRANS = "I"
+               MOVE LIST(SUB)  TO LEVEL-PLUS-1
+               IF SUB = 12
+                   MOVE ALL "9" TO LEVEL-PLUS-1
+                   MOVE 13     TO LP-NUM.
+
+           IF LEVEL-PLUS-1 = SPACES
+               MOVE ALL "9"    TO LEVEL-PLUS-1
+               MOVE SUBE       TO LP-NUM.
+
+           IF LL-CYCLE < L-CYCLE-9
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 035/072:
+      ** INVALID CYCLE TIME - CYCLE TIME MUST BE GREATER THAN LOWER LEVEL
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  72        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 4          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           IF L-NUM-9 NOT = 1
+             IF L-FIX = "D"
+               IF L-CYCLE-9 < (LL-CYCLE + LL-LOOK)
+      **********************************************************************
+      **    MESSAGE 003/212:
+      ** CYCLE MUST BE GREATER THAN PREVIOUS CYCLE + PREVIOUS LOOK AHEAD
+      **********************************************************************
+                 MOVE  03        TO CATREAD-MSG-SET
+                 MOVE  212       TO CATREAD-MSG-NUM
+                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                 MOVE 4          TO FIELD-NUMBER
+                 MOVE "XX"       TO RET-CODE
+                 PERFORM SET-ERROR
+                 GO TO EDIT-EXIT.
+
+
+           IF L-CYCLE-9 < LP-CYCLE
+               NEXT SENTENCE
+           ELSE
+      **********************************************************************
+      **    MESSAGE 035/073:
+      ** INVALID CYCLE TIME - CYCLE TIME MUST BE LESS THAN HIGHER LEVEL
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  73        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 4          TO FIELD-NUMBER
+               MOVE "XX"       TO RET-CODE
+               PERFORM SET-ERROR
+               GO TO EDIT-EXIT.
+
+           IF L-NUM-9 > 1
+               MOVE FIX-1      TO L-FIX
+            ELSE
+               IF L-FIX = "F" OR "L" OR "D"
+                   NEXT SENTENCE
+               ELSE
+      **********************************************************************
+      **    MESSAGE 035/143:
+      ** INVALID CYCLE TYPE - MUST BE F, L, OR D (FIXED, LOCKED, OR DYNAMIC)
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE 143    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE   9    TO FIELD-NUMBER
+                   MOVE "XX"   TO RET-CODE
+                   PERFORM SET-ERROR
+                   GO TO EDIT-EXIT.
+
+       EDIT-EXIT.              EXIT.
+
+       ADJUST-LOOK-AHEAD.
+           MOVE 0              TO LA-VALUE.
+           IF T-LEV-9 = 1
+               COMPUTE LA-VALUE = L-CYCLE-9 / 2
+           ELSE
+               MOVE T-LEV-9    TO LA-SUB
+               SUBTRACT 1      FROM LA-SUB
+               MOVE LIST(LA-SUB) TO LEVEL-LESS-1
+               COMPUTE LA-VALUE = LL-CYCLE / 2.
+           MOVE LA-VALUE       TO L-LOOK-9.
+
+           MOVE T-LEV-9        TO LA-SUB.
+           ADD 1               TO LA-SUB.
+           MOVE LIST(LA-SUB)   TO LEVEL-PLUS-1.
+           IF TRANS = "I"
+               MOVE LIST(SUB)  TO LEVEL-PLUS-1.
+           IF LP-CYCLE NOT = SPACES
+               COMPUTE LA-VALUE = L-CYCLE-9 / 2
+               MOVE LA-VALUE   TO LP-LOOZ
+               IF TRANS = "I"
+                   MOVE LEVEL-PLUS-1    TO LIST(SUB)
+                   MOVE L-ENTRY(SUB)    TO PMS-MSTR-SCHED
+                   MOVE LP-LOOK         TO PMS-LOOK-AHEAD
+                   MOVE PMS-MSTR-SCHED  TO L-ENTRY(SUB)
+               ELSE
+                   MOVE LEVEL-PLUS-1    TO LIST(LA-SUB)
+                   MOVE L-ENTRY(LA-SUB) TO PMS-MSTR-SCHED
+                   MOVE LP-LOOK         TO PMS-LOOK-AHEAD
+                   MOVE PMS-MSTR-SCHED  TO L-ENTRY(LA-SUB).
+
+       INSERT-LOOP.
+           MOVE 11             TO SUB.
+           MOVE 12             TO SUB1.
+           PERFORM SHIFT-FOREWARD UNTIL SUB < T-LEV-9.
+           IF LEVEL-COUNT < 12
+               ADD 1           TO LEVEL-COUNT
+               MOVE LEVEL-COUNT TO SUB
+               ADD 1           TO SUB
+               PERFORM CLEAR-NUMBERS UNTIL SUB = 13.
+
+       SHIFT-FOREWARD.
+           MOVE LIST(SUB)      TO LEVEL-DISP.
+           MOVE L-ENTRY(SUB)   TO PMS-MSTR-SCHED.
+           MOVE SUB1           TO LD-NUM.
+           MOVE LD-NUM9        TO PMS-LEVEL.
+           MOVE LEVEL-DISP     TO LIST(SUB1).
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB1).
+           SUBTRACT 1          FROM SUB SUB1.
+
+       DELETE-LOOP.
+           COMPUTE SUB1 = SUB + 1.
+           PERFORM SHIFT-BACK  UNTIL SUB = 12.
+           MOVE LEVEL-COUNT    TO SUB.
+           SUBTRACT 1          FROM LEVEL-COUNT.
+           PERFORM CLEAR-NUMBERS UNTIL SUB = 13.
+
+       SHIFT-BACK.
+           MOVE LIST(SUB1)     TO LEVEL-DISP.
+           MOVE L-ENTRY(SUB1)  TO PMS-MSTR-SCHED.
+           MOVE SUB            TO LD-NUM.
+           MOVE LD-NUM9        TO PMS-LEVEL.
+           MOVE LEVEL-DISP     TO LIST(SUB).
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB).
+           ADD 1               TO SUB SUB1.
+
+       CLEAR-NUMBERS.
+           MOVE SPACES         TO LIST(SUB) L-ENTRY(SUB).
+           ADD 1               TO SUB.
+
+       ADJUST-2.
+           PERFORM ELIMINATE1  UNTIL F2 NOT = SPACE.
+           IF F1 = SPACE       MOVE "0" TO F1.
+
+       ADJUST-4.
+           PERFORM ELIMINATE2  UNTIL F6 NOT = SPACE.
+           IF F3 = SPACE       MOVE "0" TO F3.
+           IF F4 = SPACE       MOVE "0" TO F4.
+           IF F5 = SPACE       MOVE "0" TO F5.
+
+       ELIMINATE1.
+           MOVE F1             TO F2.
+           MOVE "0"            TO F1.
+
+       ELIMINATE2.
+           MOVE F5             TO F6.
+           MOVE F4             TO F5.
+           MOVE F3             TO F4.
+           MOVE "0"            TO F3.
+
+       LOAD-SCREEN.
+           MOVE 0              TO SUB.
+           MOVE SPACES         TO LEVEL-LIST.
+           PERFORM LOAD-LOOP   LEVEL-COUNT TIMES.
+
+       LOAD-LOOP.
+           ADD 1               TO SUB.
+           MOVE L-ENTRY(SUB)   TO PMS-MSTR-SCHED.
+           MOVE SUB            TO LD-NUM.
+           MOVE PMS-CYCLE      TO LD-CYCLE.
+           MOVE PMS-PRE-REL    TO LD-PRE-REL.
+           MOVE PMS-CRITICAL   TO LD-CRIT.
+           MOVE PMS-LOOK-AHEAD TO LD-LOOK.
+           MOVE PMS-PRIORITY   TO LD-PRTY.
+           IF PMS-REC-TYP = FIX-LIT
+               MOVE "F"        TO LD-FIX
+               IF PMS-LOCK = "FL"
+                   MOVE "L"    TO LD-FIX
+               END-IF
+           ELSE
+               MOVE "D"        TO LD-FIX
+           END-IF.
+           MOVE LEVEL-DISP     TO LIST(SUB).
+
+       READ-LOOP.
+           MOVE SPACES         TO LEVEL-TABLE PMS-MSTR-SCHED.
+           MOVE SPACES         TO CRITICAL-1  FIX-1 RET-CODE.
+           MOVE 0              TO LEVEL-COUNT SUB.
+
+           MOVE MSTR-SCHED-NAME TO PMSCHEDKEY OF PM-MSTR-SCHED.
+           START PM-MSTR-SCHED KEY = PMSCHEDKEY OF PM-MSTR-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   IF SUB > 0
+                       GO TO READ-EXIT
+                   ELSE
+                       MOVE "00" TO RET-CODE
+                       GO TO READ-EXIT
+               ELSE
+                   MOVE "PM-MSTR-SCHED" TO BU-DISPLAY-FLD(2)
+                   MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(3)
+                   MOVE FILE-STAT       TO COND-WORD
+                   MOVE "START ERROR, READ-LOOP" TO
+                               BU-DISPLAY-MSG
+                   PERFORM 999-BLOWUP.
+
+       DBGET-READ-LOOP.
+           MOVE PMS-MSTR-SCHED TO HOLD-DATA.
+           READ PM-MSTR-SCHED  NEXT INTO PMS-MSTR-SCHED
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   IF SUB > 0
+                       GO TO READ-EXIT
+                   ELSE
+                       MOVE "00"   TO RET-CODE
+                       GO TO READ-EXIT
+               ELSE
+                   MOVE FILE-STAT  TO COND-WORD
+                   MOVE "PM-MSTR-SCHED" TO BU-DISPLAY-FLD(2)
+                   MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(3)
+                   MOVE "READ NEXT, READ-LOOP" TO
+                               BU-DISPLAY-MSG
+                   PERFORM 999-BLOWUP.
+
+           IF PMS-SCHED-KEY NOT = MSTR-SCHED-NAME
+               IF SUB > 0
+                   MOVE HOLD-DATA  TO PMS-MSTR-SCHED
+                   GO TO READ-EXIT
+               ELSE
+                   MOVE "00"   TO RET-CODE
+                   GO TO READ-EXIT.
+
+           ADD 1               TO SUB.
+           IF SUB = 1
+               MOVE PMS-CRITICAL TO CRITICAL-1
+               IF PMS-REC-TYP = FIX-LIT
+                   MOVE "F"    TO FIX-1
+                   IF PMS-LOCK = "FL"
+                       MOVE "L" TO FIX-1
+                   END-IF
+               ELSE
+                   MOVE "D"    TO FIX-1
+               END-IF
+           END-IF.
+           MOVE PMS-MSTR-SCHED TO L-ENTRY(SUB).
+           GO TO DBGET-READ-LOOP.
+
+       READ-EXIT.              EXIT.
+
+       CHANGE-WARNING.
+           IF ORIG-LEVELS = SPACES
+               MOVE 1          TO CONTINUE-CHANGE
+               GO TO CHANGE-WARNING-EXIT.
+           MOVE 0              TO CRITICAL-CHANGE.
+           IF LEVEL-LIST = SPACES
+               MOVE 1          TO CRITICAL-CHANGE
+               GO TO CHANGE-CHECK-END.
+           MOVE 0              TO SUB.
+
+       CHANGE-CHECK-LOOP.
+           ADD 1 TO SUB.
+           IF SUB > 12         GO TO CHANGE-CHECK-END.
+           MOVE L-ENTRY(SUB)   TO PMS-MSTR-SCHED.
+           IF ORIG-ENTRY(SUB) NOT = SPACES
+               IF PMS-MSTR-SCHED NOT = SPACES
+                   IF PMS-LEVEL NOT = ORIG-LEVEL(SUB) OR
+                      PMS-CYCLE NOT = ORIG-CYCLE(SUB) OR
+                      PMS-PRE-REL NOT = ORIG-PRE-REL(SUB)
+                      MOVE 1     TO CRITICAL-CHANGE
+                   ELSE
+                      GO TO CHANGE-CHECK-LOOP
+               ELSE
+                   MOVE 1 TO CRITICAL-CHANGE
+           ELSE
+               GO TO CHANGE-CHECK-LOOP.
+
+       CHANGE-CHECK-END.
+           IF CRITICAL-CHANGE = 0
+               PERFORM NON-CRITICAL-CHANGE
+                               THRU NON-CRITICAL-CHANGE-EXIT
+               MOVE 1          TO CONTINUE-CHANGE
+               GO TO CHANGE-WARNING-EXIT.
+           CALL "SPMSKWRN"     USING DBPARAMETERS
+                               VIEW-COMAREA
+                               MSTR-SCHED-NAME
+                               CONTINUE-CHANGE.
+           IF CONTINUE-CHANGE = 1
+               PERFORM STOP-ALL-SCHEDULES
+                               THRU STOP-ALL-SCHEDULES-EXIT.
+
+       CHANGE-WARNING-EXIT.    EXIT.
+
+       NON-CRITICAL-CHANGE.
+           MOVE MSTR-SCHED-NAME TO PMSCHEDKEY OF WO-PLANNED-SCHED.
+           START WO-PLANNED-SCHED KEY = PMSCHEDKEY OF WO-PLANNED-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO NON-CRITICAL-CHANGE-EXIT.
+
+       NON-CRITICAL-WO-LOOP.
+           READ WO-PLANNED-SCHED NEXT INTO WO-PLANNED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO NON-CRITICAL-CHANGE-EXIT
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE "READ ERROR NON-CRITICAL" TO BU-DISPLAY-MSG
+               MOVE WO-NUM-PLANNED  TO BU-DISPLAY-FLD(1)
+               MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(2)
+               PERFORM 999-BLOWUP.
+           IF PM-SCHEDULE-KEY NOT = MSTR-SCHED-NAME
+               GO TO NON-CRITICAL-CHANGE-EXIT.
+           PERFORM CHECK-INITIATION THRU CHECK-INITIATION-EXIT.
+           IF FILE-STAT NOT = "00"
+               GO TO NON-CRITICAL-WO-LOOP.
+
+           MOVE WO-NUM-PLANNED TO WONUM OF PM-SCHEDULE-WO.
+           START PM-SCHEDULE-WO KEY = WONUM OF PM-SCHEDULE-WO
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO NON-CRITICAL-UPDATE-END.
+
+       NON-CRITICAL-UPDATE-LOOP.
+           READ PM-SCHEDULE-WO NEXT INTO PM-SCHED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO NON-CRITICAL-UPDATE-END
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE "READ SCH ERROR NON-CRITICAL" TO BU-DISPLAY-MSG
+               MOVE WO-NUM-PLANNED TO BU-DISPLAY-FLD(1)
+               PERFORM 999-BLOWUP.
+
+           IF SCH-WO-NUM NOT = WO-NUM-PLANNED
+               GO TO NON-CRITICAL-UPDATE-END.
+
+           IF SCH-REC-TYP = "RI" OR "MS" OR "DM"
+               GO TO NON-CRITICAL-UPDATE-LOOP.
+
+           MOVE SCH-LEVEL      TO SUB.
+           MOVE L-ENTRY(SUB)   TO PMS-MSTR-SCHED.
+           MOVE PMS-CRITICAL   TO SCH-CRITICAL.
+           MOVE PMS-PRIORITY   TO SCH-PRIORITY.
+           REWRITE PM-SCHED-WO-REC FROM PM-SCHED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "UPDATE ERROR NON-CRITICAL" TO BU-DISPLAY-MSG
+               MOVE WO-NUM-PLANNED TO BU-DISPLAY-FLD(1)
+               MOVE SCH-EQUIP-NUM  TO BU-DISPLAY-FLD(2)
+               MOVE SCH-LEVEL      TO BU-DISPLAY-FLD(3)
+               PERFORM 999-BLOWUP.
+           GO TO NON-CRITICAL-UPDATE-LOOP.
+
+       NON-CRITICAL-UPDATE-END.
+           GO TO NON-CRITICAL-WO-LOOP.
+
+       NON-CRITICAL-CHANGE-EXIT. EXIT.
+
+       STOP-ALL-SCHEDULES.
+           MOVE MSTR-SCHED-NAME TO PMSCHEDKEY OF WO-PLANNED-SCHED.
+           START WO-PLANNED-SCHED KEY = PMSCHEDKEY OF WO-PLANNED-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO STOP-ALL-SCHEDULES-EXIT.
+
+       STOP-LOOP.
+           READ WO-PLANNED-SCHED NEXT INTO WO-PLANNED-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO STOP-ALL-SCHEDULES-EXIT
+           ELSE IF FILE-STAT NOT = "00"
+               MOVE "READ ERROR STOP-ALL-SCH" TO BU-DISPLAY-MSG
+               MOVE WO-NUM-PLANNED TO BU-DISPLAY-FLD(1)
+               MOVE "WO-PLANNED-SCHED" TO BU-DISPLAY-FLD(2)
+               PERFORM 999-BLOWUP.
+           IF PM-SCHEDULE-KEY NOT = MSTR-SCHED-NAME
+               GO TO STOP-ALL-SCHEDULES-EXIT.
+
+           IF WO-NUM-SUFF-P NOT = "000"
+               GO TO STOP-LOOP.
+
+           PERFORM CHECK-INITIATION THRU CHECK-INITIATION-EXIT.
+           IF FILE-STAT NOT = "00"
+               GO TO STOP-LOOP.
+
+           MOVE SPACES         TO BU-DISPLAY-MSG.
+           MOVE "N"            TO STOP-CALENDAR-SW.
+           MOVE "Y"            TO PM-QUEUE-MSG-SW.
+           CALL "SPMSKSTP"     USING DBPARAMETERS
+                               WO-NUM-PLANNED
+                               STOP-CALENDAR-SW
+                               PM-QUEUE-MSG-SW
+                               BU-DISPLAY-MSG
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE "SPMSKSTP" TO BU-DISPLAY-FLD(5)
+               PERFORM 999-BLOWUP.
+           GO TO STOP-LOOP.
+
+       STOP-ALL-SCHEDULES-EXIT. EXIT.
+
+       CHECK-INITIATION.
+           MOVE WO-NUM-PLANNED TO WONUM OF PM-SCHEDULE-WO2.
+           READ PM-SCHEDULE-WO2
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+
+       CHECK-INITIATION-EXIT.  EXIT.
+
+       WRITE-LOOP.
+           MOVE SPACES         TO PMS-MSTR-SCHED RET-CODE.
+           MOVE 0              TO SUB.
+
+       WRITE-LOOP-CONT.
+           MOVE MSTR-SCHED-NAME TO PMSCHEDKEY OF PM-MSTR-SCHED.
+           START PM-MSTR-SCHED KEY = PMSCHEDKEY OF PM-MSTR-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   PERFORM DBADD-LOOP LEVEL-COUNT TIMES
+                   GO TO WRITE-EXIT
+               ELSE
+                   MOVE FILE-STAT TO COND-WORD
+                   MOVE "PM-MSTR-SCHED" TO BU-DISPLAY-FLD(2)
+                   MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(3)
+                   MOVE "START ERROR, WRITE-LOOP" TO
+                               BU-DISPLAY-MSG
+                   PERFORM 999-BLOWUP.
+
+       DBGET-WRITE-LOOP.
+           READ PM-MSTR-SCHED  NEXT INTO PMS-MSTR-SCHED
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   PERFORM DBADD-LOOP LEVEL-COUNT TIMES
+                   GO TO WRITE-EXIT
+               ELSE
+                   MOVE FILE-STAT TO COND-WORD
+                   MOVE "PM-MSTR-SCHED" TO BU-DISPLAY-FLD(2)
+                   MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(3)
+                   MOVE "READ ERROR, WRITE-LOOP" TO
+                               BU-DISPLAY-MSG
+                   PERFORM 999-BLOWUP.
+
+           IF PMS-SCHED-KEY NOT = MSTR-SCHED-NAME
+               PERFORM DBADD-LOOP LEVEL-COUNT TIMES
+               GO TO WRITE-EXIT.
+
+           DELETE PM-MSTR-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO COND-WORD
+               MOVE "PM-MSTR-SCHED" TO BU-DISPLAY-FLD(2)
+               MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(3)
+               MOVE "DELETE ERROR, WRITE-LOOP" TO
+                               BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+           GO TO DBGET-WRITE-LOOP.
+
+       DBADD-LOOP.
+           ADD 1               TO SUB.
+           IF SUB > LEVEL-COUNT
+               GO TO WRITE-EXIT.
+           MOVE L-ENTRY(SUB)   TO PMS-MSTR-SCHED.
+           IF L-ENTRY(SUB) = SPACES GO TO DBADD-LOOP.
+           IF LD-FIX = "L"     MOVE "FL" TO PMS-LOCK.
+           MOVE MASTER-CREATOR TO PMS-CREATOR.
+           IF ORIG-LEVELS NOT = SPACES
+               MOVE CNUM-BUF   TO PMS-CHANGED-BY
+               MOVE CHANGE-DATE TO PMS-CHANGED-DATE.
+
+           WRITE PMS-REC       FROM PMS-MSTR-SCHED
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO COND-WORD
+               MOVE "PM-MSTR-SCHED" TO BU-DISPLAY-FLD(2)
+               MOVE MSTR-SCHED-NAME TO BU-DISPLAY-FLD(3)
+               MOVE "WRITE ERROR, WRITE-LOOP" TO
+                 BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+       WRITE-EXIT.             EXIT.
+
+       END-OF-JOB.
+           CLOSE               PM-MSTR-SCHED
+                               PM-SCHEDULE-WO
+                               WO-PLANNED-SCHED
+                               PM-SCHEDULE-WO2.
+           CLOSE               DISPLAY-FILE.
+           GOBACK.
+
+       SET-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND(FIELD-NUMBER) IND(99).
+
+       999-CATREAD.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+
+       999-BLOWUP.
+           MOVE "SPMLEVEL"     TO BU-PGM-NAME.
+           MOVE SCREEN-NAME    TO BU-DISPLAY-FLD(1).
+           CALL "TBLOWUP"      USING BASE
+                               BU-PGM-NAME
+                               STATUS-AREA
+                               VIEW-COMAREA
+                               COND-WORD
+                               BU-DISPLAY-MSG
+                               BU-DISPLAY-FLDS.
+
+       SAVE-FORM.
+           MOVE "VPMLSAVE"     TO SCREEN-NAME.
+           MOVE "O"            TO SCREEN-SW.
+           MOVE 3              TO HELP-SW.
+           MOVE SPACES         TO DISPLAY-REC.
+           PERFORM SHOWFORM    THRU SHOWFORM-EXIT.
+
+           IF KEY-HIT = 7
+               CALL "SPMHELPM" USING HELP-SW
+               GO TO SAVE-FORM.
+
+       SHOWFORM.
+           MOVE NEG-VAL        TO IND(21) IND(22) IND(23) IND(24).
+           IF SCREEN-SW = "A"
+               MOVE TRUE-VAL   TO IND(21)
+           ELSE
+           IF SCREEN-SW = "B"
+               MOVE TRUE-VAL   TO IND(22)
+           ELSE
+           IF SCREEN-SW = "C"
+               MOVE TRUE-VAL   TO IND(23)
+           ELSE
+           IF SCREEN-SW = "D"
+               MOVE TRUE-VAL   TO IND(23) IND(24).
+
+           MOVE "00"           TO SCREEN-STATUS.
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           IF DEL-SW < 2
+               NEXT SENTENCE
+           ELSE
+               MOVE 0          TO KEY-HIT DEL-SW
+               GO TO SHOWFORM-EXIT.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+       SHOWFORM-EXIT.          EXIT.
+

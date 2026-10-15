@@ -1,0 +1,209 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TREQCLNUP.
+       AUTHOR.               CA YODER.
+       DATE-WRITTEN.         JULY 2002.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D*   THIS PROGRAM WILL BE USED TO CLEAN UP THE REQUISITION
+      *D*   INTERFACE FILE MEMBERS IN R3REQDATA.
+      *D*
+      *D*   CHANGE FIELD FILES-TO-KEEP TO THE NUMBER OF FILES TO
+      *D*   SAVE.
+      *D*
+      *C* CHANGES.
+      *C*
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.    I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+      ******************************************************************
+       INPUT-OUTPUT SECTION.
+      ******************************************************************
+       FILE-CONTROL.
+
+           SELECT MPLTINFO
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+      ******************************************************************
+       DATA DIVISION.
+      ******************************************************************
+
+       FILE SECTION.
+
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+      ******************************************************************
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+      *-----------------------------------------------------------------
+      *  Q C M D E X C   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  RMVM-CMD.
+           05  PIC X(36)   VALUE "RMVM FILE(*LIBL/R3REQDATA) MBR(R3REQ".
+           05  RMVM-SEQ    PIC X(5).
+           05  PIC X(1)    VALUE ")".
+
+       01  RMVM-LEN        PIC S9(10)V9(5) COMP-3 VALUE 42.
+
+      *-----------------------------------------------------------------
+      *  M I S C E L L A N E O U S   F I E L D S
+      *-----------------------------------------------------------------
+
+       01  SEQ-NUMBER               PIC 9(5).
+       01  SEQ-ALPHA  REDEFINES SEQ-NUMBER  PIC X(5).
+
+       01  OLDEST-FILE-TO-KEEP      PIC 9(6).
+       01  NEXT-FILE-TO-DLT         PIC 9(5).
+
+      *-----------------------------------------------------------------
+      *  F L A G S   A N D   S W I T C H E S
+      *-----------------------------------------------------------------
+
+       01  RTN-CODE                 PIC X.
+
+       01  CLEANUP-COMPLETE         PIC X.
+
+      *-----------------------------------------------------------------
+      *  A C C U M U L A T O R S
+      *-----------------------------------------------------------------
+
+       01  FILE-COUNTER             PIC 9(3).
+
+       01  MISSING-FILES            PIC 9.
+
+       01  CURR-SEQ-NO              PIC 9(5).
+       01  CURR-SEQ-NO-R REDEFINES CURR-SEQ-NO
+                                    PIC X(5).
+
+       01  FILES-TO-KEEP            PIC 9(5) VALUE 60.
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   A N D   F I L E   B U F F E R S
+      *-----------------------------------------------------------------
+
+       COPY MPLT0      IN COPYLIB.
+       COPY MPLTR3SQ   IN COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       COPY DBCSACCT OF COPYLIB.
+
+       COPY DATAB    OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *  U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY TBLOWUP  OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+      ******************************************************************
+       PROCEDURE DIVISION.
+      ******************************************************************
+
+       00-CONTROL.
+
+           PERFORM 10-HSK.
+
+           PERFORM 60-DELETE-MBRS.
+
+           PERFORM 20-EOJ.
+
+           GOBACK.
+
+       10-HSK.
+
+           OPEN INPUT      MPLTINFO.
+
+      *---- GET THE SEQUENCE NUMBER FOR THE LAST REQ FILE.
+           PERFORM 9999-READ-MPLTINFO.
+           MOVE MPLTINFO-MMSREQ-SEQ TO CURR-SEQ-NO-R.
+
+      *---- ADD 100,000 TO THE NUMBER SO THAT IF THE SEQUENCE NUMBERS
+      *---- HAVE ROLLED OVER FROM 99999 TO 00000, THE CORRECT FILES WILL
+      *---- BE REMOVED BY USING JUST THE LAST 5 DIGITS OF FIELD
+      *---- OLDEST-FILE-TO-KEEP.
+           COMPUTE OLDEST-FILE-TO-KEEP = CURR-SEQ-NO
+                                       + 100000
+                                       - FILES-TO-KEEP.
+           DISPLAY "OLDEST-FILE-TO-KEEP:  " OLDEST-FILE-TO-KEEP.
+
+           MOVE "N" TO CLEANUP-COMPLETE.
+
+       20-EOJ.
+
+           CLOSE           MPLTINFO.
+
+       60-DELETE-MBRS.
+
+           PERFORM VARYING FILE-COUNTER FROM 1 BY 1
+              UNTIL CLEANUP-COMPLETE = "Y"
+
+              SUBTRACT FILE-COUNTER FROM OLDEST-FILE-TO-KEEP
+                 GIVING NEXT-FILE-TO-DLT
+
+      *------- CHECK FOR MEMBER IN R3REQDATA WITH THIS SEQ NUM
+
+              INITIALIZE RTN-CODE
+              MOVE NEXT-FILE-TO-DLT TO SEQ-ALPHA
+              CALL "REQCHKOBJ" USING   SEQ-ALPHA   RTN-CODE
+
+      *------- ASSUME THAT IF THERE ARE 3 MISSING FILES IN A ROW
+      *------- THEN THERE ARE NO MORE REQUISITION FILES TO DELETE.
+      *------- HOWEVER, IF THERE ARE 2 OR LESS FILES NOT FOUND BEFORE
+      *------- ANOTHER REQUISITION FILE IS FOUND, THEN RESET THE
+      *------- COUNTER AND CONTINUE DELETING LOOP.
+
+              IF RTN-CODE = "1"
+                 ADD 1 TO MISSING-FILES
+                 IF MISSING-FILES = 3
+                    MOVE "Y" TO CLEANUP-COMPLETE
+                 END-IF
+              ELSE
+                 INITIALIZE MISSING-FILES
+                 MOVE NEXT-FILE-TO-DLT TO RMVM-SEQ
+                 CALL "QCMDEXC" USING  RMVM-CMD  RMVM-LEN
+              END-IF
+           END-PERFORM.
+
+      *-----------------------------------------------------------------
+      *9999 UTILITY SECTION.
+      *-----------------------------------------------------------------
+
+       9999-BLOWUP.
+           MOVE "TREQCLNUP" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+              VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+              BU-DISPLAY-FLDS.
+
+      *---------------------------------
+      * MWRKLIST-INFO
+      *---------------------------------
+
+       9999-READ-MPLTINFO.
+           MOVE "R3SQ" TO PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UNABLE TO LOCATE R3SQ RECORD"
+                   TO BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+

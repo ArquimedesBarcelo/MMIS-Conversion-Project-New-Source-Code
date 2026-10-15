@@ -1,0 +1,2801 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SRELEASE.
+       AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+      **************************************************************
+      *                                                            *
+      *   S R E L E A S E                                          *
+      *                                                            *
+      *   THIS SUB PROGRAM CREATES SHIPPING RELEASES               *
+      *   EITHER INSTANTLY (TO PRINT) OR ENTERED IN A              *
+      *   BATCH FILE FOR PROCESSING LATER.                         *
+      *   NOTE THE REQUISITION IF ANY IS CLOSED OUT AT             *
+      *   THE TIME THE RELEASE IS CREATED                          *
+      *                                                            *
+      **************************************************************
+      * N O T E    T H I S   S U B R O U T I N E   I S             *
+      *         C A L L E D    B Y :                               *
+      *      1. TREQUPDT                                           *
+      *      2. TRELMAN                                            *
+      **************************************************************
+
+
+      *****************************************************************
+      **            M O D I F I C A T I O N    H I S T O R Y
+      *****************************************************************
+      *    AUG. 94   JE COFFMAN  REQ #6527
+      *    ADDED CALL TO SCHATREF IF THE USER OPTION SWITCH IS
+      *    SET REQUIRING THAT CHAT NUMBERS BE INCLUDED ON CSIS
+      *    DOCUMENTS CONTAINING CORPORATE CODED ITEMS.
+      ***------------------------------------------------------------***
+      *    02/22/1995   CA ZUBEK   REQ #94-049
+      *    ADDED LOGIC TO INCLUDE TAXES IN THE PO BUDGETED
+      *    AMOUNT FIELD.  THE LOGIC WAS COPIED FROM "SADDPITM."
+      *    ** NOTE:  IF THE TAX CALCULATION LOGIC IS CHANGED
+      *    IN THIS PROGRAM, YOU MAY HAVE TO MAKE THE SAME CHANGE
+      *    IN THE PROGRAM "SADDPITM," SINCE IT CONTAINS THE SAME
+      *    LOGIC.
+      *    ** NOTE:  ADDED CALL TO "SCALCBGT" SO THIS LOGIC NO
+      *    LONGER EXISTS IN THIS PROGRAM.   5/22/98
+      ***------------------------------------------------------------***
+      *    08/09/1995   CA YODER   REQ #94-022
+      *    ADDED LOGIC TO CALCULATE THE SHIP DATE USING SHIP TIME
+      *    FIELD.  BEFORE THIS CHANGE, EXPECT DATE AND SHIP DATE
+      *    WERE EITHER THE SAME OR BLANK.  CALCULATIONS WERE
+      *    ADDED TO USE THE ESTIMATED LEAD TIME (SHIP TIME) TO
+      *    MAKE THE TWO DATES DIFFERENT.
+      ***------------------------------------------------------------***
+      *    01/23/1996   CA YODER   REQ #95-039
+      *    ADDED CALL TO PROGRAM "SRELVEND" TO FIND OUT IF THE USER
+      *    CHOSE THE LOWEST COST VENDOR (FOR INSTANT SHIPPING RELEASE
+      *    ONLY).
+      ***------------------------------------------------------------***
+      *    06/17/1996   CA YODER
+      *    MODIFIED FOR CENTURY DATABASE CHANGES.  ALSO CHANGED ALL
+      *    REFERENCES FOR DATE CONVERSIONS TO "JULGREG".
+      ***------------------------------------------------------------***
+      *    08/27/1997   CA YODER   REQ #97-008
+      *    CHANGED PRINTING OF THE SHIPPING RELEASE TO USE "TSTRMJOB"
+      *    TO SUBMIT THE PO PRINT INSTEAD OF PRINTING ONLINE.  NAPANEE
+      *    WANTED TO TRY AND ELIMINATE SOME OF THE WAIT TIME DUE TO
+      *    PRINTING.
+      ***------------------------------------------------------------***
+      *    10/27/1997  CA YODER
+      *     ADDED LOGIC TO MOVE NOTIFY USERID TO DPOITEM AND DSHIPREL
+      *     IF ONE IS FOUND IN THE PARAMETERS PASSED TO THIS PROGRAM.
+      ***------------------------------------------------------------***
+      *    05/22/98  CA YODER
+      *    ADDED CALL TO "SCALCBGT" TO CALCULATE THE CORRECT
+      *    BUDGET AMOUNT FOR THE PO.  REMOVED TAX LOGIC THAT
+      *    EXISTED IN THIS PROGRAM.
+      ***------------------------------------------------------------***
+      *    09/14/98  CA YODER
+      *    CHANGED STANDARD INSTRUCTION AREA TO CONTAIN ALL STANDARD
+      *    INSTRUCTIONS BEFORE AND AFTER, NOT JUST THE FIRST 3 AFTER;
+      *    THE REST WERE NOT CARRIED OVER.  VALLEYFIELD WAS HAVING
+      *    A PROBLEM WITH THE STANDARD INSTRUCTIONS "DISAPPEARING."
+      *    FOR BATCH PROCESSING, A NEW DESCRIPTION LINE "99" WAS
+      *    ADDED TO HOLD ALL 12 STANDARD INSTRUCTIONS.  THIS WAS DONE
+      *    INSTEAD OF EXPANDING CS2900 IN THE MIDDLE OF A RELEASE.
+      ***------------------------------------------------------------***
+      *    06/07/99   CA YODER   (DECATUR REQUEST)
+      *    RE-COMPILED TO PICK UP MTAX DATABASE CHANGE TO
+      *    EXPAND TAX RATE PERCENTAGE FROM 2 DECIMAL PLACES TO 4.
+      ***------------------------------------------------------------***
+      *    09/09/99  CA YODER    NAPANEE REQUEST
+      *    MOVE MSTORERM MARKET COST TO UNIT VALUE FIELD FOR
+      *    REPAIR PURCHASE ORDER ITEMS.
+      ***------------------------------------------------------------***
+      *    NOV 1999  JE COFFMAN  NAPANEE REQUEST
+      *    ADD KEYWORD/MODIFIER AND MANUFACTURER AND MANUFACTURER
+      *    PART NUMBER TO SCREEN SO PERSON DOING THE RELEASE HAS
+      *    A BETTER IDEA OF WHAT THE PART IS THAT THEY ARE
+      *    RELEASING.
+      ***------------------------------------------------------------***
+      *    03/01/00  CA YODER    NAPANEE REQUEST    (D. STUBBS)
+      *    REMOVED LOGIC TO UPDATE MARKET COST FOR REPAIR ORDERS.
+      ***------------------------------------------------------------***
+      *    05/04/01  JE COFFMAN  LAWTON REQUEST
+      *    AT JIM JEFFER'S REQUEST - ADDED THE ABILITY TO 'H' (HOLD)
+      *    ENTRIES IN THE SHIPPING RELEASE FILE UNTIL RELEASED
+      *    VIA MENU OPTION PS2X.
+      ***------------------------------------------------------------***
+      *    02/26/02  BE GEISER
+      *    ADDL DESC LINES WERE NOT BEING SET TO 'H' (HOLD) IN THE
+      *    SHIPPING RELEASE FILE. ADDED LOGIC TO SET TO 'H' AS NEEDED.
+      ***------------------------------------------------------------***
+DCR01 *  04/02/2003   DCR01   D. RAUCH
+DCR01 *    ADDED LOGIC FOR PO LOGGING
+      *****************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZRELMAN-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MCLASS-I
+                  ASSIGN TO DATABASE-MCFLCS4901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MVALIDUM-I
+                  ASSIGN TO DATABASE-MCFLCS0401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MVALIDPLTDATA-I
+                  ASSIGN TO DATABASE-MCFLCS1701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MCOMMENT-I
+                  ASSIGN TO DATABASE-MCFLCS1801
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MTAX-I
+                  ASSIGN TO DATABASE-MCFLCS3701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPORCV-O
+                  ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-O
+                  ASSIGN TO DATABASE-MCFLCS2001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQD-O
+                  ASSIGN TO DATABASE-MCFLCS2101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEMC-I
+                  ASSIGN TO DATABASE-MCFLCS1001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-O
+                  ASSIGN TO DATABASE-MCFLCS1101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-O
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DSHIPREL-O
+                  ASSIGN TO DATABASE-MCFLCS2901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-O
+                  ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+9502CZ     SELECT TAXGST-FILE        ASSIGN TO DISK-TAXGST
+9502CZ                               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                   PIC X(2000).
+      *    COPY DD-FRELEASE-O OF ZRELMAN.
+
+       FD  MCLASS-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCLASS-REC-I.
+           COPY DDS-MCRPCS4900  OF MCFLCS4901.
+
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  MVALIDUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDUM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0401.
+
+       FD  MVALIDPLTDATA-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDPLTDATA-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1701.
+
+       FD  MCOMMENT-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCOMMENT-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1801.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  MTAX-I
+           LABEL RECORDS ARE STANDARD.
+       01  MTAX-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS3701.
+
+       FD  MPORCV-O
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  MREQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2001.
+
+       FD  DREQD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2101.
+
+       FD  DPOITEMC-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEMC-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1001.
+
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  DPODATAITM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+       FD  DPORECD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DSHIPREL-O
+           LABEL RECORDS ARE STANDARD.
+       01  DSHIPREL-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2901.
+
+       FD  DDAILYTC-O
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1601.
+
+       FD  TAXGST-FILE
+           RECORD CONTAINS 80 CHARACTERS.
+       01  TAXGST-RECORD             PIC X(80).
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       77  HANDLE-BLOWUP-FLAG            PIC X       VALUE "Y".
+       77  ISO-9000-PRINT-SW             PIC X       VALUE SPACE.
+       77  SUB1                          PIC S99     VALUE ZEROS.
+       77  SUB2                          PIC S99     VALUE ZEROS.
+       77  SUB                           PIC S99     VALUE ZEROS.
+       77  SAVE-CHAT-NO                  PIC X(6)    VALUE SPACES.
+       77  SAVE-CHAT-SW                  PIC X.
+       77  SAVE-UNIT-PRICE               PIC S9(11)V9(4) VALUE ZEROS.
+       77  SAVE-UNIT-QTY                 PIC S9(8)      VALUE ZEROS.
+       77  SAVE-LAST-RLSE                PIC 9(3)       VALUE ZEROS.
+       77  SAVE-PCPO-SW                  PIC X.
+
+DCR01 *************************************************************
+DCR01 * EXTRA PO LOGGING FIELDS
+DCR01 *************************************************************
+DCR01  01  WS-Z000-EXTRA-FLDS.
+DCR01      03  WS-Z000-PGM          PIC X(10)     VALUE "SRELEASE".
+
+DCR01  COPY POLOGSUBWS  IN COPYLIB.
+
+DCR01  COPY CPOLOGPRM   IN COPYLIB.
+
+       01  SAVE-SHIP-DATE-CYMD.
+           05  SAVE-SHIP-DATE-CC         PIC X(2).
+           05  SAVE-SHIP-DATE-YMD.
+               10  SAVE-SHIP-DATE-YY     PIC X(2).
+               10  SAVE-SHIP-DATE-MM     PIC X(2).
+               10  SAVE-SHIP-DATE-DD     PIC X(2).
+
+       01  SAVE-EXP-DATE-CYMD.
+           05  SAVE-EXP-DATE-CC          PIC X(2).
+           05  SAVE-EXP-DATE-YMD.
+               10  SAVE-EXP-DATE-YY      PIC X(2).
+               10  SAVE-EXP-DATE-MM      PIC X(2).
+               10  SAVE-EXP-DATE-DD      PIC X(2).
+
+       01  ZBILL-PO-SW                   PIC X     VALUE SPACE.
+           88  ZBILL-PO                          VALUE "1".
+
+       01  PO-ARRAY.
+           05  PO-ARR OCCURS 7 TIMES INDEXED BY P-INDEX.
+               10  PO-CHAR               PIC X.
+
+
+       01  BUILD-PO-NUM.
+           05  FILLER                    PIC X    VALUE "P".
+           05  PO-NUM                    PIC X(7) VALUE SPACES.
+           05  PO-RLSE                   PIC X(3) VALUE SPACES.
+           05  PO-RCV                    PIC X(3) VALUE SPACES.
+
+       01  BUILD-VALID-DEPT-KEY.
+           05  DEPT-PREFIX               PIC XX   VALUE "DP".
+           05  DEPT-NUM                  PIC X(8) VALUE SPACES.
+
+       01  BUILD-EXPENSE-CLASS.
+           05  FILLER                    PIC X(2) VALUE "EC".
+           05  EXPENSE-CLASS             PIC X(6) VALUE SPACES.
+
+       01  BUILD-NEW-WORK.
+           05  FILLER                    PIC X(2) VALUE "NW".
+           05  NEW-WORK                  PIC X(6) VALUE SPACES.
+
+       01  BUILD-BUDGET-NO.
+           05  FILLER                    PIC X(4) VALUE "PUR-".
+           05  BUD-YY                    PIC X(2) VALUE SPACES.
+           05  FILLER                    PIC X    VALUE "-".
+           05  BUD-MM                    PIC X(2) VALUE SPACES.
+
+       01  BUILD-COMMENT-NO.
+           05  BUILD-COM-PREFIX          PIC X    VALUE "C".
+           05  BUILD-COM-NO              PIC X(3) VALUE SPACES.
+
+022300 COPY CCRTFILE IN COPYLIB.
+022400
+022500 COPY CCHKOBJ IN COPYLIB.
+022600
+022700 COPY CCHKOBJM IN COPYLIB.
+
+022900 01  OVRDBF-PARM1  PIC X(80) VALUE SPACES.
+023000 01  OVRDBF-PARM2  PIC S9(10)V9(5) COMP-3 VALUE 80.
+023100
+       01  STD-INST-SAVED.
+           05  SAVE-STD-INST-BEFORE      PIC X(18).
+           05  SAVE-STD-INST-AFTER       PIC X(18).
+      **** 05  SAVE-STD-INST-AFTER-1-3   PIC X(9).
+      **** 05  SAVE-STD-INST-AFTER-4-6   PIC X(9).
+           05  SAVE-CONFIRM-FLAG         PIC X.
+           05  SAVE-CONFIRM-VERBAGE      PIC X(34).
+
+       01  DPODATAITM-TABLE.
+           05  DPODATAITM-ENTRIES  OCCURS  99  TIMES.
+               10  DPODATAITM-LINE       PIC X(80).
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT                  PIC X(68)    VALUE SPACE.
+           05  MSG-FLD                   PIC X(8)     VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC ZZZZZZZ9.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE ZERO  COMP-4.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+       COPY CATREAD IN COPYLIB.
+
+       01  PASS-CORP-CODE                PIC X(7)     VALUE SPACES.
+
+       01  RETURN-CHAT-NO                PIC X(6)     VALUE SPACES.
+
+       01  SAVE-TREL-RLSE                PIC 9(3)     VALUE 0.
+
+       01  SCREEN-1.
+           05  DISP-COMP                 PIC X(3).
+           05  DISP-EDI-RELLIT           PIC X(11).
+           05  DISP-BLANKET-NO           PIC X(7).
+           05  DISP-LAST-RLSE            PIC ZZ9.
+           05  DISP-CURRENCY-LIT         PIC X(26).
+           05  DISP-ITEM-NO              PIC ZZZ9.
+           05  DISP-CORP-CODE            PIC X(7).
+           05  DISP-PRICE                PIC Z(10)9.9(4).
+           05  DISP-PRICE-UM             PIC X(2).
+           05  DISP-EXP-DATE             PIC X(8).
+           05  DISP-QTY                  PIC Z(7)9.
+           05  DISP-KEYM                 PIC X(50).
+           05  DISP-MANU                 PIC X(78).
+           05  DE-PROCESS-INDICATOR      PIC X.
+           05  DISP-REQ-QTY              PIC Z(7)9.
+           05  DISP-REQ-UM               PIC X(2).
+           05  DE-RLSE-QTY               PIC 9(8)V9(4).
+           05  DISP-REL-UM               PIC X(2).
+           05  DE-SHIP-DATE              PIC X(6).
+           05  DE-EXP-DLV-DATE           PIC X(6).
+           05  DE-TAX-CODE               PIC X(2).
+           05  DE-SUBD                   PIC X(4).
+           05  DE-SUB                    PIC X(3).
+           05  DE-ADDTL-DATA             PIC X(6).
+           05  DE-CHAT-NO                PIC X(6).
+           05  DE-STD-INSTRUCTIONS.
+               10  DE-INSTRUCT-LIST-BEF.
+      ******** 10  DE-INSTRUCT-NO  OCCURS 3 TIMES PIC X(3).
+                   15  DE-INSTRUCT-NO-BEF  OCCURS 6 TIMES PIC X(3).
+               10  DE-INSTRUCT-LIST-AFT.
+                   15  DE-INSTRUCT-NO-AFT  OCCURS 6 TIMES PIC X(3).
+           05  DE-DESC-AREA.
+               10  DE-DESC-LINE  OCCURS 3 TIMES  PIC X(70).
+           05  DE-COMMAND-LINE           PIC X(79).
+           05  DE-MESSAGE-LINE           PIC X(79).
+
+       01  SCREEN-1L.
+           05  DISP-COMP-L               PIC X(3).
+           05  DISP-EDI-RELLIT-L         PIC X(11).
+           05  DISP-BLANKET-NO-L         PIC X(7).
+           05  DISP-LAST-RLSE-L          PIC ZZ9.
+           05  DISP-CURRENCY-LIT-L       PIC X(26).
+           05  DISP-ITEM-NO-L            PIC ZZZ9.
+           05  DISP-CORP-CODE-L          PIC X(7).
+           05  DISP-PRICE-L              PIC Z(10)9.9(4).
+           05  DISP-PRICE-UM-L           PIC X(2).
+           05  DISP-EXP-DATE-L           PIC X(8).
+           05  DISP-QTY-L                PIC Z(7)9.
+           05  DISP-KEYM-L               PIC X(50).
+           05  DISP-MANU-L               PIC X(78).
+           05  DE-PROCESS-INDICATOR-L    PIC X.
+           05  DISP-REQ-QTY-L            PIC Z(7)9.
+           05  DISP-REQ-UM-L             PIC X(2).
+           05  DE-RLSE-QTY-L             PIC 9(8)V9(4).
+           05  DISP-REL-UM-L             PIC X(2).
+           05  DE-SHIP-DATE-L            PIC X(6).
+           05  DE-EXP-DLV-DATE-L         PIC X(6).
+           05  DE-TAX-CODE-L             PIC X(2).
+           05  DE-COMPANY-L              PIC X(3).
+           05  DE-PRIME-L                PIC X(3).
+           05  DE-SUBD-L                 PIC X(4).
+           05  DE-SUB-L                  PIC X(3).
+           05  DE-SUB-L-9 REDEFINES DE-SUB-L
+                                         PIC 9(3).
+           05  DE-ADDTL-DATA-L           PIC X(6).
+           05  DE-STD-INSTRUCTIONS-L.
+               10  DE-INSTRUCT-LIST-L-BEF.
+      ******** 10  DE-INSTRUCT-NO-L  OCCURS 3 TIMES PIC X(3).
+                   15  DE-INSTRUCT-NO-L-BEF  OCCURS 6 TIMES PIC X(3).
+               10  DE-INSTRUCT-LIST-L-AFT.
+                   15  DE-INSTRUCT-NO-L-AFT  OCCURS 6 TIMES PIC X(3).
+           05  DE-DESC-AREA-L.
+               10  DE-DESC-LINE-L  OCCURS 3 TIMES  PIC X(70).
+           05  DE-COMMAND-LINE-L         PIC X(79).
+           05  DE-MESSAGE-LINE-L         PIC X(79).
+
+       01  BUILD-CC-LIT.
+           05  CURRENCY-LIT              PIC X(10).
+           05  FILLER                    PIC X.
+           05  CUR-CODE                  PIC X(2).
+           05  FILLER                    PIC X.
+           05  CUR-CODE-DESC             PIC X(12).
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       COPY MCLASS IN COPYLIB.
+
+       COPY MPLTINFO IN COPYLIB.
+
+       COPY MPORCV IN COPYLIB.
+
+       COPY DPOITEM IN COPYLIB.
+
+       COPY DPORECD IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY MREQ IN COPYLIB.
+
+       COPY DREQD IN COPYLIB.
+
+       COPY DSHIPREL IN COPYLIB.
+
+       COPY DPODATA IN COPYLIB.
+
+       COPY MVALIDUM IN COPYLIB.
+
+       COPY DDAILYTC IN COPYLIB.
+
+       COPY TC370 IN COPYLIB.
+
+9502CZ COPY MTAX IN COPYLIB.
+
+       COPY DRELTRAK IN COPYLIB.
+
+
+      *********************
+      *                   *
+      *   DATA SET NAMES  *
+      *                   *
+      *********************
+
+       01  DSET-NAMES.
+           05  DSET-DPOITEM              PIC X(16)  VALUE "DPOITEM;".
+           05  DSET-DPORECD              PIC X(16)  VALUE "DPORECD;".
+           05  DSET-MPORCV               PIC X(16)  VALUE "MPORCV;".
+           05  DSET-MSTORERM             PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-DDAILYTC             PIC X(16)  VALUE "DDAILYTC;".
+           05  DSET-MREQ                 PIC X(16)  VALUE "MREQ;".
+           05  DSET-DREQD                PIC X(16)  VALUE "DREQD;".
+           05  DSET-MCOMMENT             PIC X(16)  VALUE "MCOMMENT;".
+           05  DSET-DSHIPREL             PIC X(16)  VALUE "DSHIPREL;".
+           05  DSET-MTAX                 PIC X(16)  VALUE "MTAX;".
+           05  DSET-DPODATAITM        PIC X(16)  VALUE "DPODATAITM;".
+           05  DSET-MVALIDUM             PIC X(16)  VALUE "MVALIDUM;".
+           05  DSET-MVALIDPLTDATA  PIC X(16) VALUE "MVALIDPLTDATA;".
+
+       COPY DBSTAT IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS                 PIC XX    VALUE "@;".
+           05  CODE-SEARCH               PIC X(10) VALUE "CORP-CODE;".
+           05  PO-SEARCH                 PIC X(10) VALUE "PO-RCV-NO;".
+           05  REQ-SEARCH                PIC X(12) VALUE "REQ-NUMBER;".
+
+       01  ARG-VALUES.
+           05  PO-ARG                    PIC X(14) VALUE SPACES.
+           05  CODE-ARG                  PIC X(8)  VALUE SPACES.
+           05  MVALIDPLT-ARG.
+               10  MVALIDPLT-ARG-1-2     PIC X(2)  VALUE SPACES.
+               10  MVALIDPLT-ARG-3-10.
+                   15  MVALIDPLT-ARG-3-8 PIC 9(6).
+                   15  FILLER            PIC XX.
+           05  REQ-ARG                   PIC X(12) VALUE SPACES.
+           05  COMMENT-ARG               PIC X(4)  VALUE SPACES.
+           05  TAX-ARG                   PIC X(2)  VALUE SPACES.
+           05  UM-ARG                    PIC X(2)  VALUE SPACES.
+           05  PLT-ARG                   PIC X(4)  VALUE SPACES.
+
+
+      **************************************************
+      **                DATE AREAS                    **
+      **************************************************
+
+       COPY TDATECHK IN COPYLIB.
+
+       01  CURRENT-DATE.
+           05  CUR-CC                    PIC X(2).
+           05  CUR-DATE-YMD.
+               10  CUR-YY                PIC X(2).
+               10  CUR-MM                PIC X(2).
+               10  CUR-DD                PIC X(2).
+
+      **********************************************
+      **   FIELDS FOR CALCULATING THE SHIP DATE   **
+      **********************************************
+
+       01  JULIAN-DATE.
+           05  JUL-CC                    PIC XX.
+           05  JUL-YY                    PIC XX.
+           05  JUL-DDD                   PIC X(3).
+       01  JULIAN-DATE-9  REDEFINES JULIAN-DATE.
+           05  JUL-CCYY                  PIC 9(4).
+           05  JUL-DDD-9                 PIC 9(3).
+
+       01  GREG-DATE.
+           05  GREG-CC                   PIC XX.
+           05  GREG-DATE-YMD.
+               10  GREG-YY               PIC XX.
+               10  GREG-MM               PIC XX.
+               10  GREG-DD               PIC XX.
+
+       01  DAY-DIGIT                     PIC X.
+       01  LEAP-YEAR-FLAG                PIC X.
+
+       01  HOLD-JUL-DDD                  PIC S9(3).
+       01  JULIAN-CUR-DATE               PIC X(7).
+
+       01  HOLD-EST-LT                   PIC 9(4).
+
+9502CZ***************************************************************
+  .   ** COUNTERS, ACCUMULATORS, AND SWITCHES FOR TAX CACULATIONS. **
+  .   ***************************************************************
+  .
+  .    01  COUNTERS BINARY.
+  .        05  TOTAL-MTAX-PERCENT    PIC S9(4)V9(5)   VALUE ZERO.
+  .        05  ITEM-EXTENSION-SAVED  PIC S9(11)V9(4)  VALUE ZERO.
+  .        05  ITEM-TAX              PIC S9(11)       VALUE ZERO.
+  .        05  GST-TAX               PIC S9(11)V9(4)  VALUE ZERO.
+  .        05  GST-ENTRY             PIC S9           VALUE ZERO.
+  .
+  .    01  GST-TAX-SW                  PIC X(1).
+  .        88  DONT-TAX-ON-GST                       VALUE "1".
+9502CZ     88  TAX-ON-GST                            VALUE "2".
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  CDESC SUBPROGRAM
+      *
+      ***********************************
+
+       COPY CDESC    IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SREQLINK.SOURCE
+      *
+      ***********************************
+
+       COPY SREQLINK IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SVENPRC.SOURCE
+      *
+      ***********************************
+
+       COPY SVENPRC IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SPOMSTRM.SOURCE
+      *
+      ************************************
+
+       COPY SPOMSTRM IN COPYLIB.
+
+      *************************************
+      **  PARM AREA FOR CALLING 'SCURCONV'
+      *************************************
+
+       COPY SCURCONV IN COPYLIB.
+
+      *************************************
+      **  PARM AREA FOR CALLING 'TSTRMJOB'
+      *************************************
+
+       01  STRMRPT-COMAREA.
+           05  STRM-RET-CODE            PIC X(2)  VALUE "00".
+           05  STRM-MODE                PIC S9(4) VALUE ZEROS COMP-4.
+           05  STRM-CO-CODE.
+               10  CO-CODE-PREFIX       PIC X(2)  VALUE SPACES.
+               10  CO-CODE-LAST-DIGIT   PIC X     VALUE SPACES.
+           05  STRM-PRE-RUN-CARDS.
+               10  STRM-PRE-RUN-CARD1   PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD2   PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD3   PIC X(80) VALUE SPACES.
+               10  STRM-PRE-RUN-CARD4   PIC X(80) VALUE SPACES.
+           05  STRM-RUN-CARD            PIC X(80) VALUE SPACES.
+           05  STRM-JOB-NAME            PIC X(8)  VALUE "SHIPREL ".
+           05  STRM-ROUTE-CARD.
+               10  FILLER               PIC X(19) VALUE SPACES.
+               10  ROUTE-LP             PIC X(3)  VALUE SPACES.
+               10  FILLER               PIC X(58) VALUE SPACES.
+           05  STRM-OPTION-CARD.
+               10  STRM-PO-NUM          PIC X(14) VALUE SPACES.
+               10  STRM-PO-REPRINT      PIC X     VALUE SPACES.
+               10  STRM-PO-TYPE         PIC X     VALUE SPACES.
+               10  STRM-MOD-ORDER       PIC X     VALUE SPACES.
+               10  STRM-CANC-ORDER      PIC X     VALUE SPACES.
+               10  STRM-PO-PRINT-NUM    PIC 9(2) COMP-4 VALUE ZEROS.
+               10  STRM-PO-ITEMS        PIC X(60) VALUE SPACES.
+               10  STRM-NO-ESCAPE-PRINT PIC X     VALUE SPACES.
+           05  STRM-OPTION-CARD2        PIC X(640) VALUE SPACES.
+           05  STRM-OPTION-CARD2-CTR    PIC X(1)  VALUE SPACES.
+           05  STRM-OPTION-CARD3        PIC X(80) VALUE SPACES.
+           05  STRM-PRTRPT-CARD.
+               10  STRM-PRTRPT-FLAG     PIC X(1).
+               10  STRM-PRTRPT-FILE     PIC X(17).
+               10  STRM-PRTRPT-SPOOLTYP  PIC X(1).
+               10  STRM-PRTRPT-PRINTER   PIC X(3).
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  STC320.SOURCE
+      *
+      ***********************************
+
+       COPY STC320 IN COPYLIB.
+
+      *************************************
+      *
+      *  PARAMETERS FOR CALLING 'STC360'
+      *  WHICH IS THE SUBROUTINE FOR CUTTING
+      *  TC 360 AND 361s
+      *************************************
+
+       01  STC360-TC                     PIC X(3) VALUE SPACES.
+       01  STC360-COMPANY-SAVE           PIC X(3) VALUE SPACES.
+
+      *****************************************
+      *   PARAMETERS FOR CALLING SEDIPOLG
+      *****************************************
+
+       01  SEDIPOLG-PARMS.
+           05  PO-NUMBER-EDI      PIC X(14) VALUE SPACES.
+           05  VENDOR-CODE-EDI    PIC X(10) VALUE SPACES.
+           05  FLAGS-EDI.
+               10  FLAG-EDI-A     PIC X     VALUE SPACE.
+               10  FLAG-EDI-M     PIC X     VALUE SPACE.
+               10  FLAG-EDI-D     PIC X     VALUE SPACE.
+               10  FLAG-EDI-SEND  PIC X     VALUE SPACE.
+               10  FILLER         PIC XX    VALUE SPACES.
+           05  PO-ITEM-NO-EDI     PIC X(4)  VALUE SPACES.
+           05  CALLING-PGM-EDI    PIC X(8)  VALUE SPACES.
+
+      *****************************************
+      *   PARAMETERS FOR CALLING 'SEDIVNCK'
+      *   WHICH IS THE ROUTINE TO DETERMINE
+      *   IF VENDOR IS EDI OR NOT
+      *****************************************
+
+       COPY SEDIVNCK IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  TPOPRNT.SOURCE
+      *
+      ***********************************
+
+       01  PO-PRINT-PARMS.
+           05  PO-NUMBER                 PIC X(14).
+           05  PO-REPRINT                PIC X.
+           05  PO-PRINT-TYPE             PIC X.
+           05  PO-MODIFIED-ORDER         PIC X.
+           05  PO-CANCELLED-ORDER        PIC X.
+           05  SPOOL-PRINT-NUM           PIC S9(2) COMP-4 VALUE ZEROS.
+           05  PO-ITEMS                  PIC X(60).
+
+
+       COPY SCALCBGT IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+       LINKAGE SECTION.
+
+       01  BASE                          PIC X(10).
+
+       01  BASE-MMISA                    PIC X(24).
+
+       COPY SRELEASE IN COPYLIB.
+
+       01  COMP-SCREEN-INDIC             PIC X(3).
+
+       COPY VCOMLINK IN COPYLIB.
+
+       01  SCREEN-PRINT-PARMS.
+           05  PRINTCNTL                 PIC S9(4)  COMP-4.
+           05  PAGECNTL                  PIC S9(4)  COMP-4.
+           05  SPOOLFIL-OPEN-SW          PIC X.
+
+       01  PASSED-SPOOL-PRT              PIC S9(2)  COMP-4.
+
+       COPY LANGSUB IN COPYLIB.
+
+       COPY ESCNAME IN COPYLIB.
+
+
+
+       PROCEDURE DIVISION USING  BASE,
+                                 BASE-MMISA,
+                                 SRELEASE-PARMS,
+                                 COMP-SCREEN-INDIC,
+                                 VIEW-COMAREA,
+                                 SCREEN-PRINT-PARMS,
+                                 PASSED-SPOOL-PRT,
+                                 LANGUAGE-PARMS,
+                                 ESC-NAME.
+
+
+       1-BEGIN.
+           OPEN INPUT MVALIDUM-I, MSTORERM-I, MVALIDPLTDATA-I,
+                      MTAX-I, MCOMMENT-I, DPOITEMC-I, MCLASS-I,
+                      MPLTINFO-PK-I.
+           OPEN I-O DPORECD-O, MPORCV-O, DPODATAITM-O, DPOITEM-O,
+                    DSHIPREL-O, MREQ-O, DREQD-O, DDAILYTC-O,
+                    DISPLAY-FILE.
+
+
+DCR01      PERFORM Z000-PGM-SETUP     THRU Z000-PS-EXIT.
+
+      ********************************************************
+      *    RETRIEVE PCPO SWITCH TO SEE IF THE PLANT          *
+      *    HAS ELECTED TO UPDATE COMPANY AND PRIME ON THE    *
+      *    RELEASE SCREEN (SEE PLANT STARTUP-USER OPTIONS)   *
+      ********************************************************
+           MOVE "PCPO" TO PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF NOT GOOD-CALL
+               MOVE "N"           TO SAVE-PCPO-SW
+           ELSE
+      *    IF REL-REQ-NUM = "            "
+      *        MOVE "N"           TO SAVE-PCPO-SW
+      *    ELSE
+           MOVE MPLTINFO-PCPO-SW  TO SAVE-PCPO-SW.
+
+           MOVE "CHAT" TO PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF NOT GOOD-CALL
+               MOVE "N"                TO  SAVE-CHAT-SW
+           ELSE
+           MOVE MPLTINFO-CHAT-PURCH-REQUIRED TO  SAVE-CHAT-SW.
+
+092200**********************************************
+092300*  FIND OUT IF THE USER IS USING ISO 9000
+092400*  REVIEW OF PURCHASE ORDERS PRIOR TO THEIR
+      *  BEING PRINTED/FAXED
+092500**********************************************
+092600
+092700     MOVE "ISO "       TO PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+093000     IF NOT GOOD-CALL
+093200         MOVE "N"               TO  ISO-9000-PRINT-SW
+093700     ELSE
+093800     MOVE ISO-9000-ON-OFF       TO  ISO-9000-PRINT-SW.
+
+           PERFORM 61-PRINT-RELEASE-SCREEN  THRU  61-PRS-X.
+
+           CLOSE    MVALIDUM-I, MSTORERM-I, MVALIDPLTDATA-I,
+                    MTAX-I, MCOMMENT-I, DPOITEMC-I, MCLASS-I,
+                    DPORECD-O, MPORCV-O, DPODATAITM-O, DPOITEM-O,
+                    DSHIPREL-O, MREQ-O, DREQD-O, DDAILYTC-O,
+                    MPLTINFO-PK-I, DISPLAY-FILE.
+           GOBACK.
+
+DCR01  Z000-PGM-SETUP.
+DCR01
+DCR01 *****************************************************
+DCR01 *   MAKE SURE PO LOGGING IS ACTIVE FOR THIS PLANT
+DCR01 *****************************************************
+DCR01      SET  Z000-POLG-ACTIVE-NO TO TRUE.
+DCR01
+DCR01      MOVE WS-Z000-POLG-KEY         TO  PLT-ARG.
+DCR01      PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+DCR01      IF FILE-STATUS = "00"
+DCR01         IF  PLTINFODTA(1:1) = "Y"
+DCR01             SET  Z000-POLG-ACTIVE-YES TO TRUE
+DCR01         END-IF
+DCR01      END-IF.
+DCR01
+DCR01      IF   Z000-POLG-ACTIVE-NO
+DCR01           GO TO Z000-PS-EXIT
+DCR01      END-IF.
+DCR01
+DCR01 ******************************************************************
+DCR01 * GET PLANT CODE                                                 *
+DCR01 ******************************************************************
+DCR01      MOVE  WS-Z000-CMPNY-KEY  TO PLT-ARG.
+DCR01      PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+DCR01      MOVE PLTINFODTA(1:3)  TO WS-Z000-PLANT-CODE.
+
+DCR01  Z000-PS-EXIT.
+DCR01      EXIT.
+
+       2100-BLOWUP.
+           MOVE "SRELEASE"               TO  BU-PGM-NAME.
+           MOVE PO-ARG                   TO  BU-DISPLAY-FLD (1).
+           MOVE BUILD-PO-NUM             TO  BU-DISPLAY-FLD (2).
+           MOVE CODE-ARG                 TO  BU-DISPLAY-FLD (3).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2100-BLOWUP-X.
+           EXIT.
+
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND (FIELD-NUMBER), IND (99).
+           MOVE MESSAGE-BUFFER           TO  DE-MESSAGE-LINE,
+                                             DE-MESSAGE-LINE-L.
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+
+       61-PRINT-RELEASE-SCREEN.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE "FRELEASEL"          TO  VIEW-NFNAME
+           ELSE
+           IF SAVE-CHAT-SW = "Y"
+               MOVE "FRELEASC"           TO  VIEW-NFNAME
+           ELSE
+           MOVE "FRELEASE"               TO  VIEW-NFNAME.
+
+           MOVE SPACES                   TO  SCREEN-1
+                                             SCREEN-1L
+                                             SEDIVNCK-PARMS.
+           MOVE COMP-SCREEN-INDIC        TO  DISP-COMP,
+                                             DISP-COMP-L.
+           MOVE REL-BLANKET-NUM          TO  PO-NUM,
+                                             DISP-BLANKET-NO,
+                                             DISP-BLANKET-NO-L.
+           MOVE ZEROS                    TO  DE-RLSE-QTY
+                                             DE-RLSE-QTY-L.
+           MOVE ZEROS                    TO  PO-RCV.
+           MOVE "999"                    TO  PO-RLSE.
+           MOVE BUILD-PO-NUM             TO  PO-ARG
+                                             SEDIVNCK-PO-NUMBER.
+           CALL "SEDIVNCK" USING BASE,
+                                 SEDIVNCK-PARMS.
+           IF SEDIVNCK-EDI-IND = "Y"
+               MOVE "EDI RELEASE"        TO  DISP-EDI-RELLIT
+                                             DISP-EDI-RELLIT-L
+           ELSE
+           MOVE "           "            TO  DISP-EDI-RELLIT
+                                             DISP-EDI-RELLIT-L.
+           MOVE PO-ARG                   TO  PORCVNO OF DPORECD-REC-O.
+           START DPORECD-O KEY = PORCVNO OF DPORECD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "FIND 61-PBS * RELEASE"   TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+           READ DPORECD-O NEXT INTO BUF-DPORECD
+               AT END MOVE FILE-STATUS   TO  FILE-STATUS.
+           IF FILE-STATUS NOT = "00" OR
+              PORCVNO OF DPORECD-REC-O NOT = PO-ARG
+               MOVE "GET DPORECD *61-PRS"  TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES              TO  PORCVNO OF DPORECD-REC-O.
+           START DPORECD-O KEY > PORCVNO OF DPORECD-REC-O
+               INVALID KEY MOVE "00"     TO  FILE-STATUS.
+
+           MOVE 4                        TO  DATE-MODE.
+           MOVE PO-EXPECT-DATE           TO  DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-SLASH-OUT           TO  DISP-EXP-DATE
+                                             DISP-EXP-DATE-L.
+           MOVE SPACES                   TO  BUILD-CC-LIT.
+           IF PO-CURRENCY-CODE = SPACES
+               NEXT SENTENCE
+           ELSE
+      **       CURRENCY
+               MOVE  3                   TO  LANG-SETNUM
+               MOVE  140                 TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER       TO  CURRENCY-LIT
+               MOVE PO-CURRENCY-CODE     TO  UM-ARG
+               MOVE UM-ARG               TO  VALIDUM OF MVALIDUM-REC-I
+               READ MVALIDUM-I INTO BUF-MVALIDUM
+                   INVALID KEY MOVE "2"  TO  FILE-STATUS-2 END-READ
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "GET MVALIDUM *61-PRS" TO BU-DISPLAY-MSG
+                   MOVE UM-ARG           TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP
+               ELSE
+                   MOVE VALID-CURRENCY-DESC  TO  CUR-CODE-DESC
+                   MOVE PO-CURRENCY-CODE TO  CUR-CODE
+                   MOVE BUILD-CC-LIT     TO  DISP-CURRENCY-LIT,
+                                             DISP-CURRENCY-LIT-L.
+
+       61-GET-MPORCV.
+           MOVE PO-ARG                   TO  PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MPORCV *61-GM"  TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES              TO  PORCVNO OF MPORCV-REC-O.
+           START MPORCV-O KEY > PORCVNO OF MPORCV-REC-O
+               INVALID KEY MOVE "00"     TO  FILE-STATUS.
+
+           MOVE M-PO-LAST-RLSE           TO  DISP-LAST-RLSE,
+                                             DISP-LAST-RLSE-L.
+
+           IF REL-CODE  =  SPACES
+               IF REL-ITEM-NUM  =  SPACES
+                   MOVE "NO CODE OR ITEM PASSED *RELEASE"
+                                         TO  BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP
+               ELSE
+                   PERFORM 611-FIND-ITEM-BY-ITEM THRU 611-FIBI-X
+           ELSE
+               IF REL-CODE  =  "NON-STR"
+                   PERFORM 611-FIND-ITEM-BY-ITEM THRU 611-FIBI-X
+               ELSE
+                   PERFORM 611-FIND-ITEM-BY-CODE THRU 611-FIBC-X.
+           MOVE ITM-UM                   TO  DISP-REL-UM,
+                                             DISP-REL-UM-L.
+           MOVE ITM-NUMBER               TO  DISP-ITEM-NO,
+                                             DISP-ITEM-NO-L.
+           MOVE ITM-UNIT-PRICE           TO  DISP-PRICE,
+                                             DISP-PRICE-L.
+           MOVE ITM-PRICE-UM             TO  DISP-PRICE-UM,
+                                             DISP-PRICE-UM-L.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE ITM-COMPANY          TO  DE-COMPANY-L
+               MOVE ITM-PRIME            TO  DE-PRIME-L.
+           MOVE ITM-CLASS                TO  DE-SUB,
+                                             DE-SUB-L.
+           MOVE ITM-SUB-DETL             TO  DE-SUBD,
+                                             DE-SUBD-L.
+           MOVE ITM-ADDL-DATA            TO  DE-ADDTL-DATA,
+                                             DE-ADDTL-DATA-L.
+           IF SAVE-CHAT-SW = "Y"
+               MOVE ITM-CHAT-NO          TO  DE-CHAT-NO,
+                                             SAVE-CHAT-NO
+           ELSE
+           MOVE SPACES                   TO  DE-CHAT-NO,
+                                             SAVE-CHAT-NO.
+      *------ NOTE: AVAILABLE QTY FOR OVERAGE AT OTHER PLANTS (ITOVXXX-
+      *------ 999 PURCHASE ORDERS) IS STORED IN 'QTY-PAID' SO IT WON'T
+      *------ SHOW UP AS ONORDER
+           MOVE ITM-QTY-PAID             TO  DISP-QTY,
+                                             DISP-QTY-L.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE "NC"                 TO  DISP-CORP-CODE,
+                                             DISP-CORP-CODE-L
+           ELSE
+               MOVE ITM-CORP-CODE        TO  DISP-CORP-CODE,
+                                             DISP-CORP-CODE-L,
+                                             CODE-ARG
+           MOVE "F"                      TO  CDESC-DESC-OPTION
+           MOVE 5                        TO  CDESC-LINES-TO-GET
+           MOVE "N"                      TO  CDESC-LOCAL-DESC-OPTION
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+                          BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP
+           ELSE
+           MOVE CDESC-KWM (1)            TO  DISP-KEYM,
+                                             DISP-KEYM-L
+           MOVE CDESC-MFR-DATA (2)       TO  DISP-MANU,
+                                             DISP-MANU-L.
+
+           MOVE ITM-TAX-CODE             TO  DE-TAX-CODE,
+                                             DE-TAX-CODE-L.
+
+           IF REL-SUB = SPACES  AND
+              REL-SUBD = SPACES  AND
+              REL-ADDTL-DATA = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE REL-SUB              TO  DE-SUB,
+                                             DE-SUB-L
+               MOVE REL-SUBD             TO  DE-SUBD,
+                                             DE-SUBD-L,
+               MOVE REL-ADDTL-DATA       TO  DE-ADDTL-DATA,
+                                             DE-ADDTL-DATA-L.
+
+           IF SAVE-PCPO-SW = "N"
+               NEXT SENTENCE
+           ELSE
+           IF REL-REQ-NUM = "            "
+               NEXT SENTENCE
+           ELSE
+           IF REL-COMPANY = "   " AND REL-PRIME = "   "
+               NEXT SENTENCE
+           ELSE
+           MOVE REL-COMPANY               TO  DE-COMPANY-L
+           MOVE REL-PRIME                 TO  DE-PRIME-L.
+
+           PERFORM 611-GET-STD-INST  THRU  611-GSI-X.
+
+           IF REL-REQ-NUM = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE REL-REQ-QUANTITY     TO  DISP-REQ-QTY,
+                                             DISP-REQ-QTY-L,
+                                             DE-RLSE-QTY,
+                                             DE-RLSE-QTY-L,
+               MOVE REL-REQ-QTY-UM       TO  DISP-REQ-UM,
+                                             DISP-REQ-UM-L.
+
+           IF ITM-CORP-CODE = "NON-STR"
+               GO TO 61-READ-SCREEN-1.
+
+       61-GET-MSTORERM.
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET 61-GM * RELEASE"  TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+      *--- MOVE LEAD TIME SO THAT SHIP DATE CAN BE CALCULATED.
+           MOVE STR-EST-LT               TO  HOLD-EST-LT.
+
+           IF REL-REQ-QUANTITY = ZEROS
+               NEXT SENTENCE
+           ELSE
+               IF ITM-UM = STR-UM
+                   MOVE REL-REQ-QUANTITY TO  DE-RLSE-QTY,
+                                             DE-RLSE-QTY-L
+               ELSE
+               IF ITM-UM = STR-UM1
+                   DIVIDE REL-REQ-QUANTITY  BY  STR-UM1-CF
+                       GIVING DE-RLSE-QTY ROUNDED
+                   MOVE DE-RLSE-QTY      TO  DE-RLSE-QTY-L
+               ELSE
+               IF ITM-UM = STR-UM2
+                   DIVIDE REL-REQ-QUANTITY  BY  STR-UM2-CF
+                       GIVING DE-RLSE-QTY ROUNDED
+                   MOVE DE-RLSE-QTY      TO  DE-RLSE-QTY-L
+               ELSE
+      *            *** UNIT OF MEASURE PROBLEM CALL AKRON; CORP CODE
+      *                 = ***
+                   MOVE  21              TO  LANG-SETNUM
+                   MOVE  12              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER   TO  MSG-TEXT
+                   MOVE ITM-CORP-CODE    TO  MSG-FLD
+                   MOVE 9                TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X.
+
+           IF DE-SUB = SPACES
+               MOVE STR-CLASS            TO  DE-SUB,
+                                             DE-SUB-L.
+
+      *----- CALCULATE SHIP DATE.
+      *----- SHIP DATE = EXPECT DATE - SHIP TIME (EST LEAD TIME).
+
+           PERFORM 611-CALC-CUR-JULIAN.
+           IF REL-REQ-DATE-WANT = SPACES
+               MOVE SPACES              TO  DE-EXP-DLV-DATE,
+                                            DE-EXP-DLV-DATE-L,
+                                            DE-SHIP-DATE,
+                                            DE-SHIP-DATE-L
+           ELSE
+               PERFORM 611-MOVE-EXPECT-DATE
+               PERFORM 611-CALCULATE-SHIP-DATE.
+
+       61-READ-SCREEN-1.
+           PERFORM 610-PUT-BUFFER.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           PERFORM 610-GET-BUFFER.
+
+      ********************************************
+      *                                          *
+      *   IF THE CALLING PROGRAM IS THE MANUAL   *
+      *   SHIPPING RELEASE PROGRAM CALLED BY     *
+      *   PURCHASING THEN THE 'f6' FUNCTION      *
+      *   IS INVALID SO MOVE 'f2' TO VIEWLASTKEY *
+      *   TO CAUSE 'INVALID FUNCTION KEY         *
+      *                                          *
+      ********************************************
+
+           IF REL-CALL-PROG-ID = "P"
+               IF VIEW-LASTKEY = 6
+                   MOVE 2                TO  VIEW-LASTKEY.
+           IF VIEW-LASTKEY = 6 OR 7 OR 3
+               GO TO 61-PRS-X
+           ELSE
+           IF VIEW-LASTKEY = 1
+               MOVE B"1"                 TO  IND (26)
+               GO TO 61-READ-SCREEN-1
+           ELSE
+           IF VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 8
+      *        *** INVALID FUNCTION KEY ENTERED ***
+               MOVE   9                  TO  LANG-SETNUM
+               MOVE  10                  TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 9                    TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+           IF DE-PROCESS-INDICATOR = "B" OR "I" OR "H"
+               NEXT SENTENCE
+           ELSE
+      *        YOU MUST ENTER EITHER A 'B' OR 'I' OR 'H'
+               MOVE  66141               TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 9                    TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+           IF DE-TAX-CODE = SPACES
+      *        YOU MUST ENTER A VALID TAX CODE
+               MOVE  45058               TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 19                   TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+           IF SAVE-PCPO-SW = "Y"
+               IF DE-COMPANY-L = "   "
+      *M       COMPANY IS REQUIRED
+                   MOVE 03197            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 30               TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1
+               ELSE
+               IF DE-PRIME-L = "   "
+      *M       PRIME IS REQUIRED
+                   MOVE 16149            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 31               TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1.
+
+           IF DE-SUBD = SPACES
+      *        DEPARTMENT IS REQUIRED
+               MOVE  45056               TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 14                   TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+           IF DE-SUB = SPACES
+      *        CLASS IS REQUIRED
+               MOVE  45057               TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 24                   TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+           IF DE-RLSE-QTY = ZEROS
+      *        *** RELEASE QUANTITY MUST BE GREATER THAN ZERO ***
+               MOVE  18                  TO  LANG-SETNUM
+               MOVE  51                  TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 11                   TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+           IF PO-INVOICELESS-IND = "X"
+               IF ITM-UNIT-PRICE > ZEROES
+                   NEXT SENTENCE
+               ELSE
+      *M       *** CANNOT CUT A RELEASE - P.O. IS INVOICELESS AND
+      *M       ITEM HAS NO PRICE ***
+               MOVE  03                  TO  LANG-SETNUM
+               MOVE 617                  TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   1                  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+       61-EDIT-SHIP-DATE.
+           IF DE-SHIP-DATE = SPACES
+               MOVE SPACES               TO  SAVE-SHIP-DATE-CYMD
+               GO TO 61-EDIT-EXP-DATE.
+           MOVE 3                        TO  DATE-MODE.
+           MOVE DE-SHIP-DATE             TO  DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           IF DATE-RET-CODE  NOT = 0
+               MOVE DATE-MSG             TO  MESSAGE-BUFFER
+               MOVE 13                   TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU   4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1
+           ELSE
+               MOVE DATE-YMD-OUT         TO  SAVE-SHIP-DATE-YMD
+      *------------ ACCOUNT FOR CENTURY.
+               IF SAVE-SHIP-DATE-YY > "70"
+                   MOVE "19"             TO  SAVE-SHIP-DATE-CC
+               ELSE
+                   MOVE "20"             TO  SAVE-SHIP-DATE-CC.
+
+       61-EDIT-EXP-DATE.
+           IF DE-EXP-DLV-DATE = SPACES
+               MOVE SPACES               TO  SAVE-EXP-DATE-CYMD
+               GO TO 61-EDIT-PCPO.
+           MOVE 3                        TO  DATE-MODE.
+           MOVE DE-EXP-DLV-DATE          TO  DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           IF DATE-RET-CODE  NOT = 0
+               MOVE DATE-MSG             TO  MESSAGE-BUFFER
+               MOVE 23                   TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU   4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1
+           ELSE
+               MOVE DATE-YMD-OUT         TO  SAVE-EXP-DATE-YMD
+               IF SAVE-EXP-DATE-YY > "70"
+                   MOVE "19"             TO  SAVE-EXP-DATE-CC
+               ELSE
+                   MOVE "20"             TO  SAVE-EXP-DATE-CC.
+
+       61-EDIT-PCPO.
+           MOVE 0 TO FIELD-NUMBER.
+           PERFORM 610-PCPO-EDITS THRU 610-PE-X.
+           IF FIELD-NUMBER > 0
+               PERFORM 4-PGM-ERROR THRU 4-PGM-ERROR-X
+               GO TO 61-READ-SCREEN-1.
+
+       61-EDIT-SUBD.
+           MOVE DE-SUBD                  TO  DEPT-NUM.
+           MOVE BUILD-VALID-DEPT-KEY     TO  MVALIDPLT-ARG.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            *** DEPARTMENT CODE DOES NOT EXIST ***
+                   MOVE   4              TO  LANG-SETNUM
+                   MOVE  12              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 14               TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1
+               ELSE
+                   MOVE "GET MVALID 61-ES*RELEASE"  TO  BU-DISPLAY-MSG
+                   MOVE MVALIDPLT-ARG    TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP.
+
+      ***********************************
+      *
+      *  EDIT ADDITIONAL DATA FOR
+      *  EITHER A VALID EXPENSE CLASS OR
+      *  NEW WORK NUMBER
+      *
+      ***********************************
+
+       61-EDIT-ADDTL-DATA.
+           IF DE-ADDTL-DATA = SPACES  OR
+              REL-EDIT-ADDTL-DATA-SW = "N"
+               GO TO 61-EDIT-CHAT-NO.
+           IF SAVE-PCPO-SW = "Y"
+      *----IF EXP CLASS NOT 000-999 SKIP VALIDATION (GAS COMPATABLE)
+               IF DE-SUB NOT < "000" AND DE-SUB NOT > "099"
+                   GO TO 61-EDIT-CHAT-NO.
+           MOVE DE-ADDTL-DATA            TO  EXPENSE-CLASS.
+           MOVE BUILD-EXPENSE-CLASS      TO  MVALIDPLT-ARG.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "GET1 MVALID * 61-EAD"  TO  BU-DISPLAY-MSG
+                   MOVE MVALIDPLT-ARG    TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP
+           ELSE
+               GO TO 61-EDIT-CHAT-NO.
+
+           MOVE DE-ADDTL-DATA            TO  NEW-WORK.
+           MOVE BUILD-NEW-WORK           TO  MVALIDPLT-ARG.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            "INVALID EXPENSE CLASS OR NEW WORK NUMBER"
+                   MOVE   9              TO  LANG-SETNUM
+                   MOVE  62              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 15               TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1
+               ELSE
+                   MOVE "GET2 MVALID * 61-EAD"  TO  BU-DISPLAY-MSG
+                   MOVE MVALIDPLT-ARG    TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP.
+
+       61-EDIT-CHAT-NO.
+           IF SAVE-CHAT-SW = "N" GO TO 61-EDIT-TAX-CODE.
+           IF DE-CHAT-NO = SAVE-CHAT-NO GO TO 61-EDIT-TAX-CODE.
+           IF DISP-CORP-CODE = "NC"
+               MOVE SPACES     TO  DE-CHAT-NO
+           ELSE
+           MOVE DISP-CORP-CODE TO  PASS-CORP-CODE
+           CALL "SCHATREF" USING PASS-CORP-CODE,
+                                 RETURN-CHAT-NO,
+                                 VIEW-COMAREA
+           IF RETURN-CHAT-NO = "NOTFND"
+               MOVE SPACES     TO  DE-CHAT-NO
+           ELSE
+           MOVE RETURN-CHAT-NO TO  DE-CHAT-NO.
+
+
+      *******************************************
+      **                                       **
+      **   EDIT TAX CODE                       **
+      **                                       **
+      *******************************************
+
+       61-EDIT-TAX-CODE.
+           MOVE DE-TAX-CODE              TO  TAX-ARG.
+           MOVE TAX-ARG                  TO  TAXCDE OF MTAX-REC-I.
+           START MTAX-I KEY = TAXCDE OF MTAX-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            *** TAX CODE DOES NOT EXIST ***
+                   MOVE  20              TO  LANG-SETNUM
+                   MOVE   7              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 19               TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1
+               ELSE
+                   MOVE "GET MTAX 61-ETC*RELEASE" TO BU-DISPLAY-MSG
+                   MOVE TAX-ARG          TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP.
+
+      *--------- EDIT STANDARD INSTRUCTIONS BEFORE ITEMS.
+
+       61-EDIT-STD-INST-BEF.
+           IF DE-INSTRUCT-LIST-BEF = SPACES
+               GO TO 61-EDIT-STD-INST-AFT
+           MOVE 0                        TO  SUB1.
+
+       61-EDIT-COMMENT-NO-BEF.
+           ADD 1                         TO  SUB1.
+           IF SUB1 > 6
+               GO TO 61-EDIT-STD-INST-AFT.
+
+           IF DE-INSTRUCT-NO-BEF (SUB1) = SPACES
+               GO TO 61-EDIT-COMMENT-NO-BEF.
+           MOVE DE-INSTRUCT-NO-BEF (SUB1)    TO  BUILD-COM-NO.
+           MOVE BUILD-COMMENT-NO             TO  COMMENT-ARG.
+           MOVE COMMENT-ARG TO MCOMCOMMNT OF MCOMMENT-REC-I.
+           START MCOMMENT-I KEY = MCOMCOMMNT OF MCOMMENT-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            *** INSTRUCTION NUMBER DOES NOT EXIST ***
+                   MOVE   9              TO  LANG-SETNUM
+                   MOVE  60              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   ADD 29, SUB1  GIVING FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1
+               ELSE
+                   MOVE "GET COMMENT 61-ECN*RELEASE" TO BU-DISPLAY-MSG
+                   MOVE COMMENT-ARG      TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP.
+
+           GO TO 61-EDIT-COMMENT-NO-BEF.
+
+      *--------- EDIT STANDARD INSTRUCTIONS AFTER ITEMS.
+
+       61-EDIT-STD-INST-AFT.
+           IF DE-INSTRUCT-LIST-AFT = SPACES
+               GO TO 61-PRINT-SCREEN-MSG.
+           MOVE 0                        TO  SUB1.
+
+       61-EDIT-COMMENT-NO-AFT.
+           ADD 1                         TO  SUB1.
+           IF SUB1 > 6
+               GO TO 61-PRINT-SCREEN-MSG.
+
+           IF DE-INSTRUCT-NO-AFT (SUB1) = SPACES
+               GO TO 61-EDIT-COMMENT-NO-AFT.
+           MOVE DE-INSTRUCT-NO-AFT (SUB1)    TO  BUILD-COM-NO.
+           MOVE BUILD-COMMENT-NO             TO  COMMENT-ARG.
+           MOVE COMMENT-ARG TO MCOMCOMMNT OF MCOMMENT-REC-I.
+           START MCOMMENT-I KEY = MCOMCOMMNT OF MCOMMENT-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            *** INSTRUCTION NUMBER DOES NOT EXIST ***
+                   MOVE   9              TO  LANG-SETNUM
+                   MOVE  60              TO  LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   ADD 39, SUB1  GIVING FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   GO TO 61-READ-SCREEN-1
+               ELSE
+                   MOVE "GET COMMENT 61-ECN*RELEASE" TO BU-DISPLAY-MSG
+                   MOVE COMMENT-ARG      TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP.
+
+           GO TO 61-EDIT-COMMENT-NO-AFT.
+
+
+       61-PRINT-SCREEN-MSG.
+           IF DE-PROCESS-INDICATOR = "B" OR "H"
+      *        ***  ENTRY MADE TO BATCH FILE FOR PROCESSING LATER ***
+               MOVE   5                  TO  LANG-SETNUM
+               MOVE  30                  TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           ELSE
+           IF SEDIVNCK-EDI-IND = "Y"
+      *        ***  CREATING EDI SHIPPING RELEASE - NO PRINT
+      *             GENERATED  ***
+               MOVE   3                  TO LANG-SETNUM
+               MOVE 193                  TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           ELSE
+      *        ***  CREATING AND PRINTING A SHIPPING RELEASE IN
+      *             PURCHASING ***
+               MOVE   3                  TO  LANG-SETNUM
+               MOVE 125                  TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER           TO  DE-COMMAND-LINE
+                                             DE-COMMAND-LINE-L.
+           MOVE B"1"                     TO  IND (98).
+           IF SAVE-PCPO-SW = "Y"
+               MOVE SCREEN-1L            TO  DISPLAY-REC
+           ELSE
+           MOVE SCREEN-1                 TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN.
+
+           IF DE-PROCESS-INDICATOR = "B" OR "H"
+               PERFORM 62-PROCESS-BATCH  THRU 62-PB-X
+           ELSE
+               PERFORM 66-MOVE-SRELVEND-FIELDS
+               PERFORM 63-CREATE-SHIPPING-RELEASE  THRU 63-CSR-X
+               IF DISP-CORP-CODE NOT = "NON-STR"
+                   CALL "SRELVEND" USING TREL-RELEASE-DATA.
+
+       61-PRS-X.
+           EXIT.
+
+       610-GET-BUFFER.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE DISPLAY-REC         TO  SCREEN-1L
+               MOVE DISP-COMP-L         TO  DISP-COMP
+               MOVE DISP-EDI-RELLIT-L   TO  DISP-EDI-RELLIT
+               MOVE DISP-BLANKET-NO-L   TO  DISP-BLANKET-NO
+      *        MOVE DISP-LAST-RLSE-L    TO  DISP-LAST-RLSE
+               MOVE DISP-CURRENCY-LIT-L TO  DISP-CURRENCY-LIT
+      *        MOVE DISP-ITEM-NO-L      TO  DISP-ITEM-NO
+               MOVE DISP-CORP-CODE-L    TO  DISP-CORP-CODE
+      *        MOVE DISP-PRICE-L        TO  DISP-PRICE
+               MOVE DISP-PRICE-UM-L     TO  DISP-PRICE-UM
+               MOVE DISP-EXP-DATE-L     TO  DISP-EXP-DATE
+      *        MOVE DISP-QTY-L          TO  DISP-QTY
+               MOVE DE-PROCESS-INDICATOR-L
+                                        TO  DE-PROCESS-INDICATOR
+      *        MOVE DISP-REQ-QTY-L      TO  DISP-REQ-QTY
+               MOVE DISP-REQ-UM-L       TO  DISP-REQ-UM
+               MOVE DE-RLSE-QTY-L       TO  DE-RLSE-QTY
+               MOVE DISP-REL-UM-L       TO  DISP-REL-UM
+               MOVE DE-SHIP-DATE-L      TO  DE-SHIP-DATE
+               MOVE DE-EXP-DLV-DATE-L   TO  DE-EXP-DLV-DATE
+               MOVE DE-TAX-CODE-L       TO  DE-TAX-CODE
+      ******** MOVE DE-INSTRUCT-LIST-L  TO  DE-INSTRUCT-LIST
+               MOVE DE-INSTRUCT-LIST-L-BEF  TO  DE-INSTRUCT-LIST-BEF
+               MOVE DE-INSTRUCT-LIST-L-AFT  TO  DE-INSTRUCT-LIST-AFT
+               MOVE DE-SUBD-L           TO  DE-SUBD
+               MOVE DE-SUB-L            TO  DE-SUB
+               MOVE DE-ADDTL-DATA-L     TO  DE-ADDTL-DATA
+               PERFORM 6100-SPECIAL-631
+               MOVE DE-DESC-AREA-L      TO  DE-DESC-AREA
+               MOVE DE-COMMAND-LINE-L   TO  DE-COMMAND-LINE
+               MOVE DE-MESSAGE-LINE-L   TO  DE-MESSAGE-LINE
+           ELSE
+           MOVE DISPLAY-REC             TO  SCREEN-1
+           MOVE DISP-COMP               TO  DISP-COMP-L
+           MOVE DISP-EDI-RELLIT         TO  DISP-EDI-RELLIT-L
+           MOVE DISP-BLANKET-NO         TO  DISP-BLANKET-NO-L
+      *    MOVE DISP-LAST-RLSE          TO  DISP-LAST-RLSE-L
+           MOVE DISP-CURRENCY-LIT       TO  DISP-CURRENCY-LIT-L
+      *    MOVE DISP-ITEM-NO            TO  DISP-ITEM-NO-L
+           MOVE DISP-CORP-CODE          TO  DISP-CORP-CODE-L
+      *    MOVE DISP-PRICE              TO  DISP-PRICE-L
+           MOVE DISP-PRICE-UM           TO  DISP-PRICE-UM-L
+           MOVE DISP-EXP-DATE           TO  DISP-EXP-DATE-L
+      *    MOVE DISP-QTY                TO  DISP-QTY-L
+           MOVE DE-PROCESS-INDICATOR
+                                        TO  DE-PROCESS-INDICATOR-L
+      *    MOVE DISP-REQ-QTY            TO  DISP-REQ-QTY-L
+           MOVE DISP-REQ-UM             TO  DISP-REQ-UM-L
+           MOVE DE-RLSE-QTY             TO  DE-RLSE-QTY-L
+           MOVE DISP-REL-UM             TO  DISP-REL-UM-L
+           MOVE DE-SHIP-DATE            TO  DE-SHIP-DATE-L
+           MOVE DE-EXP-DLV-DATE         TO  DE-EXP-DLV-DATE-L
+           MOVE DE-TAX-CODE             TO  DE-TAX-CODE-L
+      **** MOVE DE-INSTRUCT-LIST        TO  DE-INSTRUCT-LIST-L
+           MOVE DE-INSTRUCT-LIST-BEF    TO  DE-INSTRUCT-LIST-L-BEF
+           MOVE DE-INSTRUCT-LIST-AFT    TO  DE-INSTRUCT-LIST-L-AFT
+           MOVE DE-SUBD                 TO  DE-SUBD-L
+           MOVE DE-SUB                  TO  DE-SUB-L
+           MOVE DE-ADDTL-DATA           TO  DE-ADDTL-DATA-L
+           PERFORM 6100-SPECIAL-631
+           MOVE DE-DESC-AREA            TO  DE-DESC-AREA-L
+           MOVE DE-COMMAND-LINE         TO  DE-COMMAND-LINE-L
+           MOVE DE-MESSAGE-LINE         TO  DE-MESSAGE-LINE-L.
+
+       610-PUT-BUFFER.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE SCREEN-1L           TO  DISPLAY-REC
+           ELSE
+           MOVE SCREEN-1                TO  DISPLAY-REC.
+
+       610-PCPO-EDITS.
+           IF SAVE-PCPO-SW = "N" GO TO 610-PE-X.
+           IF DE-COMPANY-L = "   "
+      *M   "COMPANY IS A REQUIRED FIELD"
+               MOVE  30 TO FIELD-NUMBER
+               MOVE   3 TO LANG-SETNUM
+               MOVE 196 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 610-PE-X
+           ELSE
+           MOVE "CO" TO MVALIDPLT-ARG-1-2
+           MOVE DE-COMPANY-L TO MVALIDPLT-ARG-3-10
+           PERFORM 9000-START-MVALIDPLTDATA-I
+           IF COND-WORD = 17
+      *M   "COMPANY IS INVALID"
+               MOVE  30 TO FIELD-NUMBER
+               MOVE   3 TO LANG-SETNUM
+               MOVE 197 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 610-PE-X.
+
+           IF DE-PRIME-L = "   "
+      *M   "PRIME IS A REQUIRED FIELD"
+               MOVE  16 TO LANG-SETNUM
+               MOVE 149 TO LANG-MSGNUM
+               MOVE  31 TO FIELD-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 610-PE-X
+           ELSE
+           MOVE "PR" TO MVALIDPLT-ARG-1-2
+           MOVE DE-PRIME-L TO MVALIDPLT-ARG-3-10
+           PERFORM 9000-START-MVALIDPLTDATA-I
+           IF COND-WORD = 17
+      *M  "PRIME IS INVALID"
+               MOVE  31 TO FIELD-NUMBER
+               MOVE  16 TO LANG-SETNUM
+               MOVE 150 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 610-PE-X.
+
+237200     IF DE-SUB-L = "   "
+237300*M   "CLASS IS A REQUIRED FIELD"
+237400         MOVE  27 TO FIELD-NUMBER
+237500         MOVE   3 TO LANG-SETNUM
+237600         MOVE 198 TO LANG-MSGNUM
+237700         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+237800         GO TO 610-PE-X
+237900     ELSE
+           IF DE-SUB-L = "CNS"
+               IF DISP-CORP-CODE NOT = "NC"
+                   GO TO 610-PE-X
+               ELSE
+242000         IF DE-ADDTL-DATA-L = "000000" OR "      "
+242100             GO TO 610-PE-X
+242200         ELSE
+242300         MOVE "NW" TO MVALIDPLT-ARG-1-2
+242400         MOVE DE-ADDTL-DATA-L TO MVALIDPLT-ARG-3-10
+               PERFORM 9000-START-MVALIDPLTDATA-I
+243200         IF COND-WORD = 0
+243300*M       "EXP/NW IS INVALID FOR CLASS"
+243400             MOVE  5 TO LANG-SETNUM
+243500             MOVE 62 TO LANG-MSGNUM
+243600             MOVE 15 TO FIELD-NUMBER
+243700             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+243800             GO TO 610-PE-X
+243900         ELSE
+244000         GO TO 610-PE-X
+           ELSE
+           IF DISP-CORP-CODE = "NC"
+238000         MOVE SPACES  TO MVALIDPLT-ARG
+238100         MOVE "EC"    TO MVALIDPLT-ARG-1-2
+238200         MOVE DE-SUB-L-9 TO MVALIDPLT-ARG-3-8
+               PERFORM 9000-START-MVALIDPLTDATA-I
+239000         IF COND-WORD = 17
+239100*M       "CLASS ENTERED IS INVALID"
+239200             MOVE  27 TO FIELD-NUMBER
+239300             MOVE   3 TO LANG-SETNUM
+239400             MOVE 199 TO LANG-MSGNUM
+239500             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+239600             GO TO 610-PE-X.
+239700
+239800     IF DE-SUB-L NOT < "000" AND DE-SUB-L NOT > "099"
+               IF DISP-CORP-CODE NOT = "NC"
+                   IF DE-ADDTL-DATA-L = "000000"
+                       MOVE "      " TO DE-ADDTL-DATA
+                   ELSE
+                   GO TO 610-PE-X
+               ELSE
+               GO TO 610-PE-X
+           ELSE
+239900     MOVE "NW" TO MVALIDPLT-ARG-1-2
+240000     MOVE DE-ADDTL-DATA-L TO MVALIDPLT-ARG-3-10
+           PERFORM 9000-START-MVALIDPLTDATA-I
+240800     IF COND-WORD = 17
+240900*M       "EXP/NW ENTERED IS INVALID FOR CLASS"
+241000             MOVE   5 TO LANG-SETNUM
+241100             MOVE  62 TO LANG-MSGNUM
+241200             MOVE  15 TO FIELD-NUMBER
+241300             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+241400             GO TO 610-PE-X
+241500         ELSE
+241600         GO TO 610-PE-X.
+241700
+241800     IF DE-SUB-L NOT LESS THAN "100"
+241900         IF DE-SUB-L NOT GREATER THAN "999"
+                   IF DISP-CORP-CODE NOT = "NC"
+                       GO TO 610-PE-X
+                   ELSE
+242000             IF DE-ADDTL-DATA-L = "000000" OR "      "
+242100                 NEXT SENTENCE
+242200             ELSE
+242300             MOVE "NW" TO MVALIDPLT-ARG-1-2
+242400             MOVE DE-ADDTL-DATA-L TO MVALIDPLT-ARG-3-10
+                   PERFORM 9000-START-MVALIDPLTDATA-I
+243200             IF COND-WORD = 0
+243300*M           "EXP/NW IS INVALID FOR CLASS"
+243400                 MOVE  5 TO LANG-SETNUM
+243500                 MOVE 62 TO LANG-MSGNUM
+243600                 MOVE 15 TO FIELD-NUMBER
+243700                 PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+243800                 GO TO 610-PE-X
+243900             ELSE
+244000             GO TO 610-PE-X.
+244100
+244200     MOVE "NW" TO MVALIDPLT-ARG-1-2.
+244300     MOVE DE-ADDTL-DATA-L TO MVALIDPLT-ARG-3-10.
+           PERFORM 9000-START-MVALIDPLTDATA-I.
+245100     IF COND-WORD = 0
+245200         IF DE-SUB-L NOT < "000" AND DE-SUB-L NOT > "099"
+245300             NEXT SENTENCE
+245400         ELSE
+245500*M       "CLASS ENTERED IS INVALID"
+245600         MOVE   3 TO LANG-SETNUM
+245700         MOVE 199 TO LANG-MSGNUM
+245800         MOVE  27 TO FIELD-NUMBER
+245900         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+246000         GO TO 610-PE-X
+246100     ELSE
+246200     IF DE-SUB-L NOT < "000" AND DE-SUB-L NOT > "099"
+246300*M   "EXP/NW IS INVALID FOR CLASS"
+246400         MOVE  5 TO LANG-SETNUM
+246500         MOVE 62 TO LANG-MSGNUM
+246600         MOVE 27 TO FIELD-NUMBER
+246700         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+246800
+       610-PE-X.    EXIT.
+
+       6100-SPECIAL-631.
+           IF COMP-SCREEN-INDIC = "631"
+               IF DE-SUBD = "1210"
+                   MOVE "000000" TO DE-ADDTL-DATA,
+                                    DE-ADDTL-DATA-L.
+
+       611-GET-STD-INST.
+           MOVE PO-ARG  TO PORCVNO OF DPODATAITM-REC-O.
+           MOVE "000001" TO ITEMSEQNO OF DPODATAITM-REC-O.
+           READ DPODATAITM-O INTO BUF-DPODATAITM
+               INVALID KEY MOVE "2"      TO  FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+               NEXT SENTENCE
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ DPODATAITM 611-GSI" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP
+           ELSE
+               MOVE DATAITM-INFO         TO  STD-INST-SAVED
+               MOVE SAVE-STD-INST-BEFORE     TO  DE-INSTRUCT-LIST-BEF
+                                                 DE-INSTRUCT-LIST-L-BEF
+               MOVE SAVE-STD-INST-AFTER      TO  DE-INSTRUCT-LIST-AFT
+                                                 DE-INSTRUCT-LIST-L-AFT
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+               MOVE HIGH-VALUES TO PORCVNO OF DPODATAITM-REC-O
+               START DPODATAITM-O KEY > PORCVNO OF DPODATAITM-REC-O
+                   INVALID KEY MOVE "00" TO  FILE-STATUS.
+
+       611-GSI-X.
+           EXIT.
+
+
+       611-FIND-ITEM-BY-ITEM.
+           MOVE PO-ARG                   TO  PORCVNO OF DPOITEM-REC-O.
+           MOVE REL-ITEM-NUM             TO  ITEMNO OF DPOITEM-REC-O.
+           READ DPOITEM-O INTO BUF-DPOITEM
+               INVALID KEY MOVE "2"      TO  FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+               MOVE "ITEM # NOT FOUND *RELEASE" TO BU-DISPLAY-MSG
+               MOVE ITM-NUMBER           TO  BU-DISPLAY-FLD9 (1)
+               GO TO 2100-BLOWUP
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET 611-FIBI *RELEASE" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+      *------ DO A START TO UNLOCK DPOITEM
+           MOVE HIGH-VALUES              TO  PORCVNO OF DPOITEM-REC-O.
+           START DPOITEM-O KEY > PORCVNO OF DPOITEM-REC-O
+               INVALID KEY MOVE "00"     TO  FILE-STATUS.
+
+       611-FIBI-X.
+           EXIT.
+
+       611-FIND-ITEM-BY-CODE.
+           MOVE REL-CODE                 TO  CODE-ARG.
+           MOVE 0                        TO  COND-WORD.
+           MOVE CODE-ARG                 TO  CORPCDE OF DPOITEMC-REC-I.
+           START DPOITEMC-I KEY = CORPCDE OF DPOITEMC-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 0                TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+      *A   CALL "DBFIND" USING BASE, DSET-DPOITEM, MODE1,
+      *A          STATUS-AREA, CODE-SEARCH, CODE-ARG.
+           IF COND-WORD NOT = 0
+               MOVE "FIND 611-FIBC *RELEASE"  TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+       611-GET-DPOITEM-CODE.
+           MOVE 0                        TO  COND-WORD.
+           READ DPOITEMC-I NEXT INTO BUF-DPOITEM
+               AT END MOVE 15            TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15               TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+           IF CORPCDE OF DPOITEMC-REC-I NOT = CODE-ARG
+               MOVE 15                   TO  COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DPOITEM, MODE5,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-DPOITEM, CODE-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD  =  15
+                   MOVE "CODE NOT FOUND *RELEASE"
+                                         TO  BU-DISPLAY-MSG
+                   MOVE ITM-NUMBER       TO  BU-DISPLAY-FLD9 (1)
+                   GO TO 2100-BLOWUP
+               ELSE
+                   MOVE "GET 611-FIBC *RELEASE"
+                                         TO  BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP.
+
+           IF PO-ARG  =  ITM-PO-RCV-NO
+               NEXT SENTENCE
+           ELSE
+               GO TO 611-GET-DPOITEM-CODE.
+
+       611-FIBC-X.
+           EXIT.
+
+       611-MOVE-EXPECT-DATE.
+           PERFORM 611-CONVERT-EXP-DATE.
+      *------ IF THE EXPECT DATE IS LESS THAN THE CURRENT DATE, JUST
+      *------ USE THE CURRENT DATE FOR EXPECT DATE.
+           IF JULIAN-DATE < JULIAN-CUR-DATE
+               MOVE CUR-DATE-YMD         TO  DATE-VALIDATE-IN
+           ELSE
+               MOVE REL-REQ-DATE-WANT    TO  DATE-VALIDATE-IN.
+           MOVE 4                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-OUT                 TO  DE-EXP-DLV-DATE,
+                                             DE-EXP-DLV-DATE-L.
+
+       611-CALCULATE-SHIP-DATE.
+           PERFORM 611-CONVERT-EXP-DATE.
+           MOVE JUL-DDD-9                TO  HOLD-JUL-DDD.
+           SUBTRACT HOLD-EST-LT          FROM HOLD-JUL-DDD.
+           IF HOLD-JUL-DDD < 0
+               SUBTRACT 1                FROM JUL-CCYY
+               ADD 365                   TO  HOLD-JUL-DDD.
+           MOVE HOLD-JUL-DDD             TO  JUL-DDD-9.
+      *------ IF THE SHIP DATE IS LESS THAN THE CURRENT DATE, JUST
+      *------ USE THE CURRENT DATE FOR SHIP DATE.
+           IF JULIAN-DATE < JULIAN-CUR-DATE
+               MOVE 4                    TO  DATE-MODE
+               MOVE CUR-DATE-YMD         TO  DATE-VALIDATE-IN
+           ELSE
+               MOVE SPACES               TO  GREG-DATE
+               CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                                    DAY-DIGIT, LEAP-YEAR-FLAG
+               MOVE GREG-DATE-YMD       TO  DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-OUT                TO  DE-SHIP-DATE,
+                                            DE-SHIP-DATE-L.
+
+       611-CONVERT-EXP-DATE.
+           MOVE SPACES                      TO  JULIAN-DATE.
+           MOVE REL-REQ-DATE-WANT           TO  GREG-DATE-YMD.
+           IF GREG-YY > "70"
+               MOVE "19"                    TO  GREG-CC
+           ELSE
+               MOVE "20"                    TO  GREG-CC.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                                DAY-DIGIT, LEAP-YEAR-FLAG.
+
+       611-CALC-CUR-JULIAN.
+      *----- OBTAIN THE JULIAN DATE OF THE CURRENT DATE.
+           ACCEPT CUR-DATE-YMD FROM DATE.
+           IF CUR-YY  > "70"
+               MOVE "19"                 TO  CUR-CC
+           ELSE
+               MOVE "20"                 TO  CUR-CC.
+           MOVE CURRENT-DATE             TO  GREG-DATE.
+           MOVE SPACES                   TO  JULIAN-DATE.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                                DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE JULIAN-DATE              TO  JULIAN-CUR-DATE.
+
+       62-PROCESS-BATCH.
+           ACCEPT CUR-DATE-YMD FROM DATE.
+      *--------- ACCOUNT FOR CENTURY.
+           IF CUR-YY > "70"
+               MOVE "19"                 TO  CUR-CC
+           ELSE
+               MOVE "20"                 TO  CUR-CC.
+
+           MOVE SPACES                   TO  BUF-DSHIPREL.
+           MOVE CURRENT-DATE             TO  DREL-DATE-CN.
+           IF DISP-CORP-CODE = "NC"
+               MOVE "NON-STR"            TO  DREL-DSHIPREL-CODE
+           ELSE
+               MOVE DISP-CORP-CODE       TO  DREL-DSHIPREL-CODE.
+           MOVE DISP-BLANKET-NO          TO  DREL-NUMBER.
+           MOVE ITM-NUMBER               TO  DREL-ITEM-NO.
+           MOVE ZEROS                    TO  DREL-SEQ-NO.
+           MOVE DE-RLSE-QTY              TO  DREL-QUANTITY.
+           MOVE SAVE-SHIP-DATE-YMD       TO  DREL-SHIP-DATE.
+           MOVE SAVE-EXP-DATE-YMD        TO  DREL-EXP-DATE.
+           MOVE DE-SUB                   TO  DREL-SUB.
+           MOVE DE-SUBD                  TO  DREL-SUBD.
+           MOVE DE-ADDTL-DATA            TO  DREL-ADDTL-DATA.
+           MOVE DE-TAX-CODE              TO  DREL-TAX-MSG.
+      **** MOVE DE-INSTRUCT-LIST         TO  DREL-STD-INST.
+           MOVE DE-INSTRUCT-LIST-AFT     TO  DREL-STD-INST.
+           MOVE REL-REQ-NUM              TO  DREL-REQ-NO.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE DE-COMPANY-L         TO  DREL-COMPANY
+               MOVE DE-PRIME-L           TO  DREL-PRIME.
+           IF SAVE-CHAT-SW = "Y"
+               MOVE DE-CHAT-NO           TO  DREL-CHAT-NO
+           ELSE
+           MOVE SPACES                   TO  DREL-CHAT-NO.
+           IF REL-NOTIFY-USERID > SPACES
+               MOVE REL-NOTIFY-USERID    TO  DREL-NOTIFY-USERID.
+           IF DE-PROCESS-INDICATOR = "H"
+               MOVE "H"                  TO  DREL-HOLD.
+           PERFORM 622-PUT-DSHIPREL.
+
+           IF DE-DESC-AREA = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 621-LOAD-DESC-DATA
+                   VARYING SUB1 FROM 1 BY 1
+                       UNTIL SUB1 > 3.
+
+      *---------- WRITE OUT STANDARD INSTRUCTION LINE.
+           MOVE 99                   TO  DREL-SEQ-NO.
+           MOVE DE-STD-INSTRUCTIONS  TO  DREL-DESC-LINE.
+           IF DE-PROCESS-INDICATOR = "H"
+               MOVE "H"                  TO  DREL-HOLD.
+           PERFORM 622-PUT-DSHIPREL.
+
+           IF REL-REQ-NUM = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 64-PROCESS-REQ  THRU  64-PR-X.
+
+       62-PB-X.
+           EXIT.
+
+       621-LOAD-DESC-DATA.
+           IF DE-DESC-LINE (SUB1) = SPACES
+               NEXT SENTENCE
+           ELSE
+               ADD 1                     TO  DREL-SEQ-NO
+               MOVE DE-DESC-LINE (SUB1)  TO  DREL-DESC-LINE
+               IF DE-PROCESS-INDICATOR = "H"
+                   MOVE "H"              TO  DREL-HOLD
+               END-IF
+               PERFORM 622-PUT-DSHIPREL.
+
+       622-PUT-DSHIPREL.
+           WRITE DSHIPREL-REC-O FROM BUF-DSHIPREL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DSHIPREL 622-PD" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+
+       63-CREATE-SHIPPING-RELEASE.
+           MOVE PO-ARG                   TO  PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MPORCV 63-CSR *RELEASE"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+           MOVE M-PO-LAST-RLSE           TO  SAVE-LAST-RLSE.
+
+       63-ADD-MPORCV.
+           ADD 1                         TO  SAVE-LAST-RLSE.
+           MOVE SAVE-LAST-RLSE           TO  PO-RLSE.
+           MOVE "000"                    TO  PO-RCV.
+           MOVE SPACES                   TO  BUF-MPORCV.
+           MOVE BUILD-PO-NUM             TO  M-PO-RCV-NO.
+           WRITE MPORCV-REC-O FROM BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "22"
+                   GO TO 63-ADD-MPORCV
+               ELSE
+                   MOVE "PUT MPORCV 63-AM *RELEASE"
+                                         TO  BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP.
+           MOVE "999"                    TO  PO-RLSE.
+           MOVE BUILD-PO-NUM             TO  PO-ARG.
+           MOVE PO-ARG                   TO  PORCVNO OF MPORCV-REC-O.
+           READ MPORCV-O INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MPORCV 63-AM *RELEASE" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+           MOVE SAVE-LAST-RLSE           TO  M-PO-LAST-RLSE.
+           REWRITE MPORCV-REC-O FROM BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UPD MPORCV 63-AM *RELEASE" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+           MOVE SAVE-LAST-RLSE           TO  PO-RLSE.
+           MOVE BUILD-PO-NUM             TO  PO-ARG.
+
+       63-BUILD-DPORECD.
+           MOVE BUILD-PO-NUM             TO  PO-RCV-NO.
+DCR01      MOVE BUILD-PO-NUM             TO  WS-Z000-PORCVNO.
+           ACCEPT CUR-DATE-YMD FROM DATE.
+      *--------- ACCOUNT FOR CENTURY.
+           IF CUR-YY > "70"
+               MOVE "19"                 TO  CUR-CC
+           ELSE
+               MOVE "20"                 TO  CUR-CC.
+
+           MOVE CURRENT-DATE             TO  PO-DATE-CN.
+           MOVE SAVE-SHIP-DATE-CYMD      TO  PO-SHIP-DATE-CN.
+           MOVE SAVE-EXP-DATE-CYMD       TO  PO-EXPECT-DATE-CN.
+           PERFORM 631-CALCULATE-BUDGET-AMOUNT  THRU  631-CBA-X.
+9502CZ**** MULTIPLY SAVE-UNIT-QTY  BY  SAVE-UNIT-PRICE
+  .   ****     GIVING ITEM-EXTENSION-SAVED ROUNDED.
+
+           MOVE SAVE-UNIT-QTY    TO  SCALCBGT-QTY.
+           MOVE SAVE-UNIT-PRICE  TO  SCALCBGT-PRICE.
+           MOVE DE-TAX-CODE      TO  SCALCBGT-TAX-CODE.
+           MOVE 0                TO  SCALCBGT-BUDGET.
+           CALL "SCALCBGT"  USING  SCALCBGT-PARMS.
+           MOVE SCALCBGT-BUDGET  TO  PO-BUDGET-AMT.
+
+      ******** GOT RID OF 632-CALCULATE-TAX PARAGRAPH.
+  .   **   PERFORM 632-CALCULATE-TAX THROUGH 632-CT-X.
+  .   **   ADD ITEM-EXTENSION-SAVED, ITEM-TAX
+9502CZ**       GIVING PO-BUDGET-AMT ROUNDED.
+      **************************************************
+      **   IF A CURRENCY CODE IS FOUND FOR THIS PO
+      **   THEN CALL 'SCURCONV' TO CONVERT BUDGET AMOUNT
+      **   TO LOCAL CURRENCY AMOUNT
+      **************************************************
+           IF PO-CURRENCY-CODE = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE PO-CURRENCY-CODE     TO  SCURCONV-CUR-CODE
+               MOVE PO-BUDGET-AMT        TO  SCURCONV-PRICE-WHL
+               MOVE ZEROS                TO  SCURCONV-PRICE-DEC
+               CALL "SCURCONV" USING BASE,
+                                     SCURCONV-PARMS,
+                                     STATUS-AREA,
+                                     BU-DISPLAY-MSG,
+                                     BU-DISPLAY-FLDS
+               IF BU-DISPLAY-MSG-1  NOT = SPACES
+                   MOVE "SCURCONV"       TO  BU-DISPLAY-FLD (4)
+                   GO TO 2100-BLOWUP
+               ELSE
+                   MOVE SCURCONV-PRICE-WHL  TO  PO-BUDGET-AMT.
+           MOVE CUR-YY                   TO  BUD-YY.
+           MOVE CUR-MM                   TO  BUD-MM.
+           MOVE BUILD-BUDGET-NO          TO  PO-BUDGET-NUMBER.
+           IF REL-CALL-PROG-ID = "P"
+               MOVE "B/R"                TO  PO-TYPIST
+           ELSE
+               MOVE "M/C"                TO  PO-TYPIST.
+
+           MOVE DE-SUB                   TO  PO-SUB.
+           MOVE DE-SUBD                  TO  PO-SUB-DET.
+           MOVE DE-ADDTL-DATA            TO  PO-ADDL-DATA.
+           MOVE SPACES                   TO  PO-PRFAX-DATE.
+           WRITE DPORECD-REC-O FROM BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DPORECD 63-BD *RELEASE" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+DCR01 *-------------------------------------------------------------
+DCR01      IF  Z000-POLG-ACTIVE-YES
+DCR01          PERFORM L000-LOG-ADD            THRU L000-ADD-EXIT
+DCR01      END-IF.
+DCR01 *-------------------------------------------------------------
+
+
+       63-BUILD-DDAILYTC.
+      **********************
+      *                    *
+      *CREATE TC 360       *
+      *                    *
+      **********************
+
+           MOVE "360"                    TO  STC360-TC.
+           MOVE COMP-SCREEN-INDIC        TO  STC360-COMPANY-SAVE.
+           CALL "STC360" USING BASE,
+                               STC360-COMPANY-SAVE,
+                               STC360-TC,
+                               BUF-DPORECD,
+                               STATUS-AREA,
+                               BU-DISPLAY-MSG,
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               GO TO 2100-BLOWUP.
+
+           IF SEDIVNCK-EDI-IND = "Y"
+               MOVE SPACES               TO  SEDIPOLG-PARMS
+               MOVE BUILD-PO-NUM         TO  PO-NUMBER-EDI
+               MOVE PO-VEN-CODE          TO  VENDOR-CODE-EDI
+               MOVE "X"                  TO  FLAG-EDI-A
+               MOVE "0000"               TO  PO-ITEM-NO-EDI
+               MOVE "SRELEASE"           TO  CALLING-PGM-EDI
+               CALL "SEDIPOLG" USING BASE,
+                                     SEDIPOLG-PARMS,
+                                     LANGUAGE-PARMS.
+
+           IF ITM-CORP-CODE = "NON-STR"
+               GO TO 63-PUT-DPOITEM.
+
+       63-UPDATE-MSTORERM.
+           MOVE COMP-SCREEN-INDIC        TO  SPOMSTRM-COMPANY-SAVE.
+           MOVE DE-RLSE-QTY              TO  SPOMSTRM-QTY.
+           MOVE DISP-REL-UM              TO  SPOMSTRM-QTY-UM.
+           MOVE ITM-UNIT-PRICE           TO  SPOMSTRM-PRICE.
+           MOVE DISP-PRICE-UM            TO  SPOMSTRM-PRICE-UM.
+           MOVE PO-NUM                   TO  SPOMSTRM-PO-NUM.
+           MOVE PO-RLSE                  TO  SPOMSTRM-PO-RLSE.
+           MOVE PO-VEN-CODE              TO  SPOMSTRM-VEN-CODE.
+           MOVE PO-CURRENCY-CODE         TO  SPOMSTRM-CUR-CODE.
+      ***********************************************
+      *  CHECK IF PO IS A MEMO ZBILL IF SO SET
+      *  INDICATOR BEFORE CALLING 'SPOMSTRM'
+      ***********************************************
+           MOVE SPACES                   TO  ZBILL-PO-SW.
+           MOVE PO-NUM                   TO  PO-ARRAY.
+           PERFORM 631-FIND-M  VARYING P-INDEX  FROM 7 BY -1
+               UNTIL P-INDEX = 0  OR  ZBILL-PO.
+           CALL "SPOMSTRM" USING BASE,
+                                 CODE-ARG,
+                                 SPOMSTRM-PARMS,
+                                 ZBILL-PO-SW,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               MOVE "SPOMSTRM"           TO  BU-DISPLAY-FLD (4)
+               GO TO 2100-BLOWUP.
+
+       63-PUT-DPOITEM.
+           MOVE BUILD-PO-NUM             TO  ITM-PO-RCV-NO.
+           MOVE DE-RLSE-QTY              TO  ITM-QTY-ORD.
+           MOVE DE-SUB                   TO  ITM-CLASS.
+           MOVE DE-SUBD                  TO  ITM-SUB-DETL.
+           MOVE DE-ADDTL-DATA            TO  ITM-ADDL-DATA.
+           MOVE ZEROS                    TO  ITM-QTY-DLVR,
+                                             ITM-QTY-STORED,
+                                             ITM-QTY-PAID,
+                                             ITM-WT,
+                                             ITM-KELLY-PO-QTY.
+           IF SAVE-CHAT-SW = "Y"
+               MOVE DE-CHAT-NO           TO  ITM-CHAT-NO
+           ELSE
+           MOVE SPACES                   TO  ITM-CHAT-NO.
+           MOVE DE-TAX-CODE              TO  ITM-TAX-CODE.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE DE-COMPANY-L         TO  ITM-COMPANY
+               MOVE DE-PRIME-L           TO  ITM-PRIME.
+           IF REL-NOTIFY-USERID > SPACES
+               MOVE REL-NOTIFY-USERID    TO  ITM-NOTIFY-USERID.
+      *---------- DO NOT UPDATE MARKET COST.
+      *****IF ZBILL-PO AND ITM-CORP-CODE NOT = "NON-STR"
+      *****    MOVE STR-MKT-COST         TO  ITM-ZBILL-VALUE.
+           WRITE DPOITEM-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DPOITEM 63-PD *RELEASE" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+       63-CUT-ITEM-TCS.
+           MOVE SPACES                   TO  STC320-PARMS.
+           MOVE COMP-SCREEN-INDIC        TO  STC320-COMPANY-SAVE.
+           MOVE "20"                     TO  STC320-ITEM-TC-ID.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE "NC"                 TO  STC320-CODE
+           ELSE
+               MOVE ITM-CORP-CODE        TO  STC320-CODE.
+           MOVE BUILD-PO-NUM             TO  STC320-PO-NUM.
+           MOVE ITM-NUMBER               TO  STC320-ITEM.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE ITM-QTY-ORD          TO  STC320-QTY
+               MOVE ITM-UNIT-PRICE       TO  STC320-PRICE
+               MOVE ITM-UM               TO  STC320-QTY-UM,
+                                            STC320-PRICE-UM
+           ELSE
+               MOVE SPOMSTRM-STR-QTY     TO  STC320-QTY
+               MOVE SPOMSTRM-STR-PRICE   TO  STC320-PRICE
+               MOVE SPOMSTRM-STR-UM      TO  STC320-QTY-UM,
+                                             STC320-PRICE-UM.
+           MOVE REL-REQ-NUM              TO  STC320-REQ-NO.
+           MOVE ITM-TAX-CODE             TO  STC320-TAX-CODE.
+           MOVE ITM-CLASS                TO  STC320-SUB.
+           MOVE ITM-SUB-DETL             TO  STC320-SUBD.
+           MOVE ITM-ADDL-DATA            TO  STC320-ADDTL-DATA.
+           MOVE PO-BUDGET-NUMBER         TO  STC320-BUDGET-NO.
+           MOVE PO-CURRENCY-CODE         TO  STC320-CUR-CODE.
+           MOVE ZEROS                    TO  STC320-OLD-BUDGET-AMT.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE ITM-COMPANY          TO  STC320-COMPANY
+               MOVE ITM-PRIME            TO  STC320-PRIME.
+           CALL "STC320" USING BASE,
+                               STC320-PARMS,
+                               STATUS-AREA,
+                               BU-DISPLAY-MSG,
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG-1  NOT = SPACES
+               MOVE "STC320"             TO  BU-DISPLAY-FLD (4)
+               GO TO 2100-BLOWUP.
+
+      *******************************
+      **  PROCESS REQUISITION
+      *******************************
+
+           IF REL-REQ-NUM = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 64-PROCESS-REQ  THRU  64-PR-X.
+
+           IF ITM-CORP-CODE = "NON-STR"
+               GO TO 63-COPY-DPODATA.
+
+      **********************************************************
+      **  CALL 'SVENPRC' TO UPDATE LAST PO PRICE FOR THAT
+      **  VENDOR IN DVENDITM.
+      **********************************************************
+
+           MOVE SPACES                   TO  SVENPRC-PARMS.
+           MOVE "U"                      TO  SVENPRC-FLAG.
+           MOVE CODE-ARG                 TO  SVENPRC-CODE.
+           MOVE PO-VEN-CODE              TO  SVENPRC-VEN-CODE.
+           MOVE ITM-UNIT-PRICE           TO  SVENPRC-PRICE.
+           MOVE ITM-PRICE-UM             TO  SVENPRC-PRICE-UM.
+           MOVE PO-DATE                  TO  SVENPRC-PO-DATE.
+           CALL "SVENPRC" USING BASE,
+                                SVENPRC-PARMS,
+                                STATUS-AREA,
+                                BU-DISPLAY-MSG,
+                                BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG-1  NOT = SPACES
+               MOVE "SVENPRC"            TO  BU-DISPLAY-FLD (4)
+               GO TO 2100-BLOWUP.
+
+
+      *********************************************
+      **  COPY DPODATAITMs FROM REQUIREMENT ORDER
+      **  FOR ITEM INTO A TABLE
+      *********************************************
+
+       63-COPY-DPODATA.
+           PERFORM 65-COPY-DPODATAITMS  THRU  65-CD-X.
+
+      *************************************************
+      **   CHECK FOR ADDITIONAL FREE VERBAGE/DESC
+      **   ENTERED ON THE SCREEN. IF IT EXISTS LOAD
+      **   IT INTO THE SAME TABLE AS DESC/COMMENTS
+      **   COPIED FROM THE REQUIREMENT ORDER ITEM
+      *************************************************
+
+           IF DE-DESC-AREA = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 65-LOAD-DESC-DATA
+                   VARYING SUB2 FROM 1 BY 1
+                       UNTIL SUB2 > 3.
+
+      *************************************************
+      **   USING THE TABLE FOR DESC/COMMENTS LOAD THESE
+      **   INTO DPODATAIM UNDER THE SHIPPING RELEASE
+      **   NUMBER.
+      *************************************************
+
+           PERFORM 65-PROCESS-DPODATAITM  THRU 65-PD-X.
+
+      **********************************************
+      *    SAVE STD INSTRUCTIONS FOR RELEASE
+      **********************************************
+
+           IF DE-INSTRUCT-LIST-BEF NOT = SPACES OR
+              DE-INSTRUCT-LIST-AFT NOT = SPACES
+               PERFORM 65-PUT-STD-INST THRU 65-PSI-X.
+
+       63-PRINT-RELEASE.
+           IF SEDIVNCK-EDI-IND = "Y" GO TO 63-CSR-X.
+           MOVE SPACES                   TO  PO-PRINT-PARMS.
+           MOVE BUILD-PO-NUM             TO  PO-NUMBER.
+           MOVE "S"                      TO  PO-PRINT-TYPE.
+           MOVE ZERO                     TO  PO-ITEMS.
+           MOVE REL-PO-PRT-NUM           TO  SPOOL-PRINT-NUM.
+           IF ISO-9000-PRINT-SW = "N"
+               PERFORM 631-LAUNCH-BATCH-PRINT  THRU 631-LBP-X.
+
+      *        CALL "TPOPRNT"  USING BASE,
+      *                              PO-PRINT-PARMS,
+      *                              ESC-NAME,
+      *                              LANGUAGE-PARMS.
+
+       63-CSR-X.
+           EXIT.
+
+
+       631-FIND-M.
+           IF PO-CHAR (P-INDEX) = "M"
+               MOVE "1"                  TO  ZBILL-PO-SW
+           ELSE
+      ** IF CHAR FOUND NOT = M THEN QUIT THIS CANT BE Z-BILL
+               IF PO-CHAR (P-INDEX) NOT = SPACE
+                   SET P-INDEX           TO  1.
+
+
+
+
+       631-CALCULATE-BUDGET-AMOUNT.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE ITM-UNIT-PRICE       TO  SAVE-UNIT-PRICE
+               MOVE DE-RLSE-QTY          TO  SAVE-UNIT-QTY
+               GO TO 631-CBA-X.
+
+           MOVE CODE-ARG                 TO  CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MSTORERM 631-CBA" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+           MOVE ZEROS                    TO  SAVE-UNIT-PRICE,
+                                      SAVE-UNIT-QTY.
+           IF DISP-PRICE-UM = STR-UM
+               ADD ITM-UNIT-PRICE        TO  SAVE-UNIT-PRICE ROUNDED
+           ELSE
+           IF DISP-PRICE-UM = STR-UM1
+               DIVIDE ITM-UNIT-PRICE BY STR-UM1-CF
+                   GIVING SAVE-UNIT-PRICE ROUNDED
+           ELSE
+           IF DISP-PRICE-UM = STR-UM2
+               DIVIDE ITM-UNIT-PRICE BY STR-UM2-CF
+                   GIVING SAVE-UNIT-PRICE ROUNDED
+           ELSE
+               MOVE "PRICE UM ERR 631-CBA * SRELEASE"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+           IF DISP-REL-UM = STR-UM
+               ADD DE-RLSE-QTY           TO  SAVE-UNIT-QTY ROUNDED
+           ELSE
+           IF DISP-REL-UM = STR-UM1
+               MULTIPLY DE-RLSE-QTY BY STR-UM1-CF
+                   GIVING SAVE-UNIT-QTY ROUNDED
+           ELSE
+           IF DISP-REL-UM = STR-UM2
+               MULTIPLY DE-RLSE-QTY BY STR-UM2-CF
+                   GIVING SAVE-UNIT-QTY ROUNDED
+           ELSE
+               MOVE "QTY UM ERR 631-CBA * SRELEASE"
+                                         TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+       631-CBA-X.
+           EXIT.
+
+       631-LAUNCH-BATCH-PRINT.
+           MOVE SPACES                TO  STRM-OPTION-CARD.
+           MOVE PO-ITEMS              TO  STRM-PO-ITEMS.
+           MOVE PO-NUMBER             TO  STRM-PO-NUM.
+           MOVE PO-REPRINT            TO  STRM-PO-REPRINT.
+           MOVE PO-NUMBER             TO  STRM-PO-TYPE.
+           MOVE PO-MODIFIED-ORDER     TO  STRM-MOD-ORDER.
+           MOVE PO-CANCELLED-ORDER    TO  STRM-CANC-ORDER.
+           MOVE PO-PRINT-TYPE         TO  STRM-PO-TYPE.
+           MOVE SPOOL-PRINT-NUM       TO  STRM-PO-PRINT-NUM.
+           MOVE COMP-SCREEN-INDIC     TO  STRM-CO-CODE.
+           MOVE "TPOPRTBT"            TO  STRM-RUN-CARD.
+      *-------- IF SRELEASE IS CALLING TSTRMJOB, THIS PARAMETER WILL
+      *-------- CAUSE TSTRMJOB TO CALL CLSUBMIT3 IN ORDER TO SUPPRESS
+      *-------- THE COMPLETION MESSAGE.
+           MOVE SPACES                TO  STRM-PRE-RUN-CARD1.
+           MOVE "NO CONFIRM"          TO  STRM-PRE-RUN-CARD1.
+           CALL "TSTRMJOB" USING STRMRPT-COMAREA.
+           IF STRM-RET-CODE NOT = "00"
+               MOVE STRM-RET-CODE     TO  BU-DISPLAY-FLD9 (1)
+               MOVE "STRM COMMAND FAIL * TSTRMJOB" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+       631-LBP-X.
+           EXIT.
+
+       64-PROCESS-REQ.
+           IF DE-PROCESS-INDICATOR = "B" OR "H"
+               PERFORM 641-PROCESS-REQ-BATCH-MODE  THRU  641-PRBM-X
+               GO TO 64-PR-X.
+
+           MOVE REL-REQ-NUM              TO  REQLINK-REQ-NO.
+           MOVE BUILD-PO-NUM             TO  REQLINK-PO-NUM.
+           MOVE PO-VEN-CODE              TO  REQLINK-VEN-CODE.
+           MOVE ITM-NUMBER               TO  REQLINK-PO-ITEM-NO.
+           CALL "SREQLINK"  USING BASE,
+                                  REQLINK-PARMS.
+
+       64-PR-X.
+           EXIT.
+
+
+
+       641-PROCESS-REQ-BATCH-MODE.
+           MOVE REL-REQ-NUM              TO  REQ-ARG,
+                                  BU-DISPLAY-FLD (4).
+
+           MOVE REQ-ARG                  TO  REQNO OF MREQ-REC-O.
+           READ MREQ-O INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MREQ *641-PRBM" TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+      **************************************************
+      *   UPDATE MREQ; MOVE TODAYS DATE TO DATE REL.
+      *   BY MATCONT AND MOVE 'XX' TO REQ-RELEASE-STAT SO REQUISITION
+      *   NO LONGER APPEARS AS BEING OPEN IN PURCHASING. HOWEVER MOVE
+      *   'BATCHFILE' INTO REQ-HOLD-STATUS SO REQ CAN BE FLAGGED AS
+      *   BEING IN RELEASE BATCH FILE AND CAN STILL BE CONSIDERED AN OPEN
+      *   REQ WHEN RUNNING REQ CREATE (MA1) FOR THE PURPOSE OF 'NEO'
+      *   CALCULATIONS AND ALSO REQ. UPDATE (MA2) WHEN SHOWING REQ.
+      *   ONORDER
+      **************************************************
+
+       641-UPDATE-MREQ.
+           MOVE "RE"                     TO  REQ-HOLD-STATUS-CODE.
+           MOVE "BATCHFILE"              TO  REQ-HOLD-STATUS.
+           MOVE "XX"                     TO  REQ-RELEASE-STAT.
+           IF REQ-REL-MC-DATE  NOT = SPACES
+               NEXT SENTENCE
+           ELSE
+               ACCEPT CUR-DATE-YMD FROM DATE
+               IF CUR-YY > "70"
+                   MOVE "19"             TO  CUR-CC
+               ELSE
+                   MOVE "20"             TO  CUR-CC
+               END-IF
+               MOVE CURRENT-DATE         TO  REQ-REL-MC-DATE-CN.
+           IF SAVE-SHIP-DATE-YMD  NOT = SPACES
+               MOVE SAVE-SHIP-DATE-CYMD  TO  REQ-DATE-WANTED-CN.
+           IF SAVE-PCPO-SW = "Y"
+               MOVE DE-COMPANY-L         TO  REQ-CO
+               MOVE DE-PRIME-L           TO  REQ-PRIME.
+           REWRITE MREQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UPDATE MREQ *641-UM"  TO  BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+      **************************************************
+      *                                                *
+      *   DO A FIND AND GET OF DREQD TO MAKE SURE IS   *
+      *   DOESNT EXIST IF SO SKIP OVER THE "PUT"       *
+      *                                                *
+      **************************************************
+
+       641-CHECK-FOR-DREQD.
+           MOVE REQ-ARG                  TO  REQNO OF DREQD-REC-O.
+           START DREQD-O KEY = REQNO OF DREQD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 641-PUT-DREQD
+               ELSE
+                   MOVE "START DREQD * 641-CFD" TO BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP
+           ELSE
+               GO TO 641-PRBM-X.
+
+       641-PUT-DREQD.
+           MOVE SPACES                   TO  BUF-DREQD.
+           MOVE REQ-ARG                  TO  DREQD-REQ-NUMBER.
+           IF REQ-MAT-TYPE = "S"
+               MOVE STR-BUYER            TO  DREQD-BUYER-CODE.
+           MOVE 0                        TO  COND-WORD.
+           WRITE DREQD-REC-O FROM BUF-DREQD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99                   TO  COND-WORD.
+           IF COND-WORD  NOT = 0
+      ***** BUYER CODE DOES NOT EXIST IN MBUYER SO MOVE SPACES INSTEAD
+               IF COND-WORD = 104
+                   MOVE SPACES           TO  STR-BUYER
+                   GO TO 641-PUT-DREQD
+               ELSE
+                   MOVE "PUT DREQD * 641-PD"  TO BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP.
+
+       641-PRBM-X.
+           EXIT.
+
+      **********************************************************
+      **  THIS ROUTINE MOVES ANY DPODATAITM ENTRIES FOUND FOR
+      **  ITEM UNDER THE REQUIREMENT ORDER A PUTS THEM IN
+      **  A TEMPORARY TABLE SO LATER THEY CAN BE PLACED IN
+      **  DPODATAITM UNDER THE SHIPPING RELEASE NUMBER.
+      **********************************************************
+
+       65-COPY-DPODATAITMS.
+           MOVE ZEROS                    TO  SUB1.
+           MOVE "999"                    TO  PO-RLSE.
+           MOVE BUILD-PO-NUM             TO  PO-ARG.
+           MOVE SAVE-LAST-RLSE           TO  PO-RLSE.
+           MOVE PO-ARG TO PORCVNO OF DPODATAITM-REC-O.
+           START DPODATAITM-O KEY = PORCVNO OF DPODATAITM-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 65-CD-X
+               ELSE
+                   MOVE "FIND DPODATAITM*65-CD" TO BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP.
+
+       65-GET-DPODATAITM.
+           MOVE 0                        TO  COND-WORD.
+           READ DPODATAITM-O NEXT INTO BUF-DPODATAITM
+               AT END MOVE 15            TO  COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   MOVE 15               TO  COND-WORD
+               ELSE
+                   MOVE 99               TO  COND-WORD.
+           IF PORCVNO OF DPODATAITM-REC-O NOT = PO-ARG
+               MOVE 15                   TO  COND-WORD.
+      *A   CALL "DBGET" USING BASE, DSET-DPODATAITM, MODE5,
+      *A       STATUS-AREA, ALL-ITEMS, BUF-DPODATAITM, PO-ARG.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 65-CD-X
+               ELSE
+                   MOVE "GET DPODATAITM *65-GD" TO BU-DISPLAY-MSG
+                   GO TO 2100-BLOWUP.
+           IF DATAITM-ITEM-NO = ITM-NUMBER
+               ADD 1                     TO  SUB1
+               MOVE DATAITM-INFO         TO  DPODATAITM-LINE (SUB1)
+           ELSE
+           IF DATAITM-ITEM-NO < ITM-NUMBER
+               NEXT SENTENCE
+           ELSE
+               GO TO 65-CD-X.
+
+           GO TO 65-GET-DPODATAITM.
+
+       65-CD-X.
+           EXIT.
+
+      ************************************************************
+      **   THIS ROUTINE LOADS THE 3 ADDITIONAL DESCRIPTION/COMMENTS
+      **   LINES FROM THE SCREEN INTO THE SAME TABLE AS THE
+      **   DESC/COMMENTS LINES FROM THE REQUIREMENT ORDER.
+      ************************************************************
+
+       65-LOAD-DESC-DATA.
+           IF DE-DESC-LINE (SUB2) = SPACES
+               NEXT SENTENCE
+           ELSE
+               ADD 1                     TO  SUB1
+               MOVE DE-DESC-LINE (SUB2)  TO  DPODATAITM-LINE (SUB1).
+
+
+      ***************************************************************
+      **   THIS ROUTINE PUTS ALL THE DPODATAITM DESC/COMMENT LINES **
+      **   FOR THE ITEM OUT UNDER THE SHIPPING RELEASE ENTRY       **
+      ***************************************************************
+
+       65-PROCESS-DPODATAITM.
+           IF SUB1 = ZEROS
+               GO TO 65-PD-X.
+
+           MOVE ZEROS                    TO  SUB2.
+           MOVE SPACES                   TO  BUF-DPODATAITM.
+           MOVE BUILD-PO-NUM             TO  DATAITM-PO-RCV-NO.
+
+       65-PUT-DPODATAITM.
+           ADD 1                         TO  SUB2.
+           IF SUB2 > SUB1
+               GO TO 65-UNLOCK-DPODATAITM.
+           MOVE ITM-NUMBER               TO  DATAITM-ITEM-NO.
+           MOVE SUB2                     TO  DATAITM-LINE-NO.
+           MOVE DPODATAITM-LINE (SUB2)   TO  DATAITM-INFO.
+           WRITE DPODATAITM-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DPODATAITM *65-PD" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+           GO TO 65-PUT-DPODATAITM.
+
+       65-UNLOCK-DPODATAITM.
+           IF ITM-CORP-CODE = "NON-STR"
+               PERFORM 651-CUT-TC370  THRU 651-CT370-X.
+
+       65-PD-X.
+           EXIT.
+
+       651-CUT-TC370.
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           MOVE CUR-DATE-YMD             TO  DDAILYTC-DATE.
+           ACCEPT  DDAILYTC-TIME FROM TIME.
+           MOVE "370"                    TO  DDAILYTC-TC.
+           MOVE COMP-SCREEN-INDIC        TO  DDAILYTC-PLT.
+           MOVE BUILD-PO-NUM             TO  TC370-PO-RLS.
+           MOVE ITM-NUMBER               TO  TC370-ITEM-NO.
+           MOVE "01"                     TO  TC370-LINE-NO.
+           MOVE DPODATAITM-LINE (1)      TO  TC370-NONCODED-DESC.
+           WRITE DDAILYTC-REC-O FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DDAILYTC * 651-CT370" TO BU-DISPLAY-MSG
+               GO 2100-BLOWUP.
+
+       651-CT370-X.
+           EXIT.
+
+      *******************************************************
+      **  THIS ROUTINE SAVES THE STD INSTRUCTIONS THAT PRINT
+      **  BEFORE AND AFTER THE ITEMS IN THE DPODATAITM SEGMENT
+      **  UNDER ITEM NO. ZERO '000001'
+      *******************************************************
+
+       65-PUT-STD-INST.
+           MOVE SPACES                   TO  STD-INST-SAVED.
+      **** MOVE DE-INSTRUCT-LIST         TO  SAVE-STD-INST-AFTER-1-3.
+           MOVE DE-INSTRUCT-LIST-BEF     TO  SAVE-STD-INST-BEFORE.
+           MOVE DE-INSTRUCT-LIST-AFT     TO  SAVE-STD-INST-AFTER.
+           MOVE BUILD-PO-NUM             TO  DATAITM-PO-RCV-NO.
+           MOVE "000001"                 TO  DATAITM-LINE.
+           MOVE STD-INST-SAVED           TO  DATAITM-INFO.
+           WRITE DPODATAITM-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "PUT DPODATAITM 65-PSI" TO BU-DISPLAY-MSG
+               GO TO 2100-BLOWUP.
+
+       65-PSI-X.
+           EXIT.
+
+       66-MOVE-SRELVEND-FIELDS.
+           IF DISP-CORP-CODE NOT = "NON-STR"
+               INITIALIZE BUF-DRELTRAK
+               MOVE "P"                  TO  TREL-PREFIX
+               MOVE PO-PO-NO             TO  TREL-PO
+               COMPUTE SAVE-TREL-RLSE = M-PO-LAST-RLSE + 1
+               MOVE "000"                TO  TREL-RCVR
+               MOVE SAVE-TREL-RLSE       TO  TREL-RLSE
+               MOVE ITM-NUMBER           TO  TREL-ITEM-NUM
+               MOVE ITM-CORP-CODE        TO  TREL-CODE
+               MOVE DE-RLSE-QTY          TO  TREL-QTY
+               MOVE ITM-UM               TO  TREL-QTY-UM
+               MOVE ITM-UNIT-PRICE       TO  TREL-PRICE
+               MOVE ITM-PRICE-UM         TO  TREL-PRICE-UM
+               MOVE PO-VEN-CODE          TO  TREL-VENDOR.
+
+       COPY DISPCALL IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM          TO  CATREAD-MSG-SET
+               MOVE LANG-MSGNUM          TO  CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT         TO  MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       9000-START-MVALIDPLTDATA-I.
+           MOVE 0 TO COND-WORD.
+           MOVE MVALIDPLT-ARG TO VALDTAKEY OF MVALIDPLTDATA-REC-I.
+           START MVALIDPLTDATA-I KEY = VALDTAKEY OF MVALIDPLTDATA-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9000-START-MCLASS-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO ACTGCLASS OF MCLASS-REC-I.
+           START MCLASS-I KEY = ACTGCLASS OF MCLASS-REC-I
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+DCR01  COPY POLOGSUBR2 IN COPYLIB.

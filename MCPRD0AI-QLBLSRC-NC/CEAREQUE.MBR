@@ -1,0 +1,541 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          CEAREQUE.
+       AUTHOR.              C HILLES/JIM COFFMAN (MAINTAINER).
+       DATE-WRITTEN.        3/8/91.
+       DATE-COMPILED.
+      *INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *SECURITY.
+      *REMARKS.   ONLINE APPROVAL SYSTEM: RE-QUE A REQ.
+      *           THIS HANDLES BOTH RE-QUEUEING A REQ AND RETURNING
+      *           A REQ.
+      *C
+      *C   05/05/94  JE COFFMAN  WRITTEN REQUEST 94-001/SLS REQ 6487
+      *C     ADDED THE ABILITY TO ALLOW 'SS' STATUS REQUISITIONS
+      *C     THAT HAVE THE AUTHORIZATION FLAG SET VIA MP1 TO BE
+      *C     RE-QUEUED.
+      *C
+      *C    05/07/96     CA YODER    REQ #95-041
+      *C      ADDED THE CURRENT DATE TO THE DATE RETURNED FIELD ON THE
+      *C      REQ TO SHOW WHEN IT WAS RETURNED BY PURCHASING TO
+      *C      MATERIALS CONTROL.
+      *C
+      *C    02/25/00  JE COFFMAN
+      *C      ADDED LOGIC AT LAWTON'S REQUEST TO:
+      *C         1) PUT THE RETURNER'S COMMENTS AT THE PROPER LEVEL
+      *C         2) MAKE SURE THAT "OLD" APPROVER DATES WERE NOT
+      *C               GETTING INCORRECTLY OVERWRITTEN ON A RE-QUEUE.
+      *C
+      *C    06/07/01  CA YODER
+      *C      REMOVED LOGIC TO GO TO EXIT OF 6000-MAIN IF RETURNING REQ
+      *C      TO MATERIALS CONTROL.  NEED TO MAKE SURE THAT "CEAQUE" IS
+      *C      EXECUTED SO THAT THE RETURN COMMENTS ARE NOT LOST.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DREQQUE-RQ-O
+               ASSIGN TO DATABASE-MCFLCS4401
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+       FD  DREQQUE-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQQUE-RQ-REC-O.
+           COPY DDS-MCRPCS4400  OF MCFLCS4401.
+
+       FD  MREQ-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-RQ-REC-O.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+       01  HANDLE-BLOWUP-FLAG            PIC X(1).
+       01  SAVE-APPROVALS-LEFT           PIC 9(3).
+       01  FORCE-RE-Q                    PIC X(1).
+       01  HOLD-DRQQ-QUEUED-DATE-CN      PIC X(8).
+       01  QUE-CK-SW                     PIC 9.
+       01  SUB                           PIC S9(4) BINARY.
+       01  FOUND-LEVEL-FLAG              PIC X(1).
+       01  RE-Q-TO-CERTAIN-LEV           PIC X(1).
+       01  FOUND-LEV-TO-RE-Q-TO          PIC X(1).
+       01  UPDATE-FLAG                   PIC X(1).
+       01  SAVE-DREQQUE-TABLE.
+           05  SAVE-DREQQUE-LINE OCCURS 12 TIMES.
+               10  SRQ-QUEUED-DATE-CN    PIC X(8).
+               10  SRQ-APPROVE-DATE-CN   PIC X(8).
+               10  SRQ-LEVEL-NUM         PIC X(2).
+
+       01  SAVE-BUF-DREQQUE.
+           05  FILLER                    PIC X(18).
+           05  SAVE-DRQQ-QUEUED-DATE-CN  PIC X(8).
+           05  SAVE-DRQQ-APPROVE-DATE-CN PIC X(8).
+           05  FILLER                    PIC X(120).
+       COPY CEARQPH    IN COPYLIB.
+       COPY CEAQUE     IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+       COPY HMSGBUF    IN COPYLIB.
+       01  APPROVAL-WORKAREA.
+           05  APPROVAL-WO               PIC X(10).
+           05  APPROVAL-STATUS           PIC X(1).
+
+      *
+      * FILE STATUS DEFINITION FOR AS/400 DB CALLS OR HP KSAM CALLS
+      *
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X.
+           05  FILE-STATUS-2             PIC X.
+
+       01  DSET-DREQQUE                  PIC X(16) VALUE "DREQQUE;".
+
+       01  DSET-MREQ                     PIC X(16) VALUE "MREQ;".
+
+       01  REQ-ARG                       PIC X(12).
+       01  REQ-SEARCH                    PIC X(16) VALUE "REQ-NUMBER;".
+
+       01  CURRENT-DATE.
+           05  CUR-YY                    PIC 9(2).
+           05  CUR-MM                    PIC 9(2).
+           05  CUR-DD                    PIC 9(2).
+
+       COPY DREQQUE IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  BASE                          PIC X(10).
+       01  MMISA                         PIC X(24).
+       COPY DBSTAT   IN COPYLIB.
+       COPY LANGSUB  IN COPYLIB.
+       COPY REQGLOBS IN COPYLIB.
+       COPY MREQ     IN COPYLIB.
+       COPY DREQD    IN COPYLIB.
+       COPY BUMSG    IN COPYLIB.
+       COPY CEAREQUE IN COPYLIB.
+       PROCEDURE DIVISION USING BASE,
+                                MMISA,
+                                STATUS-AREA,
+                                LANGUAGE-PARMS,
+                                REQ-GLOBALS,
+                                BUF-MREQ,
+                                BUF-DREQD,
+                                BU-DISPLAY-MSG,
+                                CEAREQUE-PARMS.
+
+       1000-START.
+           MOVE MREQ-NUMBER     TO  REQ-ARG.
+           MOVE "N"             TO  RE-Q-WAS-DONE.
+           PERFORM 9999-OPEN-STUFF.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       2100-BLOWUP.
+           GOBACK.
+
+       6000-MAIN.
+           MOVE "N"                      TO RE-Q-TO-CERTAIN-LEV.
+           IF LEVEL-TO-RE-Q-TO > "00"
+               IF CHECK-RE-Q-NECCESSARY NOT = "Y"
+                   MOVE "Y"              TO RE-Q-TO-CERTAIN-LEV
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF LEVEL-TO-RE-Q-TO IS ALPHABETIC
+               IF CHECK-RE-Q-NECCESSARY NOT = "Y"
+                   MOVE "Y"              TO RE-Q-TO-CERTAIN-LEV.
+      *    IF LEVEL-TO-RE-Q-TO NUMERIC AND LEVEL-TO-RE-Q-TO NOT = "00"
+      *------ CHANGED 8/4/99 WHEN APPROVER IN LAWTON WAS UNABLE TO
+      *------ QUEUE TO AN ALPHABETIC LEVEL APPROVER.......JIM C.
+      *    AND (CHECK-RE-Q-NECCESSARY NOT = "Y")
+      *        MOVE "Y"                  TO  RE-Q-TO-CERTAIN-LEV
+      *    ELSE
+      *        MOVE "N"                  TO  RE-Q-TO-CERTAIN-LEV.
+
+      *------ CMANREQ LETS THIS SUBPROG DETERMINE IF A RE-QUEUE
+      *------ IS NECCESSARY.  ON A PATH CHANGE, PREVIOUS APPROVALS
+      *------ ARE SAVED.  IF A RE-Q IS FORCED DUE TO A PRICE INCREASE,
+      *------ ETC, THE PREV. APPROVALS ARE NOT SAVED AND MUST
+      *------ RE-APPROVE.
+           MOVE "N"                      TO  FORCE-RE-Q.
+           IF CHECK-RE-Q-NECCESSARY = "Y"
+               IF RE-Q-ANY = "Y"
+                   MOVE "Y"              TO  FORCE-RE-Q
+               ELSE
+               IF RE-Q-VALUE = "Y" AND REQ-BUDGET-AMT > REQS-PREV-VALUE
+                   MOVE "Y"              TO  FORCE-RE-Q
+               ELSE
+               IF RE-Q-QTY = "Y" AND REQS-CURRENT-QTY > REQS-PREV-QTY
+                   MOVE "Y"              TO  FORCE-RE-Q.
+
+           MOVE "R"                      TO  RQPH-PATH-TYPE.
+           MOVE REQ-SUB                  TO  RQPH-CLASS.
+           MOVE REQ-FOR-DEPT             TO  RQPH-DEPARTMENT.
+           MOVE REQ-REQ-DEPT             TO  RQPH-REQ-DEPT.
+           MOVE REQ-ADDTL-DATA           TO  RQPH-EXPENSE-CLASS.
+           MOVE REQ-BUDGET-NO            TO  RQPH-BUDGET-NUMBER.
+           MOVE REQ-BUDGET-AMT           TO  RQPH-VALUE.
+           IF DREQD-WO-NUMBER > SPACES
+               MOVE DREQD-WO-NUMBER      TO  APPROVAL-WO
+               CALL "TPASSAPP" USING MMISA, APPROVAL-WORKAREA
+               MOVE APPROVAL-STATUS      TO  RQPH-WO-APPROVED
+           ELSE
+               MOVE "N"                  TO  RQPH-WO-APPROVED.
+
+           CALL "CEARQPH" USING BASE, STATUS-AREA, RQPH-AREA,
+             BU-DISPLAY-MSG.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               GO TO 6990-MAIN-X.
+
+      *------ IF CHECKING FOR A RE-Q, AND WE DON'T WANT TO FORCE
+      *------ THE RE-Q, AND THE PATH DIDNT CHANGE, THEN EXIT,
+      *------ WE DON'T DO ANYTHING. IF THE PATH DID CHANGE AND
+      *------ THE GLOBAL OPTION TO RE-Q ON A PATH CHANGE IS NO,
+      *------ EXIT ALSO.
+           IF CHECK-RE-Q-NECCESSARY = "Y" AND FORCE-RE-Q = "N"
+               IF REQ-PATH = RQPH-RET-PATH-NUM
+                   GO TO 6990-MAIN-X
+               ELSE
+               IF RE-Q-PATH = "N"
+                   GO TO 6990-MAIN-X.
+
+      *------ AT THIS POINT WE ARE GOING TO RE-QUEUE.  DELETE ALL
+      *------ THE DREQQUE ENTRIES AND SAVE APPROVE DATES IN A TABLE
+      *------ IN CASE WE NEED TO KEEP PREVIOUS APPROVALS.
+           MOVE "Y"                      TO  RE-Q-WAS-DONE.
+
+           MOVE ZERO                     TO  SUB.
+           PERFORM 9999-CHAINHD-DREQQUE-RQ-O.
+           PERFORM 9999-GETNEXT-DREQQUE-RQ-O.
+           PERFORM UNTIL (NOT GOOD-CALL) OR SUB > 11
+               ADD 1                     TO  SUB
+               MOVE DRQQ-QUEUED-DATE-CN  TO  SRQ-QUEUED-DATE-CN (SUB)
+               MOVE DRQQ-APPROVE-DATE-CN TO  SRQ-APPROVE-DATE-CN (SUB)
+               MOVE DRQQ-LEVEL-NUM       TO  SRQ-LEVEL-NUM (SUB)
+               PERFORM 9999-DELETE-DREQQUE-RQ-O
+               PERFORM 9999-GETNEXT-DREQQUE-RQ-O
+           END-PERFORM.
+
+      *------ 'CEAQUE' WILL DO THE ACTUAL UPDATE OF MREQ, BUT CHANGE
+      *------ HOLD STATUS TO '
+           IF RETURNING-EMPL > SPACES
+               IF LEVEL-TO-RE-Q-TO = "00"
+                   MOVE "RT"             TO  REQ-HOLD-STATUS-CODE
+      *            "RETURNED"
+                   MOVE 18049            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER   TO  REQ-HOLD-STATUS
+                   MOVE RETURNING-EMPL   TO  REQ-RET-EMPL
+                   ACCEPT CURRENT-DATE FROM DATE
+                   MOVE CUR-YY           TO  REQ-DATE-RETN-YY
+                   MOVE CUR-MM           TO  REQ-DATE-RETN-MM
+                   MOVE CUR-DD           TO  REQ-DATE-RETN-DD
+                   IF CUR-YY > "70"
+                       MOVE "19"         TO  REQ-DATE-RETN-CC
+                   ELSE
+                   MOVE "20"             TO  REQ-DATE-RETN-CC.
+
+      *------ WHEN AN 'SS' STATUS REQ IS RETURNED (I.E. REQ HAS
+      *------ THE AUTHORIZED FLAG ON AND APPROVAL PATHS EXIST)
+      *------ THE REQUISITION IS TO BE RETURNED TO MATERIALS CONTROL
+           IF REQ-STATUS = "SS" AND REQ-AUTH-CODE-FLAG = "X"
+               MOVE ZEROES TO REQ-PATH, REQ-APPROVALS-LEFT-9
+               IF REQ-CO = "631" AND REQ-MMIS-REQ-NO-1 = "M"
+      *---------- MOVE THE DATE RETURNED TO MATERIALS CONTROL TO THE
+      *---------- RECORD BUT DON'T CLEAR THE AUTHORIATION FLAG.
+                   ACCEPT CURRENT-DATE FROM DATE
+                   MOVE CUR-YY               TO  REQ-DATE-RETN-YY
+                   MOVE CUR-MM               TO  REQ-DATE-RETN-MM
+                   MOVE CUR-DD               TO  REQ-DATE-RETN-DD
+                   IF CUR-YY > "70"
+                       MOVE "19"             TO  REQ-DATE-RETN-CC
+                   ELSE
+                       MOVE "20"             TO  REQ-DATE-RETN-CC
+                   END-IF
+                   PERFORM 9999-UPDATE-MREQ-RQ-O
+                   GO TO 6990-MAIN-X
+               ELSE
+               MOVE " "    TO REQ-AUTH-CODE-FLAG
+      *---------- MOVE THE DATE RETURNED TO MATERIALS CONTROL TO THE
+      *---------- RECORD.
+               ACCEPT CURRENT-DATE FROM DATE
+               MOVE CUR-YY                   TO  REQ-DATE-RETN-YY
+               MOVE CUR-MM                   TO  REQ-DATE-RETN-MM
+               MOVE CUR-DD                   TO  REQ-DATE-RETN-DD
+               IF CUR-YY > "70"
+                   MOVE "19"                 TO  REQ-DATE-RETN-CC
+               ELSE
+                   MOVE "20"                 TO  REQ-DATE-RETN-CC
+               END-IF
+               PERFORM 9999-UPDATE-MREQ-RQ-O.
+      *------------ IF RETURNING A REQ, DON'T EXIT YET.  CALL PROGRAM
+      *------------ TO REQUE THE REQ SO THAT THE COMMENTS WILL NOT
+      *------------ BE DELETED.    6/7/01
+      ******** GO TO 6990-MAIN-X.
+
+      *------ QUEUE UP THE REQ FOR THOSE THAT NEED TO APPROVE IT.
+           MOVE MREQ-NUMBER              TO  EAQ-REQ-NUMBER.
+           MOVE RQPH-RET-PATH            TO  EAQ-PATH-ARG.
+           MOVE RQPH-RET-PATH2           TO  EAQ-PATH-ARG2.
+           MOVE REQ-ORIGINATOR           TO  EAQ-ORIG-EMPL.
+           MOVE "R"                      TO  EAQ-QUEUE-TYPE.
+           IF DREQD-WO-NUMBER > SPACES
+               MOVE "Y"                  TO  EAQ-WO-FLAG
+           ELSE
+               MOVE "N"                  TO  EAQ-WO-FLAG.
+           MOVE RQPH-WO-APPROVED         TO  EAQ-WO-APP.
+           MOVE RETURN-REASON-1          TO  EAQ-REASON-1.
+           MOVE RETURN-REASON-2          TO  EAQ-REASON-2.
+           MOVE REQ-AUTH-CODE-FLAG       TO  EAQ-AUTH-FLAG.
+           MOVE LEVEL-TO-RE-Q-TO         TO  EAQ-TO-LEVEL.
+           IF RE-Q-MODE = "UP" MOVE "U" TO EAQ-MODE.
+           CALL "CEAQUE" USING BASE, STATUS-AREA, EAQ-AREA,
+             REQ-GLOBALS, BUF-MREQ, BU-DISPLAY-MSG.
+           MOVE REQ-APPROVALS-LEFT-9     TO  SAVE-APPROVALS-LEFT.
+
+      *------ IF FORCING A RE-Q (IE IF PRICE INCREASE FORCES A RE-Q,
+      *------ ALL APPROVERS MUS RE-APPROVE).  BUT ON A PATH CHANGE,
+      *------ OLD APPROVALS ARE RETAINED.
+           IF FORCE-RE-Q = "Y"
+               GO TO 6990-MAIN-X.
+
+      *------ RETURNING TO A CERTAIN LEVEL AT LEVEL 00 (ORIGINATOR)
+      *------ IS THE SAME AS A PLAIN RETURN, SO DONT UPDATE ANY
+      *------ PREVIOUS APPROVALS.
+           IF LEVEL-TO-RE-Q-TO = "00"
+           AND (CHECK-RE-Q-NECCESSARY NOT = "Y")
+               GO TO 6990-MAIN-X.
+
+      *------ IF RETURNING A REQ TO THE ORIGINATOR, DO NOT RETAIN
+      *------ ANY PREVIOUS APPROVALS.  WHEN RETURNING TO A CERTAIN
+      *------ LEVEL, RETAIN ONLY THOSE APPROVALS UP TO BUT NOT
+      *------ INCLUDING THE LEVEL BEING RETURNED TO.  THE LEVEL
+      *------ BEING RETURNED TO WILL HAVE A QUEUED DATE BUT NOT
+      *------ AN APPROVE DATE. BE AWARE THAT CEAQUE HAS BUILT
+      *------ EMPTY DREQQUE RECORDS TO BE UPDATED WITH WHAT WAS
+      *------ SAVED PRIOR TO ITS BEING CALLED.
+           MOVE "N"                      TO  FOUND-LEV-TO-RE-Q-TO.
+           PERFORM 9999-CHAINHD-DREQQUE-RQ-O.
+           PERFORM 9999-GETNEXT-DREQQUE-RQ-O.
+           PERFORM UNTIL NOT GOOD-CALL
+               MOVE "N"                  TO  FOUND-LEVEL-FLAG
+               PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 12
+               OR FOUND-LEVEL-FLAG = "Y"
+                   IF SRQ-LEVEL-NUM (SUB) = DRQQ-LEVEL-NUM
+                       MOVE "Y"          TO  FOUND-LEVEL-FLAG
+                   END-IF
+               END-PERFORM
+               SUBTRACT 1 FROM SUB
+               IF FOUND-LEVEL-FLAG = "Y"
+                   IF RE-Q-TO-CERTAIN-LEV = "Y"
+                       IF DRQQ-LEVEL-NUM = LEVEL-TO-RE-Q-TO
+                           MOVE "Y"      TO  FOUND-LEV-TO-RE-Q-TO
+                           MOVE SPACES   TO  SRQ-APPROVE-DATE-CN (SUB)
+                           PERFORM 7000-UPDATE-PREV-DATA
+                       ELSE
+                       IF FOUND-LEV-TO-RE-Q-TO = "N"
+                           PERFORM 7000-UPDATE-PREV-DATA
+                       END-IF
+                       END-IF
+                   ELSE
+                       PERFORM 7000-UPDATE-PREV-DATA
+                   END-IF
+               END-IF
+               PERFORM 9999-GETNEXT-DREQQUE-RQ-O
+           END-PERFORM.
+
+      *----- ADDED THE FOLLOWING PERFORM 5/6/97 TO HANDLE
+      *----- A SITUATION WHEREBY A REQUISITION BEING RE-QUEUED
+      *----- WAS NOT ALWAYS SETTING THE NEXT APPROVER'S
+      *----- QUEUED DATE.
+
+           PERFORM 7001-SET-NEXT-APPROVER THRU 7001-SNA-X.
+
+           IF REQ-APPROVALS-LEFT-9 NOT = SAVE-APPROVALS-LEFT
+               PERFORM 9999-UPDATE-MREQ-RQ-O.
+
+       6990-MAIN-X.
+           EXIT.
+
+       7000-UPDATE-PREV-DATA.
+           MOVE "N" TO UPDATE-FLAG.
+
+           IF SUB = 1
+               MOVE DRQQ-QUEUED-DATE-CN TO HOLD-DRQQ-QUEUED-DATE-CN.
+
+      *    ADDED THE NEXT IF CHECK ON 2/23/00 WHEN LAWTON POINTED OUT
+      *    THAT A RE-QUEUE TO A LEVEL OTHER THAN THE ORIGINATOR WAS
+      *    INCORRECTLY ALTERING THE QUEUE DATES OF THE ORIGINATOR
+      *    AND THE QUEUE DATE OF THE 1ST APPROVER.
+
+           IF FOUND-LEV-TO-RE-Q-TO = "N"
+               MOVE SRQ-QUEUED-DATE-CN (SUB) TO DRQQ-QUEUED-DATE-CN
+               MOVE "Y" TO UPDATE-FLAG
+           ELSE
+           IF SRQ-QUEUED-DATE-CN (SUB) NUMERIC
+           AND (DRQQ-QUEUED-DATE-CN NOT NUMERIC)
+               MOVE SRQ-QUEUED-DATE-CN (SUB) TO DRQQ-QUEUED-DATE-CN
+               MOVE "Y" TO UPDATE-FLAG.
+
+      *    ADDED THE NEXT IF CHECK ON 2/23/00 WHEN LAWTON POINTED OUT
+      *    THAT A RE-QUEUE TO A LEVEL OTHER THAN THE ORIGINATOR WAS
+      *    INCORRECTLY ALTERING THE APPROVE DATES OF THE ORIGINATOR.
+
+           IF FOUND-LEV-TO-RE-Q-TO = "N"
+               IF SRQ-LEVEL-NUM (SUB) = "00"
+                   MOVE SRQ-APPROVE-DATE-CN (SUB)
+                       TO DRQQ-APPROVE-DATE-CN
+                   MOVE "Y" TO UPDATE-FLAG
+               ELSE
+               SUBTRACT 1 FROM REQ-APPROVALS-LEFT-9
+               MOVE SRQ-APPROVE-DATE-CN (SUB) TO DRQQ-APPROVE-DATE-CN
+               MOVE "Y" TO UPDATE-FLAG
+           ELSE
+           IF SRQ-APPROVE-DATE-CN (SUB) NUMERIC
+           AND (DRQQ-APPROVE-DATE-CN NOT NUMERIC)
+               SUBTRACT 1 FROM REQ-APPROVALS-LEFT-9
+               MOVE SRQ-APPROVE-DATE-CN (SUB) TO DRQQ-APPROVE-DATE-CN
+               MOVE "Y" TO UPDATE-FLAG.
+
+           IF UPDATE-FLAG = "Y"
+               PERFORM 9999-UPDATE-DREQQUE-RQ-O.
+
+       7001-SET-NEXT-APPROVER.
+           MOVE SPACES TO SAVE-BUF-DREQQUE, BUF-DREQQUE.
+           PERFORM 9999-CHAINHD-DREQQUE-RQ-O.
+       7001-SNA-CONT.
+           MOVE BUF-DREQQUE TO SAVE-BUF-DREQQUE.
+           PERFORM 9999-GETNEXT-DREQQUE-RQ-O.
+           IF END-OF-CHAIN GO TO 7001-SNA-X.
+           IF DRQQ-QUEUED-DATE-CN NUMERIC GO TO 7001-SNA-CONT.
+           IF SAVE-DRQQ-APPROVE-DATE-CN NUMERIC
+               MOVE HOLD-DRQQ-QUEUED-DATE-CN TO DRQQ-QUEUED-DATE-CN
+               PERFORM 9999-UPDATE-DREQQUE-RQ-O
+               GO TO 7001-SNA-X.
+           GO TO 7001-SNA-CONT.
+       7001-SNA-X.    EXIT.
+
+       999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+           IF MESSAGE-BUFFER-1  = SPACES
+               MOVE "* ERROR ON THIS FIELD *" TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       9999-CHAINHD-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY = REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CLOSE-STUFF.
+           CLOSE MREQ-RQ-O.
+           CLOSE DREQQUE-RQ-O.
+
+       9999-DELETE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DREQQUE-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF MREQ-RQ-REC-O.
+           READ MREQ-RQ-O INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MREQ-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF MREQ-RQ-REC-O.
+           START MREQ-RQ-O KEY > REQNO OF MREQ-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQQUE-RQ-O NEXT INTO BUF-DREQQUE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQQUE-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQQUE-RQ-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQQUE-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQQUE-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQQUE-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY > REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-OPEN-STUFF.
+           OPEN I-O MREQ-RQ-O.
+           OPEN I-O DREQQUE-RQ-O.
+
+       9999-UPDATE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE DREQQUE-RQ-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MREQ-RQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+

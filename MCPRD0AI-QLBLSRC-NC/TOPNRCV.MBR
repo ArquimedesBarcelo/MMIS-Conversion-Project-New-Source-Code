@@ -1,0 +1,1190 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     TOPNRCV.
+       AUTHOR.         BARBARA WINTER.
+      *INSTALLATION.   GOODYEAR TIRE & RUBBER COMPANY.
+       DATE-WRITTEN.   MARCH 1985.
+       DATE-COMPILED.
+      *SECURITY.
+      *D* REMARKS.
+      *D*
+      *D*      INVOICING OPEN RECEIVERS REPORT.
+      *D*
+      *D*      THIS PROGRAM WILL PRINT OPEN RECEIVERS ON
+      *D*      PURCHASE ORDERS BASED ON CRITERIA THAT THE
+      *D*      USER HAS SELECTED.  THE OPTIONS ALLOWED ARE:
+      *D*          "ALL" OR UP TO 5 SELECTIONS OF
+      *D*                1.  CLASS
+      *D*                2.  SUBD
+      *D*                3.  ADDITIONAL DATA
+      *D*
+      *D*      THE USER THEN HAS THE OPTION OF SORTING THE
+      *D*      REPORT BY HIS SELECTION OR BY PO NUMBER.
+      *D*     THE USER ALSO ENTERS THE YEAR AND ENDING MONTH
+      *D*     FOR THIS REPORT.  ANY RECEIVING SLIPS WITH A
+      *D*     PAST THIS ENTERED DATE WILL NOT BE INCLUDED IN
+      *D*     THE REPORT.
+      *D*
+      *D*     THE REPORT IS PRINTED TO A DISC FILE.  THE JOB
+      *D*     STREAM THAT RUNS THIS PROGRAM SETS THE SPOOLER
+      *D*     TYPE AND PRINTER NUMBER AND THEN RUNS A PROGRAM
+      *D*     CALLED "XPRTRPT".  THIS IS DONE SO THAT EACH
+      *D*     PLANT MAY HAVE THEIR OWN JOB STREAM AND CAN
+      *D*     ASSIGN THE REPORT TO ANY PRINTER THEY WISH.
+      *D*     "XPRTRPT" ALSO HAS THE ABILITY TO COMPRESS THE
+      *D*     132 CHARACTER REPORT TO FIT ON AN 80-COLUMN PRINTER.
+      *D*
+      *D* CALLING PROGRAM:    TRSCREEN
+      *D* PASSED PARAMETERS:  1.  SELECTION
+      *D*                     2.  ALL OPTION     ("A"=ALL)
+      *D*                     3.  5 CHOICES      (ONLY IF NOT ALL)
+      *D*                     4.  SORT OPTION
+      *D*                     5.  MONTH END CLOSING DATE
+      *D*
+      *D*
+      *D* CALLED PROGRAMS:  TBLOWUP   (ABORTS PROGRAM CLEANLY)
+      *D*                   THDPRT2    (PRINTS REPORT HEADER)
+      *D*                   TDATECHK  (FORMATS U.S./EUROPEAN DATE)
+      *D*
+      *C* CHANGES.
+      *C*    NOV 18, 1993     CR KALMAN
+      *C*    NOT ENTERING THE CLOSING DATE ON THE SCREEN "OPNRCV"
+      *C*    IN ZRSCREEN CAUSED THIS PROGRAM TO BLOWUP ON A DECIMAL
+      *C*    DATA ERROR.  TO FIX THIS THE PROGRAM WILL NOW TRY TO
+      *C*    GET THE CLOSING DATE FROM MACCOUNT-INFO IF THE USER
+      *C*    ENTERS NOTHING.
+      *C
+      *C     06/10/96         JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     FIGURE CENTURY FOR DATE ENTERED.  YEAR > 70 THEN 19
+      *C     ELSE 20.  CHANGE COMPARE OF DATE FROM YYMM TO CCYYMM
+      *C     FOR DATE RECEIVED.  CHANGE SORT RECORDS TO INCLUDE
+      *C     CENTURY.
+      ***************************************************************
+      ***************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    HP-3000.
+       OBJECT-COMPUTER.    HP-3000.
+
+       SPECIAL-NAMES.  C01 IS NEW-PAGE.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+             SELECT DISC-PRT     ASSIGN TO PRINTER-MCPRT.
+             SELECT SORTED-PRINT-FILE  ASSIGN TO DISK-SORTED.
+             SELECT SORT-FILE          ASSIGN TO DISK-SORT.
+
+             SELECT DPOITEM-I
+               ASSIGN TO DATABASE-MCFLCS1002
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+             SELECT DPORECD-I
+               ASSIGN TO DATABASE-MCFLCS0901
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+             SELECT MSTORERM-I
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+             SELECT DRCVITEM-I
+               ASSIGN TO DATABASE-MCFLCS1201
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+             SELECT MPORCV-I
+               ASSIGN TO DATABASE-MCFLCS0101
+               ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+9311CK     SELECT MACCOUNT-INFO-I
+  .               ASSIGN TO DATABASE-MCFLCA0101
+  .               ORGANIZATION IS INDEXED
+  .               ACCESS MODE IS DYNAMIC
+  .               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+9311CK            FILE STATUS IS FILE-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  DISC-PRT
+           RECORD CONTAINS 133 CHARACTERS.
+       01  PRT-REC.
+           05  PRT-LINE                PIC X(133).
+
+       FD  SORTED-PRINT-FILE
+           RECORD CONTAINS 88 CHARACTERS.
+       01  SRTD-RECORD.
+           05  SRTD-SUB-CLASS          PIC X(3).
+           05  SRTD-PO                 PIC X(14).
+           05  SRTD-VENDOR             PIC X(7).
+           05  SRTD-CODE               PIC X(7).
+           05  SRTD-SUB-DET            PIC X(4).
+           05  SRTD-ADDL-DATA          PIC X(6).
+           05  SRTD-DLVR               PIC S9(11).
+           05  SRTD-UNPAID             PIC S9(11).
+           05  SRTD-VALUE              PIC S9(11).
+           05  SRTD-UM                 PIC X(2).
+           05  SRTD-ITEM               PIC X(4).
+           05  SRTD-DATE-RCVD-CN.
+               10  SRTD-DATE-RCVD-CC   PIC X(2).
+               10  SRTD-DATE-RCVD      PIC X(6).
+
+       SD  SORT-FILE
+           RECORD CONTAINS 88 CHARACTERS.
+       01  SORT-RECORD.
+           05  SORT-SUB-CLASS          PIC X(3).
+           05  SORT-PO                 PIC X(14).
+           05  SORT-VENDOR             PIC X(7).
+           05  SORT-CODE               PIC X(7).
+           05  SORT-SUB-DET            PIC X(4).
+           05  SORT-ADDL-DATA          PIC X(6).
+           05  SORT-DLVR               PIC S9(11).
+           05  SORT-UNPAID             PIC S9(11).
+           05  SORT-VALUE              PIC S9(11).
+           05  SORT-UM                 PIC X(2).
+           05  SORT-ITEM               PIC X(4).
+           05  SORT-DATE-RCVD-CN.
+               10  SORT-DATE-RCVD-CC   PIC X(2).
+               10  SORT-DATE-RCVD      PIC X(6).
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-MCRPCS1000  OF MCFLCS1002.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-MCRPCS0900  OF MCFLCS0901.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DRCVITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-REC-I.
+           COPY DDS-MCRPCS1200  OF MCFLCS1201.
+
+       FD  MPORCV-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-I.
+           COPY DDS-MCRPCS0100  OF MCFLCS0101.
+
+9311CK FD  MACCOUNT-INFO-I
+  .        LABEL RECORDS ARE STANDARD.
+  .    01  MACCOUNT-INFO-REC-I.
+9311CK     COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+       01  PAGE-NUM                    PIC 9(3)   VALUE 0.
+       01  LINE-CTR                    PIC 9(3)   VALUE 70.
+
+       01  ENTERED-DATE-CYM.
+           05  ENTERED-DATE-CC         PIC 9(2).
+           05  ENTERED-DATE-YM.
+               10  ENTERED-DATE-YY     PIC 9(2).
+               10  ENTERED-DATE-MM     PIC 9(2).
+
+      *----------  ACCEPT FIELDS
+       01  ROUTE-LINE                  PIC X(80)  VALUE SPACES.
+      *----------  WORK AREAS FOR THE ACCEPT FIELDS
+       01  ACCEPT-FIELDS.
+           05  ACCEPT-OPTION           PIC X      VALUE SPACE.
+               88  CLASS-OPTION                   VALUE "1".
+               88  SUBD-OPTION                    VALUE "2".
+               88  ADDTL-OPTION                   VALUE "3".
+           05  ACCEPT-ALL-FLAG         PIC X      VALUE SPACE.
+               88  ALL-ITEMS                      VALUE "A".
+           05  ACCEPT-ENTRIES.
+              07  ACCEPT-CHOICE OCCURS 5 TIMES INDEXED BY C-X
+                                       PIC X(6).
+           05  ACCEPT-SORT             PIC X      VALUE SPACE.
+               88  PO-SORT                        VALUE "1".
+               88  OPTION-SORT                    VALUE "2".
+
+       01  PO-WORK-AREA.
+           05  PO-WORK-P                 PIC X.
+           05  DISPLAY-PO.
+               07  PO-WORK-NO            PIC X(7).
+               07  PO-WORK-RLS           PIC X(3).
+               07  PO-WORK-RCV           PIC X(3).
+
+       01  PO-WORK-AREA2.
+           05  PO-P2                     PIC X.
+           05  PO-NO2                    PIC X(7).
+           05  PO-RLS2                   PIC X(3).
+           05  PO-RCV2                   PIC 9(3).
+
+       01  COMPARE-VARIABLES.
+           05  COMPARE-PO                PIC X(14) VALUE SPACES.
+           05  COMPARE-CLASS             PIC X(3)  VALUE SPACES.
+           05  COMPARE-DET               PIC X(4)  VALUE SPACES.
+           05  COMPARE-ADDL              PIC X(6)  VALUE SPACES.
+       01  C-ALT-CF                      PIC S9(6)V9(8) VALUE ZEROES.
+       01  WS-TEMP                       PIC S9(11)V9(4) VALUE ZEROES.
+       01  WS-UNPAID                     PIC S9(11)V9(4) VALUE ZEROES.
+
+       01  SAVE-QTY-PAID                 PIC S9(11)V9(4).
+       01  SAVE-QTY-DLVR                 PIC S9(11)V9(4).
+       01  TOTAL-PAST-ENDING-MONTH       PIC S9(11)V9(4)  VALUE ZEROES.
+       01  SAVE-UNIT-PRICE               PIC S9(11)V9(4)  VALUE ZEROES.
+       01  SAVE-PRICE-UM                 PIC X(2).
+       01  RCVR-DATE-WS.
+           05  RCVR-DATE                 PIC 9(6).
+           05  FILLER                    PIC X(2).
+
+      *---------  BREAK TOTALS
+       01  TOTAL-RCV-WS                  PIC S9(14) VALUE ZEROES.
+       01  TOTAL-RNP-WS                  PIC S9(14) VALUE ZEROES.
+       01  TOTAL-VAL-WS                  PIC S9(14) VALUE ZEROES.
+
+      *--------- REPORT TOTALS
+       01  RPTOT-RCV-WS                  PIC S9(14) VALUE ZEROES.
+       01  RPTOT-RNP-WS                  PIC S9(14) VALUE ZEROES.
+       01  RPTOT-VAL-WS                  PIC S9(14) VALUE ZEROES.
+      **************************************************************
+      *                 C A L L E D  R O U T I N E S               *
+      **************************************************************
+       COPY TBLOWUP OF COPYLIB.
+       01  VIEW-COMAREA.
+           05  FILLER                  PIC X(118)  VALUE ALL "0".
+           05  FILLER                  PIC S9(4)   COMP-4 VALUE 9999.
+       01  KSAM-STATUS                 PIC X(2)    VALUE SPACES.
+
+       COPY TDATECHK OF COPYLIB.
+      *----------  E S C A P E   S E Q U E N C E S
+       01  COMPRESS-PRINT             PIC X(8).
+       01  NORMAL-PRINT               PIC X(8).
+       01  ESC-TEXT-61                PIC X(8).
+       01  ESC-TEXT-60                PIC X(8).
+       COPY ESCNAM2 OF COPYLIB.
+       COPY CCHKOBJ OF COPYLIB.
+       COPY OVRPFDATA OF COPYLIB.
+       COPY CCRTFILE  OF COPYLIB.
+       COPY THDPRTA   OF COPYLIB.
+
+      *************************************************************
+      *              P R I N T   A R E A S                        *
+      *************************************************************
+       01  PRINT-LINE                  PIC X(132)    VALUE SPACES.
+       01  HEAD1 REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(44).
+           05  HEAD1-TITLE             PIC X(43).
+           05  FILLER                  PIC X(45).
+       01  HEAD2 REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(5).
+           05  HEAD2-DATE              PIC X(8).
+           05  FILLER                  PIC X(5).
+           05  HEAD2-TIME              PIC X(8).
+           05  FILLER                  PIC X(33).
+           05  HEAD2-TITLE             PIC X(3).
+           05  HEAD2-OPTION            PIC X(10).
+           05  FILLER                  PIC X(45).
+           05  HEAD2-PAGE              PIC X(5).
+           05  HEAD2-PAGE-NO           PIC Z,ZZ9.
+           05  FILLER                  PIC X(5).
+
+       01  HEAD3 REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(33).
+           05  HEAD3-SELECTED          PIC X(13).
+           05  HEAD3-ENTRY1            PIC X(6).
+           05  HEAD3-2                 PIC X(6).
+           05  HEAD3-ENTRY2            PIC X(6).
+           05  HEAD3-3                 PIC X(6).
+           05  HEAD3-ENTRY3            PIC X(6).
+           05  HEAD3-4                 PIC X(6).
+           05  HEAD3-ENTRY4            PIC X(6).
+           05  HEAD3-5                 PIC X(6).
+           05  HEAD3-ENTRY5            PIC X(6).
+           05  FILLER                  PIC X(32).
+
+       01  HEAD3A REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(56).
+           05  HEAD3A-TITLE            PIC X(15).
+           05  HEAD3A-MONTH            PIC X(2).
+           05  HEAD3A-DASH             PIC X.
+           05  HEAD3A-YEAR             PIC X(2).
+           05  FILLER                  PIC X(56).
+
+       01  HEAD4 REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(6).
+           05  HEAD4-PO                PIC X(2).
+           05  FILLER                  PIC X(9).
+           05  HEAD4-ITEM              PIC X(4).
+           05  FILLER                  PIC X(4).
+           05  HEAD4-LAST              PIC X(4).
+           05  FILLER                  PIC X(4).
+           05  HEAD4-VENDOR            PIC X(6).
+           05  FILLER                  PIC X(3).
+           05  HEAD4-CODE              PIC X(9).
+           05  FILLER                  PIC X(3).
+           05  HEAD4-CLASS             PIC X(5).
+           05  FILLER                  PIC X(3).
+           05  HEAD4-SUB               PIC X(3).
+           05  FILLER                  PIC X(4).
+           05  HEAD4-ADDTL             PIC X(5).
+           05  FILLER                  PIC X(6).
+           05  HEAD4-TOTAL             PIC X(9).
+           05  FILLER                  PIC X(5).
+           05  HEAD4-QTY               PIC X(8).
+           05  FILLER                  PIC X(5).
+           05  HEAD4-UM                PIC X(2).
+           05  FILLER                  PIC X(6).
+           05  HEAD4-DOLLAR            PIC X(6).
+           05  FILLER                  PIC X(11).
+       01  HEAD5 REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(25).
+          05  HEAD5-RCVR               PIC X(4).
+          05  FILLER                   PIC X(5).
+           05  HEAD5-CODE              PIC X(4).
+           05  FILLER                  PIC X(23).
+           05  HEAD5-DETAIL            PIC X(6).
+           05  FILLER                  PIC X(2).
+           05  HEAD5-DATA              PIC X(4).
+           05  FILLER                  PIC X(9).
+           05  HEAD5-RCVD              PIC X(4).
+           05  FILLER                  PIC X(8).
+           05  HEAD5-NOTPAID           PIC X(8).
+           05  FILLER                  PIC X(13).
+           05  HEAD5-VALUE             PIC X(5).
+           05  FILLER                  PIC X(12).
+
+       01  LINE1 REDEFINES PRINT-LINE.
+           05  LINE1-PO                PIC X(13).
+           05  FILLER                  PIC X(4).
+           05  LINE1-ITEM              PIC X(4).
+           05  FILLER                  PIC X(2).
+           05  LINE1-RCVR-DATE         PIC X(8).
+           05  FILLER                  PIC X.
+           05  LINE1-VENDOR            PIC X(7).
+           05  FILLER                  PIC X(4).
+           05  LINE1-CODE              PIC X(7).
+           05  FILLER                  PIC X(4).
+           05  LINE1-CLASS             PIC X(3).
+           05  FILLER                  PIC X(5).
+           05  LINE1-SUB               PIC X(4).
+           05  FILLER                  PIC X(3).
+           05  LINE1-ADDTL             PIC X(6).
+           05  FILLER                  PIC X(5).
+           05  LINE1-TOTAL             PIC --,---,--9.
+           05  FILLER                  PIC X(4).
+           05  LINE1-QTY               PIC --,---,--9.
+           05  FILLER                  PIC X(4).
+           05  LINE1-UM                PIC X(2).
+           05  FILLER                  PIC X(3).
+           05  LINE1-VALUE             PIC --,---,---,--9.
+           05  FILLER                  PIC X(5).
+
+       01  DASH-LINE REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(79).
+           05  DASHES1                 PIC X(11).
+           05  FILLER                  PIC X(3).
+           05  DASHES2                 PIC X(11).
+           05  FILLER                  PIC X(8).
+           05  DASHES3                 PIC X(15).
+           05  FILLER                  PIC X(5).
+       01  TOTAL-LINE REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(70).
+           05  TOTAL-TOTAL             PIC X(7).
+           05  TOTAL-RCV               PIC -,---,---,--9.
+           05  FILLER                  PIC X.
+           05  TOTAL-RNP               PIC -,---,---,--9.
+           05  FILLER                  PIC X(6).
+           05  TOTAL-VAL               PIC -,---,---,---,--9.
+           05  TOTAL-END               PIC X(2).
+           05  FILLER                  PIC X(3).
+
+       01  RPTOT-LINE REDEFINES PRINT-LINE.
+           05  FILLER                  PIC X(63).
+           05  RPTOT-RPTOT             PIC X(14).
+           05  RPTOT-RCV               PIC -,---,---,--9.
+           05  FILLER                  PIC X.
+           05  RPTOT-RNP               PIC -,---,---,--9.
+           05  FILLER                  PIC X(6).
+           05  RPTOT-VAL               PIC -,---,---,---,--9.
+           05  RPTOT-END               PIC X(3).
+           05  FILLER                  PIC X(2).
+       COPY DATAB OF COPYLIB.
+
+       01  DATABASE-ARGS.
+           03  CORPCODE-ARG            PIC X(8)   VALUE SPACES.
+           03  PO-ARG                  PIC X(10)  VALUE SPACES.
+           03  DUMMY-ARG               PIC X(10)  VALUE SPACES.
+
+       01  ITEM-LIST-VALUES.
+           03  ALL-ITEM-LIST           PIC XX     VALUE "@;".
+           03  PO-SEARCH               PIC X(10)  VALUE "PO-RCV-NO;".
+           03  CORP-SEARCH             PIC X(10)  VALUE "CORP-CODE;".
+
+       COPY DPORECD  OF COPYLIB.
+       COPY DPOITEM  OF COPYLIB.
+       COPY DRCVITEM OF COPYLIB.
+       COPY MPORCV   OF COPYLIB.
+       COPY MSTORERM OF COPYLIB.
+9311CK COPY MACTINFO OF COPYLIB.
+
+       LINKAGE SECTION.
+       COPY THDPRTB OF COPYLIB.
+       01  DATA-LINE.
+           05  DATA-CLASS              PIC X.
+           05  DATA-SUB-DET            PIC X.
+           05  DATA-ADDL               PIC X.
+           05  ENTRIES                 PIC X(30).
+           05  DATA-PO                 PIC X.
+           05  DATA-OPTION             PIC X.
+           05  ENTERED-DATE            PIC 9(4).
+           05  DATE-BREAKUP REDEFINES ENTERED-DATE.
+               07  RCVR-YEAR             PIC 99.
+               07  RCVR-MONTH            PIC 99.
+           05  FILLER                  PIC X(41).
+           05  FILLER                  PIC X(81).
+      **************************************************************
+      **************************************************************
+      *        P R O C E D U R E        D I V I S I O N            *
+      *     READ ALL RECORDS FROM DPOITEM AND DPONSITM. COMPARE    *
+      *     OPTION (CLASS, SUBD, OR ADDTL) WITH THE RECORD DATA.    *
+      *     IF USER SELECTED ALL, IT REALLY DOESN'T MATTER WHICH   *
+      *     OPTION WAS SELECTED BECAUSE ALL RECORDS WILL BE        *
+      *     PROCESSED.  WRITE EACH SELECTED ENTRY INTO A FILE      *
+      *     THAT WILL LATER BE SORTED.                             *
+      *                                                            *
+      **************************************************************
+      **************************************************************
+       PROCEDURE DIVISION USING HD-ROUTE-DATA, DATA-LINE.
+       00-MAIN.
+           MOVE "TOPNRCV"                  TO BU-PGM-NAME.
+           PERFORM 010-OPEN-FILES          THRU 019-EXIT.
+           PERFORM 030-GET-PARAMETERS      THRU 039-EXIT.
+           PERFORM 100-READ-ITEMS    THRU 199-EXIT.
+           PERFORM 300-SORT                THRU 399-EXIT.
+           PERFORM 400-PRINT-REPORT        THRU 499-EXIT.
+           PERFORM 020-CLOSE-FILES         THRU 029-EXIT.
+           GOBACK.
+      *************************************************************
+      *           OPEN DATABASE AND PRINT FILE                    *
+      *************************************************************
+       010-OPEN-FILES.
+           OPEN INPUT DPORECD-I MSTORERM-I DPOITEM-I DRCVITEM-I
+                      MPORCV-I  MACCOUNT-INFO-I.
+
+      *----------  BUILD NEW TEMP FILE
+      *    MOVE SPACES TO COMMAND.
+      *    MOVE "BUILD INVDISC.PUB;DISC=20000,32,1;REC=-133,25,F,ASCII;T
+      *-           "EMP" TO COMMAND.
+      *    CALL INTRINSIC "COMMAND" USING COMMAND-IMAGE, COMMAND-ERROR,
+      *                                   COMMAND-PARM.
+      *    IF COMMAND-ERROR NOT = 0
+      *       MOVE COMMAND TO BU-DISPLAY-MSG
+      *       MOVE "COMMAND INTRINSIC FAILED" TO BU-DISPLAY-FLD (1)
+      *       MOVE COMMAND-ERROR              TO BU-DISPLAY-FLD9 (1)
+      *       MOVE COMMAND-PARM               TO BU-DISPLAY-FLD9 (2)
+      *       PERFORM 990-BLOWUP THRU 999-EXIT.
+      *----- CALL CCRTFILE TO CREATE A TEMPORARY FILE FOR SORTING
+      *----- LIBRARY 'QTEMP' IS USED FOR TEMPORARY FILES
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "SORTED"      TO CCRTFILE-FILE.
+           MOVE "0088"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "90000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "02000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE "10"          TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'SORTED' FAILED"
+                  TO BU-DISPLAY-MSG
+               PERFORM 990-BLOWUP THRU 999-EXIT.
+      *----------  OPEN OUTPUT FILE
+           OPEN OUTPUT SORTED-PRINT-FILE.
+       019-EXIT.  EXIT.
+
+      *************************************************************
+      *               CLOSE DATABASE AND PRINT FILE               *
+      *************************************************************
+       020-CLOSE-FILES.
+           CLOSE DISC-PRT, SORTED-PRINT-FILE.
+           CLOSE DPORECD-I MSTORERM-I DPOITEM-I DRCVITEM-I
+                      MPORCV-I MACCOUNT-INFO-I.
+       029-EXIT.  EXIT.
+      *************************************************************
+      *************************************************************
+      *   ACCEPT TWO LINES OF DATA: 1) ALL HEADER INFORMATION -   *
+      *     WHO AND WHERE THIS REPORT WILL BE ROUTED TO  2) ALL   *
+      *     REPORT OPTIONS.                                       *
+      *   THE FOLLOWING FLAGS ARE SET ACCORDING TO THE OPTIONS    *
+      *     THE USER SELECTED:                                    *
+      *          1.  ACCEPT-OPTION  -  RECORD RETRIEVAL BY        *
+      *                     OPTION.  "1"=CLASS; "2"=SUB DETAIL;   *
+      *                     "3"=ADDITIONAL DATA.                  *
+      *          2.  ACCEPT-ALL-FLAG - "A"=RETRIEVE ALL RECORDS;  *
+      *                     SPACE=RETRIEVE ONLY SELECTED RECORDS. *
+      *          3.  ACCEPT-CHOICE  -  5 ENTRIES.  BLANK IF "A"   *
+      *                     WAS CHOSEN ABOVE; CONTAINS UP TO 5    *
+      *                     CHOICES IF ALL WAS NOT CHOSEN.        *
+      *          4.  ACCEPT-SORT  -  SORT OPTION.  "1"=SORT BY    *
+      *                     PO NUMBER; "2"=SORT BY OPTION.    *
+      *************************************************************
+      *************************************************************
+       030-GET-PARAMETERS.
+           MOVE 70 TO LINE-CTR.
+           IF DATA-CLASS NOT = " "
+              MOVE "1" TO ACCEPT-OPTION
+           ELSE
+              IF DATA-SUB-DET NOT = " "
+                 MOVE "2" TO ACCEPT-OPTION
+              ELSE
+                 MOVE "3" TO ACCEPT-OPTION.
+           MOVE ENTRIES TO ACCEPT-ENTRIES.
+           IF ACCEPT-CHOICE (1) = "ALL"
+              MOVE "A" TO ACCEPT-ALL-FLAG.
+           IF DATA-PO = "X"
+              MOVE "1" TO ACCEPT-SORT
+           ELSE
+              MOVE "2" TO ACCEPT-SORT.
+
+      *----------  DO NOT COMPARE FOR BLANK OPTIONS
+           IF ACCEPT-CHOICE (1) = SPACES
+              MOVE "??????" TO ACCEPT-CHOICE (1).
+           IF ACCEPT-CHOICE (2) = SPACES
+              MOVE "??????" TO ACCEPT-CHOICE (2).
+           IF ACCEPT-CHOICE (3) = SPACES
+              MOVE "??????" TO ACCEPT-CHOICE (3).
+           IF ACCEPT-CHOICE (4) = SPACES
+              MOVE "??????" TO ACCEPT-CHOICE (4).
+           IF ACCEPT-CHOICE (5) = SPACES
+              MOVE "??????" TO ACCEPT-CHOICE (5).
+
+      *----CHECK THAT THE MONTH END CLOSING DATE WAS ENTERED
+      *----IF NOT GET IT FROM MACCOUNT-INFO.
+
+           DISPLAY "ENTERED-DATE BEFORE = " ENTERED-DATE.
+           IF ENTERED-DATE NOT NUMERIC
+              MOVE "MTED" TO INFOKEY OF MACCOUNT-INFO-REC-I
+              READ MACCOUNT-INFO-I INTO BUF-MACCT-INFO
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+              END-READ
+              IF FILE-STATUS NOT = "00"
+                 MOVE "READ MACCOUNT-INFO*030-GP" TO BU-DISPLAY-MSG
+                 MOVE "MTED MISSING" TO BU-DISPLAY-FLD (1)
+                 PERFORM 990-BLOWUP THRU 999-EXIT
+              END-IF
+              MOVE MACCT-MONTH-END-DATE (1:4) TO ENTERED-DATE.
+           DISPLAY "ENTERED-DATE AFTER  = " ENTERED-DATE.
+           MOVE ENTERED-DATE TO ENTERED-DATE-YM.
+           IF ENTERED-DATE-YY > 70
+               MOVE 19 TO ENTERED-DATE-CC
+           ELSE
+               MOVE 20 TO ENTERED-DATE-CC.
+
+       039-EXIT.  EXIT.
+      *************************************************************
+      *************************************************************
+      *       READ ALL OF DPOITEM ENTRIES AND USE ONLY THE        *
+      *       RECORDS THE USER SELECTED.                          *
+      *************************************************************
+      *************************************************************
+       100-READ-ITEMS.
+      *    CALL "DBGET" USING BASE, DPOITEM, MODE2, STATUS-AREA,
+      *                 ALL-ITEM-LIST, BUF-DPOITEM, DUMMY-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE SPACES TO PORCVNO OF DPOITEM-REC-I.
+           START DPOITEM-I KEY IS GREATER THAN OR EQUAL
+                           PORCVNO OF DPOITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF END-OF-FILE
+              GO TO 199-EXIT.
+
+       102-READ-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD.
+           IF NOT GOOD-CALL
+              GO TO 199-EXIT.
+
+           IF END-OF-FILE
+              GO TO 199-EXIT.
+           IF NOT GOOD-CALL
+              MOVE "DBGET DPOITEM AT 100 IN TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+      *----------  CANNOT PAY ON A BLANKET SO IGNORE ALL "999" RELEASES
+           MOVE ITM-PO-RCV-NO TO PO-WORK-AREA, PO-ARG.
+           IF PO-WORK-RLS = "999"
+              GO TO 102-READ-LOOP.
+
+           MOVE ITM-CORP-CODE TO CORPCODE-ARG.
+      *    CALL "DBGET" USING BASE, MSTORERM, MODE7, STATUS-AREA,
+      *                 ALL-ITEM-LIST, BUF-MSTORERM, CORPCODE-ARG.
+
+           MOVE 0 TO COND-WORD.
+           MOVE CORPCODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF NOT GOOD-CALL
+              MOVE "DBGET MSTORERM AT 107 IN TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+      *----------  DETERMINE WHICH RECORDS SHOULD BE SELECTED
+           IF ALL-ITEMS
+              GO TO 115-WRITE-ENTRY.
+           IF CLASS-OPTION
+              IF STR-CLASS = ACCEPT-CHOICE (1) OR ACCEPT-CHOICE (2) OR
+                             ACCEPT-CHOICE (3) OR ACCEPT-CHOICE (4) OR
+                             ACCEPT-CHOICE (5)
+                    GO TO 115-WRITE-ENTRY
+              ELSE
+                    GO TO 102-READ-LOOP.
+           IF SUBD-OPTION
+              IF ITM-SUB-DETL = ACCEPT-CHOICE (1) OR ACCEPT-CHOICE (2)
+                            OR  ACCEPT-CHOICE (3) OR ACCEPT-CHOICE (4)
+                            OR  ACCEPT-CHOICE (5)
+                    GO TO 115-WRITE-ENTRY
+              ELSE
+                    GO TO 102-READ-LOOP.
+           IF ADDTL-OPTION
+              IF ITM-ADDL-DATA = ACCEPT-CHOICE (1) OR ACCEPT-CHOICE (2)
+                              OR ACCEPT-CHOICE (3) OR ACCEPT-CHOICE (4)
+                              OR ACCEPT-CHOICE (5)
+                    GO TO 115-WRITE-ENTRY
+              ELSE
+                    GO TO 102-READ-LOOP.
+       115-WRITE-ENTRY.
+           MOVE DISPLAY-PO            TO SRTD-PO.
+           MOVE ITM-CORP-CODE         TO SRTD-CODE.
+           MOVE ITM-SUB-DETL          TO SRTD-SUB-DET.
+           MOVE ITM-ADDL-DATA         TO SRTD-ADDL-DATA.
+           MOVE ITM-UM                TO SRTD-UM.
+           MOVE ITM-NUMBER            TO SRTD-ITEM.
+           MOVE ITM-DATE-RCVD-CN      TO SRTD-DATE-RCVD-CN.
+
+           MOVE ITM-CLASS                TO SRTD-SUB-CLASS.
+           IF ITM-CLASS = "    "
+             IF ITM-CORP-CODE NOT = "NON-STR"
+              MOVE ITM-CORP-CODE TO CORPCODE-ARG
+              PERFORM 800-READ-MSTORERM THRU 809-EXIT
+              IF GOOD-CALL
+                 MOVE STR-CLASS          TO SRTD-SUB-CLASS.
+           MOVE ZEROES TO TOTAL-PAST-ENDING-MONTH.
+
+      *----------  GET VENDOR CODE
+           MOVE "000"                 TO PO-WORK-RCV.
+           MOVE PO-WORK-AREA TO PO-WORK-AREA2.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-WORK-AREA2 TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF NOT GOOD-CALL
+              MOVE "DBFIND DPORECD AT 115 IN TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+           MOVE 0 TO COND-WORD.
+           READ DPORECD-I NEXT INTO BUF-DPORECD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF NOT GOOD-CALL
+              MOVE "DBGET DPORECD AT 115 IN TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+      ***************************************************
+      *  IF PO IS NON-RECEIVABLE THEN EXCLUDE FROM REPORT
+      ***************************************************
+
+           IF PO-NON-RCV-INDIC NOT = SPACES
+               GO TO 102-READ-LOOP.
+
+           MOVE PO-VEN-CODE1-7        TO SRTD-VENDOR.
+
+      *---------- MAKE SURE QTY AND PRICE UM'S MATCH
+           MOVE ITM-QTY-PAID     TO SAVE-QTY-PAID.
+           IF ITM-CORP-CODE = "NON-STR"
+              IF ITM-UNIT-PRICE = ZEROS
+                 GO TO 102-READ-LOOP.
+
+           IF ITM-UNIT-PRICE = ZEROS
+               MOVE STR-AVG-COST  TO  SAVE-UNIT-PRICE
+               MOVE STR-UM        TO  SAVE-PRICE-UM
+           ELSE
+               MOVE ITM-PRICE-UM  TO SAVE-PRICE-UM
+               MOVE ITM-UNIT-PRICE TO SAVE-UNIT-PRICE.
+           MOVE ITM-QTY-DLVR     TO SAVE-QTY-DLVR.
+
+           PERFORM 120-CHECK-FOR-MONTH THRU 129-EXIT.
+           SUBTRACT TOTAL-PAST-ENDING-MONTH FROM SAVE-QTY-DLVR.
+           SUBTRACT SAVE-QTY-PAID FROM SAVE-QTY-DLVR
+                    GIVING SRTD-UNPAID ROUNDED, WS-UNPAID ROUNDED.
+
+      *----------  CHECK IF ITEM IS OPEN
+           IF SRTD-UNPAID = 0
+              GO TO 102-READ-LOOP.
+
+           PERFORM 180-CONVERT-UM     THRU 189-EXIT.
+           MOVE ZEROS            TO  SRTD-DLVR.
+           ADD SAVE-QTY-DLVR  TO  SRTD-DLVR ROUNDED.
+           MULTIPLY WS-TEMP BY SAVE-UNIT-PRICE
+               GIVING SRTD-VALUE ROUNDED.
+           WRITE SRTD-RECORD.
+           GO TO 102-READ-LOOP.
+
+       120-CHECK-FOR-MONTH.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-WORK-AREA TO PORCVNO OF MPORCV-REC-I.
+           READ MPORCV-I INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF NO-ENTRY
+              GO TO 129-EXIT.
+           IF NOT GOOD-CALL
+              MOVE "DBGET MPORCV 115 TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+           IF M-PO-LAST-RCVR NUMERIC
+               MOVE M-PO-LAST-RCVR  TO  PO-RCV2
+           ELSE
+               GO TO 129-EXIT.
+
+           IF PO-RCV2 = ZEROS
+               GO TO 129-EXIT.
+
+       122-READ-RCVR.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-WORK-AREA2  TO PORCVNO OF DRCVITEM-REC-I.
+           START DRCVITEM-I KEY = PORCVNO OF DRCVITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF NO-ENTRY
+              GO TO 125-GET-NEXT-RCVR.
+           IF NOT GOOD-CALL
+              MOVE "DBFIND DRCVITEM 122 TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+
+       124-READ-RCVR-ITEMS.
+           MOVE 0 TO COND-WORD.
+           READ DRCVITEM-I NEXT INTO BUF-DRCVITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DRCVITEM-REC-I NOT = PO-WORK-AREA2
+               MOVE 15 TO COND-WORD.
+           IF END-OF-CHAIN
+              GO TO 125-GET-NEXT-RCVR.
+           IF NOT GOOD-CALL
+              MOVE "DBGET DRCVITEM 124 TOPNRCV" TO BU-DISPLAY-MSG
+              PERFORM 990-BLOWUP THRU 999-EXIT.
+           IF RCV-ITEM-NUMBER NOT = SRTD-ITEM
+              GO TO 124-READ-RCVR-ITEMS.
+           IF RCV-DD-RCVD = SPACES
+              MOVE ZEROES TO RCVR-DATE
+           ELSE
+              MOVE RCV-DATE-RCVD-CN TO RCVR-DATE-WS.
+           IF RCVR-DATE > ENTERED-DATE-CYM
+              ADD RCV-QTY-DLVR TO TOTAL-PAST-ENDING-MONTH
+           ELSE
+               GO TO 129-EXIT.
+
+       125-GET-NEXT-RCVR.
+           SUBTRACT 1 FROM PO-RCV2.
+           IF PO-RCV2 = ZEROS
+              GO TO 129-EXIT.
+           GO TO 122-READ-RCVR.
+       129-EXIT.  EXIT.
+
+      *----------  CONVERT ORDERED QTY TO PRICE QTY
+       180-CONVERT-UM.
+           IF SRTD-UM = SAVE-PRICE-UM
+              MOVE WS-UNPAID TO WS-TEMP
+              GO TO 189-EXIT.
+           IF SRTD-UM = STR-UM
+              IF SAVE-PRICE-UM = STR-UM1
+               DIVIDE WS-UNPAID BY STR-UM1-CF GIVING WS-TEMP ROUNDED
+              ELSE
+               DIVIDE WS-UNPAID BY STR-UM2-CF GIVING WS-TEMP ROUNDED
+           ELSE
+           IF SAVE-PRICE-UM = STR-UM
+              IF SRTD-UM = STR-UM1
+                 MULTIPLY WS-UNPAID BY STR-UM1-CF
+                          GIVING WS-TEMP ROUNDED
+              ELSE
+                 MULTIPLY WS-UNPAID BY STR-UM2-CF
+                          GIVING WS-TEMP ROUNDED
+           ELSE
+              IF SAVE-PRICE-UM = STR-UM1
+               DIVIDE STR-UM2-CF BY STR-UM1-CF
+                        GIVING C-ALT-CF ROUNDED
+               MULTIPLY WS-UNPAID BY C-ALT-CF GIVING WS-TEMP ROUNDED
+              ELSE
+               DIVIDE STR-UM1-CF BY STR-UM2-CF GIVING C-ALT-CF ROUNDED
+               MULTIPLY WS-UNPAID BY C-ALT-CF GIVING WS-TEMP ROUNDED.
+       189-EXIT.  EXIT.
+       199-EXIT.  EXIT.
+      *************************************************************
+      *************************************************************
+      *          SORT THE SORT FILE BY PO NUMBER OR           *
+      *          BY THE OPTION THE USER SELECTED.                 *
+      *************************************************************
+      *************************************************************
+       300-SORT.
+           CLOSE SORTED-PRINT-FILE.
+           IF PO-SORT
+              SORT SORT-FILE ON ASCENDING KEY SORT-PO
+                                              SORT-ITEM
+                                              SORT-SUB-CLASS
+                                              SORT-SUB-DET
+                                              SORT-ADDL-DATA
+                   USING SORTED-PRINT-FILE
+                   GIVING SORTED-PRINT-FILE
+              GO TO 399-EXIT.
+
+           IF CLASS-OPTION
+              SORT SORT-FILE ON ASCENDING KEY SORT-SUB-CLASS
+                                              SORT-PO
+                                              SORT-ITEM
+                   USING SORTED-PRINT-FILE
+                   GIVING SORTED-PRINT-FILE
+              GO TO 399-EXIT.
+
+           IF SUBD-OPTION
+              SORT SORT-FILE ON ASCENDING KEY SORT-SUB-DET
+                                              SORT-PO
+                                              SORT-ITEM
+                   USING SORTED-PRINT-FILE
+                   GIVING SORTED-PRINT-FILE
+              GO TO 399-EXIT.
+
+           IF ADDTL-OPTION
+              SORT SORT-FILE ON ASCENDING KEY SORT-ADDL-DATA
+                                              SORT-PO
+                                              SORT-ITEM
+                   USING SORTED-PRINT-FILE
+                   GIVING SORTED-PRINT-FILE
+              GO TO 399-EXIT.
+
+       399-EXIT.  EXIT.
+      *************************************************************
+      *************************************************************
+      *        PRINT THE REPORT.  SEPARATE BREAKS OF SELECTED     *
+      *        OPTION WITH 3 BLANK LINES, NOT WITH A NEW PAGE     *
+      *        SINCE THIS REPORT HAS THE POTENTIAL OF BEING HUGE. *
+      *************************************************************
+      *************************************************************
+       400-PRINT-REPORT.
+      *---------- OPEN THE PRINT FILE, GET THE FILE NUMBER OF THE PRINT
+      *---------- FILE, AND PRINT THE HEADER PAGE.
+           OPEN INPUT SORTED-PRINT-FILE.
+      *----------  SET UP PRINTER ESCAPE SEQUENCES
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI     TO COMPRESS-PRINT.
+           MOVE CHAR-10PI       TO NORMAL-PRINT.
+           MOVE TEXT-LENGTH-61 TO ESC-TEXT-61.
+           MOVE TEXT-LENGTH-60 TO ESC-TEXT-60.
+
+      *----------  OPEN OUTPUT FILE
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"       TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES TO OVRPRTF-COPIES.
+           MOVE "MCPRT"      TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT DISC-PRT.
+      *----------  PRINT HEADER PAGE
+           MOVE "DHDR02.PUB" TO HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME,
+              FNUM, HD-ROUTE-DATA, ESC-NAME.
+           IF PAPER-IS-132-COLS
+                NEXT SENTENCE
+           ELSE
+               WRITE PRT-REC FROM COMPRESS-PRINT AFTER ADVANCING 0
+               WRITE PRT-REC FROM ESC-TEXT-61 AFTER ADVANCING 0.
+           IF HD-RET-CODE NOT = 0
+               DISPLAY "THDRPT ERROR".
+
+           MOVE "*************************" TO COMPARE-VARIABLES.
+       401-READ-LOOP.
+           READ SORTED-PRINT-FILE
+                 AT END     PERFORM 480-BREAK-TOTAL THRU 489-EXIT
+                            GO TO 490-REPORT-TOTALS.
+           IF PO-SORT
+              GO TO 405-COMPARE-PO.
+           IF CLASS-OPTION AND SRTD-SUB-CLASS = COMPARE-CLASS
+              GO TO 410-MOVE-FIELDS.
+           IF SUBD-OPTION AND SRTD-SUB-DET = COMPARE-DET
+              GO TO 410-MOVE-FIELDS.
+           IF ADDTL-OPTION AND SRTD-ADDL-DATA = COMPARE-ADDL
+              GO TO 410-MOVE-FIELDS.
+
+       402-SEPARATE-BREAKS.
+      *----------  DO NOT PRINT BREAK TOTALS FOR FIRST READ
+           IF COMPARE-VARIABLES NOT = "*************************"
+              PERFORM 480-BREAK-TOTAL THRU 489-EXIT.
+           MOVE SPACES                TO PRINT-LINE.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 3 LINES.
+           ADD 3                      TO LINE-CTR.
+
+      *----------  RESET COMPARE VARIABLES
+           MOVE SRTD-SUB-CLASS        TO COMPARE-CLASS.
+           MOVE SRTD-SUB-DET          TO COMPARE-DET.
+           MOVE SRTD-ADDL-DATA        TO COMPARE-ADDL.
+           MOVE SRTD-PO               TO COMPARE-PO.
+
+           GO TO 410-MOVE-FIELDS.
+
+       405-COMPARE-PO.
+           IF SRTD-PO NOT = COMPARE-PO
+              GO TO 402-SEPARATE-BREAKS.
+      *************************************************************
+      *       PRINT THE DETAIL LINE FOR EACH RECORD.              *
+      *************************************************************
+       410-MOVE-FIELDS.
+           IF LINE-CTR > 55
+              PERFORM 470-NEW-PAGE THRU 479-EXIT.
+
+           IF SRTD-VALUE > ZEROS
+               NEXT SENTENCE
+           ELSE
+               GO TO 401-READ-LOOP.
+
+           MOVE SPACES                TO PRINT-LINE.
+           MOVE SRTD-ITEM             TO LINE1-ITEM.
+           MOVE SRTD-SUB-CLASS        TO LINE1-CLASS.
+           MOVE SRTD-VENDOR           TO LINE1-VENDOR.
+           MOVE SRTD-PO               TO LINE1-PO.
+           MOVE SRTD-CODE             TO LINE1-CODE.
+           MOVE SRTD-SUB-DET          TO LINE1-SUB.
+           MOVE SRTD-ADDL-DATA        TO LINE1-ADDTL.
+           MOVE SRTD-DLVR             TO LINE1-TOTAL.
+           MOVE SRTD-UNPAID           TO LINE1-QTY.
+           MOVE SRTD-VALUE            TO LINE1-VALUE.
+           MOVE SRTD-UM               TO LINE1-UM.
+           IF SRTD-DATE-RCVD = SPACES
+              MOVE SPACES             TO LINE1-RCVR-DATE
+           ELSE
+              MOVE 4 TO DATE-MODE
+              MOVE SRTD-DATE-RCVD TO DATE-VALIDATE-IN
+              DISPLAY "SORT DATE=" SRTD-DATE-RCVD " " SRTD-DATE-RCVD-CN
+              CALL "TDATECHK" USING DATE-CHECK-AREA
+              MOVE DATE-SLASH-OUT     TO LINE1-RCVR-DATE.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           ADD 1                      TO LINE-CTR.
+
+           ADD SRTD-DLVR          TO TOTAL-RCV-WS.
+           ADD SRTD-UNPAID            TO TOTAL-RNP-WS.
+           ADD SRTD-VALUE             TO TOTAL-VAL-WS.
+
+           GO TO 401-READ-LOOP.
+       470-NEW-PAGE.
+           MOVE SPACES                TO PRINT-LINE.
+           ADD 1                      TO PAGE-NUM.
+           MOVE "O P E N   R E C E I V E R S   R E P O R T"
+                                      TO HEAD1-TITLE.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING NEW-PAGE.
+           MOVE SPACES                TO PRINT-LINE.
+
+           MOVE 1                     TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-FORMATTED-TIME-OUT TO HEAD2-TIME.
+           MOVE DATE-SLASH-OUT        TO HEAD2-DATE.
+           MOVE "by "                 TO HEAD2-TITLE.
+           IF CLASS-OPTION
+              MOVE "CLASS     "       TO HEAD2-OPTION.
+           IF SUBD-OPTION
+              MOVE "SUB DETAIL"       TO HEAD2-OPTION.
+           IF ADDTL-OPTION
+              MOVE "ADDTL DATA"       TO HEAD2-OPTION.
+           MOVE "PAGE "               TO HEAD2-PAGE.
+           MOVE PAGE-NUM              TO HEAD2-PAGE-NO.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           MOVE SPACES                TO PRINT-LINE.
+           MOVE "SELECTED: 1) "       TO HEAD3-SELECTED.
+           IF ACCEPT-CHOICE (1) = "??????"
+              MOVE SPACES             TO HEAD3-ENTRY1
+           ELSE
+              MOVE ACCEPT-CHOICE (1)  TO HEAD3-ENTRY1.
+           MOVE "   2) "              TO HEAD3-2.
+           IF ACCEPT-CHOICE (2) = "??????"
+              MOVE SPACES             TO HEAD3-ENTRY2
+           ELSE
+              MOVE ACCEPT-CHOICE (2)  TO HEAD3-ENTRY2.
+           MOVE "   3) "              TO HEAD3-3.
+           IF ACCEPT-CHOICE (3) = "??????"
+              MOVE SPACES             TO HEAD3-ENTRY3
+           ELSE
+              MOVE ACCEPT-CHOICE (3)  TO HEAD3-ENTRY3.
+           MOVE "   4) "              TO HEAD3-4.
+           IF ACCEPT-CHOICE (4) = "??????"
+              MOVE SPACES             TO HEAD3-ENTRY4
+           ELSE
+              MOVE ACCEPT-CHOICE (4)  TO HEAD3-ENTRY4.
+           MOVE "   5) "              TO HEAD3-5.
+           IF ACCEPT-CHOICE (5) = "??????"
+              MOVE SPACES             TO HEAD3-ENTRY5
+           ELSE
+              MOVE ACCEPT-CHOICE (5)  TO HEAD3-ENTRY5.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           MOVE SPACES                TO PRINT-LINE.
+           MOVE "CLOSING DATE:  "     TO HEAD3A-TITLE.
+           MOVE "-"                   TO HEAD3A-DASH.
+           MOVE RCVR-YEAR             TO HEAD3A-YEAR.
+           MOVE RCVR-MONTH            TO HEAD3A-MONTH.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 2 LINES.
+           MOVE SPACES                TO PRINT-LINE.
+           MOVE "PO"                  TO HEAD4-PO.
+           MOVE "ITEM"                TO HEAD4-ITEM.
+           MOVE "LAST"                TO HEAD4-LAST.
+           MOVE "VENDOR"              TO HEAD4-VENDOR.
+           MOVE "CORP CODE"           TO HEAD4-CODE.
+           MOVE "CLASS"               TO HEAD4-CLASS.
+           MOVE "SUB"                 TO HEAD4-SUB.
+           MOVE "ADDTL"               TO HEAD4-ADDTL.
+           MOVE "TOTAL QTY"           TO HEAD4-TOTAL.
+           MOVE "QTY RCVD"            TO HEAD4-QTY.
+           MOVE "UM"                  TO HEAD4-UM.
+           MOVE "DOLLAR"              TO HEAD4-DOLLAR.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 4 LINES.
+           MOVE SPACES                TO PRINT-LINE.
+
+           MOVE "RCVR"                TO HEAD5-RCVR.
+           MOVE "CODE"                TO HEAD5-CODE.
+           MOVE "DETAIL"              TO HEAD5-DETAIL.
+           MOVE "DATA"                TO HEAD5-DATA.
+           MOVE "RCVD"                TO HEAD5-RCVD.
+           MOVE "NOT PAID"            TO HEAD5-NOTPAID.
+           MOVE "VALUE"               TO HEAD5-VALUE.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           MOVE SPACES                TO PRINT-LINE.
+           MOVE PRINT-LINE            TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINES.
+
+           MOVE 12                    TO LINE-CTR.
+       479-EXIT.  EXIT.
+      *************************************************************
+      *      PRINT TOTALS FOR EACH GROUP BREAK                    *
+      *************************************************************
+       480-BREAK-TOTAL.
+           IF TOTAL-VAL-WS = ZEROS
+               GO TO 489-EXIT.
+           MOVE SPACES                 TO PRINT-LINE.
+           MOVE "===========" TO DASHES1, DASHES2.
+           MOVE "==============="      TO DASHES3.
+           MOVE PRINT-LINE             TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           MOVE SPACES                 TO PRINT-LINE.
+           MOVE TOTAL-RCV-WS           TO TOTAL-RCV.
+           MOVE TOTAL-RNP-WS           TO TOTAL-RNP.
+           MOVE TOTAL-VAL-WS           TO TOTAL-VAL.
+           MOVE "TOTAL  "              TO TOTAL-TOTAL.
+           MOVE " *"                   TO TOTAL-END.
+           MOVE PRINT-LINE             TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           MOVE SPACES                 TO PRINT-LINE.
+
+           ADD TOTAL-RCV-WS TO RPTOT-RCV-WS.
+           ADD TOTAL-RNP-WS TO RPTOT-RNP-WS.
+           ADD TOTAL-VAL-WS TO RPTOT-VAL-WS.
+           MOVE ZEROES TO TOTAL-RCV-WS, TOTAL-RNP-WS, TOTAL-VAL-WS.
+           ADD 3                       TO LINE-CTR.
+       489-EXIT.  EXIT.
+
+      *************************************************************
+      *      PRINT FINAL REPORT TOTALS FOR ALL GROUPS             *
+      *************************************************************
+       490-REPORT-TOTALS.
+           MOVE SPACES                 TO PRINT-LINE.
+           MOVE "REPORT TOTAL  "       TO RPTOT-RPTOT.
+           MOVE RPTOT-RCV-WS           TO RPTOT-RCV.
+           MOVE RPTOT-RNP-WS           TO RPTOT-RNP.
+           MOVE RPTOT-VAL-WS           TO RPTOT-VAL.
+           MOVE " **"                  TO RPTOT-END.
+           MOVE PRINT-LINE             TO PRT-LINE.
+           WRITE PRT-REC AFTER ADVANCING 1 LINE.
+           MOVE SPACES                 TO PRINT-LINE.
+       499-EXIT.  EXIT.
+       800-READ-MSTORERM.
+           MOVE 0 TO COND-WORD.
+           MOVE CORPCODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+       809-EXIT.  EXIT.
+       COPY OVRPFCALL IN COPYLIB.
+      ************************************************************
+      ************************************************************
+      *                    B L O W U P                           *
+      *     CHECK FOR IMAGE, VIEW, OR SPOOL ERROR.  CLOSE        *
+      *     FILES, GET OUT OF BLOCK MODE, AND DISPLAY            *
+      *     APPROPRIATE ERROR MESSAGE ON SCREEN.                 *
+      *                                                          *
+      *     ALSO APPENDS THE ERROR MESSAGE TO A FILE CALLED      *
+      *     BLOWUP.PUB.  TO READ THIS FILE, RUN "XBLPRT.OBJECT". *
+      *                                                          *
+      *         |||  PROGRAM IS ABORTED IN TBLOWUP  |||          *
+      ************************************************************
+      ************************************************************
+       990-BLOWUP.
+      *----------  PURGE THE FILE
+      *    MOVE SPACES TO COMMAND.
+      *    MOVE "PURGE INVDISC.PUB,TEMP" TO COMMAND.
+      *    CALL INTRINSIC "COMMAND" USING COMMAND-IMAGE, COMMAND-ERROR,
+      *                                   COMMAND-PARM.
+           MOVE PO-WORK-AREA TO BU-DISPLAY-FLD (2).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-FLDS.
+       999-EXIT.  EXIT.

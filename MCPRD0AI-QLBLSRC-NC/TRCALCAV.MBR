@@ -1,0 +1,438 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TRCALCAV.
+       AUTHOR.               CA YODER.
+       DATE-WRITTEN.         JUNE 1996.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+
+      *-----------------------------------------------------------*
+      *                                                           *
+      *  T R C A L C A V                                          *
+      *                                                           *
+      *    THIS PROGRAM RE-CALCULATES THE VALUES IN DTRANS FOR    *
+      *    ISS, RET, AND SADJ TRANSACTIONS IN CASE THE AVERAGE OR *
+      *    STANDARD COST FOR RAW MATERIALS HAS CHANGED.           *
+      *                                                           *
+      *-----------------------------------------------------------*
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      IBM-AS400.
+       OBJECT-COMPUTER.      IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MCHT-ACCTS-I
+               ASSIGN          TO DATABASE-MCFLCA0301
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT MMATL-ACCUM-I
+               ASSIGN          TO DATABASE-MCFLCA0601
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT DTRANS-IO
+               ASSIGN          TO DATABASE-MCFLCA0701
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+               ASSIGN          TO DATABASE-MCFLCS0201
+               ORGANIZATION    IS INDEXED
+               ACCESS MODE     IS DYNAMIC
+               RECORD KEY      IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS     IS FILE-STATUS.
+
+           SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+       FD  MCHT-ACCTS-I
+           LABEL RECORDS ARE STANDARD.
+       01  MCHT-ACCTS-REC-I.
+           COPY DDS-MCRPCA0300  OF MCFLCA0301.
+
+       FD  MMATL-ACCUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MMATL-ACCUM-REC-I.
+           COPY DDS-MCRPCA0600  OF MCFLCA0601.
+
+       FD  DTRANS-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-IO.
+           COPY DDS-MCRPCA0700  OF MCFLCA0701.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  ONLINE-PRT
+           DATA RECORD IS PRT-REC
+           RECORD CONTAINS 132 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+       01  PRT-REC                       PIC X(132).
+
+       WORKING-STORAGE SECTION.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X(1)  VALUE "0".
+           05  FILE-STATUS-2             PIC X(1)  VALUE "0".
+
+       01  MMATL-CODE-ARG                PIC X(8).
+       01  DEPT-ARG                      PIC X(6).
+
+       01  WS-MATL-CLASS                 PIC X(3).
+           88  RAW-MATERIAL              VALUES "100" THRU "199",
+                                                "400" THRU "499".
+
+       01  FILE-SWITCHES.
+           05  MMATL-ACCUM-EOF-SW        PIC X     VALUE "N".
+           05  END-OF-CODE-SW            PIC X     VALUE "N".
+           05  DTRANS-EOF-SW             PIC X     VALUE "N".
+           05  RECORD-PRINTED-SW         PIC X     VALUE "N".
+
+       01  HOLD-TRANS-VALUE              PIC S9(12)V99.
+       01  DIFFERENCE-VALUE              PIC S9(8)V99.
+       01  NEW-TRANS-VALUE               PIC S9(12)V99.
+
+       01  PAGE-NUM                      PIC 9(3) VALUE 0.
+       01  NUM-LINES                     PIC 9(2) VALUE 0.
+       01  RPT-OPTION                    PIC X.
+
+       01  CURRENT-DATE.
+           05  CUR-YY                    PIC X(2).
+           05  CUR-MM                    PIC X(2).
+           05  CUR-DD                    PIC X(2).
+
+       01  CURRENT-TIME.
+           05  CUR-HR                    PIC X(2).
+           05  CUR-MIN                   PIC X(2).
+           05  CUR-SEC                   PIC X(2).
+
+      *----------------------------------------------------------------*
+      *                R E P O R T   L I N E S                         *
+      *----------------------------------------------------------------*
+
+       01  HEADING-1.
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  H1-MM              PIC X(2).
+           05  FILLER             PIC X     VALUE "/".
+           05  H1-DD              PIC X(2).
+           05  FILLER             PIC X     VALUE "/".
+           05  H1-YY              PIC X(2).
+           05  FILLER             PIC X(25) VALUE SPACES.
+           05  FILLER             PIC X(56) VALUE
+             "CSAS RECALCULATION OF ISS RET & SADJ TRANSACTION VALUES ".
+           05  FILLER             PIC X(25) VALUE SPACES.
+           05  FILLER             PIC X(8)  VALUE "TRCALCAV".
+           05  FILLER             PIC X(5)  VALUE SPACES.
+
+       01  HEADING-2.
+           05  FILLER             PIC X(5)  VALUE SPACES.
+           05  H2-HR              PIC X(2).
+           05  FILLER             PIC X     VALUE ":".
+           05  H2-MIN             PIC X(2).
+           05  FILLER             PIC X     VALUE ":".
+           05  H2-SEC             PIC X(2).
+           05  FILLER             PIC X(45) VALUE SPACES.
+           05  H2-OPTION          PIC X(16).
+           05  FILLER             PIC X(45) VALUE SPACES.
+           05  FILLER             PIC X(5)  VALUE "PAGE ".
+           05  H2-PAGE-NUM        PIC ZZ9.
+           05  FILLER             PIC X(5)  VALUE SPACES.
+
+       01  HEADING-3.
+           05  FILLER             PIC X(7)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "CODE".
+           05  FILLER             PIC X(7)  VALUE SPACES.
+           05  FILLER             PIC X(5)  VALUE "CLASS".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(5)  VALUE "TRANS".
+           05  FILLER             PIC X(2)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "DATE".
+           05  FILLER             PIC X(7)  VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "DEPT".
+           05  FILLER             PIC X(10) VALUE SPACES.
+           05  FILLER             PIC X(3)  VALUE "QTY".
+           05  FILLER             PIC X(12) VALUE SPACES.
+           05  FILLER             PIC X(4)  VALUE "COST".
+           05  FILLER             PIC X(7)  VALUE SPACES.
+           05  FILLER             PIC X(10) VALUE "PREV VALUE".
+           05  FILLER             PIC X(8)  VALUE SPACES.
+           05  FILLER             PIC X(9)  VALUE "NEW VALUE".
+           05  FILLER             PIC X(4)  VALUE SPACES.
+           05  FILLER             PIC X(10) VALUE "DIFFERENCE".
+           05  FILLER             PIC X(7)  VALUE SPACES.
+
+       01  DETAIL-LINE.
+           05  FILLER             PIC X(7).
+           05  DL-CODE            PIC X(8).
+           05  FILLER             PIC X(3).
+           05  DL-CLASS           PIC X(4).
+           05  FILLER             PIC X(3).
+           05  DL-TRANS           PIC X(4).
+           05  FILLER             PIC X(3).
+           05  DL-MM              PIC X(2).
+           05  DL-H-1             PIC X.
+           05  DL-DD              PIC X(2).
+           05  DL-H-2             PIC X.
+           05  DL-YY              PIC X(2).
+           05  FILLER             PIC X(3).
+           05  DL-DEPT            PIC X(6).
+           05  FILLER             PIC X(3).
+           05  DL-QTY             PIC Z(8).
+           05  FILLER             PIC X(3).
+           05  DL-COST            PIC Z(7)9.9999-.
+           05  FILLER             PIC X(3).
+           05  DL-OLD-VAL         PIC Z(9)9.99-.
+           05  FILLER             PIC X(3).
+           05  DL-NEW-VAL         PIC Z(9)9.99-.
+           05  FILLER             PIC X(3).
+           05  DL-DIFF            PIC Z(6)9.99-.
+           05  FILLER             PIC X(7).
+
+      *----------------------------------------------------------------*
+      *                U T I L I T Y   A R E A S                       *
+      *----------------------------------------------------------------*
+
+       COPY TBLOWUP     IN COPYLIB.
+
+       COPY DATAB       IN COPYLIB.
+
+       COPY VCOMAREA    IN COPYLIB.
+
+      *----------------------------------------------------------------*
+      *              D A T A B A S E   B U F F E R S                   *
+      *----------------------------------------------------------------*
+
+       COPY MCHTACCT    IN COPYLIB.
+
+       COPY MATLACUM    IN COPYLIB.
+
+       COPY DTRANS      IN COPYLIB.
+
+       COPY MSTORERM    IN COPYLIB.
+
+      *----------------------------------------------------------------*
+      *              P R O C E D U R E   D I V I S I O N               *
+      *----------------------------------------------------------------*
+
+       PROCEDURE DIVISION.
+
+       0-BEGIN.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN UNTIL MMATL-ACCUM-EOF-SW = "Y".
+           PERFORM 2-EOJ.
+           GOBACK.
+
+      *----------------------------------------------------------------*
+      *                H O U S E K E E P I N G                         *
+      *----------------------------------------------------------------*
+
+       1-HSK.
+           OPEN INPUT    MCHT-ACCTS-I
+                         MMATL-ACCUM-I
+                         MSTORERM-I
+                I-O      DTRANS-IO
+                OUTPUT   ONLINE-PRT.
+
+           ACCEPT CURRENT-DATE FROM DATE.
+           ACCEPT CURRENT-TIME FROM TIME.
+           ACCEPT RPT-OPTION.
+
+      *----------- IF INVALID OPTION, JUST PRINT REPORT; OTHERWISE,
+      *----------- UPDATE ALSO.
+           IF RPT-OPTION NOT = "U" AND RPT-OPTION NOT = "R"
+               MOVE "R"      TO  RPT-OPTION.
+
+           IF RPT-OPTION = "U"
+               MOVE "   * UPDATE *   "    TO  H2-OPTION
+           ELSE
+               MOVE "* REPORT ONLY * "    TO  H2-OPTION.
+
+           MOVE CUR-YY       TO  H1-YY.
+           MOVE CUR-MM       TO  H1-MM.
+           MOVE CUR-DD       TO  H1-DD.
+           MOVE CUR-HR       TO  H2-HR.
+           MOVE CUR-MIN      TO  H2-MIN.
+           MOVE CUR-SEC      TO  H2-SEC.
+
+           MOVE "N"                   TO  MMATL-ACCUM-EOF-SW
+                                          RECORD-PRINTED-SW.
+           PERFORM 9999-START-MMATL-ACCUM.
+           PERFORM 9999-READ-NEXT-MMATL-ACCUM.
+
+           PERFORM 9999-WRITE-HEADINGS.
+
+      *----------------------------------------------------------------*
+      *                E N D - O F - P R O G R A M                     *
+      *----------------------------------------------------------------*
+
+       2-EOJ.
+           IF RECORD-PRINTED-SW = "N"
+               MOVE SPACES            TO  PRT-REC
+               MOVE "       **** NO TRANSACTIONS UPDATED ***"
+                                      TO  PRT-REC
+               WRITE PRT-REC AFTER ADVANCING 2.
+
+           CLOSE         MCHT-ACCTS-I
+                         MMATL-ACCUM-I
+                         MSTORERM-I
+                         DTRANS-IO
+                         ONLINE-PRT.
+
+      *----------------------------------------------------------------*
+      *                M A I N   P A R A G R A P H                     *
+      *----------------------------------------------------------------*
+
+       6-MAIN.
+           MOVE MATL-CLASS            TO  WS-MATL-CLASS.
+           IF RAW-MATERIAL
+               MOVE MATL-STORES-CODE  TO  MMATL-CODE-ARG
+               MOVE "N"               TO  END-OF-CODE-SW
+               PERFORM 9999-READ-MSTORERM
+               IF FILE-STATUS = "00"
+                   PERFORM 9999-START-DTRANS
+                   PERFORM 9999-READ-NEXT-DTRANS
+                   PERFORM 60-PROCESS-DTRANS
+                       UNTIL END-OF-CODE-SW = "Y".
+           PERFORM 9999-READ-NEXT-MMATL-ACCUM.
+
+       60-PROCESS-DTRANS.
+           IF TRANS-CODE = "ISS" OR "RET" OR "SADJ"
+               MOVE TRANS-DEPT        TO  DEPT-ARG
+               IF TRANS-QTY NUMERIC AND STR-STD-COST NUMERIC
+                                    AND STR-AVG-COST NUMERIC
+                   IF TRANS-QTY > 0 AND STR-STD-COST > 0
+                                    AND STR-AVG-COST > 0
+                       PERFORM 61-CALCULATE-NEW-VALUE.
+           PERFORM 9999-READ-NEXT-DTRANS.
+
+       61-CALCULATE-NEW-VALUE.
+           PERFORM 9999-READ-MCHT-ACCTS.
+           IF MCHT-DEPT-TYPE = "PR"
+               COMPUTE NEW-TRANS-VALUE ROUNDED = TRANS-QTY
+                                               * STR-STD-COST
+           ELSE
+               COMPUTE NEW-TRANS-VALUE ROUNDED = TRANS-QTY
+                                               * STR-AVG-COST.
+           IF NEW-TRANS-VALUE NOT = TRANS-VALUE
+               COMPUTE DIFFERENCE-VALUE = NEW-TRANS-VALUE
+                                        - TRANS-VALUE
+               MOVE TRANS-VALUE         TO  HOLD-TRANS-VALUE
+               MOVE NEW-TRANS-VALUE     TO  TRANS-VALUE
+               PERFORM 9999-REWRITE-DTRANS
+               PERFORM 9999-WRITE-DETAIL.
+
+      *----------------------------------------------------------------*
+      *                I N P U T / O U T P U T                         *
+      *----------------------------------------------------------------*
+
+       9999-WRITE-DETAIL.
+           INITIALIZE DETAIL-LINE.
+           MOVE MMATL-CODE-ARG           TO  DL-CODE.
+           MOVE MATL-CLASS               TO  DL-CLASS.
+           MOVE TRANS-CODE               TO  DL-TRANS.
+           MOVE TRANS-DEPT               TO  DL-DEPT.
+           MOVE TRANS-MM                 TO  DL-MM.
+           MOVE TRANS-DD                 TO  DL-DD.
+           MOVE TRANS-YY                 TO  DL-YY.
+           MOVE "/"                      TO  DL-H-1    DL-H-2.
+           MOVE TRANS-QTY                TO  DL-QTY.
+           IF MCHT-DEPT-TYPE = "PR"
+               MOVE STR-STD-COST         TO  DL-COST
+           ELSE
+               MOVE STR-AVG-COST         TO  DL-COST.
+           MOVE HOLD-TRANS-VALUE         TO  DL-OLD-VAL.
+           MOVE NEW-TRANS-VALUE          TO  DL-NEW-VAL.
+           MOVE DIFFERENCE-VALUE         TO  DL-DIFF.
+           WRITE PRT-REC FROM DETAIL-LINE AFTER ADVANCING 1.
+           ADD 1                         TO  NUM-LINES.
+           MOVE "Y"                      TO  RECORD-PRINTED-SW.
+           IF NUM-LINES > 55
+               PERFORM 9999-WRITE-HEADINGS.
+
+       9999-WRITE-HEADINGS.
+           ADD 1                         TO  PAGE-NUM.
+           MOVE PAGE-NUM                 TO  H2-PAGE-NUM.
+           WRITE PRT-REC FROM HEADING-1 AFTER ADVANCING PAGE.
+           WRITE PRT-REC FROM HEADING-2 AFTER ADVANCING 1.
+           WRITE PRT-REC FROM HEADING-3 AFTER ADVANCING 2.
+           MOVE SPACES TO PRT-REC.
+           WRITE PRT-REC AFTER ADVANCING 1.
+           MOVE 4                        TO  NUM-LINES.
+
+       9999-START-MMATL-ACCUM.
+           MOVE SPACES TO MATLCODE OF MMATL-ACCUM-REC-I.
+           START MMATL-ACCUM-I KEY >= MATLCODE OF MMATL-ACCUM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "ERROR WITH START OF MMATL-ACCUM*1-HSK"
+                                         TO  BU-DISPLAY-MSG
+               PERFORM 9999-BLOWUP.
+
+       9999-READ-NEXT-MMATL-ACCUM.
+           READ MMATL-ACCUM-I NEXT INTO BUF-MATLACUM
+               AT END MOVE "Y" TO MMATL-ACCUM-EOF-SW.
+
+       9999-READ-MSTORERM.
+           MOVE MMATL-CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-START-DTRANS.
+           MOVE "N"                      TO  DTRANS-EOF-SW.
+           MOVE MMATL-CODE-ARG TO MATLCODE OF DTRANS-REC-IO.
+           START DTRANS-IO KEY >= MATLCODE OF DTRANS-REC-IO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "ERROR WITH START OF DTRANS*9999-SD"
+                                         TO  BU-DISPLAY-MSG
+               MOVE MMATL-CODE-ARG       TO  BU-DISPLAY-FLD (1)
+               PERFORM 9999-BLOWUP.
+
+       9999-READ-NEXT-DTRANS.
+           READ DTRANS-IO NEXT INTO BUF-DTRANS
+               AT END MOVE "Y" TO DTRANS-EOF-SW.
+           IF    DTRANS-EOF-SW = "Y" OR
+                 TRANS-STORES-CODE NOT = MMATL-CODE-ARG
+               MOVE "Y" TO END-OF-CODE-SW.
+
+       9999-READ-MCHT-ACCTS.
+           MOVE DEPT-ARG TO DEPT OF MCHT-ACCTS-REC-I.
+           READ MCHT-ACCTS-I INTO BUF-MCHTACCTS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "ERROR WITH READ OF MACT-ACCTS*9999-RMA"
+                                         TO  BU-DISPLAY-MSG
+               MOVE MMATL-CODE-ARG       TO  BU-DISPLAY-FLD (1)
+               MOVE DEPT-ARG             TO  BU-DISPLAY-FLD (2)
+               PERFORM 9999-BLOWUP.
+
+       9999-REWRITE-DTRANS.
+           IF RPT-OPTION = "U"
+               REWRITE DTRANS-REC-IO FROM BUF-DTRANS
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "ERROR WITH REWRITE OF DTRANS*9999-RD"
+                                         TO  BU-DISPLAY-MSG
+                   MOVE MMATL-CODE-ARG   TO  BU-DISPLAY-FLD (1)
+                   PERFORM 9999-BLOWUP.
+
+       9999-BLOWUP.
+           MOVE "TRCALCAV" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.
+

@@ -1,0 +1,676 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TTRNSINQ.
+       AUTHOR.               K MOVSESIAN.
+       DATE-WRITTEN.         MAR 7, 1988.
+      *REMARKS.
+      **************************************************************
+      *                                                            *
+      *   T T R N S I N Q   TRANSACTION INQUIRY (CSAS)      (SAQ1) *
+      *    THIS PROGRAM IS AN ONLINE INQUIRY PROGRAM WHICH LISTS   *
+      *    ALL THE DETAIL TRANSACTION FOR THE MONTH.  THE USER     *
+      *    CAN VIEW ALL THE TRANSACTION FOR EITHER A CORPORATE     *
+      *    CODE OR A PURCHASE ORDER NUMBER.  THE USER ALSO HAS THE *
+      *    OPTION TO VIEW OTHER OPEN TRANSACTION THAT ARE NOT      *
+      *    TRANSACTIONS FOR THE CURRENT MONTH.  GENERALLY THESE    *
+      *    ARE OPEN INVOICE AND RECEIPT TRANSACTIONS.              *
+      *                                                            *
+      **************************************************************
+      *                                                            *
+      * C O M M E N T S                                            *
+      *                                                            *
+      * 10/17/1994        C A ZUBEK                                *
+      * ADDED A CALL TO THE SUBROUTINE "TALTKEY" TO ALLOW THE USER *
+      * TO TYPE IN AN ALTERNATE KEY.  THE VALUE OF THE CORPORATE   *
+      * CODE CORRESPONDING TO THE ALTERNATE KEY IS RETURNED FROM   *
+      * THE SUBROUTINE.                                            *
+      *                                                            *
+      * INCREASED THE SIZE OF THE ENTRY SCREEN CORPORATE CODE      *
+      * FIELD TO ALLOW FOR THE 12-BYTE ALTERNATE KEY FIELD.        *
+      *                                                            *
+      * ALSO ADDED THE READ STATEMENT FOR MATLACCUM SO THAT THE    *
+      * CLASS FIELD DISPLAYS ON SCREEN.  (REQ #6281)               *
+      *                                                            *
+      *C*  06/21/1996    CA YODER                                  *
+      *C*    RE-COMPILED TO PICK UP CENTURY DATABASE CHANGES.      *
+      *C*                                                          *
+      **************************************************************
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      IBM-AS400.
+       OBJECT-COMPUTER.      IBM-AS400.
+       SPECIAL-NAMES.        I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZTRNSINQ-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS RELATIVE-RECNO
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+           SELECT MATLACCUM-I
+                  ASSIGN TO DATABASE-MCFLCA0601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DTRANS-I-CDE
+                  ASSIGN TO DATABASE-MCFLCA0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+           SELECT DTRANS-I-PO
+                  ASSIGN TO DATABASE-MCFLCA0703
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC           PIC X(2000).
+       FD  MATLACCUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MATLACCUM-REC-I.
+           COPY DDS-ALL-FORMATS OF MCFLCA0601.
+       FD  DTRANS-I-CDE
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-I-CDE.
+           COPY DDS-ALL-FORMATS OF MCFLCA0701.
+       FD  DTRANS-I-PO
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-I-PO.
+           COPY DDS-ALL-FORMATS OF MCFLCA0703.
+
+       WORKING-STORAGE SECTION.
+       77 EOJ-SW                        PIC X(1)       VALUE SPACES.
+       77 FATAL-ERR-SW                  PIC X(1)       VALUE SPACES.
+       77 ERR-SW                        PIC X(1)       VALUE SPACES.
+       77  RET-CODE-TALTKEY             PIC X(2)       VALUE "00".
+       77  BASE-TALTKEY                 PIC X(20).
+       77  ALT-KEY-ARG                  PIC X(40).
+       77  ALT-CORP-CODE                PIC X(8).
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X          VALUE SPACES.
+           05  FILE-STATUS-2            PIC X          VALUE SPACES.
+       01  RELATIVE-RECNO               PIC 9(9).
+       01  SAVE-CLASS                   PIC X(4)       VALUE SPACES.
+
+      **********************************************************
+      **   VIEW PARAMETERS                                    **
+      **********************************************************
+
+       COPY VCOMAREA IN COPYLIB.
+
+       01  FORMFILE.
+           05  FORM-FNAME                PIC X(8)  VALUE "FTRNSINQ".
+           05  FILLER                    PIC X     VALUE ".".
+           05  FORM-GNAME.
+               10  FORM-GNAME1           PIC X(5)  VALUE "FLANG".
+               10  FORM-GNAME2           PIC X(3)  VALUE SPACES.
+           05  FILLER                    PIC X(19) VALUE SPACES.
+
+       01  FORM-NAMES.
+           05  INQ-HEADER                PIC X(8)  VALUE "TRANSHDR".
+           05  INQ-TRANS                 PIC X(8)  VALUE "TRANSINQ".
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(64)    VALUE SPACE.
+           05  MSG-FLD               PIC X(12)    VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(11)9.
+
+       01  MESSAGE-BUFLEN            PIC S9(4)    VALUE 76    COMP-4.
+
+       01  MESSAGE-ACTLEN            PIC S9(4)    VALUE ZERO  COMP-4.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1     COMP-4.
+      *************************************************************
+      **    PARAMETER AREA FOR DISPLAY SCREENS                   **
+      *************************************************************
+       COPY DISPDATA   IN COPYLIB.
+       01  COMMAND-AREA.
+           05  OVERRIDE-ZTRNSINQ      PIC X(34) VALUE
+               "OVRDSPF FILE(ZTRNSINQ) SHARE(*YES)".
+           05  OVERRIDE-PARM2         PIC S9(10)V9(5) COMP-3 VALUE 34.
+
+      *************************************************************
+      **         D A T A  E N T R Y  B U F F E R S               **
+      *************************************************************
+
+       01  SCREEN-1.
+           05  DE1-MATL-CODE            PIC X(12).
+           05  DE1-PO-NUMBER.
+               10  DE1-PO-NUM           PIC X(7).
+               10  DE1-PO-RLS           PIC X(3).
+           05  DE1-VIEW-ALL-TC-SW       PIC X(1).
+           05  DE1-COMMAND-LINE         PIC X(79).
+           05  DE1-MESSAGE-LINE         PIC X(79).
+
+       01  SUBFILE-CONTROL.
+           05  SC-HEADER-LINE-1         PIC X(40).
+           05  SC-HEADER-LINE-2         PIC X(18).
+           05  SC-DESC                  PIC X(79).
+           05  SC-PO-CODE-LIT           PIC X(10).
+
+       01  DISP-SUBFILE.
+           05  DS-DETAIL-LINE           PIC X(79).
+
+       01  HDR-LINE1.
+           05 CODE-PO-LIT   PIC X(16)  VALUE SPACES.
+           05 DISP-CODE-PO  PIC X(10) VALUE SPACES.
+           05 FILLER        PIC X(2)  VALUE SPACES.
+           05 DISP-CLASS-LIT  PIC X(7)  VALUE SPACES.
+           05 DISP-CLASS      PIC X(3)  VALUE SPACES.
+
+       01  HDR-LINE2.
+           05 DESCR-LIT     PIC X(18)  VALUE SPACES.
+
+       01  HDR-LINE3.
+           05 DESCR-OUT     PIC X(79)  VALUE SPACES.
+
+       01  DETAIL-LINE1.
+           05 DIS-TC-CODE               PIC X(4) VALUE SPACES.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-QTY                   PIC Z(9)9- VALUE ZEROS.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-VALUE                 PIC Z(11)9.99- VALUE ZEROS.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-PO-OR-CODE            PIC X(11) VALUE SPACES.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-RCVR                  PIC X(3) VALUE SPACES.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-ITEM-NO               PIC X(4) VALUE SPACES.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-ACCT                  PIC X(6) VALUE SPACES.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-DEPT                  PIC X(4) VALUE SPACES.
+           05 FILLER                    PIC X(2) VALUE SPACES.
+           05 DIS-TC-DATE               PIC X(8) VALUE SPACES.
+           05 FILLER                    PIC X(1) VALUE SPACES.
+           05 DIS-UM                    PIC X(2) VALUE SPACES.
+
+       01  DETAIL-LINE2.
+           05 FILLER                    PIC X(5) VALUE SPACES.
+           05 DIS-BAL-QTY               PIC Z(10)- VALUE ZEROS.
+           05 FILLER                    PIC X(18) VALUE SPACES.
+           05 DIS-DOC-NUM               PIC X(12) VALUE SPACES.
+
+       01  F3-MSG.
+           05 FILLER                    PIC X(40) VALUE SPACES.
+
+       01  F4-MSG.
+           05 FILLER                    PIC X(40) VALUE SPACES.
+
+       01  F3-LABEL-KEY                 PIC X(16) VALUE SPACES.
+
+       01  F4-LABEL-KEY                 PIC X(16) VALUE SPACES.
+
+
+      ************************************************************
+      **                                                        **
+      **           D A T A B A S E   B U F F E R S              **
+      **                                                        **
+      ************************************************************
+
+       COPY MATLACUM IN COPYLIB.
+
+       COPY DTRANS   IN COPYLIB.
+
+      **********************************************************
+      *              D A T A    B A S E                        *
+      **********************************************************
+
+       COPY DBCSACCT IN COPYLIB.
+
+       01  STORES-BASE          PIC X(12)   VALUE "  STORES;".
+       01  STORES-PASSWORD      PIC X(8)    VALUE "JADE; ".
+
+       COPY DBMODES  IN COPYLIB.
+
+       COPY DBSTAT   IN COPYLIB.
+
+       01  DATASET-NAMES.
+           05  DSET-MMATL-ACCUM PIC X(16)  VALUE "MMATL-ACCUM;".
+           05  DSET-DTRANS      PIC X(16)  VALUE "DTRANS;".
+
+       01  ITEMS-LISTING.
+           05  ALL-ITEMS        PIC X(2)   VALUE "@;".
+           05  MATL-KEY         PIC X(10)  VALUE "MATL-CODE;".
+           05  PO-KEY           PIC X(10)  VALUE "PO-NUMBER;".
+
+       01  IMAGE-ARGS.
+           05  MATL-ARG         PIC X(8)   VALUE SPACES.
+           05  PO-ARG           PIC X(10)  VALUE SPACES.
+
+      *******************************
+      **  PARAMETERS FOR CALLING
+      **  'CDESC'
+      *******************************
+
+       COPY CDESC IN COPYLIB.
+
+       01  RET-CODE                     PIC X(2)  VALUE SPACES.
+
+      ********************************
+      **   PARAMETERS FOR CALLING   **
+      **   'TDATECHK'               **
+      ********************************
+
+       COPY TDATECHK IN COPYLIB.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY CATREAD  IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+      ***************************************************************
+
+       PROCEDURE DIVISION.
+
+       001-BEGIN SECTION.
+
+       BEGIN-HERE.
+           PERFORM 1-HSK THRU 1-H-X.
+
+           PERFORM 6-MAIN THRU 6-M-X.
+
+           PERFORM 2-EOJ  THRU 2-EOJ-X.
+
+           GOBACK.
+
+       1-HSK.
+           OPEN INPUT MATLACCUM-I, DTRANS-I-CDE, DTRANS-I-PO.
+           CALL "QCMDEXC" USING OVERRIDE-ZTRNSINQ, OVERRIDE-PARM2.
+           OPEN I-O DISPLAY-FILE.
+
+      *     PREVIOUS ENTRIES
+           MOVE  16 TO LANG-SETNUM.
+           MOVE 128 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO F3-LABEL-KEY.
+      *     MORE DATA
+           MOVE  13 TO LANG-SETNUM.
+           MOVE  45 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO F4-LABEL-KEY.
+      *     PRESS 'f3' TO SEE PREVIOUS DATA
+           MOVE  16 TO LANG-SETNUM.
+           MOVE 131 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO F3-MSG.
+      *     PRESS 'f4' TO SEE MORE DATA
+           MOVE  16 TO LANG-SETNUM.
+           MOVE 132 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO F4-MSG.
+
+       1-H-X.
+           EXIT.
+
+       2-EOJ.
+           CLOSE MATLACCUM-I, DTRANS-I-CDE, DTRANS-I-PO.
+           CLOSE DISPLAY-FILE.
+
+       2-EOJ-X.
+            EXIT.
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "TTRNSINQ"              TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING ACCTG-BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       2-BLOWUP-X.
+           EXIT.
+
+       4-PGM-ERROR.
+           MOVE B"1" TO IND(99), IND(FIELD-NUMBER).
+           MOVE MESSAGE-BUFFER TO DE1-MESSAGE-LINE.
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+      **************************************************
+      *                                                *
+      *     6 - M A I N                                *
+      *                                                *
+      **************************************************
+
+       6-MAIN.
+           PERFORM 61-PROCESS-SCREEN-1  THRU  61-PS1-X.
+           IF EOJ-SW = "Y"
+               GO TO 6-M-X.
+
+           PERFORM 62-PROCESS-SCREEN-2  THRU  62-PS2-X.
+           GO TO 6-MAIN.
+
+       6-M-X.
+           EXIT.
+
+
+
+       61-PROCESS-SCREEN-1.
+           MOVE INQ-HEADER              TO  VIEW-NFNAME.
+           MOVE SPACES                  TO  SCREEN-1.
+           MOVE ZEROS                   TO  DE1-PO-RLS.
+
+       61-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1                TO  DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC             TO  SCREEN-1.
+           IF VIEW-LASTKEY = 3
+               MOVE "Y"                 TO  EOJ-SW
+               GO TO 61-PS1-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        "* INVALID FUNCTION KEY ENTERED *"
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-1.
+
+           IF DE1-MATL-CODE = SPACES AND DE1-PO-NUM = SPACES
+      *** ENTER EITHER MATERIAL CODE OR PO NUMBER
+               MOVE 66327 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 2  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 61-SHOWFORM-SCREEN-1.
+
+       61-EDIT-DATA.
+           MOVE "N"                     TO ERR-SW.
+           IF DE1-MATL-CODE = SPACES
+               PERFORM 611-EDIT-PO-NUMBER
+           ELSE
+               PERFORM 611-EDIT-MATL-CODE.
+           IF ERR-SW = "Y"
+               GO TO 61-SHOWFORM-SCREEN-1.
+
+       61-PS1-X.
+           EXIT.
+
+       611-EDIT-PO-NUMBER.
+           MOVE DE1-PO-NUMBER           TO PO-ARG,
+                                           BU-DISPLAY-FLD (1).
+           MOVE PO-ARG TO PONUM OF DTRANS-REC-I-PO.
+           START DTRANS-I-PO KEY = PONUM OF DTRANS-REC-I-PO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+      *            "PURCHASE ORDER DOES NOT EXIST"
+                   MOVE  16 TO LANG-SETNUM
+                   MOVE  45 TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE PO-ARG         TO  MSG-FLD
+                   MOVE 4              TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   MOVE "Y"            TO ERR-SW
+               ELSE
+                   MOVE "START DTRANS * 611-EPN" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       611-EDIT-MATL-CODE.
+           MOVE DE1-MATL-CODE           TO BU-DISPLAY-FLD (1)
+                                           ALT-KEY-ARG.
+      *-----------------------------------------------------------*
+      *  10/18/94           C A ZUBEK                             *
+      *  LOGIC TO CALL THE SUBROUTINE "TALTKEY" TO SEE IF USER    *
+      *  ENTERED AN ALTERNATE KEY.  IF SO, THE CORPORATE CODE     *
+      *  WILL BE RETURNED.                                        *
+      *-----------------------------------------------------------*
+
+           CALL "TALTKEY" USING RET-CODE-TALTKEY,
+                                BASE-TALTKEY,
+                                STATUS-AREA,
+                                ALT-KEY-ARG,
+                                ALT-CORP-CODE.
+           IF RET-CODE-TALTKEY NOT EQUAL "00"
+               MOVE "TALTKEY ERROR 611-EMC" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+           MOVE ALT-CORP-CODE           TO MATL-ARG
+                                           DE1-MATL-CODE.
+
+           MOVE MATL-ARG TO MATLCODE OF MATLACCUM-REC-I.
+           START MATLACCUM-I KEY = MATLCODE OF MATLACCUM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+                READ MATLACCUM-I NEXT INTO BUF-MATLACUM
+                    AT END MOVE FILE-STATUS TO FILE-STATUS
+                END-READ
+                MOVE MATL-CLASS             TO SAVE-CLASS
+           ELSE
+               IF FILE-STATUS-1 = "2"
+      *            "MATERIAL CODE DOES NOT EXIST"
+                   MOVE 13  TO LANG-SETNUM
+                   MOVE 56  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO MSG-TEXT
+                   MOVE MATL-ARG       TO  MSG-FLD
+                   MOVE 2              TO  FIELD-NUMBER
+                   PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+                   MOVE "Y"            TO ERR-SW
+               ELSE
+                   MOVE "START MATLACCUM * 611-EMC" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       62-PROCESS-SCREEN-2.
+           MOVE SPACES                  TO  SUBFILE-CONTROL,
+                                            HDR-LINE1,
+                                            HDR-LINE2,
+                                            HDR-LINE3.
+           IF DE1-MATL-CODE = SPACES
+               PERFORM 621-LOAD-PO-HDR
+           ELSE
+               PERFORM 621-LOAD-CODE-HDR.
+           MOVE HDR-LINE1               TO  SC-HEADER-LINE-1.
+           MOVE HDR-LINE2               TO  SC-HEADER-LINE-2.
+           MOVE HDR-LINE3               TO  SC-DESC.
+           PERFORM 810-CLEAR-SUBFILE THRU 810-EXIT.
+           MOVE 0                       TO  RELATIVE-RECNO.
+
+       62-PUT-BUFFER.
+           IF DE1-MATL-CODE NOT = SPACES
+                MOVE DE1-MATL-CODE TO MATL-ARG
+                MOVE MATL-ARG      TO MATLCODE OF DTRANS-REC-I-CDE
+                START DTRANS-I-CDE KEY = MATLCODE  OF DTRANS-REC-I-CDE
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+                END-START
+                IF FILE-STATUS NOT = "00"
+                   MOVE SPACES TO DISP-SUBFILE
+      *           NO ENTRIES QUALIFIED
+                   MOVE 14   TO LANG-SETNUM
+                   MOVE 116  TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE MESSAGE-BUFFER TO DS-DETAIL-LINE
+                   MOVE DISP-SUBFILE   TO DISPLAY-REC
+                   ADD  1              TO RELATIVE-RECNO
+                   WRITE SUBFILE DISPLAY-REC FORMAT "RDSF"
+                         INDICATORS SRF-INDICATORS
+                ELSE
+                    PERFORM 621-GET-DTRANS-ENTRIES THRU 621-EXIT
+           ELSE
+               PERFORM 621-GET-DTRANS-ENTRIES THRU 621-EXIT.
+
+
+           WRITE DISPLAY-REC FORMAT "RDSB"
+                 INDICATORS SRF-INDICATORS.
+           MOVE B"1" TO IND(76).
+           IF RELATIVE-RECNO > ZERO
+                MOVE B"1" TO IND(75)
+           ELSE
+               MOVE B"1" TO IND(75).
+           MOVE SUBFILE-CONTROL TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT "RDSC"
+                 INDICATORS SRF-INDICATORS.
+           READ DISPLAY-FILE FORMAT "RDSC"
+                 INDICATORS SRF-INDICATORS.
+
+       62-PS2-X.
+           EXIT.
+
+
+       621-LOAD-PO-HDR.
+      *        PURCHASE ORDER
+           MOVE 16  TO LANG-SETNUM
+           MOVE 129 TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER          TO CODE-PO-LIT.
+      *        CODE
+           MOVE 3   TO LANG-SETNUM
+           MOVE 179 TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER          TO SC-PO-CODE-LIT.
+           MOVE DE1-PO-NUMBER           TO DISP-CODE-PO.
+
+
+       621-LOAD-CODE-HDR.
+           MOVE SAVE-CLASS              TO DISP-CLASS.
+           MOVE DE1-MATL-CODE           TO DISP-CODE-PO.
+
+      *        STORES CODE
+           MOVE 19  TO LANG-SETNUM
+           MOVE 39  TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER          TO CODE-PO-LIT.
+      *        DESCRIPTION
+           MOVE 4   TO LANG-SETNUM
+           MOVE 34  TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER          TO DESCR-LIT.
+      *        CLASS
+           MOVE 3   TO LANG-SETNUM
+           MOVE 178 TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER          TO DISP-CLASS-LIT.
+      *        PO NUMBER
+           MOVE 16  TO LANG-SETNUM
+           MOVE 130 TO LANG-MSGNUM
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER          TO SC-PO-CODE-LIT.
+
+      ************************************************************
+      *  THIS SUBROUTINE WILL GET THE MATERIAL CODE DESCRIPTION  *
+      ************************************************************
+
+           MOVE "01"                    TO CDESC-LINES-TO-GET.
+           MOVE "N"                     TO CDESC-LOCAL-DESC-OPTION.
+           CALL "CDESC" USING RET-CODE, STORES-BASE, STATUS-AREA,
+               BU-DISPLAY-MSG, MATL-ARG, CDESC-DATA.
+           MOVE CDESC (1)               TO DESCR-OUT.
+
+       621-GET-DTRANS-ENTRIES.
+           IF DE1-MATL-CODE NOT = SPACES
+               READ DTRANS-I-CDE NEXT INTO BUF-DTRANS
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+           ELSE
+               READ DTRANS-I-PO NEXT INTO BUF-DTRANS
+                   AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   GO TO 621-EXIT
+               ELSE
+                   MOVE "GET DTRANS * 621-GDE" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP
+           ELSE
+               IF TRANS-DOCUMENT-NUM = "PROC"
+                   IF DE1-VIEW-ALL-TC-SW = "X"
+                       NEXT SENTENCE
+                   ELSE
+                       GO TO 621-GET-DTRANS-ENTRIES.
+
+           IF DE1-MATL-CODE NOT = SPACES
+               IF MATLCODE OF DTRANS-REC-I-CDE NOT = MATL-ARG
+                   GO TO 621-EXIT
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               IF PONUM OF DTRANS-REC-I-PO NOT = PO-ARG
+                   GO TO 621-EXIT.
+
+       621-LOAD-DATA.
+           MOVE SPACES              TO DETAIL-LINE1,
+                                       DETAIL-LINE2.
+           MOVE TRANS-CODE          TO DIS-TC-CODE.
+           MOVE TRANS-QTY           TO DIS-QTY.
+           MOVE TRANS-VALUE         TO DIS-VALUE.
+           MOVE TRANS-RCVR-NUM      TO DIS-RCVR.
+           MOVE TRANS-ITEM-NUM      TO DIS-ITEM-NO.
+           MOVE TRANS-ACCT          TO DIS-ACCT.
+           MOVE TRANS-DEPT          TO DIS-DEPT.
+           MOVE 4                   TO DATE-MODE.
+           MOVE TRANS-DATE          TO DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-SLASH-OUT      TO DIS-TC-DATE.
+           MOVE TRANS-UNIT-MEASURE  TO DIS-UM.
+           MOVE TRANS-BALANCE-QTY   TO DIS-BAL-QTY.
+           MOVE TRANS-DOCUMENT-NUM  TO DIS-DOC-NUM.
+           IF DE1-MATL-CODE = SPACES
+               MOVE TRANS-STORES-CODE TO DIS-PO-OR-CODE
+           ELSE
+               MOVE TRANS-PO-NUM      TO DIS-PO-OR-CODE.
+
+           MOVE SPACES                TO DISP-SUBFILE.
+           MOVE DETAIL-LINE1          TO DS-DETAIL-LINE.
+           MOVE DISP-SUBFILE          TO DISPLAY-REC.
+           ADD  1                     TO RELATIVE-RECNO.
+           WRITE SUBFILE DISPLAY-REC FORMAT "RDSF"
+                 INDICATORS SRF-INDICATORS.
+
+           MOVE SPACES                TO DISP-SUBFILE.
+           MOVE DETAIL-LINE2          TO DS-DETAIL-LINE.
+           MOVE DISP-SUBFILE          TO DISPLAY-REC.
+           ADD  1                     TO RELATIVE-RECNO.
+           WRITE SUBFILE DISPLAY-REC FORMAT "RDSF"
+                 INDICATORS SRF-INDICATORS.
+
+           GO TO 621-GET-DTRANS-ENTRIES.
+
+       621-EXIT.
+           EXIT.
+
+       810-CLEAR-SUBFILE.
+           MOVE B"0" TO IND(75), IND(76).
+           MOVE B"1" TO IND(77).
+           MOVE SUBFILE-CONTROL TO DISPLAY-REC.
+           WRITE DISPLAY-REC FORMAT "RDSC" INDICATORS SRF-INDICATORS.
+           MOVE B"0" TO IND(77).
+           MOVE ZERO TO RELATIVE-RECNO.
+
+       810-EXIT.
+           EXIT.
+
+       COPY DISPCALL IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

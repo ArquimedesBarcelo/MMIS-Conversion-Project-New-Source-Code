@@ -1,0 +1,94 @@
+
+/***---                                                         ---***/
+/***---      Extract Work Order data and send to EDW            ---***/
+/***---                                                         ---***/
+/***---      Write the data to the files ending in EDW,         ---***/
+/***---      then use CPYTOIMPF to write those to delimited     ---***/
+/***---      files ending in DLM, and found in WRKLNK           ---***/
+/***---      /ftp/outbound                                      ---***/
+/***---      The files ending in DLM are sent to EDW.           ---***/
+/***---                                                         ---***/
+/***---  *** Modifications:                                     ---***/
+/***--- R1   D. Baraona 06/25/2020                              ---***/
+/***--- R1   Modified to send the WorkOrder Parts data in a     ---***/
+/***--- R1   second FTP connection due to the large file size   ---***/
+/***--- R1   at some plants which caused the connection to drop ---***/
+/***--- R1   before the send was completed.                     ---***/
+/***--- R1 RFC 1120233 CD 5105456 INC0737989 CPPI 2020-00121353 ---***/
+/***---                                                         ---***/
+
+             PGM PARM(&INITFLAG)
+
+/***  INITFLAG=N for Not Initial Load. INITFLAG=Y for Inital Load  ***/
+             DCL VAR(&INITFLAG) TYPE(*CHAR) LEN(1)
+
+/***---   Clear data from the intermediate files.                ---***/
+             CLRPFM     FILE(*LIBL/MCFP10JEDW)
+             CLRPFM     FILE(*LIBL/MCFP240EDW)
+             CLRPFM     FILE(*LIBL/MCFP120EDW)
+             CLRPFM     FILE(*LIBL/MCFP140EDW)
+
+/***---   Call program to load the first two intermediate files ---***/
+/** ---   MCFP10JEDW and MCFP120EDW                             --- **/
+/** ---   If paramater = Y, initally load file with 2017/18 data--- **/
+/** ---   If paramater = N, send today & last three days only   --- **/
+             CALL       PGM(TWO2EDW1) PARM(&INITFLAG)
+
+/***---   Call program to load the second two intermediate files---***/
+/***---   These entire 2 files are sent, with plant code added  ---***/
+/** ---   MCFP140EDW and MCFP240EDW.  No parameters needed.     --- **/
+
+             CALL       PGM(TWO2EDW2)
+
+/***---   Write the intermediate files to the stream files      ---***/
+
+             CPYTOIMPF  FROMFILE(MCFP10JEDW) +
+                          TOSTMF('/FTP/OUTBOUND/MCFP10JDLM') +
+                          MBROPT(*REPLACE) RCDDLM(*CRLF) +
+                          FLDDLM('|') DATFMT(*YYMD)
+
+             CPYTOIMPF  FROMFILE(MCFP120EDW) +
+                          TOSTMF('/FTP/OUTBOUND/MCFP120DLM') +
+                          MBROPT(*REPLACE) RCDDLM(*CRLF) +
+                          FLDDLM('|') DATFMT(*YYMD)
+
+             CPYTOIMPF  FROMFILE(MCFP140EDW) +
+                          TOSTMF('/FTP/OUTBOUND/MCFP140DLM') +
+                          MBROPT(*REPLACE) RCDDLM(*CRLF) +
+                          FLDDLM('|') DATFMT(*YYMD)
+
+             CPYTOIMPF  FROMFILE(MCFP240EDW) +
+                          TOSTMF('/FTP/OUTBOUND/MCFP240DLM') +
+                          MBROPT(*REPLACE) RCDDLM(*CRLF) +
+                          FLDDLM('|') DATFMT(*YYMD)
+
+/***---   Housekeeping: clean FTP log file                      ---***/
+             CLRPFM     FILE(*LIBL/QFTPSRC) MBR(FTPEDWWOO)
+             MONMSG     MSGID(CPF0000)
+
+/***---   Override the default FTP input/output                 ---***/
+             OVRDBF     FILE(INPUT) TOFILE(*LIBL/QFTPSRC) +
+                          MBR(FTPEDWWOI)
+             OVRDBF     FILE(OUTPUT) TOFILE(*LIBL/QFTPSRC) +
+                          MBR(FTPEDWWOO)
+
+/***---   Run the file transfer AHQIDA1=Test, AHQIPA1=Prod      ---***/
+             STRTCPFTP  RMTSYS(AHQIPA1)
+
+/***---   Remove the overrides on the FTP input/output          ---***/
+             DLTOVR     FILE(INPUT)
+             MONMSG     MSGID(CPF0000)
+             DLTOVR     FILE(OUTPUT)
+             MONMSG     MSGID(CPF0000)
+
+/***---   Print the FTP transfer output                         ---***/
+             CPYSRCF    FROMFILE(*LIBL/QFTPSRC) TOFILE(*PRINT) +
+                          FROMMBR(FTPEDWWOO)
+             MONMSG     MSGID(CPF0000)
+
+             DLYJOB     DLY(20) /* Let the previous FTP session end. */
+
+/* R1  Send the Workorder Parts data through a new FTP connection    */
+             CALL       PGM(CLWO2EDW2)
+
+             ENDPGM

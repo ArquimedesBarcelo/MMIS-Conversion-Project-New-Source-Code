@@ -1,0 +1,4215 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.          SRCVEXEC.
+       AUTHOR.              LYNN M BUNN / B WINTER.
+       DATE-WRITTEN.        APRIL 15, 1979.
+       DATE-COMPILED.
+       INSTALLATION.        GOODYEAR TIRE AND RUBBER - AKRON.
+      *************************************************************
+      *************************************************************
+      **                     S R C V E X E C                     **
+      *D     A RECEIVING SLIP FOR ALL ITEMS IS CREATED AND       **
+      *D     ALL ASSOCIATED ENTRIES IN THE DATABASE ARE UPDATED. **
+      **                                                         **
+      **                PROCESSING OUTLINE                       **
+      **    1.  THE FIRST SCREEN REQUESTS WHICH ITEMS TO RECEIVE **
+      **    2.  THE ITEMS ARE VALIDATED.                         **
+      **    3.  THE ITEMS ARE STORED IN A TABLE TO BE            **
+      **          PROCESSED LATER ONE AT A TIME.                 **
+      **    4.  THE SECOND SCREEN REQUESTS RECEIVED QTY AND UM.  **
+      **    5.  THE QUANTITY AND UM ARE VALIDATED.               **
+      **    6.  SUBPROGRAM "SFREIGHT" IS CALLED TO PROCESS       **
+      **          FREIGHT DATA.  UPDATES DPOFREIGHT AND          **
+      **          MSTORERM DATASETS.  WRITES A 350 AND 352       **
+      **          TRANSACTION TO DDAILYTC DATASET.               **
+      **    7.  UPDATES DATABASE:                                **
+      **        A)  DDAILYTC - PUT     TRANSACTION 323 OR 423    **
+      **                               TRANSACTION 326           **
+      **        B)  DPOITEM  - UPDATE  QTY & DATE DLVR (ACCUM)   **
+      **        C)  DRCVITEM  - PUT     NEW RECEIVING SLIP        **
+      **        D)  DVENDITM - PUT     IF DOES NOT ALREADY EXIST **
+      **                     - UPDATE  LEAD TIME                 **
+      **        E)  MSTORERM - UPDATE  ONORDER, UNPAID QTY       **
+      **    8.  DIRECT DELIVERY ITEM UPDATES:                    **
+      **        A)  DPOITEM  - UPDATE  QTY STORED, DATE STORED   **
+      **        B)  DRCVITEM  - PUT     QTY STORED, DATE STORED   **
+      **        B)  USAGEFIL - KSAM    MONTH-TO-DATE USAGE       **
+      **    9.  RAW MATERIALS:                                   **
+      **        A)  MSTORERM - UPDATE  ONORDER WITH TOTAL DLVR   **
+      **   10.  "C" PURCHASE ORDERS:                             **
+      **          IF RCVR HAS A DIFFERENT PRICE UM THAN          **
+      **          ORDERED UM, THEN UPDATE:                       **
+      **        A)  DDAILYTC - PUT    TRANSACTION 327            **
+      **   11.  PRINT THE RECEIVING SLIP.                        **
+      *************************************************************
+      *C***********************************************************
+      *C MAY 21, 1992  -  JEFF BUNGO   (005979)                   *
+      *C      CHANGED THE LINKAGE SECTION, PROCEDURE DIVISION     *
+      *C      USING STATEMENT, AND THE PARAMETERS TO CALL CRSPRT  *
+      *C      TO ALLOW THE PASSING OF THE MMISA BASE FROM TUDCDOCK*
+      *C      AND TO CRSPRT.  THIS WAS DONE TO ALLOW CRSPRT       *
+      *C      TO ACCESS AN MMISA DATABASE FILE (PER-PERSONNEL).   *
+      *C SEPTEMBER 24, 1992 - JEFF BUNGO (006264)                 *
+      *C      ADDED CODE TO READ DPOITEM FOR THE COMPANY CODE     *
+      *C      AND WRITE TRANSACTION 326 IS THE PLANT SWITCH IS    *
+      *C      IS ON FOR THIS TRANSACTION.  THE SWITCH IS PASSED   *
+      *C      FROM TUDCDOCK.                                      *
+      *C NOVEMBER 2, 1992   - JEFF BUNGO                          *
+      *C      ADD TWO MORE VARIABLES TO PASS TO SUBPROGRAM        *
+      *C      SFREIGHT.  PASS SORT-TABLE AND RAW-MATERIAL-GROUP,  *
+      *C APRIL 20, 1993 - JEFF BUNGO                              *
+      *C      ADDED A VARIABLE MORE-ITEMS-SAVE TO INDICATE IF THE *
+      *C      THE MORE-ITEMS FLAG WAS SET FOR THE LAST SET OF     *
+      *C      ITEMS PROCESSED AND RESET TO N.  THIS FLAG WILL BE  *
+      *C      USED TO DETIRMINE WHETHER OR NOT TO TRY TO DELETE   *
+      *C      THE REFERBACK FREIGHT RECORD FOR MORE THAN 12 ITEMS *
+      *C      WHEN EXITING AND NOT PROCESSING THE NEXT SET OF     *
+      *C      12 ITEMS.  THIS REFER BACK RECORD WAS CREATED IN    *
+      *C      SFREIGHT.                                           *
+      *C
+      *C  DECEMBER 16, 1993 - JEFF BUNGO (6454)
+      *C      ADDED CODE TO PREVENT A PO TO HAVE A FREIGHT
+      *C      REFERBACK TO ITSELF.  THE 6 ADDITIONAL PO'S ARE
+      *C      EDITTED SO THAT THEY MAY NOT MATCH THE FIRST PO
+      *C      ENTERED.
+      *C
+      *C 27JAN1994    DAVE PLUM    REQUEST #6465 (94-004)
+      *C      ADDED LOGIC IN AN ATTEMPT TO INSURE THAT THE PO
+      *C      CURRENCY CODE WILL ALWAYS BE MOVED TO FIELD
+      *C      "TC323-CURRENCY-CODE" OR "TC423-CURRENCY-CODE" FOR
+      *C      ASHEBORO (PLANT 155).
+      *C
+      *C FEB 28, 1995  JEFF BUNGO
+      *C      REMOVED LOGIC TO UPDATE STR-ONORDER IN MSTORERM.
+      *C      THIS FIELD HAS NOT BEEN USED FOR MANY YEARS (NOW
+      *C      CALCULATED FROM DPOITEM) BUT THIS PROGRAM WAS
+      *C      NEVER UPDATED TO REFLECT THIS.
+      *C
+      *C JUN 19, 1995  JEFF BUNGO
+      *C      WRITE A TC923 AFTER A TC323 WHENEVER THE DELIVERED
+      *C      QUANTITY HAS A DECIMAL VALUE AND WAS ROUNDED ON THE
+      *C      TC323.
+      *C
+      *C AUG 10, 1995  JEFF BUNGO 95-020
+      *C      CALL PGM MCXSNDMSG TO SNDUSRMSG TO A USERID FOUND
+      *C      ON A REQUISTION TO NOTIFY THE REQUISITIONER THAT
+      *C      THE MATERIAL THAT THEY HAVE REQUESTED HAS ARRIVED
+      *C      AT THE DOCK.
+      *C
+      *C AUG 22, 1995  JEFF BUNGO
+      *C      ADDED A CALL TO CSIS PROGRAM BXRAWBAR PASSING
+      *C      CODE, QTY AND UM.  THAT PROGRAM WILL THEN SUBMIT
+      *C      A JOB THAT WILL RUN A NON CSIS PROGRAM TO PRINT
+      *C      BAR CODES FOR RAW MATERIALS.
+      *C
+      *C JUNE 6, 1996  JEFF BUNGO
+      *C      CHECK DOCK-SPECIAL-PRINT PARM FOR CALL THE THE
+      *C      RECEIVING SLIP PRINT PROGRAM.  IF SET TO Y THEN
+      *C      PRINT USING ESCAPE SEQUENCES.
+      *C
+      *C JULY 2, 1996  JEFF BUNGO
+      *C      UPDATED LOGIC FOR THE 326 TRANSACTION.  THE TC
+      *C      NUMBER WAS NOT BEING WRITTEN ON THIS TRANS AND
+      *C      CAUSING A DOUBLE 323 TRANS FOR EACH ITEM.
+      *C
+      *C DECEMBER 4, 1996  JEFF BUNGO
+      *C      IF PO ITEM RECEIVED AGAINST IS QS9000 TRACKING
+      *C      THEN UPDATE FIRST AVAILABLE TRACKING ENTRY WITH
+      *C      DLVR QTY, DATE, RS NUMBER, AND CARRIER.  PASS
+      *C      CARRIER BACK FROM CALL TO SFREIGHT.  ALSO CHECK
+      *C      IF CARRIER IS AN EXPEDITE FREIGHT CARRIER AND
+      *C      SET FLAG ON TRACKING RECORD IS NECESSARY.
+      *C
+      *C FEBRUARY 3, 1997   JEFF BUNGO
+      *C      MOVED CALL TO BXRAWBAR TO AFTER UPDATE OF DDAILYTC
+      *C      MSTORERM AND USAGEFIL.  WHEN THEIR PROGRAM HAS A
+      *C      PROBLEM AND THEY CANCEL, TRANSACTIONS ARE NOT WRITTEN
+      *C      ONHAND AND USAGE ARE NOT UPDATED.
+      *C
+      *C MARCH 11, 1997 JEFF BUNGO
+      *C      FIXED PROBLEM WITH RS ITEMS > 12.  THE REFERBACK TO
+      *C      ORIGINAL 12 FREIGHT WAS NOT WORKING PROPERLY.
+      *C
+      *C APRIL 30, 1997 JEFF BUNGO
+      *C      CHANGED PROGRAM TO ALLOW RECEIPT BY VERIFYING A
+      *C      PREVIOUSLY RECEIVED ASN THAT HAS ALREADY SET UP
+      *C      A RECEIVER.  THE ASN QTY WILL BE DISPLAYED FOR
+      *C      EACH ITEM TO BE VERIFIED, AND THE FREIGHT INFORMATION
+      *C      WILL BE DISPLAYED ALSO FOR VERIFICATION.  A NEW
+      *C      PARAMETER WILL BE PASSED TO THIS PROGRAM TO INDICATE
+      *C      THE RECEIVER ASN.  IF BLANK THEN IT IS BUSINESS AS
+      *C      USUAL.  IF THE ITEM IS AN AUTO STORE ITEM AND THE
+      *C      ITEM IS A FRANCHISE ITEM, THEN AUTOSTORE INTO THE
+      *C      FRANCHISE PRIMARY BIN INSTEAD OF THE FIRST BIN.
+      *C      THIS PROGRAM MUST ALSO PASS THE NEW PARM AS A NEW
+      *C      PARM TO SFREIGHT.
+      *C
+      *C SEPTEMBER 3, 1997  JEFF BUNGO
+      *C      IF STORES RECEIPTS INTERFACE WITH AN EXTERNAL
+      *C      SYSTEM (APPLICATION) AND ALL MATERIAL IS TO BE
+      *C      AUTOSTORED (BASED ON MPLTINFO KEY SRX), THEN
+      *C      MARK CODE AS AUTO STORE.  THEN CALL THE EXTERNAL
+      *C      INTERFACE PROGRAM TO PASS THE DATA (RECEIVER,
+      *C      ITEM NUMBER, CODE, QTY, UM, DATE, AND TIME).
+      *C
+      *C OCT 27, 1997       CA YODER
+      *C      CALL PGM MCXSNDMSG TO SNDUSRMSG TO A USERID FOUND
+      *C      ON THE PO ITEM TO NOTIFY THE USER THAT THE MATERIAL
+      *C      HAS ARRIVED AT THE DOCK.
+      *C
+      *C 11/10/97    JEFF BUNGO
+      *C      REMOVE SORT-TABLE OF MAX OF 12 ITEMS. USE A SUBFILE
+      *C      TO HOLD ALL ITEMS ON A RECEIVING SLIP ELIMINATING THE
+      *C      MAXIMUM ON NUMBER OF ITEMS.  SUBFILE RECORD WILL BE
+      *C      MOVED INTO OLD SORT RECORD SD- FOR USE IN PROGRAM.
+      *C
+      *C 11/11/97    JEFF BUNGO
+      *C      CLEANED UP SOURCE CODE BY REMOVING OLD COMMENTED CODE.
+      *C      REMOVE ALL REFERENCES TO LOCKING AND UNLOCKING
+      *C      DATASETS, DATASET REFERENCES (FROM HP DAYS).
+      *C
+      *C  11/25/97    JEFF BUNGO   REQ #97-017
+      *C     ADD USAGE FIELDS FOR DIRECT DELIVERY.  DD USAGE
+      *C     TO BE STORED IN ADDITIONAL FIELD AND TOTAL USAGE.
+      *C     STORE ISSUE USAGE CALCULATED BY TOTAL USAGE - DD USAGE.
+      *C     AFTER RECEIVING A DIRECT DELIVERY ITEM, INCREMENT THE
+      *C     DD USAGE FOR THE CODE IN ADDITION TO THE TOTAL USAGE.
+      *C
+      *C  03/10/98    JEFF BUNGO
+      *C     ADD ONE LINE OF ADDITIONAL PO ITEM DESCRIPTION FOR
+      *C     CODED ITEMS WHEN CODE DESCRIPTION DISPLAYED ON SCREEN.
+      *C
+      *C  09/24/98    CA YODER
+      *C     ADDED LOGIC TO SEND AN E-MAIL MESSAGE TO BUYER ON PO
+      *C     WHEN NAFTA PAPERS ARE NOT INCLUDED WITH SHIPMENT.
+      *C     THIS IS FOR MEXICO ONLY.
+      *C
+      *C  12/18/98    CA YODER
+      *C     REMOVED LOGIC TO SKIP OVERSHIPMENT CHECK FOR ASN
+      *C     RECEIPTS.  DANVILLE WANTED THE CHECK RETURNED TO
+      *C     THE PROCESSING OF ASNS.
+      *C
+      *C  09/23/99    CA YODER    UNC REQUEST
+      *C     ADDED RECEIVING SLIP # TO PARAMETERS PASSED TO PROGRAM
+      *C     BXRAWBAR.
+      *C
+      *C  04/04/02    CA YODER
+      *C     BLOCKED ENTRY OF RECEIVING SLIPS FOR "999" ORDERS.
+      *C
+      *C  04/18/02    CA YODER    (NAPANEE REQUEST)
+      *C     ADDED CALL TO "SRCVDESC" TO SHOW COMPLETE RECEIVING
+      *C     SLIP ITEM DESCRIPTION.
+      *C
+      *C  04/29/03    CA YODER    (NAPANEE REQUEST)
+      *C     SEND SECOND NOTIFICATION MESSAGE TO EXPEDITE USER IF
+      *C     AN ENTRY FOR THE REQ EXISTS IN MCFPCSRQNO FILE.
+      *C
+      *C  07/10/03    CA YODER    (NAPANEE REQUEST)
+      *C     ADDED LOGIC TO CAPTURE USER-ID OF PERSON CREATING
+      *C     THE RECEIVING SLIP.
+      *C
+      *C  07/14/04    CA YODER    (NAPANEE REQUEST)
+      *C     ADDED FIRST LINE OF REQ DESCRIPTION TO REQ NOTIFY
+      *C     MESSAGE.
+      *C
+      *C***********************************************************
+       ENVIRONMENT DIVISION.
+
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  HP-3000.
+       OBJECT-COMPUTER.  HP-3000.
+       COPY SPECIALN IN COPYLIB.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MPORCV-PO-I
+               ASSIGN TO DATABASE-MCFLCS0101
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-PO-O
+               ASSIGN TO DATABASE-MCFLCS1002
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-PO-I
+               ASSIGN TO DATABASE-MCFLCS1002
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOFREIGHT-PO-I
+               ASSIGN TO DATABASE-MCFLCS2401
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOFREIGHT-PO-O
+               ASSIGN TO DATABASE-MCFLCS2401
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDITM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0802
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-VN-I
+               ASSIGN TO DATABASE-MCFLCS0701
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-PO-O
+               ASSIGN TO DATABASE-MCFLCS0901
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVITEM-PO-O
+               ASSIGN TO DATABASE-MCFLCS1201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQD-PO-I
+               ASSIGN TO DATABASE-MCFLCS2102
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-RQ-I
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DTALLY-CD-O
+               ASSIGN TO DATABASE-MCFLCS4702
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DRAWLOT-CL-O
+               ASSIGN TO DATABASE-MCFLCS4601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-DT-O
+               ASSIGN TO DATABASE-MCFLCS1601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-PO-O
+               ASSIGN TO DATABASE-MCFLCS1101
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-PO-I
+               ASSIGN TO DATABASE-MCFLCS1101
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVTRAK
+               ASSIGN TO DATABASE-MCFLCS6402
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT CARRIER-FILE
+               ASSIGN TO DATABASE-MCFLCACARR
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT REQ-FILE-IO
+               ASSIGN TO DATABASE-MCFLCSRQNO
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT USAGEFIL-CD-O
+               ASSIGN TO DATABASE-MCFLCSUSAG
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+           SELECT LOT-NUM ASSIGN TO DISK-LOTNUM.
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZUDCDOCK-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS DYNAMIC
+                  RELATIVE KEY IS SFL-PTR
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT BUYR-I
+               ASSIGN         TO DATABASE-MCFLCSBUYR
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                              WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT NFTA-IO
+               ASSIGN         TO DATABASE-MCFLCSNFTA
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                              WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  LOT-NUM
+           RECORD CONTAINS 1190 CHARACTERS.
+       01  LOT-NUM-REC.
+           05  LOT-DE-DESCRIPTION.
+               10  LOT-ITEM              PIC 9(5).
+               10  LOT-DESC  OCCURS 15   PIC X(79).
+
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+       FD  MPORCV-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-PO-REC-I.
+           COPY DDS-MCRPCS0100  OF MCFLCS0101.
+
+       FD  DPOITEM-PO-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-PO-REC-O.
+           COPY DDS-MCRPCS1000  OF MCFLCS1002.
+
+       FD  DPOITEM-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-PO-REC-I.
+           COPY DDS-MCRPCS1000  OF MCFLCS1002.
+
+       FD  DPOFREIGHT-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHT-PO-REC-I.
+           COPY DDS-MCRPCS2400  OF MCFLCS2401.
+
+       FD  DPOFREIGHT-PO-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHT-PO-REC-O.
+           COPY DDS-MCRPCS2400  OF MCFLCS2401.
+
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DVENDITM-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDITM-CD-REC-O.
+           COPY DDS-MCRPCS0800  OF MCFLCS0802.
+
+       FD  DVENDOR-VN-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-VN-REC-I.
+           COPY DDS-MCRPCS0700  OF MCFLCS0701.
+
+       FD  MSTORERM-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-O.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  DPORECD-PO-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-PO-REC-O.
+           COPY DDS-MCRPCS0900  OF MCFLCS0901.
+
+       FD  DRCVITEM-PO-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-PO-REC-O.
+           COPY DDS-MCRPCS1200  OF MCFLCS1201.
+
+       FD  DREQD-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-PO-REC-I.
+           COPY DDS-MCRPCS2100  OF MCFLCS2102.
+
+       FD  MREQ-RQ-I
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-RQ-REC-I.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  DTALLY-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  DTALLY-CD-REC-O.
+           COPY DDS-MCRPCS4700  OF MCFLCS4702.
+
+       FD  DRAWLOT-CL-O
+           LABEL RECORDS ARE STANDARD.
+       01  DRAWLOT-CL-REC-O.
+           COPY DDS-MCRPCS4600  OF MCFLCS4601.
+
+       FD  DDAILYTC-DT-O
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-DT-REC-O.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+
+       FD  DPODATAITM-PO-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-PO-REC-O.
+           COPY DDS-MCRPCS1100  OF MCFLCS1101.
+
+       FD  DPODATAITM-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-PO-REC-I.
+           COPY DDS-MCRPCS1100  OF MCFLCS1101.
+
+       FD  DRCVTRAK
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVTRAK-REC.
+           COPY DDS-MCRPCS6400  OF MCFLCS6402.
+
+       FD  CARRIER-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  CARRIER-REC.
+           COPY DDS-MCRPCACARR  OF MCFLCACARR.
+
+       FD  REQ-FILE-IO
+           LABEL RECORDS ARE STANDARD.
+       01  REQ-FILE-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCSRQNO.
+
+       FD  USAGEFIL-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  USAGEFIL-CD-REC-O.
+           COPY DDS-MCRPCSUSAG  OF MCFLCSUSAG.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC        PIC X(2000).
+
+       FD  BUYR-I
+           LABEL RECORDS ARE STANDARD.
+       01  BUYR-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCSBUYR.
+
+       FD  NFTA-IO
+           LABEL RECORDS ARE STANDARD.
+       01  NFTA-IO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCSNFTA.
+
+      *------ FD STATEMENTS FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+      *************************************************************
+      *               W O R K I N G   S T O R A G E               *
+      *************************************************************
+
+       01  HANDLE-BLOWUP-FLAG            PIC X(1)         VALUE "Y".
+       01  FOUND-IT                      PIC X(1).
+       01  INIT-FLAG                     PIC X(1)         VALUE "Y".
+       01  SAVE-UNIT-PRICE               PIC S9(10)V99    VALUE ZEROES.
+       01  SAVE-VENCODE                  PIC X(10)        VALUE SPACES.
+       01  SAVE-VENNAME                  PIC X(44)        VALUE SPACES.
+       01  SAVE-RCVG-CHAT-SW             PIC X            VALUE "N".
+       01  SAVE-EXTSYS                   PIC X            VALUE "N".
+       01  SAVE-EXTAUTO                  PIC X            VALUE "N".
+       01  EXT-QTY                       PIC S9(8)  COMP-3  VALUE ZEROS.
+       01  EXT-CORRECT                   PIC X(1)         VALUE SPACES.
+       01  PLANT-NUMERIC                 PIC 999          VALUE ZEROES.
+       01  STORE-SW                      PIC X            VALUE "N".
+       01  ZERO-WS                       PIC 9(8)         VALUE 0.
+       01  RSHIFTED-ADDL-DATA            PIC X(8)         VALUE SPACES.
+       01  RSHIFTED-NUMERIC REDEFINES RSHIFTED-ADDL-DATA  PIC 9(8).
+       01  FOUND-DVENDITM-ENTRY          PIC 9            VALUE 0.
+       01  FLD-15                        PIC 9(11)V9(4).
+       01  FLD-12                        PIC 9(8)V9(4).
+       01  CVR-FILLER                    PIC X(10)        VALUE SPACES.
+       01  WS-SD-ITM                     PIC 9(4)         VALUE ZEROES.
+       01  TOTAL-DLVR                    PIC 9(8)V9(4)    VALUE ZEROES.
+
+      *----------  NUMBER OF ITEMS BEING RECEIVED; LIMIT OF 12 AT A TIME
+       01  TBL-LIMIT                     PIC 999          VALUE ZEROS.
+       01  GREATEST-ITEM                 PIC 99           VALUE ZEROS.
+       01  SFL-PTR                       PIC 9(4)        VALUE ZEROS.
+       01  NET-RAW-WEIGHT         PIC S9(8)V9(4) VALUE ZEROS.
+
+       01  CHECK-QTY                     PIC 9(8)V9(4)    VALUE ZEROS.
+       01  LAST-SEQNO                    PIC 9(4) VALUE ZEROS.
+
+      *----------  ITEM NUMBER FOR RETURNABLE CONTAINERS
+       01  WORK-ITEM.
+           05  FILLER                    PIC X            VALUE SPACE.
+           05  SHIFTED-ITEM.
+               07  WK-ITEM               PIC X(3)         VALUE SPACES.
+               07  WK-ASTERICK           PIC X            VALUE "*".
+
+      *----------  THE FOLLOWING 2 FIELDS ARE USED TO CONVERT A
+      *            QUANTITY INTO STOREROOM UNIT OF MEASURE.
+       01  WS-CONVERT-FLD                PIC S9(8)V9(4)   VALUE ZEROS.
+       01  WS-RESULT-FLD                 PIC S9(8)        VALUE ZEROS.
+
+      *----------  PO LEAD TIME, AND MSTORERM LT (CALCULATED FROM REQ DATE)
+       01  CALC-LT                       PIC 9(4).
+       01  CALC-LT2                      PIC 9(4).
+       01  ACTIVITY-DATE                 PIC X(6).
+
+      *----------  DATA ITEMS FOR LOT UM
+       01  LOT-CTR                       PIC S9(2) BINARY VALUE ZERO.
+       01  DESC-SUB                      PIC S9(2) BINARY VALUE ZERO.
+
+      *----------  PRICE QTY FOR QTY COUNT CHECK
+       01  WORK-PRICE                 PIC 9(8)V9(4) BINARY VALUE ZERO.
+
+       01  DATE-CYMD.
+           05  DATE-CYMD-CC              PIC 9(2).
+           05  DATE-CYMD-YMD.
+               10  DATE-CYMD-YY          PIC 9(2).
+               10  DATE-CYMD-MM          PIC 9(2).
+               10  DATE-CYMD-DD          PIC 9(2).
+
+       01  BUYR-FILE-SW                  PIC X.
+       01  NFTA-FILE-SW                  PIC X.
+       01  REQ-FILE-SW                   PIC X.
+       01  HOLD-USER-ID                  PIC X(10)  VALUE SPACES.
+       01  HOLD-SYSTEM-ID                PIC X(8)   VALUE "GTRLAN  ".
+
+      ************************************************************
+      *                    S U B S C R I P T S                   *
+      ************************************************************
+      *----------  POSITION IN SCREEN BUFFER FOR ITEMS AND DESCRIPTION
+       01  S-X                           PIC 99     VALUE ZEROS.
+      *----------  POSITION IN SORTED ITEM TABLE
+       01  A                             PIC 99     VALUE ZEROS.
+      *----------  USED TO INDEX INTO SCREEN PO'S BUFFER
+       01  P-X                           PIC S9(2)  VALUE ZEROES.
+       01  SUB                           PIC 9(2).
+       01  FRAN-SUB                      PIC 9      VALUE ZERO.
+      *************************************************************
+      *                      F L A G S                            *
+      *************************************************************
+       01  CALL-PRINT-PROGRAM            PIC X      VALUE "Y".
+
+       01  DIRECT-CHARGE-SW              PIC X      VALUE "N".
+           88  DIRECT-CHARGE                        VALUE "Y".
+
+       01  STOREROOM-ITEM-SW             PIC X      VALUE "N".
+           88  STOREROOM-ITEM                       VALUE "Y".
+
+       01  FOUND-ITEM-WITH-QTY           PIC X      VALUE "N".
+           88  NO-ITEM-WITH-QTY                     VALUE "N".
+       01  CHECK-ITEM-WITH-QTY           PIC 9(2)   VALUE 0.
+
+       01  C-ORDER-SW                    PIC X      VALUE "N".
+           88  C-ORDER                              VALUE "Y".
+
+       01  NEED-PRICE-QTY-SW             PIC X      VALUE "N".
+           88  NEED-PRICE-QTY                       VALUE "Y".
+
+       01  ACCEPT-OVERSHIPMENT-SW        PIC X      VALUE "N".
+
+       01  PRINT-EXTRA-TITLES-SW         PIC X      VALUE "N".
+           88  PRINT-EXTRA-TITLES                   VALUE "Y".
+
+       01  RCVR-FLAG                     PIC X(1).
+
+       01  FRANCHISE-VENDOR-SW           PIC X      VALUE "N".
+           88  FRANCHISE-VENDOR                     VALUE "Y".
+           88  NOT-FRANCHISE-VENDOR                 VALUE "N".
+
+      *************************************************************
+      *                      T A B L E S                          *
+      *************************************************************
+       01  FOUND-ITM-TABLE.
+           05  FOUND-ITM-LINE OCCURS 12 TIMES.
+               10  FOUND-ITM             PIC X(1).
+
+      *----------  ITEM DATA TABLE; SORTED BY ITEM NUMBER
+       01  SORT-TABLE.
+      *------MAKE TABLE ONLY 1 ITEM, RECORDS HELD BY SUBFILE
+      *    05  SD-LINE    OCCURS  13  TIMES.
+           05  SD-LINE.
+       COPY RCVITEM IN COPYLIB.
+
+      *----------  TABLE FOR ITEMS THAT NEED A PHYSICAL COUNT.  IF
+      *            ITEM NEEDS A COUNT, "Y" IS PLACED IN TABLE.
+       01  COUNT-AREA                    PIC X(12).
+       01  COUNT-TABLE REDEFINES COUNT-AREA.
+           02  COUNT-ITEM OCCURS 999 TIMES   PIC X.
+
+      *----02/18/98 FRANCHISE VENDOR TABLE
+       01  FRAN-TABLE.
+           05  FRAN-ENTRY OCCURS 4 TIMES INDEXED BY FRAN-IDX.
+               10  FRAN-ID             PIC X(1).
+               10  FRAN-NAME           PIC X(4).
+               10  FRAN-VEN-CODE       PIC X(10).
+
+      *************************************************************
+      *             C A L L E D   R O U T I N E S                 *
+      *************************************************************
+       01  CDD-PO-ADDL-DATA              PIC X(8).
+       01  CDD-PO-PRIME                  PIC X(3).
+       01  CDD-INTERNAL-PO               PIC X.
+       01  RETURN-FLAGS.
+           05  RETURN-DD                 PIC X.
+           05  FILLER                    PIC X.
+
+       COPY RCVFLAGS IN COPYLIB.
+
+      *----------  SFREIGHT
+       01  PASS-FREIGHT-DATA.
+           05  OSD-PASS                  PIC X(3).
+           05  FRT-RS-NUMBER             PIC X(3)   VALUE SPACES.
+           05  FRT-F8-EXIT-SW            PIC X      VALUE SPACES.
+           05  FRT-PO-RCV-STAT           PIC XXXX   VALUE SPACES.
+           05  SAVE-INTERNAL-FLAG        PIC X      VALUE SPACE.
+           05  FRT-SEQ-RCV               PIC X(6)   VALUE SPACES.
+           05  PASS-CARRIER              PIC X(4)   VALUE SPACES.
+       COPY TUMCF      IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY CDESC      IN COPYLIB.
+       COPY CNDESC     IN COPYLIB.
+       COPY TNRQDESC   IN COPYLIB.
+       COPY TRSHIFT    IN COPYLIB.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY DISPDAT2   IN COPYLIB.
+       COPY CCRTFILE   IN COPYLIB.
+       01  BARCODE-DATA.
+           05  BAR-CODE                  PIC X(7).
+           05  BAR-QTY                   PIC 9(8)V9(4).
+           05  BAR-UM                    PIC X(2).
+           05  BAR-RECEIVER              PIC X(14).
+       01  RET-CODE                      PIC X(2)   VALUE SPACES.
+
+       01  BUF-USAGEFIL.
+           05  FILLER                    PIC XX.
+           05  K-CORP-CODE               PIC X(8).
+           05  K-MONTHS                 OCCURS 14 TIMES.
+               10  K-MTH-USAGE           PIC S9(9) BINARY.
+           05  K-MONTHS-DD              OCCURS 14 TIMES.
+               10  K-MTH-USAGE-DD        PIC S9(9) BINARY.
+
+       COPY HMSGBUF    IN COPYLIB.
+
+      *---------- VSETKEYLABEL
+       01  VSETKEYLABEL-PARMS.
+           05  FORM-OR-GLOBAL            PIC S9(4) BINARY.
+           05  KEY-NUM                   PIC S9(4) BINARY.
+           05  KEY-LABEL                 PIC X(16) VALUE SPACES.
+
+       COPY FUNCTDEF IN COPYLIB.
+       01  PREVIOUS-KEY    VALUE 4     PIC S9(4).
+       01  NEXT-KEY        VALUE 5     PIC S9(4).
+
+       01  NATIVE-CURRENCY-CODE          PIC X(2)     VALUE SPACES.
+       COPY TBLOWUP IN COPYLIB.
+       COPY TSHWRDFM IN COPYLIB.
+      *----------  CALL TO RCVR PRINT PROGRAM
+       COPY RCVPRT IN COPYLIB.
+       COPY CATREAD IN COPYLIB.
+       01  RCVR-PRINT-ITEMS.
+           05  RCVR-ITEM OCCURS 999 TIMES PIC X(4).
+
+      *--------- CALL TO CHAT NUMBER REFERENCE PROGRAM
+       01  PASS-CORP-CODE                PIC X(7).
+       01  RETURN-CHAT-NO                PIC X(6).
+
+       01  SRCVDESC-PARMS.
+           05  SRCVDESC-PO            PIC X(14).
+           05  SRCVDESC-ITEM          PIC X(4).
+           05  SRCVDESC-CODE          PIC X(7).
+
+       COPY CWHO IN COPYLIB.
+
+      *************************************************************
+      *              S C R E E N   B U F F E R S                  *
+      *************************************************************
+      *----------  PURCHASE ORDER WORKAREA
+       01  DE-FIELDS-1.
+      *----------  THIS FIELD USED FOR MEXICO ONLY.-------
+           05  DE-NAFTA-ANS              PIC X.
+      *---------------------------------------------------
+           05  DE-FIELDS-1-PO.
+               10  DE-PO-RLSE OCCURS 7 TIMES.
+                  15  DE-PO                  PIC X(7).
+                  15  DE-RLSE                PIC X(3).
+               10  ALL-DE-ITEMS.
+                   15  DE-ITM-LINE OCCURS 12 TIMES.
+                       20  DE-ITM-CODE.
+                           25  DE-ITM        PIC X(4).
+                           25  DE-ITM-CODE-CHECK PIC X(1).
+                           25  FILLER        PIC X(2).
+               10  DE-COMMAND-LINE-1         PIC X(79).
+               10  DE-MESSAGE-LINE-1         PIC X(79).
+
+       COPY RCVQTY IN COPYLIB.
+           05  DE-COMMAND-LINE-2         PIC X(79).
+           05  DE-MESSAGE-LINE-2         PIC X(79).
+
+       01  DE-FIELDS-3.
+           05  VIEW-PO                   PIC X(7).
+           05  VIEW-RLSE                 PIC X(3).
+           05  VIEW-ITEM                 PIC X(4).
+           05  VIEW-VENCODE              PIC X(10).
+           05  VIEW-VENNAME              PIC X(44).
+           05  DE-LOT-MOLD               PIC X.
+           05  DE-LOT-COMPLETE           PIC X.
+           05  DE-DESCRIPTIONS.
+               10  DE-DESC OCCURS 15 TIMES  PIC X(79).
+           05  DE-COMMAND-LINE-3         PIC X(79).
+           05  DE-MESSAGE-LINE-3         PIC X(79).
+
+
+       01  REQ-NOTIFICATION.
+           05  FILLER                    PIC X(48) VALUE
+            "The item that you had requested on Requisition #".
+           05  REQ-NOTIFY-REQ-NUMBER     PIC X(10) VALUE SPACES.
+           05  FILLER                    PIC X(49) VALUE
+            " has been received at the Dock on Receiving Slip ".
+           05  REQ-NOTIFY-RCV-NUMBER     PIC X(13) VALUE SPACES.
+           05  FILLER                    PIC X(04) VALUE " on ".
+           05  REQ-NOTIFY-DATE           PIC X(08) VALUE SPACES.
+           05  FILLER                    PIC X(04) VALUE " at ".
+           05  REQ-NOTIFY-TIME           PIC X(08) VALUE SPACES.
+           05  FILLER                    PIC X(15) VALUE
+                                                   ". Description: ".
+           05  REQ-DESCRIPTION           PIC X(80).
+           05  FILLER                    PIC X(273) VALUE SPACES.
+
+       01  REQ-NOTIFICATION-2.
+           05  FILLER                    PIC X(35) VALUE
+            "The item requested on Requisition #".
+           05  REQ-NOTIFY-REQ-NUMBER-2   PIC X(10) VALUE SPACES.
+           05  FILLER                    PIC X(49) VALUE
+            " has been received at the Dock on Receiving Slip ".
+           05  REQ-NOTIFY-RCV-NUMBER-2   PIC X(13) VALUE SPACES.
+           05  FILLER                    PIC X(04) VALUE " on ".
+           05  REQ-NOTIFY-DATE-2         PIC X(08) VALUE SPACES.
+           05  FILLER                    PIC X(04) VALUE " at ".
+           05  REQ-NOTIFY-TIME-2         PIC X(08) VALUE SPACES.
+           05  FILLER                    PIC X(125) VALUE SPACES.
+
+       01  PO-NOTIFICATION.
+           05  FILLER                    PIC X(5)  VALUE
+            "Item ".
+           05  PO-NOTIFY-ITEM            PIC ZZZ9.
+           05  FILLER                    PIC X(21) VALUE
+            " of Purchase Order # ".
+           05  PO-NOTIFY-PO-NUMBER       PIC X(7).
+           05  FILLER                    PIC X     VALUE "-".
+           05  PO-NOTIFY-RLSE            PIC X(3).
+           05  FILLER                    PIC X(49) VALUE
+            " has been received at the Dock on Receiving Slip ".
+           05  PO-NOTIFY-RCV-NUMBER      PIC X(13) VALUE SPACES.
+           05  FILLER                    PIC X(04) VALUE " on ".
+           05  PO-NOTIFY-DATE            PIC X(08) VALUE SPACES.
+           05  FILLER                    PIC X(04) VALUE " at ".
+           05  PO-NOTIFY-TIME            PIC X(08) VALUE SPACES.
+           05  FILLER                    PIC X(385) VALUE SPACES.
+
+       01  MCXSNDDST-PARMS.
+           05  MCXSNDDST-USER            PIC X(8).
+           05  MCXSNDDST-SYSTEM          PIC X(8).
+           05  MCXSNDDST-MSG.
+               10  MCXSNDDST-PO          PIC X(7).
+               10  FILLER                PIC X     VALUE "-".
+               10  MCXSNDDST-RLSE        PIC X(3).
+               10  FILLER                PIC X     VALUE "-".
+               10  MCXSNDDST-RCVR        PIC X(3).
+               10  FILLER                PIC X(23) VALUE
+                                         " received at Laredo on ".
+               10  MCXSNDDST-DATE        PIC X(8).
+               10  FILLER                PIC X(4)  VALUE " at ".
+               10  MCXSNDDST-TIME        PIC X(5).
+               10  FILLER                PIC X(24) VALUE
+                                         ".  NAFTA papers missing.".
+               10  FILLER                PIC X(177) VALUE SPACES.
+
+
+      *************************************************************
+      *        D A T A B A S E   V A R I A B L E S                *
+      *************************************************************
+       COPY DBMODES IN COPYLIB.
+       COPY DBSTAT  IN COPYLIB.
+
+      *----------  ARGUMENT VALUES
+       01  CODE-ARG                      PIC X(8)   VALUE SPACES.
+       01  PO-ARG                        PIC X(14)  VALUE SPACES.
+       01  REQ-ARG                       PIC X(12)  VALUE SPACES.
+       01  PLT-ARG                       PIC X(4)   VALUE SPACES.
+       01  VEN-ARG                       PIC X(10)  VALUE SPACES.
+       COPY DBPOARG1 IN COPYLIB.
+       COPY DBPOARG2 IN COPYLIB.
+       COPY FILESTAT IN COPYLIB.
+
+       01  FRT-RLSE-RS.
+           05  FRT-INDIC                 PIC X(1)   VALUE "P".
+           05  FRT-WS-PO                 PIC X(7)   VALUE SPACES.
+           05  FRT-WS-RLSE               PIC X(3)   VALUE SPACES.
+           05  FRT-WS-RS                 PIC X(3)   VALUE "000".
+
+      *----------  ITEM VALUES
+       01  CODE-SEARCH                   PIC X(10)  VALUE "CORP-CODE;".
+       01  PO-SEARCH                     PIC X(10)  VALUE "PO-RCV-NO;".
+       01  VEN-SEARCH                    PIC X(9)   VALUE "VEN-CODE;".
+       01  MPLTINFO-SEARCH         PIC X(13)  VALUE "MPLTINFO-KEY;".
+      *************************************************************
+      *              D A T A B A S E   B U F F E R S              *
+      *************************************************************
+       COPY DRAWLOT  IN COPYLIB.
+       COPY DTALLY   IN COPYLIB.
+       COPY MPORCV   IN COPYLIB.
+       COPY DFREIGHT IN COPYLIB.
+       COPY DPOITEM  IN COPYLIB.
+       COPY DRCVITEM IN COPYLIB.
+       COPY DPORECD  IN COPYLIB.
+       COPY DDESC    IN COPYLIB.
+       COPY DVENDOR  IN COPYLIB.
+       COPY DVENDITM IN COPYLIB.
+       COPY MSTORERM IN COPYLIB.
+       COPY DPODATA  IN COPYLIB.
+       COPY DREQD    IN COPYLIB.
+       COPY DREQITM  IN COPYLIB.
+       COPY MREQ     IN COPYLIB.
+       COPY DRCVTRAK IN COPYLIB.
+       COPY DDAILYTC IN COPYLIB.
+       COPY TC323    IN COPYLIB.
+       COPY TC423    IN COPYLIB.
+       COPY TC326    IN COPYLIB.
+       COPY TC327    IN COPYLIB.
+       COPY TC325    IN COPYLIB.
+       COPY TC425    IN COPYLIB.
+       COPY TC341    IN COPYLIB.
+       COPY TC923    IN COPYLIB.
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTCUR  IN COPYLIB.
+       COPY MPLTCHAT IN COPYLIB.
+       COPY MPLTSRX  IN COPYLIB.
+       COPY MPLTFRAN IN COPYLIB.
+       COPY BUYRFILE   IN COPYLIB.
+       COPY NFTAFILE   IN COPYLIB.
+       01  BUF-REQ-FILE.
+           05  REQF-REQ-NO          PIC X(12).
+           05  REQF-USER-ID         PIC X(10).
+
+      *************************************************************
+      **           L I N K A G E    S E C T I O N                **
+      *************************************************************
+       LINKAGE SECTION.
+
+       01  BASE-MMISA                    PIC X(24).
+
+       COPY DOCKMISC IN COPYLIB.
+       COPY VCOMLINK IN COPYLIB.
+
+       01  DSET-ARRAY.
+           05  DSET-NUMBER               PIC 9(2).
+           05  DSET-INFO OCCURS 10 TIMES.
+               07  D-SET-NAME            PIC X(16).
+               07  LEEWAY-NUMBER         PIC 9(4).
+               07  CURRENT-ENTRIES       PIC 9(9) BINARY.
+               07  SET-CAPACITY          PIC 9(9) BINARY.
+               07  GO-AHEAD-FLAG         PIC X.
+               07  FILLER                PIC X.
+
+      *----------  VALID RECEIVING DEPARTMENTS AND SPOOLER NUMBERS
+       01  USER-AREA                     PIC X(960).
+       01  USER-AREA-RD  REDEFINES USER-AREA.
+           02  USER-DATA    OCCURS 80 TIMES
+                            INDEXED BY U-X.
+               05  USER-NAME-UA          PIC X(8).
+               05  RCV-DPT-UA            PIC X(4).
+      *----------  DIRECT DELIVERY ITEMS FOR SUBPLANTS
+       01  DIRDEL-AREA                   PIC X(60).
+       01  DIRDEL-TABLE REDEFINES DIRDEL-AREA.
+           02  PLANT-AREA OCCURS 6 TIMES INDEXED BY P-A.
+               03  DIRDEL-STR-DEPT       PIC X(4).
+               03  DIRDEL-DATE           PIC X(6).
+
+      *----------  SWITCH TO TELL WHETHER TO STORE RAW MATERIALS
+      *            AUTOMATICALLY UPON RECEIPT OR NOT (ONLY RAW
+      *            MATERIALS 26, 27, 28, AND 29 FOR NOW) OCT 87.
+       01  AUTOSTORE-AREA                PIC X(12).
+       01  AUTOSTORE-TABLE REDEFINES AUTOSTORE-AREA.
+           02  AUTOSTR-AREA OCCURS 4 TIMES INDEXED BY I.
+               03  AUTOSTORE-GRP         PIC X(2).
+               03  AUTOSTORE-SW          PIC X.
+
+       COPY LANGSUB  IN COPYLIB.
+       COPY ESCSUB   IN COPYLIB.
+
+       01 DOCK-OVERSHIPMENT.
+          05  CODED-OVERSHIPMENT         PIC 99.
+          05  NONCODED-OVERSHIPMENT      PIC 99.
+          05  CODED-RAW-OVERSHIPMENT     PIC 99.
+          05  RAW-MATERIAL-GROUP.
+              07  RM-GROUP OCCURS 6 TIMES PIC X(2).
+
+      *----4/30/97, ADD NEW PARM FOR ASN RECEIPT
+       01  ASN-RECEIVER.
+           05  FILLER                     PIC X(1).
+           05  ASN-PO                     PIC X(10).
+           05  ASN-RCVR                   PIC X(3).
+
+      *************************************************************
+      *************************************************************
+      *                   PROCEDURE DIVISION                      *
+      *       DISPLAY FORM THAT REQUESTS THE ITEMS BEING          *
+      *   RECEIVED.  THEN DISPLAY A FORM THAT REQUESTS THE        *
+      *   QUANTITY RECEIVED FOR EACH ITEM.  UPDATE DATABASE       *
+      *   AND PRINT EACH RECEIVING SLIP THAT IS CREATED.          *
+      *************************************************************
+      *************************************************************
+       PROCEDURE DIVISION USING   BASE-MMISA,
+                                  MISCELLANEOUS-DATA,
+                                  VIEW-COMAREA,
+                                  DSET-ARRAY,
+                                  USER-AREA,
+                                  DIRDEL-AREA,
+                                  AUTOSTORE-AREA,
+                                  LANGUAGE-PARMS,
+                                  ESC-NAME,
+                                  DOCK-OVERSHIPMENT
+                                  ASN-RECEIVER.
+       00-SRCVEXEC SECTION 01.
+
+       00-SRCVEXEC-MAIN.
+           MOVE 2                        TO  SRF-MODE.
+           PERFORM 9999-OPEN-STUFF.
+           PERFORM 100-INITIALIZE-ONE-TIME-ONLY THRU 109-EXIT.
+
+       04-CREATE-NEW-RECEIVER.
+           PERFORM 050-SHOW-NEW-RECEIVER-FORM THRU 059-EXIT.
+           IF  VIEW-LASTKEY = EXIT-PROGRAM
+               GO TO 99-EXIT.
+           IF  VIEW-LASTKEY = EXIT-AREA
+               GO TO 04-CREATE-NEW-RECEIVER.
+
+           PERFORM 200-CREATE-RECEIVING-SLIP THRU 299-EXIT.
+
+      *------4/30/97, EXIT PGM IF RECEIPT OF AN ASN
+           IF ASN-RECEIVER = SPACES
+               GO TO 04-CREATE-NEW-RECEIVER.
+       99-EXIT.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "SRCVEXEC"               TO  BU-PGM-NAME.
+           MOVE VIEW-NFNAME              TO  BU-DISPLAY-FLD (1).
+           MOVE WS-ACCUMULATOR           TO  BU-DISPLAY-FLD (2).
+           MOVE CODE-ARG                 TO  BU-DISPLAY-FLD (3).
+           MOVE WS-RECEIVER              TO  BU-DISPLAY-FLD (4).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                 VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                 BU-DISPLAY-FLDS.
+
+      ***********************************************************
+      **    THE FORM IS DISPLAYED REQUESTING A PURCHASE        **
+      **    ORDER NUMBER.  SEVERAL CHECKS ARE PERFORMED        **
+      **    ON THE NUMBER AFTER IT HAS BEEN ENTERED.           **
+      **       1.  MPORCV IS READ TO SEE IF PO EXISTS          **
+      **       2.  DPOFREIGHT IS READ TO SEE IF PO EXISTS      **
+      **           ON A FREIGHT NUMBER - THIS IS NOT ALLOWED.  **
+      **       3.  DPOFREIGHT IS READ TO SEE IF ANY OF THE     **
+      **           7 PO NUMBERS ENTERED EXISTS ON A FREIGHT    **
+      **           BILL OF A PRIOR RECEIVING SLIP- THIS IS     **
+      **           NOT ALLOWED.                                **
+      **       4.  AKRON PLANTS CHECK FOR VALID RECEIVING      **
+      **           DEPARTMENTS.                                **
+      ***********************************************************
+       050-SHOW-NEW-RECEIVER-FORM.
+PDR        MOVE "N"                      TO MISC-CAP-RCVR,
+PDR                                         RAW-MAT-PRINT.
+           IF  INIT-FLAG NOT = "Y"
+               MOVE "Y"                  TO  INIT-FLAG
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+           MOVE SPACES                   TO  DE-FIELDS-1.
+           MOVE "RCVEXEC_2"              TO  VIEW-NFNAME.
+           PERFORM 9999-GETNEXTFORM.
+           PERFORM 9999-INITFORM.
+           MOVE SPACES                   TO  MESSAGE-BUFFER.
+           PERFORM 9999-PUTWINDOW.
+
+           MOVE SPACES                   TO  RCVR-PRINT-PARAMETERS.
+           MOVE "ALL"                    TO  DE-ITM-CODE (1).
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 7
+               MOVE "000"                TO  DE-RLSE (SUB)
+           END-PERFORM.
+           IF (MISC-USER-NAME = "DOCKTX" OR MISC-USER-NAME = "A257947")
+                                         AND AN-AKRON-PLANT
+               MOVE "N"                  TO  DE-NAFTA-ANS.
+
+       052-DISPLAY-RECEIVING-SCREEN.
+      *------4/30/97 IF ASN RECEIPT, SKIP ENTERING PUCH ORDERS
+           IF ASN-RECEIVER NOT = SPACES
+               MOVE ASN-PO TO DE-PO-RLSE (1)
+               MOVE ASN-RECEIVER TO MISC-RS-ARG
+                                    WS-ACCUMULATOR
+                                    WS-RECEIVER
+               MOVE "000"        TO WS-ACCUM-RS
+               GO TO 058-RCV-DEPT-AND-PO-STATUS
+           END-IF.
+
+           MOVE 6                        TO  SRF-KEYSET.
+           MOVE "I"                      TO  SRF-FKEY (7), SRF-FKEY (1).
+
+      *----------- ENABLE NAFTA FIELD IF USER IS DOCKTX.
+           IF (MISC-USER-NAME = "DOCKTX" OR MISC-USER-NAME = "A257947")
+                                         AND AN-AKRON-PLANT
+               MOVE B"1"                 TO  IND(80)
+           ELSE
+               MOVE B"0"                 TO  IND(80).
+
+           PERFORM  9999-DO-SCREEN-1.
+
+           IF  VIEW-LASTKEY = 2
+               MOVE 16                   TO  SRF-CURSOR-FLD
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+           IF  VIEW-LASTKEY = EXIT-PROGRAM
+               GO TO 059-EXIT.
+
+
+      *---------- READ DATA BUFFER
+           MOVE 1                        TO  P-X.
+
+      *---------- DON'T ALLOW ENTRY OF RCVG SLIP FOR A BLANKET ORDER.
+           IF  DE-RLSE (1) = "999"
+      *            "THERE ARE NO RECEIVERS ON A BLANKET"
+               MOVE 20049                TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               COMPUTE SRF-ERROR-FLD = (P-X * 2) - 1
+               MOVE DE-PO-RLSE (P-X)     TO  MSG-FLD
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+      **********************************************************
+      *      UP TO 7 PURCHASE ORDER NUMBERS MAY BE ENTERED.    *
+      *      CHECK EACH ONE TO SEE IF IT EXISTS IN DATA SET    *
+      *      MPORCV.  SKIP ANY ENTRIES THAT WERE LEFT BLANK.   *
+      **********************************************************
+       054-VALIDATE-PO-RLSE.
+           IF  P-X    > 7
+               GO TO 055-CHECK-ORIGINAL-PO-FREIGHT.
+
+           IF  DE-PO (P-X) = SPACES AND P-X > 1
+               ADD 1                     TO  P-X
+               GO TO 054-VALIDATE-PO-RLSE.
+
+      *----------  MAKE SURE PO DOES NOT MATCH FIRST PO
+           IF P-X NOT = 1
+               IF DE-PO-RLSE (P-X) = DE-PO-RLSE (1)
+      *            "PO CANNOT MATCH FIRST PO ENTERED"
+                   MOVE 16163                TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   COMPUTE SRF-ERROR-FLD = (P-X * 2) - 1
+                   MOVE DE-PO-RLSE (P-X)     TO  MSG-FLD
+                   GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+      *----------  SEE IF PO EXISTS
+           MOVE DE-PO (P-X)              TO  WS-ACCUM-PO.
+           MOVE DE-RLSE (P-X)            TO  WS-ACCUM-RLSE.
+           MOVE "000"                    TO  WS-ACCUM-RS.
+           MOVE "P"                      TO  WS-ACCUM-PO-INDIC.
+           MOVE WS-ACCUMULATOR           TO  PO-ARG.
+           PERFORM 9999-GETKEY-MPORCV-PO-I.
+           IF  NO-ENTRY
+      *            "PO DOES NOT EXIST - CORRECT AND REENTER"
+               MOVE 16045                TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               COMPUTE SRF-ERROR-FLD = (P-X * 2) - 1
+               MOVE DE-PO-RLSE (P-X)     TO  MSG-FLD
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+PDR   *----------  IF THE FIRST PO ALREADY HAS 999 RECEIVERS, NO MORE
+PDR   *----------  CAN BE ADDED.  IN THIS CASE RETURN TO THE SELECTION
+PDR   *----------  SCREEN AND GIVE THE USER A MESSAGE.
+PDR        IF  P-X = 1
+PDR         IF M-PO-LAST-RCVR-X IS NUMERIC
+PDR          IF M-PO-LAST-RCVR > 998
+PDR   *       "PO HAS REACHED MAX RECEIVERS.  NO MORE WILL BE ACCEPTED.
+PDR             MOVE 16142                TO CATREAD-MSG-NUMBER
+PDR             PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+PDR             MOVE 1 TO SRF-ERROR-FLD
+PDR             MOVE DE-PO-RLSE (P-X)     TO  MSG-FLD
+PDR             GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+      *----------  DETERMINE IF ANY ITEMS EXIST ON PO
+           MOVE WS-ACCUMULATOR           TO  PO-ARG.
+           PERFORM 9999-CHAINHD-DPOITEM-PO-O.
+           PERFORM 9999-GETNEXT-DPOITEM-PO-O.
+           IF NO-ENTRY
+      *        "NO ITEMS ON PO"
+               MOVE 14107                TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE DE-PO-RLSE (P-X)     TO  MSG-FLD
+               COMPUTE SRF-ERROR-FLD = (P-X * 2) - 1
+               PERFORM 9999-RESET-DPOITEM-PO-O
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+PDR        PERFORM 9999-RESET-DPOITEM-PO-O.
+           ADD 1                         TO  P-X.
+           GO TO 054-VALIDATE-PO-RLSE.
+
+      *----------  THE FIRST PO ENTERED MAY NOT ALREADY BE ON A FREIGHT
+       055-CHECK-ORIGINAL-PO-FREIGHT.
+           MOVE DE-PO (1)                TO  WS-ACCUM-PO, WS-PO.
+           MOVE DE-RLSE (1)              TO  WS-ACCUM-RLSE, WS-RLSE.
+           MOVE WS-ACCUMULATOR           TO  PO-ARG, MISC-RS-ARG.
+           IF  DE-PO (2) = SPACES AND DE-PO (3) = SPACES
+           AND DE-PO (4) = SPACES AND DE-PO (5) = SPACES
+           AND DE-PO (6) = SPACES AND DE-PO (7) = SPACES
+               NEXT SENTENCE
+           ELSE
+               PERFORM 9999-CHAINHD-DPOFREIGHT-PO-I
+               IF GOOD-CALL
+                   PERFORM 9999-GETNEXT-DPOFREIGHT-PO-I
+                   IF GOOD-CALL AND FRT-REFERBACK > SPACES
+      *               "MULTI PO'S NOT ALLOWED-PO EXISTS ON FREIGHT#:"
+                       MOVE 13001        TO  CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE FRT-REFERBACK TO  MSG-FLD
+                       MOVE 1            TO  SRF-ERROR-FLD
+                       GO TO  052-DISPLAY-RECEIVING-SCREEN.
+
+           MOVE 2                        TO  P-X.
+      *----------  CHECK IF ANY OF THE 7 PO NUMBERS ENTERED
+      *            HAVE A PRIOR FREIGHT SEGMENT.
+       056-CHECK-FOR-PRIOR-FREIGHT.
+           IF P-X    > 7
+               MOVE DE-PO (1)            TO  WS-ACCUM-PO
+               MOVE DE-RLSE (1)          TO  WS-ACCUM-RLSE
+               GO TO 058-RCV-DEPT-AND-PO-STATUS.
+
+           MOVE DE-PO (P-X)              TO  WS-ACCUM-PO.
+           MOVE DE-RLSE (P-X)            TO  WS-ACCUM-RLSE.
+           MOVE WS-ACCUMULATOR           TO  PO-ARG.
+
+           PERFORM 9999-CHAINHD-DPOFREIGHT-PO-I.
+           IF  NO-ENTRY
+               ADD 1                     TO  P-X
+               GO TO 056-CHECK-FOR-PRIOR-FREIGHT.
+
+           PERFORM 9999-GETNEXT-DPOFREIGHT-PO-I.
+           IF GOOD-CALL
+               IF  FRT-REFERBACK NOT = SPACES
+      *       "P.O. EXISTS ON FREIGHT BILL OF RECEIVING NO."
+                   MOVE 16005            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE FRT-REFERBACK    TO  MSG-FLD
+                   COMPUTE SRF-ERROR-FLD = (P-X * 2) - 1
+                   GO TO  052-DISPLAY-RECEIVING-SCREEN.
+
+           ADD 1                         TO  P-X.
+           GO TO 056-CHECK-FOR-PRIOR-FREIGHT.
+
+       058-RCV-DEPT-AND-PO-STATUS.
+           CALL "CVALRCVR" USING MISCELLANEOUS-DATA,
+                                 USER-AREA, MESSAGE-BUFFER,
+                                 LANG-SETNUM, LANG-MSGNUM,
+                                 BUF-DPORECD, CVR-FILLER.
+           IF  LANG-SETNUM NOT = ZEROES
+               MOVE LANG-SETNUM          TO  CATREAD-MSG-SET
+               MOVE LANG-MSGNUM          TO  CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1                    TO  SRF-ERROR-FLD
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+           MOVE ZERO                     TO  A, S-X, TBL-LIMIT.
+           MOVE SPACES                   TO  SORT-TABLE, COUNT-AREA.
+           PERFORM 8100-CLEAR-SFL THRU 8100-EXIT.
+           MOVE ZERO                     TO  SFL-PTR.
+           MOVE "N"                      TO  C-ORDER-SW,
+                                             NEED-PRICE-QTY-SW,
+                                             PRINT-EXTRA-TITLES-SW,
+                                             ACCEPT-OVERSHIPMENT-SW.
+           PERFORM 300-LOAD-ITEMS THRU 349-EXIT.
+           PERFORM 9999-RESET-DPOITEM-PO-O.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               GO TO 052-DISPLAY-RECEIVING-SCREEN.
+
+      *------ CALL CCRTFILE TO CREATE A TEMPORARY FILE 'XXXXXXXXXX'
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "LOTNUM"      TO CCRTFILE-FILE.
+           MOVE  1190         TO CCRTFILE-RECORD-LENGTH.
+           MOVE 10000         TO CCRTFILE-NO-RECORDS.
+           MOVE  1000         TO CCRTFILE-INCREMENT-AMT.
+           MOVE     3         TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'LOTNUM' FAILED"
+                  TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+       059-EXIT.  EXIT.
+
+       I-N-I-T SECTION 5.
+       100-INITIALIZE-ONE-TIME-ONLY.
+      *----------  SET UP PARAMETERS FOR CALL TO "CRSPRT"
+           MOVE "N"                      TO  FOUND-ITEM-WITH-QTY
+                                             VENDOR-SW.
+           MOVE SPACES                   TO  RCVR-PRINT-ITEMS
+                                             SORT-TABLE,
+                                             MESSAGE-BUFFER.
+           MOVE 78                       TO  MSG-ACTUALEN.
+
+      *----11/10/97 JSB, NO LONGER NEEDED
+      *----------  SET UP PARAMETERS FOR CALL TO "SFREIGHT"
+      *    INITIALIZE         RCVR-FLAG   REPLACING
+      *        ALPHANUMERIC   BY          ALL "0".
+
+      *----------  GET THE NATIVE CURRENCY CODE TO USE ON TC'S
+           MOVE  "CCHM"                  TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF  NOT GOOD-CALL
+               MOVE "**"                 TO  NATIVE-CURRENCY-CODE
+           ELSE
+              IF  MPLTINFO-CUR-CONV-SW = "Y"
+                  MOVE MPLTINFO-HOME-CUR-CODE TO NATIVE-CURRENCY-CODE
+              ELSE
+                  MOVE "**"              TO  NATIVE-CURRENCY-CODE.
+           MOVE NATIVE-CURRENCY-CODE     TO  PASS-NATIVE-CURRENCY.
+
+      *----------  GET THE CHAT REQUIREMENT FLAGS
+           MOVE  "CHAT"                  TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF  NOT GOOD-CALL
+               MOVE "Y"                 TO   SAVE-RCVG-CHAT-SW
+           ELSE
+               IF MPLTINFO-CHAT-RCVG-REQUIRED = SPACES
+                  MOVE "Y"             TO   SAVE-RCVG-CHAT-SW
+               ELSE
+                  MOVE MPLTINFO-CHAT-RCVG-REQUIRED TO SAVE-RCVG-CHAT-SW.
+
+      *----------  GET THE STORES RECEIPT EXTERNAL INTERFACE SWITCHES
+      *----------  JSB, 9/3/97 FOR DES MOINES
+           MOVE  "SRX "                  TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF  NOT GOOD-CALL
+               MOVE "N"                 TO   SAVE-EXTSYS
+                                             SAVE-EXTAUTO
+           ELSE
+               MOVE MPLTINFO-SRX-EXTSYS TO SAVE-EXTSYS
+               MOVE MPLTINFO-SRX-AUTO   TO SAVE-EXTAUTO.
+
+      *---------- GET VALID FRANCHISERS, 2/18/98
+           MOVE "FRAN" TO PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF NOT GOOD-CALL
+               MOVE SPACES TO FRAN-TABLE
+           ELSE
+               MOVE MPLTINFO-FRANCHISES TO FRAN-TABLE.
+
+      *---------- FIND OUT WHO IS CREATING THE RECEIVING SLIP.
+           CALL "WHO" USING MOD, CAP, LATTR,
+             USERNAME OF WHO-VARIABLES,
+                       GRPNAME, ACCTNAME, HOMEGRP, TNUM.
+
+       109-EXIT.  EXIT.
+      *************************************************************
+      *           RETRIEVE DATA FOR EACH ITEM FROM DATABASE.      *
+      *           DISPLAY THE SCREEN REQUESTING QUANTITY REC-     *
+      *           RECEIVED FOR EACH ITEM AND VALIDATE ENTERED     *
+      *           DATA.  IF CHECKS ARE PASSED, UPDATE THE         *
+      *           DATABASE.                                       *
+      *************************************************************
+      *************************************************************
+       RECEVING-SLIP SECTION 7.
+       200-CREATE-RECEIVING-SLIP.
+
+PDR   * MODIFIED THE  FOLLOWING LINES BECAUSE THEY WERE
+PDR   * CAUSING PROBLEMS WITH THE CAPITAL ITEM PRINT LOGIC.
+
+PDR   *    MOVE "N"                      TO  MISC-CAP-RCVR,
+PDR   *                                      RAW-MAT-PRINT.
+
+      *---------- LOOP THROUGH TABLE AND DISPLAY EACH ITEM ON THE
+      *           SCREEN ONE AT A TIME.  THE USER MAY ENTER QTY
+      *           RECEIVED FOR EACH ITEM DISPLAYED.
+      *---11/10/97 INSTEAD OF LOOPING THROUGH TABLE, USE SUBFILE
+       217-CREATE-RCV-SLIP-LOOP.
+           OPEN OUTPUT LOT-NUM
+           MOVE SPACES TO LOT-NUM-REC.
+      *---11/10/97 JSB, SET SFL-PTR FOR FIRST ITEM
+           MOVE 0 TO SFL-PTR.
+           PERFORM 400-DISPLAY-ITEMS THRU 499-EXIT.
+           IF  VIEW-LASTKEY = EXIT-PROGRAM OR EXIT-AREA
+               CLOSE LOT-NUM
+               GO TO 299-EXIT.
+
+           CLOSE LOT-NUM.
+           OPEN INPUT LOT-NUM.
+
+           MOVE 0 TO SFL-PTR.
+           PERFORM 500-UPDATE-DATABASE THRU 599-EXIT.
+           MOVE 0 TO SFL-PTR.
+           PERFORM 600-CALL-BXRAWBAR THRU 600-EXIT.
+           CLOSE LOT-NUM.
+           IF  VIEW-LASTKEY = EXIT-PROGRAM OR EXIT-AREA
+               GO TO 299-EXIT.
+
+           MOVE WS-RECEIVER              TO  MISC-RS-ARG.
+           MOVE "N"                      TO  MISC-REPRINT.
+
+           IF  CALL-PRINT-PROGRAM = "Y"
+               IF DOCK-SPECIAL-PRINT = "Y"
+                   CALL "CRSPRT" USING BASE-MMISA,
+                                       MISCELLANEOUS-DATA,
+                                       RCVR-PRINT-PARAMETERS,
+                                       RCVR-PRINT-ITEMS,
+                                       VIEW-COMAREA,
+                                       LANGUAGE-PARMS,
+                                       COUNT-AREA,
+                                       ESC-NAME
+               ELSE
+                   CALL "CRSPRT2" USING BASE-MMISA,
+                                       MISCELLANEOUS-DATA,
+                                       RCVR-PRINT-PARAMETERS,
+                                       RCVR-PRINT-ITEMS,
+                                       VIEW-COMAREA,
+                                       LANGUAGE-PARMS,
+                                       COUNT-AREA,
+                                       ESC-NAME.
+
+           MOVE SPACES                   TO  RCVR-PRINT-PARAMETERS.
+           MOVE "N"                      TO  MISC-CAP-RCVR.
+
+       299-EXIT.
+           EXIT.
+
+      ******************************************************************
+      **                                                              **
+      **  L O A D   I T E M S   I N T O   T A B L E                   **
+      **                                                              **
+      ******************************************************************
+       300-LOAD-ITEMS.
+           MOVE MISC-VEN-CODE            TO  SAVE-VENCODE VEN-ARG.
+      *----------  GET VENDOR NAME TO DISPLAY ON SCREEN
+           PERFORM 9999-CHAINHD-DVENDOR-VN-I.
+           PERFORM 9999-GETNEXT-DVENDOR-VN-I.
+           IF GOOD-CALL
+               MOVE VEN-NAME             TO  SAVE-VENNAME
+           ELSE
+               MOVE SPACES               TO  SAVE-VENNAME.
+
+           MOVE 1                        TO  S-X.
+
+           MOVE PO-INTERNAL-ORDER-INDIC  TO  CDD-INTERNAL-PO
+           MOVE SPACES                   TO  SAVE-INTERNAL-FLAG.
+           IF  PO-INTERNAL-ORDER-INDIC = "X"
+               MOVE "X"                  TO  SAVE-INTERNAL-FLAG.
+           IF AN-AKRON-PLANT
+      *----------  IF PO IS A "C" ORDER, SET FLAG
+               IF  WS-PO-1 = "C"
+                   MOVE "Y"              TO  C-ORDER-SW.
+
+      *************************************************************
+      *     IF ALL ITEMS WERE REQUESTED, THEN RETREIVE ALL        *
+      *   DPOITEM AND STOREROOM RECORDS, BUT ONLY UP TO 12        *
+      *   AT A TIME. STORE THIS INFORMATION INTO A TABLE THAT     *
+      *   WILL LATER BE SORTED BY ITEM NUMBER.  THE VARIABLE      *
+      *   HOLD-ITEM-NUMBER WILL KEEP TRACK OF WHICH ITEM TO       *
+      *   CONTINUE WITH AFTER THE PREVIOUS ITEMS HAVE BEEN        *
+      *   PROCESSED.                                              *
+      *-----11/10/97 JSB
+      *       WRITE ITEMS FOUND TO A SUBFILE.  NO LONGER NEED A
+      *       LIMITATION OF 12 ITEMS PER RECEIVER
+      *************************************************************
+           MOVE WS-ACCUMULATOR           TO  PO-ARG.
+           PERFORM 9999-CHAINHD-DPOITEM-PO-O.
+       330-LOAD-ITEMS-NO-CHAINHD.
+           MOVE "XXXXXXXXXXXX"           TO  FOUND-ITM-TABLE.
+           MOVE ZERO                     TO  A.
+           PERFORM 12 TIMES
+               ADD 1                     TO  A
+               IF DE-ITM (A) = SPACES OR "0000"
+                   MOVE SPACES           TO  FOUND-ITM (A)
+               END-IF
+           END-PERFORM.
+           MOVE ZERO                     TO  A.
+
+       331-LOAD-ITEMS-LOOP.
+           IF FOUND-ITM-TABLE = SPACES
+               GO TO 340-WHAT-DID-WE-GET.
+
+           PERFORM 9999-GETNEXT-DPOITEM-PO-O.
+           IF END-OF-CHAIN
+               GO TO 340-WHAT-DID-WE-GET.
+
+           IF DE-ITM (1) NOT = "ALL"
+               MOVE 0                    TO  SUB
+               MOVE "N"                  TO  FOUND-IT
+               PERFORM UNTIL SUB = 12 OR FOUND-IT = "Y"
+                   ADD 1                 TO  SUB
+                   IF DE-ITM-CODE-CHECK (SUB) > SPACES
+                       IF DE-ITM-CODE (SUB) = ITM-CORP-CODE
+                           MOVE "Y"      TO  FOUND-IT
+                       END-IF
+                   ELSE
+                       MOVE DE-ITM (SUB) TO  RS-SHIFT-FLD
+                       CALL "TRSHIFT" USING RS-RET-CODE, RS-SHIFT-FLD
+                       MOVE RS-SHIFT-FLD-5-8 TO DE-ITM (SUB)
+                       IF DE-ITM (SUB) = ITM-NUMBER
+                           MOVE "Y"      TO  FOUND-IT
+                       END-IF
+                   END-IF
+               END-PERFORM
+               IF AN-AKRON-PLANT AND ITM-NUMBER = "9980"
+                   MOVE SPACES           TO  FOUND-ITM (SUB)
+               ELSE
+               IF FOUND-IT = "N"
+                   GO TO 331-LOAD-ITEMS-LOOP
+               ELSE
+                   MOVE SPACES           TO  FOUND-ITM (SUB).
+
+           ADD 1                         TO SFL-PTR.
+           PERFORM 370-LOAD-SORT-TABLE THRU 379-EXIT.
+           GO TO 331-LOAD-ITEMS-LOOP.
+
+       340-WHAT-DID-WE-GET.
+           IF DE-ITM (1) NOT = "ALL"
+               IF FOUND-ITM-TABLE NOT = SPACES
+      *            "DUPLICATE OR NON-EXISTING ITEM NO. FOR THIS PO"
+                   MOVE 04001            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 16               TO  SRF-ERROR-FLD
+                   GO TO 349-EXIT.
+
+           MOVE SFL-PTR                  TO  TBL-LIMIT.
+           IF TBL-LIMIT = ZERO
+               IF DE-ITM (1) = "ALL"
+      *            "*** PURCHASE ORDER CONTAINS NO ITEMS ***"
+                   MOVE 16056            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD
+                   MOVE 16               TO  SRF-ERROR-FLD
+                   GO TO 349-EXIT
+               ELSE
+      *            "*** NO ITEMS ENTERED ***"
+                   MOVE 14004            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD
+                   MOVE 16               TO  SRF-ERROR-FLD
+                   GO TO 349-EXIT.
+
+       349-EXIT. EXIT.
+
+      *************************************************************
+      *           RETRIEVE MSTOREROOM RECORD.  THE STR-CLASS      *
+      *           DETERMINES IF ITEM IS A DIRECT DELIVERY.        *
+      *************************************************************
+       360-GET-MSTOREROOM.
+           MOVE ITM-CORP-CODE            TO  CODE-ARG.
+
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+           PERFORM 9999-RESET-MSTORERM-CD-O.
+
+           IF  SD-CLASS = SPACES
+               MOVE STR-CLASS            TO  SD-CLASS.
+
+           MOVE "N"                      TO  SD-RAW-FLAG.
+
+      *----------  IF RAW MATERIAL, GET LOT NUMBER
+           IF A-KELLY-PLANT
+               IF  PO-TYPE = "2"
+                   MOVE "Y"              TO  SD-RAW-FLAG
+                   MOVE STR-RAW-LOT      TO  SD-LOT-NO
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF  SD-MAJOR-GROUP = RM-GROUP (1) OR RM-GROUP (2) OR
+                                    RM-GROUP (3) OR RM-GROUP (4) OR
+                                    RM-GROUP (5) OR RM-GROUP (6)
+               MOVE "Y"                  TO  SD-RAW-FLAG
+               MOVE STR-RAW-LOT          TO  SD-LOT-NO.
+
+      *----------  CHANGE RAW MATERIAL PRINT FLAG TO "Y" IF ANY
+      *            ITEMS ARE RAW MATERIALS.  THEN, BEFORE PRINTING,
+      *            CHECK IF THE PRINTER IS 0.  IF IT IS, DON'T PRINT.
+           IF  SD-RAW-FLAG = "Y"
+               MOVE "Y"                  TO  RAW-MAT-PRINT.
+       369-EXIT.  EXIT.
+      *************************************************************
+      *             STORE DATA INTO SORT TABLE                    *
+      *************************************************************
+       370-LOAD-SORT-TABLE.
+      *-----11/10/97 JSB, NO LONGER A TABLE, REMOVE SUBSCRIPT
+           IF  ITM-CONTAINER = "*"
+               MOVE ITM-CONTAINER        TO  SD-CONTAINER
+           ELSE
+               MOVE SPACES               TO  SD-CONTAINER.
+           MOVE ITM-NUMBER               TO  SD-ITM.
+           MOVE ITM-CORP-CODE            TO  SD-CODE.
+           MOVE ITM-QTY-ORD              TO  SD-QTY-ORD.
+           MOVE ITM-QTY-DLVR             TO  SD-PREV-DLVR.
+           MOVE ITM-UM                   TO  SD-UM.
+           MOVE ITM-SUB-DETL             TO  SD-SUB-DETL.
+           MOVE ITM-ADDL-DATA            TO  SD-ADDL-DATA,
+                                             CDD-PO-ADDL-DATA.
+           MOVE ITM-CLASS                TO  SD-CLASS.
+           MOVE ITM-UNIT-PRICE           TO  SD-UNIT-PRICE.
+           MOVE ITM-PRICE-UM             TO  SD-PRICE-UM.
+           MOVE ITM-QTY-STORED           TO  SD-PREV-STORED.
+           MOVE ITM-MASTER-STOCK         TO  SD-MASTER-STOCK.
+           MOVE ITM-CHAT-NO              TO  SD-CHATNO.
+           IF A-KELLY-PLANT
+               MOVE ITM-KELLY-PO-QTY     TO  SD-PO-QTY-ORD
+               MOVE ITM-KELLY-PO-UM      TO  SD-KELLY-PO-UM.
+           MOVE ZEROS                    TO  SD-STR-QTY-DLVR
+                                             SD-PO-QTY-DLVR
+                                             SD-PRICE-QTY-DLVR
+                                             SD-DE
+                                             SD-CONTAINER-QTY.
+           MOVE SPACES                   TO  SD-CONTAINER-UM.
+           MOVE SPACES                   TO  SD-RAW-FLAG,
+                                             SD-TALLY.
+
+      *-------4/30/97, IF ASN RECEIPT GET ASN QTY AND UM
+           IF ASN-RECEIVER NOT = SPACES
+               MOVE ASN-RECEIVER TO PORCVNO OF DRCVITEM-PO-REC-O
+               MOVE ITM-NUMBER TO ITEMNO OF DRCVITEM-PO-REC-O
+               READ DRCVITEM-PO-O INTO BUF-DRCVITEM
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS  = "00"
+                   MOVE RCV-ASN-QTY TO SD-PO-QTY-DLVR
+                   MOVE RCV-ITEM-UM TO SD-DE-UM
+               END-IF
+           END-IF.
+
+      *----------  IF SUB-DETL > 10000, THEN IT IS CAPITAL ITEM
+      *            AND WILL BE PRINTED ON ACCOUNTING PRINTER
+           MOVE ITM-ADDL-DATA            TO  RSHIFTED-ADDL-DATA.
+           CALL "TRSHIFT" USING RET-CODE, RSHIFTED-ADDL-DATA.
+           IF  RSHIFTED-NUMERIC IS NOT NUMERIC
+               NEXT SENTENCE
+           ELSE
+              IF  RSHIFTED-NUMERIC > 10000
+                  MOVE "Y"               TO  PASS-CAPITAL-ITEM (SFL-PTR)
+                  MOVE "Y"               TO  MISC-CAP-RCVR.
+
+           MOVE SPACES                   TO  SD-LOT-NO,
+                                             SD-SYSTEM-LOT.
+           MOVE "Y"                      TO  SD-DIRECT-SW.
+           MOVE "N"                      TO  SD-RAW-FLAG.
+           MOVE PO-PRIME                 TO  CDD-PO-PRIME.
+           IF  SD-CODE NOT = "NON-STR"
+               PERFORM 360-GET-MSTOREROOM THRU 369-EXIT
+               CALL "CDDCHECK" USING PLT-NUMBER,
+                                    DIRDEL-AREA,
+                                    ITM-SUB-DETL,
+                                    CDD-PO-ADDL-DATA,
+                                    CDD-PO-PRIME,
+                                    CDD-INTERNAL-PO,
+                                    PO-CO,
+                                    SD-CLASS,
+                                    RETURN-FLAGS
+                                    PO-SUB
+              MOVE RETURN-DD             TO  SD-DIRECT-SW.
+
+      *-----11/10/97 JSB, WRITE SUBFILE RECORD INSTEAD OF TABLE
+           WRITE SUBFILE DISPLAY-REC FROM SD-LINE
+             FORMAT IS "RCVSFL"
+             INDICATORS ARE SRF-INDICATORS
+           END-WRITE.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON SFL WRITE LOAD ITEMS" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP
+           END-IF.
+      *-----
+
+       379-EXIT.  EXIT.
+
+
+      *****************************************************
+      *    RETRIEVE DATA TO WRITE THE SECOND SCREEN
+      *****************************************************
+       400-DISPLAY-ITEMS.
+           MOVE ZEROS                    TO  A,
+                                             LOT-CTR,
+                                             DESC-SUB
+                                             VIEW-LASTKEY.
+           MOVE ZERO                     TO  SFL-PTR.
+           MOVE "N"                      TO  PRINT-PRICE-SW.
+           MOVE "N"                      TO  FOUND-ITEM-WITH-QTY.
+
+       405-WRITE-NEXT-ITEM.
+           MOVE SPACES                   TO  DE-FIELDS-2.
+           MOVE "0"                      TO  VAL-MARK-FLAG.
+           IF VIEW-LASTKEY = 1
+               GO TO 499-EXIT.
+           IF VIEW-LASTKEY = PREVIOUS-KEY
+               IF SFL-PTR NOT = 1
+                   SUBTRACT 1 FROM SFL-PTR
+               END-IF
+           ELSE IF VIEW-LASTKEY = 0 OR NEXT-KEY
+               IF SFL-PTR < TBL-LIMIT
+                   ADD 1 TO SFL-PTR
+               ELSE
+                   IF VIEW-LASTKEY = 0
+                       GO TO 499-EXIT.
+           IF SFL-PTR > GREATEST-ITEM
+               MOVE SFL-PTR TO GREATEST-ITEM.
+
+      *-----INITIALIZE SUBFILE TO READ FROM
+           MOVE B"0" TO IND(70)
+                        IND(71)
+                        IND(72)
+                        IND(73).
+           WRITE SUBFILE DISPLAY-REC FROM SD-LINE
+             FORMAT IS "RCVSFLC"
+             INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON WRITING SFLC" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+
+      *---11/10/97 JSB, GET SUBFILE RECORD FOR ITEM
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+      *---
+
+           IF  SD-ITM  = ZEROS
+               GO TO 405-WRITE-NEXT-ITEM.
+
+           IF  SD-UM  = "LT" OR "AS"
+               PERFORM 460-DISPLAY-LOT-SCREEN THRU 469-EXIT
+               IF  VIEW-LASTKEY = EXIT-PROGRAM OR EXIT-AREA
+                   GO TO 499-EXIT
+               ELSE
+               IF VIEW-LASTKEY = 1
+                   WRITE LOT-NUM-REC
+                   GO TO 499-EXIT
+               ELSE
+                   WRITE LOT-NUM-REC
+                   GO TO 405-WRITE-NEXT-ITEM.
+
+      ************************************************************
+      *     FIND AND GET ALL DESCRIPTION LINES (LOCATED IN THE   *
+      *      DATASET DDESC) & STORE IN THE HOLD FILE             *
+      ************************************************************
+           MOVE SPACES                   TO  DE-FIELDS-3.
+           MOVE 1                        TO  S-X.
+
+           IF  SD-CODE = "NON-STR"
+               MOVE 7                    TO  CNDESC-LINES-TO-GET
+               MOVE 0                    TO  CNDESC-LINES-GOT
+               MOVE SPACES               TO  CNDESC-LINE
+               MOVE SD-ITM               TO  WS-SD-ITM
+               CALL "CNDESC" USING BASE, PO-ARG, WS-SD-ITM,
+                 CNDESC-DATA
+               PERFORM 426-MOVE-NONCODED-DESC CNDESC-LINES-GOT TIMES
+           ELSE
+               MOVE SPACES               TO  CDESC-DATA
+      *---------(JSB 3/10/98) CHANGE FROM 7 TO 6
+               MOVE 6                    TO  CDESC-LINES-TO-GET
+               MOVE "P"                  TO  CDESC-LANGUAGE-OPTION
+               MOVE "F"                  TO  CDESC-DESC-OPTION
+               MOVE "S"                  TO  CDESC-MANUFACT-OPTION
+               MOVE "R"                  TO  CDESC-LOCAL-DESC-OPTION
+               MOVE SD-CODE              TO  CODE-ARG
+               CALL "CDESC" USING RET-CODE, BASE, STATUS-AREA,
+                           BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA
+               PERFORM 425-MOVE-CODED-DESC CDESC-LINES-GOT TIMES
+
+      *-----GET FIRST DPODATAITM LINE FOR DESCRIPTION (JSB 3/10/98)
+               MOVE SD-ITM TO ITEMSEQNO OF DPODATAITM-PO-REC-I(1:4)
+               MOVE "01" TO ITEMSEQNO OF DPODATAITM-PO-REC-I(5:2)
+               MOVE PO-ARG TO PORCVNO OF DPODATAITM-PO-REC-I
+               READ DPODATAITM-PO-I INTO BUF-DPODATAITM
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE SPACES TO QTY-DESC (S-X)
+               ELSE
+                   MOVE DATAITM-INFO TO QTY-DESC (S-X).
+
+           GO TO 430-FILL-IN-REST-OF-SCREEN.
+
+       425-MOVE-CODED-DESC.
+           MOVE CDESC (S-X)              TO  QTY-DESC (S-X).
+           ADD 1                         TO  S-X.
+
+       426-MOVE-NONCODED-DESC.
+           MOVE CNDESC (S-X)             TO  QTY-DESC (S-X).
+           ADD 1                         TO  S-X.
+      ************************************************************
+      *         FILL THE QUANTITY RECEIVED SCREEN                *
+      ************************************************************
+       430-FILL-IN-REST-OF-SCREEN.
+      *---11/10/97 JSB, REMOVE SUBSCRIPT FOR SD-
+           MOVE DE-PO (1)                TO  VAL-PO.
+           MOVE DE-RLSE (1)              TO  VAL-RLSE.
+           MOVE SD-ITM                   TO  QTY-ITM.
+           MOVE SD-CODE                  TO  QTY-CODE.
+           MOVE SD-QTY-ORD               TO  QTY-ORD.
+           MOVE SD-PREV-DLVR             TO  QTY-PREV-DLVR.
+           MOVE SD-UM                    TO  QTY-ORD-UM, QTY-UM.
+           IF SD-DE-UM NOT = SPACES
+               MOVE SD-DE-UM             TO QTY-UM
+           ELSE
+               MOVE SD-UM                TO QTY-UM.
+           IF SD-CONTAINER-UM NOT = SPACES
+               MOVE SD-CONTAINER-UM  TO QTY-CONT-UM.
+           IF SD-MATERIAL-COMPLETE NOT = SPACES
+               MOVE SD-MATERIAL-COMPLETE TO QTY-MATERIAL-COMPLETE.
+           MOVE SD-PO-QTY-DLVR           TO QTY-DLVR.
+           MOVE SD-PRICE-QTY-DLVR        TO QTY-PRICE.
+           MOVE SD-CONTAINER-QTY         TO QTY-CONT-DLVR.
+
+           MOVE SD-CHATNO                TO QTY-CHATNO.
+
+           IF  SD-LOT-NO = SPACES
+               MOVE "0000"               TO  SD-LOT-NO.
+
+           IF  SD-RAW-FLAG = "N"
+      *---  MOVE "NO" TO SCREEN ELSE MOVE "YES" TO SCREEN
+               MOVE 14117                TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER       TO  QTY-RAW-YESNO
+               MOVE SPACES               TO  QTY-RAW-LOT
+           ELSE
+               MOVE 25028                TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER       TO  QTY-RAW-YESNO
+               MOVE "S   "               TO  QTY-RAW-LOT.
+
+      *----------  IF KELLY PLANT, FIND CONVERSION FACTOR AND CONVERT
+      *            ALL STORES QUANTITIES TO PO QUANTITIES.  IF A
+      *            BLANKET ORDER, THEN PO QTY ORDERED IS ALWAYS A ZERO,
+      *            SO USE A CONVERSION FACTOR OF 1 SINCE QTY WILL
+      *            ALWAYS BE THE SAME FOR STORES AND PO QUANTITY IN
+      *            THIS CASE.
+           IF A-KELLY-PLANT
+               IF  PO-BLANKET-INDIC = "B" OR
+                   PO-BLANKET-INDIC = "Y"
+                   MOVE 1                TO  SD-KELLY-CF
+               ELSE
+                 IF SD-QTY-ORD = ZERO OR SD-PO-QTY-ORD = ZERO
+                     MOVE 1 TO SD-KELLY-CF
+                 ELSE
+                     DIVIDE SD-QTY-ORD BY SD-PO-QTY-ORD
+                             GIVING SD-KELLY-CF ROUNDED.
+           IF A-KELLY-PLANT
+               DIVIDE SD-PREV-DLVR BY SD-KELLY-CF
+                     GIVING CHECK-QTY ROUNDED
+               MOVE CHECK-QTY            TO  QTY-PREV-DLVR
+               MOVE SD-PO-QTY-ORD        TO  QTY-ORD
+               MOVE SD-KELLY-PO-UM       TO  QTY-UM, QTY-ORD-UM.
+      *----- IF THE PO IS A C-ORDER AND THE ORDERED UM IS DIFFERENT
+      *----- THAN THE PRICE UM, THE USER MUST GIVE US THE QUANTITY
+      *----- IN BOTH UM.  THE "NEED-PRICE-QTY-SW" IS SET WHEN BOTH
+      *----- OF THESE INSTANCES EXIST (C-ORDER & TWO DIFFERENT UM)
+           IF AN-AKRON-PLANT
+               IF  C-ORDER
+                   IF  SD-UM  =  SD-PRICE-UM
+                       MOVE "N"          TO  NEED-PRICE-QTY-SW
+                   ELSE
+                       MOVE 01023        TO  CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE MESSAGE-BUFFER TO QTY-C-ORDER-INSTRUCTION
+                       MOVE SD-PRICE-UM    TO QTY-PRICE-UM
+                       MOVE "Y"          TO  PRINT-EXTRA-TITLES-SW,
+                                            NEED-PRICE-QTY-SW.
+
+      *------4/30/97, MOVE ASN QTY AND UM TO SCREEN VARIABLES
+           IF ASN-RECEIVER NOT = SPACES
+               MOVE SD-PO-QTY-DLVR TO QTY-DLVR
+               MOVE SD-DE-UM TO QTY-UM
+           END-IF.
+
+      *----------  CHOOSE WHICH SCREEN TO DISPLAY
+           IF AN-AKRON-PLANT
+               IF  NEED-PRICE-QTY
+                   IF  SD-CONTAINER = "*"
+                       MOVE "CCON_7"     TO  VIEW-NFNAME
+                   ELSE
+                       MOVE "C_ORDER_CODED_7" TO VIEW-NFNAME.
+           IF AN-AKRON-PLANT
+               IF  NOT NEED-PRICE-QTY
+                   IF  SD-CONTAINER = "*"
+                       MOVE "CCON_3"     TO  VIEW-NFNAME
+                   ELSE
+                       MOVE "CODERS_3"   TO  VIEW-NFNAME.
+           IF  NOT AN-AKRON-PLANT
+               IF  SD-CONTAINER = "*"
+                   MOVE "CCON_3"         TO  VIEW-NFNAME
+               ELSE
+                   MOVE "CODERS_3"       TO  VIEW-NFNAME.
+
+           PERFORM 9999-GETNEXTFORM.
+
+           IF  SD-CONTAINER = "*"
+               MOVE "RETURNABLE CONTAINER"  TO QTY-CONTAINER-LIT
+           ELSE
+               MOVE SPACES               TO  QTY-CONTAINER-LIT.
+           PERFORM 9999-INITFORM.
+
+           MOVE SPACES                   TO  MESSAGE-BUFFER.
+           PERFORM 9999-PUTWINDOW.
+
+       438-VPUTBUFFER.
+           MOVE  SAVE-VENCODE            TO  QTY-VENCODE.
+           MOVE  SAVE-VENNAME            TO  QTY-VENNAME.
+      *************************************************************
+      *     DISPLAY THE ITEM RECEIVING SLIP. IF QTY RECEIVED IS   *
+      *     0, SKIP THIS ITEM AND DISPLAY RECEIVING SLIP FOR      *
+      *     NEXT ITEM.  THE FOLLOWING CHECKS ARE PERFORMED:       *
+      *        1.  VALIDATE RECEIVING UNIT OF MEASURE             *
+      *        2.  CHECK FOR OVERSHIPMENT                         *
+      *                                                           *
+      *     IF AKRON AND THE QTY IS AN OVERSHIPMENT, A WARNING    *
+      *     MESSAGE IS DISPLAYED AND THE USER MAY ACCEPT THE      *
+      *     OVERSHIPMENT IF HE DESIRES.                           *
+      *************************************************************
+       440-SHOW-FORM.
+           MOVE " AFE"                   TO  SRF-FKEY (1).
+           MOVE " AFE"                   TO  SRF-FKEY (6).
+           MOVE " AFE"                   TO  SRF-FKEY (4).
+           MOVE " AFE"                   TO  SRF-FKEY (5).
+           IF  SD-CODE = "NON-STR"
+               MOVE 1                    TO  VIEW-LABELOPT
+               IF AN-AKRON-PLANT
+                   MOVE 1                TO  FORM-OR-GLOBAL
+                   MOVE 2                TO  KEY-NUM
+                   MOVE " ACCEPT OVERSHIP" TO KEY-LABEL
+                   PERFORM 9999-SETKEYLABEL.
+
+           MOVE 0                        TO  SRF-KEYSET.
+           MOVE "I"                      TO  SRF-FKEY (HP-F3-KEY).
+           IF  SD-CODE = "NON-STR"
+               IF AN-AKRON-PLANT
+                   IF  VAL-ACCEPT-OVERSHIPMENT-SW = "Y"
+                       NEXT SENTENCE
+                   ELSE
+                       MOVE "I"          TO  SRF-FKEY (2)
+               ELSE
+                   MOVE "I"              TO  SRF-FKEY (2)
+           ELSE
+               MOVE "I"                  TO  SRF-FKEY (2).
+
+           IF  VAL-MARK-FLAG = "1"
+               NEXT SENTENCE
+           ELSE
+              IF AN-AKRON-PLANT
+                  IF  QTY-FLASH-COUNT-MSG = SPACES
+                      MOVE "I"           TO  SRF-FKEY (6)
+                  ELSE
+                      NEXT SENTENCE
+              ELSE
+                  MOVE "I"               TO  SRF-FKEY (6).
+
+
+      ******************************************************************
+      **                                                              **
+      **    R E A D   R E C E I V I N G   S C R E E N                 **
+      **                                                              **
+      ******************************************************************
+           MOVE 0                        TO  SRF-KEYSET.
+      **** MOVE "I"                      TO  SRF-FKEY (2),
+           MOVE "I"                      TO  SRF-FKEY (6).
+           MOVE " "                      TO  SRF-FKEY (8).
+           PERFORM 9999-DO-SCREEN-2.
+
+           IF VIEW-LASTKEY = 8
+               MOVE PO-ARG    TO  SRCVDESC-PO
+               MOVE SD-ITM    TO  SRCVDESC-ITEM
+               MOVE SD-CODE   TO  SRCVDESC-CODE
+               CALL "SRCVDESC" USING SRCVDESC-PARMS VIEW-COMAREA
+               GO TO 440-SHOW-FORM.
+
+      *----------  IF AKRON HAS JUST SEEN THE "QTY COUNT" MESSAGE, THEN
+      *            THEY MAY ONLY ENTER F6
+           IF AN-AKRON-PLANT
+               IF  QTY-FLASH-COUNT-MSG NOT = SPACES
+                   IF  VIEW-LASTKEY NOT = 6
+      *******        "INVALID KEY - DEPRESS F6"
+                       MOVE 09093        TO  CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 1            TO  SRF-ERROR-FLD
+                       GO TO 440-SHOW-FORM
+                   ELSE
+                       GO TO 405-WRITE-NEXT-ITEM.
+
+      *----------  IF F6 FLAG IS SET, USER WANTS TO MARK ITEM COMPLETE
+      *            EVEN THOUGH IT IS < 90% DELIVERED.
+           IF  VAL-MARK-FLAG = "1" AND VIEW-LASTKEY = 6
+               MOVE "C"                  TO  VAL-MARK-FLAG
+               GO TO 448-READ-BUFFER.
+
+           IF  VIEW-LASTKEY = 2
+               MOVE "Y"                  TO  ACCEPT-OVERSHIPMENT-SW
+               GO TO 448-READ-BUFFER.
+
+           IF  VIEW-LASTKEY EQUAL EXIT-PROGRAM OR EXIT-AREA
+               GO TO 499-EXIT.
+
+       448-READ-BUFFER.
+      *************************************************************
+      *                 VALIDATE INPUT                            *
+      *************************************************************
+      *---- VALIDATE/RIGHTSHIFT QUANTITIES AND PRICE
+           CALL "CNUM84" USING QTY-DLVR, MESSAGE-BUFFER, LANGUAGE-PARMS.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               GO TO 440-SHOW-FORM.
+           CALL "CNUM124" USING QTY-PRICE, MESSAGE-BUFFER,
+             LANGUAGE-PARMS.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               GO TO 440-SHOW-FORM.
+           CALL "CNUM84" USING QTY-CONT-DLVR, MESSAGE-BUFFER,
+             LANGUAGE-PARMS.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               GO TO 440-SHOW-FORM.
+
+           IF  QTY-DLVR = ZERO AND QTY-DLVR = SD-PO-QTY-DLVR
+               GO TO 405-WRITE-NEXT-ITEM
+           ELSE
+               MOVE "Y" TO FOUND-ITEM-WITH-QTY.
+
+           MOVE ACCEPT-OVERSHIPMENT-SW  TO VAL-ACCEPT-OVERSHIPMENT-SW.
+           MOVE "N"                      TO  CALLING-ROUTINE-FLAG.
+           MOVE ZEROES                   TO  LANG-SETNUM, LANG-MSGNUM,
+                                             CORRECTION-RS-PREV-DLVR.
+      *----- SET PASS-DOCK-TRANS TO "MD" TO SKIP OVERSHIP CHECK FOR ASN
+      *----- REMOVED THIS LOGIC 12/18/98 PER DANVILLE REQUEST.
+      **** IF ASN-RECEIVER NOT = SPACES
+      ****     MOVE "MD" TO PASS-DOCK-TRANS.
+           CALL "CVALITEM" USING     MISCELLANEOUS-DATA,
+                                     SRF-ERROR-FLD, LANG-SETNUM,
+                                     LANG-MSGNUM,
+                                     PASSED-FLAGS,
+                                     BUF-DPORECD,
+                                     DE-FIELDS-2,
+                                     SD-LINE,
+                                     DOCK-OVERSHIPMENT.
+
+           IF  LANG-SETNUM NOT = 0
+               MOVE LANG-SETNUM          TO  CATREAD-MSG-SET
+               MOVE LANG-MSGNUM          TO  CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 440-SHOW-FORM.
+
+      *----------  ITEM PASSED ALL CHECKS
+           MOVE QTY-UM                   TO  SD-DE-UM,
+                                             PASS-DLV-UM (SFL-PTR).
+           MOVE QTY-PRICE                TO  SD-PRICE-QTY-DLVR,
+                                             PASS-PRICE-QTY (SFL-PTR).
+           MOVE SD-ITM                   TO  PASS-ITEM (SFL-PTR).
+           MOVE SD-PRICE-UM              TO  PASS-PRICE-UM (SFL-PTR).
+           MOVE QTY-CONT-DLVR            TO  SD-CONTAINER-QTY
+                                            PASS-CONTAINER-QTY(SFL-PTR).
+           MOVE QTY-CONT-UM              TO  SD-CONTAINER-UM
+                                             PASS-CONTAINER-UM(SFL-PTR).
+           MOVE QTY-TIRE-MOLD            TO  SD-TIRE-MOLD.
+           MOVE QTY-COMMENT              TO  SD-ITEM-COMMENT.
+           MOVE QTY-TALLY                TO  SD-TALLY.
+           MOVE QTY-CHATNO               TO  SD-CHATNO.
+
+           IF  SD-CONTAINER NOT = "*"
+               MOVE ZEROES               TO PASS-CONTAINER-QTY(SFL-PTR)
+               MOVE SPACES               TO PASS-CONTAINER-UM (SFL-PTR).
+
+           IF  PRINT-EXTRA-TITLES
+               MOVE "Y"                  TO  PRINT-PRICE-SW
+           ELSE
+               MOVE SPACES               TO  PASS-PRICE-UM (SFL-PTR)
+               MOVE ZEROES               TO  PASS-PRICE-QTY (SFL-PTR).
+
+           MOVE "Y"                      TO  FOUND-ITEM-WITH-QTY.
+
+      *---------- CHECK IF ITEM SHOULD BE REFERENCED TO A CHAT NUMBER
+           IF SAVE-RCVG-CHAT-SW = "Y"
+               IF SD-CODE = "NON-STR"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE SD-CODE    TO  PASS-CORP-CODE
+                   MOVE SD-CHATNO  TO  RETURN-CHAT-NO
+                   CALL "SCHATREF" USING PASS-CORP-CODE,
+                                     RETURN-CHAT-NO,
+                                     VIEW-COMAREA
+                   IF RETURN-CHAT-NO NOT = "NOTFND"
+                       IF RETURN-CHAT-NO NOT = SPACES
+                           MOVE RETURN-CHAT-NO TO  SD-CHATNO
+                       ELSE
+      *---------------------- CHAT NUMBER MUST BE SELECTED
+                           MOVE   3  TO  CATREAD-MSG-SET
+                           MOVE 214 TO  CATREAD-MSG-NUM
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE 53 TO SRF-ERROR-FLD
+                           GO TO 440-SHOW-FORM.
+
+      *----11/10/97 JSB, REWRITE SUBFILE RECORD FOR ITEM
+           REWRITE SUBFILE DISPLAY-REC FROM SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS
+           END-REWRITE.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "ERROR REWRITING SFL RECORD" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+      *----
+
+           GO TO 405-WRITE-NEXT-ITEM.
+
+       457-CHECK-AUDITING-CONDITIONS.
+           IF  WORK-PRICE > 19
+               IF  QTY-DLVR < 76
+                   IF  SD-UNIT-PRICE  > 2
+                       GO TO 460-FLASH-COUNT-MSG.
+
+      *----------  FAILED AUDIT CHECKS SO DO NOT FLASH MESSAGE
+           GO TO 405-WRITE-NEXT-ITEM.
+
+      *----------  FLASH THE MSG "QUANTITY COUNT REQUIRED"
+       460-FLASH-COUNT-MSG.
+           MOVE "Y"                      TO  COUNT-ITEM (SFL-PTR).
+           MOVE 17022                    TO  CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE MESSAGE-BUFFER           TO  QTY-FLASH-COUNT-MSG
+           MOVE 004020                   TO  CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1                        TO  SRF-ERROR-FLD
+           GO TO 438-VPUTBUFFER.
+
+      *************************************************************
+      *                L O T   S C R E E N                        *
+      *************************************************************
+       460-DISPLAY-LOT-SCREEN.
+           MOVE "LOTUM_5"                TO  VIEW-NFNAME.
+
+           PERFORM 9999-GETNEXTFORM.
+           PERFORM 9999-INITFORM.
+
+           MOVE SPACES                   TO  MESSAGE-BUFFER.
+           PERFORM 9999-PUTWINDOW.
+
+      * ---------  MOVE DATA TO SCREEN
+           MOVE SPACES                   TO  DE-FIELDS-3.
+           MOVE SAVE-VENNAME             TO  VIEW-VENNAME.
+           MOVE SAVE-VENCODE             TO  VIEW-VENCODE.
+           MOVE DE-PO (1)                TO  VIEW-PO.
+           MOVE DE-RLSE (1)              TO  VIEW-RLSE.
+           MOVE SD-ITM                   TO  VIEW-ITEM.
+           MOVE 6                        TO  SRF-KEYSET.
+           MOVE "I"                      TO  SRF-FKEY (2).
+       462-SHOW.
+           PERFORM 9999-DO-SCREEN-3.
+           ADD 1                         TO  LOT-CTR.
+
+           MOVE SD-ITM                   TO  LOT-ITEM.
+           IF  DE-DESCRIPTIONS = SPACES
+               MOVE ZEROES               TO  SD-PO-QTY-DLVR,
+                                             SD-STR-QTY-DLVR
+           ELSE
+               MOVE .0001                TO  SD-PO-QTY-DLVR,
+                                             SD-STR-QTY-DLVR.
+           MOVE DE-LOT-MOLD              TO  SD-TIRE-MOLD.
+           IF  DE-LOT-COMPLETE = "X"
+               MOVE "Y"                  TO  SD-MATERIAL-COMPLETE.
+           MOVE ZERO                     TO  DESC-SUB.
+
+       465-PROCESS-LOT-DATA.
+           PERFORM  UNTIL  DESC-SUB >= 15
+                    ADD  1               TO  DESC-SUB
+                    IF  DE-DESC(DESC-SUB) > SPACES
+                        MOVE  DE-DESC(DESC-SUB) TO LOT-DESC(DESC-SUB)
+                        MOVE  "Y"        TO  FOUND-ITEM-WITH-QTY
+                    END-IF
+           END-PERFORM.
+
+      *----11/10/97 JSB, REWRITE SUBFILE RECORD FOR ITEM
+           REWRITE SUBFILE DISPLAY-REC FROM SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS
+           END-REWRITE.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "ERROR REWRITING SFL RECORD" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+      *----
+
+       469-EXIT.
+           EXIT.
+       499-EXIT.
+           EXIT.
+      *************************************************************
+      *************************************************************
+      *                   UPDATE DATABASE                         *
+      *     THE FOLLOWING DATASETS ARE UPDATED:                   *
+      *       1.  DPOITEM  -       ACCUMULATOR ENTRY              *
+      *                    - QTY AND DATE DELIVERED               *
+      *                    - IF ITEM IS DIRECT DELIVERY, UPDATE   *
+      *                      QTY AND DATE STORED.                 *
+      *                    - IF ITEM IS COMPLETED RAW MATERIAL,   *
+      *                      UPDATE ONORDER WITH QTY RECEIVED.    *
+      *                            CREATE RECEIVING SLIP          *
+      *                    - DBPUT NEW RECORD                     *
+      *       2.  DVENDITM - CALCULATE LEAD TIME                  *
+      *       3.  MSTORERM - ONORDER                              *
+      *                      UNPAID ONORDER                       *
+      *                      ACTIVITY DATE                        *
+      *                      LAST DELIVERY TIME                   *
+      *       4.  DDAILYTC - CREATE TRANSACTION 323               *
+      *                    - IF ITEM IS C-ORDER AND UM NOT =      *
+      *                      PRICE UM, WRITE TRANSACTION 327      *
+      *                                                           *
+      *     USAGE FILE IS UPDATE WITH QUANTITY RECEIVED.          *
+      *                                                           *
+      *     SUBROUTINE SFREIGHT.SOURCE IS CALLED TO UPDATE        *
+      *     DPOFREIGHT, WRITE TRANSACTIONS 350 AND 353, UPDATE    *
+      *     MPORCV WITH NEW RECEIVING SLIP NUMBER AND CREATE      *
+      *     A NEW MPORCV RECORD WITH CURRENT NUMBER.              *
+      *************************************************************
+      *************************************************************
+       UPDATE-ALL SECTION 06.
+       500-UPDATE-DATABASE.
+           IF ASN-RECEIVER NOT = SPACES
+               MOVE ASN-RECEIVER TO WS-RECEIVER.
+           IF  NO-ITEM-WITH-QTY
+               MOVE "N"                  TO  CALL-PRINT-PROGRAM
+               GO TO 599-EXIT
+           ELSE
+               MOVE "Y"                  TO  CALL-PRINT-PROGRAM
+               MOVE "N"                  TO  FOUND-ITEM-WITH-QTY.
+
+           IF THE-ASHEBORO-PLANT
+               MOVE SPACES               TO  FRT-PO-RCV-STAT
+               GO TO 516-FIND-FREIGHT.
+
+      *----------  DETERMINE WHETHER PO CONTAINS ALL STORERROOM
+      *            ITEMS, ALL DIRECT CHARGE ITEMS, OR BOTH.
+      *            ASSIGN THE CORRECT MPORCV STATUS.
+           MOVE 0                        TO SFL-PTR
+                                            NET-RAW-WEIGHT.
+
+       510-DETERMINE-PO-TYPE.
+           IF SFL-PTR < TBL-LIMIT
+               ADD 1                     TO SFL-PTR
+           ELSE
+               GO TO 515-FOUND-PO-TYPE.
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL,PO-TYPE" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+
+           IF  SD-DIRECT-SW   =  "Y"
+               MOVE "Y"                  TO  DIRECT-CHARGE-SW
+           ELSE
+           IF  SD-DIRECT-SW  = "N"
+               MOVE "Y"                  TO  STOREROOM-ITEM-SW.
+
+      *---11/10/97 JSB, COMPUTE TOTAL RAW WEIGHT TO PASS TO SFREIGHT
+      *---              INSTEAD OF PASSING SORT TABLE
+           IF SD-UM = "LB" OR SD-KELLY-PO-UM = "LB"
+             IF SD-RAW-FLAG = "Y"
+                 ADD SD-PO-QTY-DLVR TO NET-RAW-WEIGHT.
+
+           GO TO 510-DETERMINE-PO-TYPE.
+
+       515-FOUND-PO-TYPE.
+           IF  DIRECT-CHARGE AND STOREROOM-ITEM
+               MOVE "MX  "               TO  FRT-PO-RCV-STAT
+           ELSE
+           IF  DIRECT-CHARGE AND NOT STOREROOM-ITEM
+               MOVE "XX  "               TO  FRT-PO-RCV-STAT
+           ELSE
+           IF  NOT DIRECT-CHARGE AND STOREROOM-ITEM
+               MOVE "    "               TO  FRT-PO-RCV-STAT.
+      *************************************************************
+      *    CALL SFREIGHT:                                         *
+      *                    WRITES FREIGHT SCREEN                  *
+      *                    UPDATES DPOFREIGHT                     *
+      *                    PASSES BACK FREIGHT INFO TO PRINT      *
+      *************************************************************
+       516-FIND-FREIGHT.
+      *---11/10/97 REMOVE SORT TABLE PARAMETER AND REPLACE WITH
+      *            NET RAW MATERIAL WEIGHT
+      *            REMOVE RAW-MATERIAL-GROUP AS A PARAMETER
+      *            REMOVE ANY-MORE-ITEMS-FLAG AS A PARAMETER
+           CALL "SFREIGHT" USING VIEW-COMAREA,
+                                 DE-FIELDS-1-PO,
+                                 MISCELLANEOUS-DATA,
+                                 PASS-FREIGHT-DATA,
+                                 LANGUAGE-PARMS,
+      *                          SORT-TABLE
+                                 NET-RAW-WEIGHT,
+      *                          RAW-MATERIAL-GROUP,
+      *                          ANY-MORE-ITEMS-FLAG,
+      *                          RCVR-FLAG
+                                 ASN-RECEIVER.
+
+           IF  FRT-F8-EXIT-SW = "Y"
+               MOVE "N"                  TO  FRT-F8-EXIT-SW
+               GO TO 599-EXIT.
+
+           MOVE DE-PO (1)                TO  WS-PO.
+           MOVE DE-RLSE (1)              TO  WS-RLSE.
+           MOVE "P"                      TO  WS-PO-INDIC.
+           MOVE FRT-RS-NUMBER            TO  WS-RS.
+           MOVE "N"                      TO  DIRECT-CHARGE-SW,
+                                      STOREROOM-ITEM-SW.
+
+      *--------- WRITE NAFTA TRACKING DATA AND E-MAIL MESSAGES IF USER
+      *--------- IS DOCKTX AND NAFTA DOCUMENTATION WAS NOT INCLUDED
+      *--------- WITH SHIPMENT.
+           IF (MISC-USER-NAME = "DOCKTX" OR MISC-USER-NAME = "A257947")
+                                         AND AN-AKRON-PLANT
+                                         AND DE-NAFTA-ANS = "N"
+               PERFORM 9999-SEND-NAFTA-MSG
+               IF NFTA-FILE-SW = "Y"
+                   PERFORM 9999-WRITE-NAFTA-TRACK.
+
+      *----------  UPDATE ACCUMULATOR ENTRY IN DPOITEM
+           MOVE WS-ACCUMULATOR           TO  PO-ARG.
+           PERFORM 9999-CHAINHD-DPOITEM-PO-O.
+           MOVE 1                        TO SFL-PTR.
+       520-DPOITEM-ACCUMULATOR.
+           IF SFL-PTR > TBL-LIMIT
+               GO TO 530-CALCULATE-LEAD-TIME.
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL,ACCUM" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+
+           IF  SD-ITM  = ZEROS  OR  SD-PO-QTY-DLVR  = ZEROS
+               ADD 1                     TO  SFL-PTR
+               GO TO 520-DPOITEM-ACCUMULATOR.
+
+           PERFORM 9999-GETNEXT-DPOITEM-PO-O.
+           IF  END-OF-CHAIN
+               GO TO 530-CALCULATE-LEAD-TIME.
+           IF  SD-ITM  NOT = ITM-NUMBER
+               GO TO 520-DPOITEM-ACCUMULATOR.
+
+      *----------  CALCULATE A NEW TOTAL DELIVERED.  IF
+      *            MATERIAL IS BEING COMPLETELY RECEIVED,
+      *            MOVE TOTAL QUANTITY DELIVERED TO ONORDER.
+           IF A-KELLY-PLANT
+               ADD SD-STR-QTY-DLVR, SD-PREV-DLVR
+                   GIVING ITM-QTY-DLVR ROUNDED
+           ELSE
+              ADD SD-PO-QTY-DLVR, SD-PREV-DLVR
+                   GIVING ITM-QTY-DLVR ROUNDED.
+
+      *------4/30/97, IF ASN RECEIPT REDUCE ACCUM ASN QTY
+           IF ASN-RECEIVER NOT = SPACES
+               SUBTRACT SD-PO-QTY-DLVR FROM ITM-ASN-QTY
+           END-IF.
+
+           IF  SD-UM = "LT" OR "AS"
+               MOVE .0001                TO  ITM-QTY-DLVR.
+
+      *-----INCLUDE CENTURY IN DATE
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT TO DATE-CYMD-YMD.
+           IF DATE-CYMD-YY > 70
+               MOVE 19 TO DATE-CYMD-CC
+           ELSE
+               MOVE 20 TO DATE-CYMD-CC.
+           MOVE DATE-CYMD                TO  ITM-DATE-RCVD-CN.
+           MOVE DATE-YMD-OUT             TO  ACTIVITY-DATE.
+           IF  SD-DIRECT-SW  =  "Y"
+               MOVE "DD"                 TO  MM-STORED
+               MOVE SPACES               TO  DD-STORED
+               MOVE SPACES               TO  YY-STORED
+               MOVE SPACES               TO  CC-STORED
+               IF A-KELLY-PLANT
+                   ADD SD-STR-QTY-DLVR, SD-PREV-STORED
+                      GIVING ITM-QTY-STORED ROUNDED
+               ELSE
+                  ADD SD-PO-QTY-DLVR, SD-PREV-STORED
+                     GIVING ITM-QTY-STORED ROUNDED
+           ELSE
+               MOVE SPACES               TO  ITM-DATE-STORED.
+
+      *----------  AUTOMATICALLY STORE CERTAIN RAW MATERIALS
+           MOVE "N"                      TO  STORE-SW.
+           PERFORM 840-CHECK-IF-STORE THRU 849-EXIT.
+
+      *----------  FILL IN STORED DATE AND QTY IF AN AUTOMATIC STORE
+           IF  STORE-SW = "Y"
+               MOVE ITM-DATE-RCVD-CN     TO  ITM-DATE-STORED-CN
+               IF A-KELLY-PLANT
+                   ADD SD-STR-QTY-DLVR, SD-PREV-STORED
+                      GIVING ITM-QTY-STORED ROUNDED
+               ELSE
+                  ADD SD-PO-QTY-DLVR, SD-PREV-STORED
+                     GIVING ITM-QTY-STORED ROUNDED.
+
+           IF  SD-MATERIAL-COMPLETE = "Y"
+               MOVE "*"                  TO  ITM-COMPLETE-FLAG.
+
+           PERFORM 9999-UPDATE-DPOITEM-PO-O.
+
+      *------- NOTIFY USER-ID THAT MATERIAL ON PO HAS BEEN RECEIVED.
+           IF ITM-NOTIFY-USERID NOT = SPACES
+               MOVE WS-PO                   TO  PO-NOTIFY-PO-NUMBER
+               MOVE WS-RLSE                 TO  PO-NOTIFY-RLSE
+               MOVE ITM-NUMBER              TO  PO-NOTIFY-ITEM
+               MOVE WS-RECEIVER-2-14        TO  PO-NOTIFY-RCV-NUMBER
+               MOVE 1                       TO  DATE-MODE
+               CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+               MOVE DATE-SLASH-OUT          TO  PO-NOTIFY-DATE
+               MOVE DATE-FORMATTED-TIME-OUT TO PO-NOTIFY-TIME
+               CALL "MCXSNDMSG" USING PO-NOTIFICATION ITM-NOTIFY-USERID.
+
+      *-----UPDATE FIRST AVAILABLE QS9000 TRACKING RECORD
+      *       WITH QTY, DATE, CARRIER AND RECEIVER
+       520-UPDATE-TRACKING.
+           IF ITM-QS9000-TRACK NOT = "X"
+               GO TO 520-LOOP-BOTTOM.
+           MOVE PO-ARG     TO PORCVNO OF DRCVTRAK-REC.
+           MOVE ITM-NUMBER TO ITEMNO OF DRCVTRAK-REC.
+           MOVE ZEROS      TO SEQNO OF DRCVTRAK-REC.
+           START DRCVTRAK KEY NOT < EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+      *------NO RECORDS FOUND TO UPDATE, CREATE NEW TRACKING RECORD
+      *------SET EXPECT QTY, EARLY DAYS AND LATE DAYS TO ZERO
+      *------AND EXPECTED DATE TO RECEIVED DATE.  SINCE THE START
+      *------FAILED THIS MEANS THE SEQ # SHOULD BE ONE.
+               MOVE PO-ARG                  TO RCVTRAK-PO-RCV-NO
+               MOVE ITM-NUMBER              TO RCVTRAK-ITEM-NUMBER
+               MOVE 1                       TO RCVTRAK-SEQNO
+               MOVE PO-VEN-CODE             TO RCVTRAK-VEN-CODE
+               MOVE SD-CODE                 TO RCVTRAK-CORP-CODE
+               MOVE ZEROS                   TO RCVTRAK-EXPECT-QTY
+               MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-EXPECT-DATE
+               MOVE ZEROS                   TO RCVTRAK-EARLY-DAYS
+                                               RCVTRAK-LATE-DAYS
+               MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-DLVR-DATE
+               MOVE WS-RECEIVER             TO RCVTRAK-RCV-SLIP
+               MOVE PASS-CARRIER            TO RCVTRAK-CARRIER
+               IF A-KELLY-PLANT
+                   MOVE SD-STR-QTY-DLVR     TO RCVTRAK-DLVR-QTY
+               ELSE
+                   MOVE SD-PO-QTY-DLVR      TO RCVTRAK-DLVR-QTY
+               END-IF
+      *----------CHECK IF CARRIER IS EXPEDITE FREIGHT CARRIER
+               MOVE PASS-CARRIER TO KCARCDE OF CARRIER-REC
+               READ CARRIER-FILE
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE SPACES TO RCVTRAK-EXPD-CARR
+               ELSE
+                   IF KCAREXP OF CARRIER-REC NOT = "Y "
+                       MOVE SPACES TO RCVTRAK-EXPD-CARR
+                   ELSE
+                       MOVE "X" TO RCVTRAK-EXPD-CARR
+                   END-IF
+               END-IF
+               WRITE DRCVTRAK-REC FROM BUF-DRCVTRAK
+                  INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-WRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "UPDATE ERR 520-UPDATE-TRACKING"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+               END-IF
+               GO TO 520-LOOP-BOTTOM.
+       520-FIND-TRACK-RECORD.
+           READ DRCVTRAK NEXT INTO BUF-DRCVTRAK
+              AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+      *------NO RECORDS FOUND TO UPDATE, CREATE NEW TRACKING RECORD
+      *------SET EXPECT QTY, EARLY DAYS AND LATE DAYS TO ZERO
+      *------AND EXPECTED DATE TO RECEIVED DATE.
+               MOVE PO-ARG                  TO RCVTRAK-PO-RCV-NO
+               MOVE ITM-NUMBER              TO RCVTRAK-ITEM-NUMBER
+               ADD 1 TO LAST-SEQNO GIVING      RCVTRAK-SEQNO
+               MOVE PO-VEN-CODE             TO RCVTRAK-VEN-CODE
+               MOVE SD-CODE                 TO RCVTRAK-CORP-CODE
+               MOVE ZEROS                   TO RCVTRAK-EXPECT-QTY
+               MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-EXPECT-DATE
+               MOVE ZEROS                   TO RCVTRAK-EARLY-DAYS
+                                               RCVTRAK-LATE-DAYS
+               MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-DLVR-DATE
+               MOVE WS-RECEIVER             TO RCVTRAK-RCV-SLIP
+               MOVE PASS-CARRIER            TO RCVTRAK-CARRIER
+               IF A-KELLY-PLANT
+                   MOVE SD-STR-QTY-DLVR     TO RCVTRAK-DLVR-QTY
+               ELSE
+                   MOVE SD-PO-QTY-DLVR      TO RCVTRAK-DLVR-QTY
+               END-IF
+      *----------CHECK IF CARRIER IS EXPEDITE FREIGHT CARRIER
+               MOVE PASS-CARRIER TO KCARCDE OF CARRIER-REC
+               READ CARRIER-FILE
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE SPACES TO RCVTRAK-EXPD-CARR
+               ELSE
+                   IF KCAREXP OF CARRIER-REC NOT = "Y "
+                       MOVE SPACES TO RCVTRAK-EXPD-CARR
+                   ELSE
+                       MOVE "X" TO RCVTRAK-EXPD-CARR
+                   END-IF
+               END-IF
+               WRITE DRCVTRAK-REC FROM BUF-DRCVTRAK
+                  INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-WRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "UPDATE ERR 520-UPDATE-TRACKING"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+               END-IF
+               GO TO 520-LOOP-BOTTOM.
+           IF RCVTRAK-PO-RCV-NO NOT = PO-ARG OR
+              RCVTRAK-ITEM-NUMBER NOT = ITM-NUMBER
+      *------NO RECORDS FOUND TO UPDATE, CREATE NEW TRACKING RECORD
+      *------SET EXPECT QTY, EARLY DAYS AND LATE DAYS TO ZERO
+      *------AND EXPECTED DATE TO RECEIVED DATE.
+               MOVE PO-ARG                  TO RCVTRAK-PO-RCV-NO
+               MOVE ITM-NUMBER              TO RCVTRAK-ITEM-NUMBER
+               ADD 1 TO LAST-SEQNO GIVING      RCVTRAK-SEQNO
+               MOVE PO-VEN-CODE             TO RCVTRAK-VEN-CODE
+               MOVE SD-CODE                 TO RCVTRAK-CORP-CODE
+               MOVE ZEROS                   TO RCVTRAK-EXPECT-QTY
+               MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-EXPECT-DATE
+               MOVE ZEROS                   TO RCVTRAK-EARLY-DAYS
+                                               RCVTRAK-LATE-DAYS
+               MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-DLVR-DATE
+               MOVE WS-RECEIVER             TO RCVTRAK-RCV-SLIP
+               MOVE PASS-CARRIER            TO RCVTRAK-CARRIER
+               IF A-KELLY-PLANT
+                   MOVE SD-STR-QTY-DLVR     TO RCVTRAK-DLVR-QTY
+               ELSE
+                   MOVE SD-PO-QTY-DLVR      TO RCVTRAK-DLVR-QTY
+               END-IF
+      *----------CHECK IF CARRIER IS EXPEDITE FREIGHT CARRIER
+               MOVE PASS-CARRIER TO KCARCDE OF CARRIER-REC
+               READ CARRIER-FILE
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                   MOVE SPACES TO RCVTRAK-EXPD-CARR
+               ELSE
+                   IF KCAREXP OF CARRIER-REC NOT = "Y "
+                       MOVE SPACES TO RCVTRAK-EXPD-CARR
+                   ELSE
+                       MOVE "X" TO RCVTRAK-EXPD-CARR
+                   END-IF
+               END-IF
+               WRITE DRCVTRAK-REC FROM BUF-DRCVTRAK
+                  INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-WRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "UPDATE ERR 520-UPDATE-TRACKING"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+               END-IF
+               GO TO 520-LOOP-BOTTOM.
+           MOVE RCVTRAK-SEQNO TO LAST-SEQNO.
+      *------SKIP UNTIL FIRST AVAILABLE
+           IF RCVTRAK-DLVR-DATE > SPACES
+               GO TO 520-FIND-TRACK-RECORD.
+           MOVE WS-RECEIVER             TO RCVTRAK-RCV-SLIP.
+           MOVE PASS-CARRIER            TO RCVTRAK-CARRIER.
+      *------CHECK IF CARRIER IS EXPEDITE FREIGHT CARRIER
+           MOVE PASS-CARRIER TO KCARCDE OF CARRIER-REC.
+           READ CARRIER-FILE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES TO RCVTRAK-EXPD-CARR
+           ELSE
+               IF KCAREXP OF CARRIER-REC NOT = "Y "
+                   MOVE SPACES TO RCVTRAK-EXPD-CARR
+               ELSE
+                   MOVE "X" TO RCVTRAK-EXPD-CARR.
+           IF A-KELLY-PLANT
+               MOVE SD-STR-QTY-DLVR     TO RCVTRAK-DLVR-QTY
+           ELSE
+               MOVE SD-PO-QTY-DLVR      TO RCVTRAK-DLVR-QTY.
+           MOVE ITM-DATE-RCVD-CN        TO RCVTRAK-DLVR-DATE.
+           REWRITE DRCVTRAK-REC FROM BUF-DRCVTRAK
+              INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 520-UPDATE-TRACKING"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       520-LOOP-BOTTOM.
+           ADD 1                         TO SFL-PTR.
+           GO TO 520-DPOITEM-ACCUMULATOR.
+
+      *----------  CALCULATE LEAD TIME BY USING PO DATE AND
+      *            CURRENT DATE.  CALLS SUBROUTINE JULIAN.
+       530-CALCULATE-LEAD-TIME.
+           PERFORM 9999-RESET-DPOITEM-PO-O.
+
+      *-----INCLUDE CENTURY IN DATE
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT TO DATE-CYMD-YMD.
+           IF DATE-CYMD-YY > 70
+               MOVE 19 TO DATE-CYMD-CC
+           ELSE
+               MOVE 20 TO DATE-CYMD-CC.
+           MOVE DATE-YMD-OUT             TO  ACTIVITY-DATE.
+
+      *----------  DETERMINE LEAD TIME FROM PO DATE FOR DVENDITM
+           CALL "CDATCALC" USING PO-DATE, ACTIVITY-DATE, CALC-LT.
+           MOVE CALC-LT                  TO  CALC-LT2.
+
+           IF  CALC-LT = ZEROS
+               MOVE 0                    TO  SFL-PTR
+               GO TO 540-CREATE-NEW-RS-ITEMS.
+      *----------  DVENDITM - UPDATE (OR PUT) LEAD TIMES
+           MOVE 0                        TO  SFL-PTR.
+
+       535-UPDATE-LEAD-TIMES.
+           IF SFL-PTR < TBL-LIMIT
+               ADD 1                     TO SFL-PTR
+           ELSE
+               MOVE 0                    TO SFL-PTR
+               GO TO 540-CREATE-NEW-RS-ITEMS.
+
+      *--11/10/97 USE SUBFILE INSTEAD OF SORT TABLE
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL,LEADTIMES" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+      *---
+
+           IF  SD-ITM  = ZEROS  OR  SD-PO-QTY-DLVR  = ZEROES  OR
+               SD-CODE  = "NON-STR"
+               GO TO 535-UPDATE-LEAD-TIMES.
+           MOVE SD-CODE               TO  CODE-ARG.
+           PERFORM 9999-CHAINHD-DVENDITM-CD-O.
+
+           MOVE 0                        TO  FOUND-DVENDITM-ENTRY.
+
+      *----------  LOOP THRU DVENDITM UNTIL END OF CHAIN BECAUSE
+      *            QUOTES CAN PUT OUT MULTIPLE DVENDITM ENTRIES AND
+      *            ALL ENTRIES SHOULD BE UPDATED WITH LEAD TIMES.
+       537-LOOP-FOR-VENDOR.
+           PERFORM 9999-GETNEXT-DVENDITM-CD-O.
+           IF  END-OF-CHAIN
+               IF  FOUND-DVENDITM-ENTRY = 0
+                   MOVE SPACES           TO  BUF-DVENDITM
+                   PERFORM 538-ZERO-DVENDITM
+                   MOVE PO-VEN-CODE      TO  VEN-ITM-VENCODE
+                   MOVE CALC-LT          TO  VEN-ITM-LT1
+                   MOVE ZEROS            TO  VEN-ITM-LT2
+                                          VEN-ITM-LT3
+                                          VEN-ITM-PRICE
+                                          VEN-ITM-YTD-BUS
+                   MOVE CODE-ARG         TO  VEN-ITM-CORPCODE
+                   PERFORM 9999-PUT-DVENDITM-CD-O
+                   GO TO 535-UPDATE-LEAD-TIMES
+               ELSE
+                   GO TO 535-UPDATE-LEAD-TIMES.
+
+           IF  VEN-ITM-VENCODE NOT = PO-VEN-CODE
+               GO TO 537-LOOP-FOR-VENDOR.
+           MOVE VEN-ITM-LT2              TO  VEN-ITM-LT3.
+           MOVE VEN-ITM-LT1              TO  VEN-ITM-LT2.
+           MOVE CALC-LT                  TO  VEN-ITM-LT1.
+
+           MOVE 1                        TO  FOUND-DVENDITM-ENTRY.
+           PERFORM 9999-UPDATE-DVENDITM-CD-O.
+           GO TO 537-LOOP-FOR-VENDOR.
+
+       538-ZERO-DVENDITM.
+           MOVE ZEROES                   TO VEN-ITM-PRICE,
+                                            VEN-EST-LT
+                                            VEN-ITM-LT1
+                                            VEN-ITM-LT2
+                                            VEN-ITM-LT3
+                                            VEN-LOW-QTY (1)
+                                            VEN-LOW-QTY (2)
+                                            VEN-LOW-QTY (3)
+                                            VEN-HIGH-QTY (1)
+                                            VEN-HIGH-QTY (2)
+                                            VEN-HIGH-QTY (3)
+                                            VEN-WORK-PRICE (1)
+                                            VEN-WORK-PRICE (2)
+                                            VEN-WORK-PRICE (3)
+                                            VEN-BID-QTY
+                                            VEN-SURCHARGE
+                                            VEN-DISCOUNT-PERCENT
+                                            VEN-NONCODED-ITEM
+                                            VEN-ITM-YTD-BUS.
+      ********************************************************
+      *    DPOITEM - CREATE A NEW RECEIVING SLIP RECORD      *
+      *            - IF THE ITEM IS A DIRECT CHARGE, ALSO    *
+      *              UPDATE STORED QUANTITY AND DATE.        *
+      *            - IF THE ITEM IS A COMPLETE RAW MATERIAL, *
+      *              UPDATE ONORDER WITH QUANTITY RECEIVED.  *
+      ********************************************************
+       540-CREATE-NEW-RS-ITEMS.
+           IF SFL-PTR < TBL-LIMIT
+               ADD 1                     TO  SFL-PTR
+           ELSE
+               MOVE 0                    TO  SFL-PTR
+               GO TO 560-UPDATE-STOREROOM.
+
+      *--11/10/97 GET ITEM FROM SUBFILE
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL,LEADTIMES" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+      *--
+
+           IF  SD-UM  = "LT" OR "AS"
+               IF  SD-PO-QTY-DLVR  = ZEROES
+                   GO TO 540-CREATE-NEW-RS-ITEMS
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               IF SD-ITM  = ZEROS  OR  SD-PO-QTY-DLVR  = ZEROS
+                  GO TO 540-CREATE-NEW-RS-ITEMS.
+
+      *----------  AUTOMATICALLY STORE CERTAIN RAW MATERIALS
+           MOVE "N"                      TO  STORE-SW.
+           PERFORM 840-CHECK-IF-STORE THRU 849-EXIT.
+
+      *------4/30/97, IF ASN RECEIPT RETRIEVE DRCVITEM TO UPDATE
+           IF ASN-RECEIVER = SPACES
+               MOVE SPACES                   TO  BUF-DRCVITEM
+           ELSE
+               MOVE ASN-RECEIVER TO PORCVNO OF DRCVITEM-PO-REC-O
+               MOVE SD-ITM TO ITEMNO OF DRCVITEM-PO-REC-O
+               READ DRCVITEM-PO-O INTO BUF-DRCVITEM
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS NOT = "00"
+                 MOVE "READ ASN RECEIVER 540-CREATE-NEW-RS-ITEMS"
+                   TO BU-MSG-AREA
+                 PERFORM 2100-BLOWUP
+               END-IF
+      *------4/30/97, IF ASN RECEIPT REDUCE ASN QTY
+               SUBTRACT SD-PO-QTY-DLVR FROM RCV-ASN-QTY
+           END-IF.
+
+           MOVE SD-CODE                  TO  RCV-CORP-CODE.
+           MOVE SD-ITM                   TO  RCV-ITEM-NUMBER.
+           MOVE SD-UM                    TO  RCV-ITEM-UM.
+           MOVE SD-ITEM-COMMENT          TO  RCV-COMMENT.
+           IF A-KELLY-PLANT
+               MOVE SD-STR-QTY-DLVR      TO  RCV-QTY-DLVR
+           ELSE
+               MOVE SD-PO-QTY-DLVR       TO  RCV-QTY-DLVR.
+
+           IF  SD-UM  = "LT" OR "AS"
+               MOVE .0001                TO  RCV-QTY-DLVR.
+
+           MOVE ZEROS                    TO  RCV-QTY-STORED
+           IF ASN-RECEIVER = SPACES
+               MOVE ZEROS                TO  RCV-ASN-QTY.
+           MOVE SPACES                   TO  RCV-DATE-STORED-CN.
+      *-----INCLUDE CENTURY IN DATE
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT TO DATE-CYMD-YMD.
+           IF DATE-CYMD-YY > 70
+               MOVE 19 TO DATE-CYMD-CC
+           ELSE
+               MOVE 20 TO DATE-CYMD-CC.
+           MOVE DATE-CYMD                TO  RCV-DATE-RCVD-CN.
+           IF ASN-RECEIVER = SPACES
+               MOVE WS-RECEIVER          TO  RCV-PO-RCV-NO.
+
+           IF  SD-DIRECT-SW = "Y"
+               MOVE "DD"                 TO  RCV-MM-STORED
+               MOVE SPACES               TO  RCV-DD-STORED
+               MOVE SPACES               TO  RCV-YY-STORED
+               MOVE SPACES               TO  RCV-CC-STORED
+               MOVE RCV-QTY-DLVR         TO  RCV-QTY-STORED.
+
+      *----------  FILL IN STORED DATE AND QTY IF AN AUTOMATIC STORE
+           IF  STORE-SW = "Y"
+               MOVE RCV-DATE-RCVD-CN     TO  RCV-DATE-STORED-CN
+               MOVE RCV-QTY-DLVR         TO  RCV-QTY-STORED.
+
+
+           IF  SD-MATERIAL-COMPLETE = "Y"
+               MOVE "*"                  TO  RCV-COMPLETE-FLAG.
+
+           IF A-KELLY-PLANT
+               MOVE SD-KELLY-PO-UM   TO  RCV-KELLY-PO-UM
+               MOVE SD-PO-QTY-DLVR   TO  RCV-KELLY-PO-QTY
+           ELSE
+               MOVE ZEROS                TO  RCV-KELLY-PO-QTY.
+           MOVE ZEROS                    TO  RCV-EEC-NET-MASS
+                                             RCV-EEC-SUPPL-UNITS.
+
+           IF  SD-RAW-FLAG  = "Y"
+               MOVE SD-LOT-NO            TO  RCV-LOT
+           ELSE
+               MOVE SPACES               TO  RCV-LOT.
+
+           MOVE SD-TALLY                 TO  RCV-TALLY.
+           MOVE SD-CHATNO                TO  RCV-CHATNO.
+           MOVE USERNAME OF WHO-VARIABLES  TO  RCV-USER-ID.
+
+      *------4/30/97, IF ASN RECEIPT REWRITE DRCVITEM OTHERWISE WRITE
+           IF ASN-RECEIVER = SPACES
+               PERFORM 9999-PUT-DRCVITEM-PO-O
+           ELSE
+               REWRITE DRCVITEM-PO-REC-O FROM BUF-DRCVITEM
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-REWRITE
+               IF FILE-STATUS NOT = "00"
+                   MOVE "REWRITE DRCVITEM 540-CREATE-NEW-RS-ITEMS"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP
+               END-IF
+           END-IF.
+
+           IF  SD-UM = "LT" OR "AS"
+               MOVE 0                    TO  LOT-CTR
+               PERFORM 585-UPDATE-LOT-DESC THRU 589-EXIT.
+
+           GO TO 540-CREATE-NEW-RS-ITEMS.
+
+      ********************************************************
+      *  MSTORERM - UPDATE ONORDER AND PRINT LOCATIONS       *
+      ********************************************************
+       560-UPDATE-STOREROOM.
+           IF SFL-PTR < TBL-LIMIT
+               ADD 1                     TO SFL-PTR
+           ELSE
+               GO TO 599-EXIT.
+
+      *---11/10/97 JSB, GET SUBFILE RECORD INTO SD-LINE
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL,LEADTIMES" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+
+           IF  SD-ITM = ZEROS  OR  SD-PO-QTY-DLVR = ZEROS
+               GO TO 560-UPDATE-STOREROOM.
+
+           IF  SD-CODE = "NON-STR"
+               GO TO 565-UPDATE.
+
+           MOVE SD-CODE                  TO  CODE-ARG.
+
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+       565-UPDATE.
+
+      *----------  DETERMINE LEAD TIME FROM REQ DATE FOR MSTORERM.
+      *----------   IF NO REQ NUMBER, USE LEAD TIME FROM PO DATE
+      *----------   ALSO NOTIFY THE REQUISTIONER FROM THE USERID
+      *----------   ON THE MREQ RECORD.
+           MOVE WS-ACCUMULATOR           TO  PO-ARG.
+           PERFORM 9999-CHAINHD-DREQD-PO-I.
+
+       566-GET-DREQD.
+           PERFORM 9999-GETNEXT-DREQD-PO-I.
+           IF  END-OF-CHAIN
+               IF SD-CODE = "NON-STR"
+                   GO TO 570-DDAILYTC
+               ELSE
+                   GO TO 567-UPDATE-LEAD-TIME.
+           IF  DREQD-PO-ITM-NO NOT = SD-ITM
+               GO TO 566-GET-DREQD.
+
+           MOVE DREQD-REQ-NUMBER         TO  REQ-ARG.
+           PERFORM 9999-GETKEY-MREQ-RQ-I.
+           IF  NOT GOOD-CALL
+               IF SD-CODE = "NON-STR"
+                   GO TO 570-DDAILYTC
+               ELSE
+                   MOVE CALC-LT              TO  CALC-LT2
+                   GO TO 567-UPDATE-LEAD-TIME.
+
+      *------- NOTIFY REQUISITIONER OF RECEIPT AT DOCK
+           IF REQ-DOCK-NOTIFY NOT = SPACES
+               MOVE REQ-ARG TO REQ-NOTIFY-REQ-NUMBER
+               MOVE WS-RECEIVER-2-14  TO REQ-NOTIFY-RCV-NUMBER
+               MOVE 1       TO  DATE-MODE
+               CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+               MOVE DATE-SLASH-OUT TO  REQ-NOTIFY-DATE
+               MOVE DATE-FORMATTED-TIME-OUT TO REQ-NOTIFY-TIME
+               PERFORM 880-GET-REQ-DESC THRU 880-EXIT
+               CALL "MCXSNDMSG" USING REQ-NOTIFICATION REQ-DOCK-NOTIFY.
+           IF REQ-FILE-SW = "Y"
+             IF REQ-ARG > SPACES
+               PERFORM 9999-SEND-EXPEDITE-MSG.
+           IF  SD-CODE = "NON-STR"
+      *-------- NONSTR WAS TO ONLY CHECK FOR REQ NOTIFICATION
+               GO TO 570-DDAILYTC.
+
+           CALL "CDATCALC" USING REQ-DATE, ACTIVITY-DATE, CALC-LT2.
+
+       567-UPDATE-LEAD-TIME.
+           IF  CALC-LT2 = 0
+               IF  CALC-LT = 0
+                   GO TO 568-UPDATE
+               ELSE
+                   MOVE CALC-LT          TO  CALC-LT2.
+
+           MOVE STR-LAST-DLVTIMES (2)    TO  STR-LAST-DLVTIMES (3).
+           MOVE STR-LAST-DLVTIMES (1)    TO  STR-LAST-DLVTIMES (2).
+      *-----INCLUDE CENTURY IN DATE.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  DATE-CYMD-YMD.
+           IF DATE-CYMD-YY > 70
+               MOVE 19                 TO  DATE-CYMD-CC
+           ELSE
+               MOVE 20                 TO  DATE-CYMD-CC.
+           MOVE DATE-CYMD                TO  STR-ACT-DATE-CN.
+           MOVE CALC-LT2                 TO  STR-LAST-DLVTIMES (1).
+
+       568-UPDATE.
+           IF  SD-SYSTEM-LOT = "S"
+               MOVE SD-LOT-NO            TO  STR-RAW-LOT.
+
+           PERFORM 9999-UPDATE-MSTORERM-CD-O.
+
+           IF  SD-TALLY = SPACES OR SD-CODE = "NON-STR"
+               GO TO 569-RAWLOT.
+
+           MOVE SD-CODE                  TO  DTAL-CODE.
+           MOVE SD-TALLY                 TO  DTAL-TALLY.
+           MOVE SD-ITM                   TO  DTAL-ITEM.
+           MOVE WS-RECEIVER              TO  DTAL-PO.
+           PERFORM 9999-PUT-DTALLY-CD-O.
+
+
+       569-RAWLOT.
+           IF  SD-RAW-FLAG  = "N"
+               GO TO 570-DDAILYTC.
+
+      *----------  UPDATE DRAWLOT IF ITEM WAS RAW MATERIAL
+
+           MOVE SD-CODE                  TO  DRAW-CORP-ARG.
+           MOVE SD-LOT-NO                TO  DRAW-LOT-ARG.
+           MOVE DRAWLOT-ARG              TO  DRAWLOT-CORP-LOT.
+           MOVE WS-RECEIVER              TO  DRAWLOT-PO.
+           PERFORM 9999-PUT-DRAWLOT-CL-O.
+
+       570-DDAILYTC.
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           ACCEPT DDAILYTC-DATE FROM DATE.
+           ACCEPT DDAILYTC-TIME FROM TIME.
+           MOVE PLT-NUMBER-PASS TO DDAILYTC-PLT.
+      *************************************************************
+      *      WRITE A TRANSACTION 323 (DOCK RECEIPT) FOR EVERY     *
+      *      RECEIVER ON EVERY ITEM.  ALSO WRITE A 323 FOR        *
+      *      ANY RETURNABLE CONTAINERS.                           *
+      *      IF UNIT PRICE > 9,999,999.99 THEN WRITE TC 423.      *
+      *************************************************************
+           MOVE SPACES                   TO  DDAILYTC-DATA.
+
+           IF  SD-UNIT-PRICE > 9999999.99
+               GO TO 575-CREATE-TC423.
+
+           MOVE SD-CODE                  TO  TC323-CORPCODE.
+
+           IF AN-AKRON-PLANT
+               IF  SD-CODE = "NON-STR"
+                   ADD ZERO, SD-PO-QTY-DLVR
+                     GIVING TC323-NONCODED-RCV-QTY ROUNDED
+                   MOVE SD-UM            TO  TC323-UM
+               ELSE
+                   ADD ZERO, SD-PO-QTY-DLVR
+                     GIVING TC323-CODED-RCV-QTY ROUNDED
+                   MOVE SD-UM            TO  TC323-UM
+           ELSE
+               IF A-KELLY-PLANT
+                   IF SD-CODE = "NON-STR"
+                      ADD ZERO, SD-PO-QTY-DLVR
+                        GIVING TC323-NONCODED-RCV-QTY ROUNDED
+                      MOVE SD-KELLY-PO-UM      TO TC323-UM
+                   ELSE
+                      ADD ZERO, SD-STR-QTY-DLVR
+                        GIVING TC323-CODED-RCV-QTY ROUNDED
+                       MOVE STR-UM       TO  TC323-UM
+               ELSE
+                   IF SD-CODE = "NON-STR"
+                      ADD ZERO, SD-PO-QTY-DLVR
+                        GIVING TC323-NONCODED-RCV-QTY ROUNDED
+                      MOVE SD-UM         TO  TC323-UM
+                   ELSE
+                      ADD ZERO, SD-STR-QTY-DLVR
+                        GIVING TC323-CODED-RCV-QTY ROUNDED
+                      MOVE STR-UM        TO  TC323-UM.
+
+           IF AN-AKRON-PLANT
+               IF  SD-TC323-TC-FLAG = SPACES
+                   IF  OSD-PASS NOT = SPACES
+                       MOVE "D"          TO  SD-TC323-TC-FLAG.
+
+           MOVE "323"                    TO  DDAILYTC-TC.
+           MOVE WS-RECEIVER              TO  TC323-RS.
+           MOVE SD-ITM                   TO  TC323-ITEM.
+           MOVE SD-TC323-TC-FLAG         TO  TC323-TC-FLAG.
+           MOVE SD-TIRE-MOLD             TO  TC323-MOLD.
+
+           MOVE SD-UNIT-PRICE            TO  SAVE-UNIT-PRICE.
+      *----------  CHANGE PRICE QTY TO STR UM IF NOT KELLY OR AKRON
+           IF AN-AKRON-PLANT
+               MOVE SD-UNIT-PRICE        TO  TC323-UNIT-PRICE
+               GO TO 572-MOVE-FIELDS.
+           IF A-KELLY-PLANT
+               GO TO 572-MOVE-FIELDS.
+
+           IF  SD-CODE = "NON-STR"
+               MOVE SD-UNIT-PRICE        TO  TC323-UNIT-PRICE
+           ELSE
+               MOVE "PR"                 TO  UMCF-RET-CODE
+               MOVE SD-UM                TO  UMCF-DEST-UM
+               MOVE SD-PRICE-UM          TO  UMCF-SOURCE-UM
+               MOVE SD-UNIT-PRICE        TO  UMCF-SOURCE-QTY
+               CALL "TUMCF" USING UMCF-RET-CODE, STR-UM-AREA,
+                              UMCF-QUANTITY-AREA
+               IF  UMCF-RET-CODE NOT = "00"
+                   MOVE "CONVERSION ERROR 570 SRCVEXEC" TO
+                                              BU-DISPLAY-MSG
+                   MOVE UMCF-RET-CODE    TO  BU-DISPLAY-FLD (5)
+                   PERFORM 2100-BLOWUP
+               ELSE
+                   MOVE UMCF-QTY-STR-UM-DEC TO  TC323-UNIT-PRICE
+                                               SAVE-UNIT-PRICE.
+
+           MOVE PLT-NUMBER-PASS          TO  PLANT-NUMERIC.
+
+      *------ 27JAN1994 ADDED "OR PLANT-NUMERIC = 155" TO THE FOLLOWING
+      *------           STATEMENT.  REQUEST #6465 - DAVE PLUM
+
+           IF  PLANT-NUMERIC > 599 OR PLANT-NUMERIC = 155
+               MOVE PO-CURRENCY-CODE     TO  TC323-CURRENCY-CODE.
+
+       572-MOVE-FIELDS.
+           IF A-KELLY-PLANT
+               MOVE SD-PO-QTY-DLVR       TO  TC323-KELLY-PRICE
+               MOVE SD-KELLY-PO-UM       TO  TC323-KELLY-PO-UM
+               MOVE SD-CLASS             TO  TC323-KELLY-CLASS
+               MOVE SD-SUB-DETL          TO  TC323-KELLY-SUBD
+               MOVE FRT-SEQ-RCV          TO  TC323-KELLY-SEQ
+           ELSE
+               MOVE PO-PRIME             TO  TC323-PRIME
+               MOVE SD-CLASS             TO  TC323-SUB
+               MOVE SD-SUB-DETL          TO  TC323-SUB-DETAIL
+               MOVE SD-ADDL-DATA         TO  TC323-ADDL-DATA.
+
+           GO TO 578-DBPUT.
+
+       575-CREATE-TC423.
+           MOVE "423"                    TO  DDAILYTC-TC.
+           MOVE SD-CODE                  TO  TC423-CORPCODE.
+           IF AN-AKRON-PLANT
+               IF  SD-CODE = "NON-STR"
+                   MOVE SD-PO-QTY-DLVR   TO   TC423-NONCODED-RCV-QTY
+                   MOVE SD-UM            TO   TC423-UM
+               ELSE
+                   MOVE SD-PO-QTY-DLVR   TO   TC423-CODED-RCV-QTY
+                   MOVE SD-UM            TO   TC423-UM
+           ELSE
+               IF SD-CODE = "NON-STR"
+                  MOVE SD-PO-QTY-DLVR    TO   TC423-NONCODED-RCV-QTY
+                  MOVE SD-UM             TO   TC423-UM
+               ELSE
+                  MOVE SD-STR-QTY-DLVR   TO   TC423-CODED-RCV-QTY
+                  MOVE STR-UM            TO   TC423-UM.
+
+           IF AN-AKRON-PLANT
+               IF  SD-TC323-TC-FLAG = SPACES
+                   IF  OSD-PASS NOT = SPACES
+                       MOVE "D"          TO  SD-TC323-TC-FLAG.
+
+           ADD SD-PREV-DLVR, SD-PO-QTY-DLVR GIVING TOTAL-DLVR.
+           IF  TOTAL-DLVR  >   SD-QTY-ORD
+               IF  TC323-TC-FLAG = SPACE
+                   MOVE "A"              TO  SD-TC323-TC-FLAG.
+
+           MOVE "423"                    TO  DDAILYTC-TC.
+           MOVE WS-RECEIVER-2-14         TO  TC423-RS.
+           MOVE SD-ITM                   TO  TC423-ITEM.
+           MOVE SD-TC323-TC-FLAG         TO  TC423-TC-FLAG.
+           MOVE SD-TIRE-MOLD             TO  TC423-MOLD.
+
+           MOVE SD-UNIT-PRICE            TO  SAVE-UNIT-PRICE.
+      *----------  CHANGE PRICE QTY    TO STR UM IF NOT KELLY OR AKRON
+           IF AN-AKRON-PLANT
+               MOVE SD-UNIT-PRICE        TO  TC423-UNIT-PRICE
+               GO TO 576-MOVE-FIELDS.
+           IF A-KELLY-PLANT
+               GO TO 576-MOVE-FIELDS.
+
+           IF  SD-CODE = "NON-STR"
+               MOVE SD-UNIT-PRICE        TO  TC423-UNIT-PRICE
+               GO TO 576-MOVE-FIELDS.
+
+           MOVE "PR"                     TO  UMCF-RET-CODE.
+           MOVE SD-UM                    TO  UMCF-DEST-UM.
+           MOVE SD-PRICE-UM              TO  UMCF-SOURCE-UM.
+           MOVE SD-UNIT-PRICE            TO  UMCF-SOURCE-QTY.
+           CALL "TUMCF" USING UMCF-RET-CODE, STR-UM-AREA,
+                              UMCF-QUANTITY-AREA.
+           IF  UMCF-RET-CODE NOT = "00"
+               MOVE "CONVERSION ERROR 575 SRCVEXEC" TO BU-DISPLAY-MSG
+               MOVE UMCF-RET-CODE        TO  BU-DISPLAY-FLD (1)
+               PERFORM 2100-BLOWUP.
+           MOVE UMCF-QTY-STR-UM-DEC      TO  TC423-UNIT-PRICE,
+                                           SAVE-UNIT-PRICE.
+
+           MOVE PLT-NUMBER-PASS          TO  PLANT-NUMERIC.
+
+      *------ 27JAN1994 ADDED "OR PLANT-NUMERIC = 155" TO THE FOLLOWING
+      *------           STATEMENT.  REQUEST #6465 - DAVE PLUM
+
+           IF  PLANT-NUMERIC > 599 OR PLANT-NUMERIC = 155
+               MOVE PO-CURRENCY-CODE     TO  TC423-CURRENCY-CODE.
+
+       576-MOVE-FIELDS.
+           IF A-KELLY-PLANT
+               MOVE SD-STR-QTY-DLVR      TO  TC423-CODED-RCV-QTY
+               MOVE SD-PO-QTY-DLVR       TO  TC423-KELLY-PRICE
+               MOVE SD-KELLY-PO-UM       TO  TC423-KELLY-PO-UM
+               MOVE SD-CLASS             TO  TC423-KELLY-CLASS
+               MOVE SD-SUB-DETL          TO  TC423-SUB-DETAIL
+               MOVE FRT-SEQ-RCV          TO  TC423-KELLY-SEQ
+           ELSE
+               MOVE PO-PRIME             TO  TC423-PRIME
+               MOVE SD-CLASS             TO  TC423-SUB
+               MOVE SD-SUB-DETL          TO  TC423-SUB-DETAIL
+               MOVE SD-ADDL-DATA         TO  TC423-ADDL-DATA.
+
+       578-DBPUT.
+           PERFORM 9999-PUT-DDAILYTC-DT-O.
+
+      *----------  CREATE A 323 FOR CONTAINERS
+           IF  SD-CONTAINER NOT = "*"
+               GO TO 579-CREATE-TC923.
+           IF SD-CODE NOT = "NON-STR"
+               ADD ZERO, SD-CONTAINER-QTY
+                 GIVING TC323-CODED-RCV-QTY ROUNDED
+           ELSE
+               ADD ZERO, SD-CONTAINER-QTY
+                 GIVING TC323-NONCODED-RCV-QTY ROUNDED
+           END-IF.
+           MOVE SD-CONTAINER-UM          TO  TC323-UM.
+           MOVE TC323-ITEM               TO  WORK-ITEM.
+           MOVE "*"                      TO  WK-ASTERICK.
+           MOVE SHIFTED-ITEM             TO  TC323-ITEM.
+           IF A-KELLY-PLANT
+               MOVE ZEROES               TO  TC323-KELLY-PRICE
+           ELSE
+               MOVE ZEROES               TO  TC323-UNIT-PRICE.
+
+           PERFORM 9999-PUT-DDAILYTC-DT-O.
+
+      *------CREATE A 923 IF DLVR QTY HAS DECIMAL VALUE
+       579-CREATE-TC923.
+           IF (SD-CODE = "NON-STR" AND
+                        SD-PO-QTY-DLVR-DEC > 0)
+               OR (SD-CODE NOT = "NON-STR" AND
+                            SD-STR-QTY-DLVR-DEC > 0)
+               MOVE SPACES TO DDAILYTC-DATA
+               MOVE "923" TO DDAILYTC-TC
+               MOVE SD-CODE TO TC923-CORPCODE
+               MOVE WS-RECEIVER TO TC923-RS  PO-ARG
+               MOVE SD-ITM TO TC923-ITEM
+               IF SD-CODE = "NON-STR"
+                   MOVE SD-PO-QTY-DLVR TO TC923-RCV-QTY
+                   IF A-KELLY-PLANT
+                       MOVE SD-KELLY-PO-UM TO TC923-UM
+                   ELSE
+                       MOVE SD-UM TO TC923-UM
+                   END-IF
+               ELSE
+                   MOVE SD-STR-QTY-DLVR TO TC923-RCV-QTY
+                   MOVE STR-UM TO TC923-UM
+               END-IF
+               PERFORM 9999-PUT-DDAILYTC-DT-O
+           END-IF.
+
+       579-CREATE-TC326.
+      *************************************************************
+      * WRITE A TRANSACTION 326 FOR EACH ITEM IF THE PLANT SWITCH *
+      * IS SET IN MISC-P326-SW.                                   *
+      *************************************************************
+           IF MISC-P326-SW = "Y"
+               MOVE SPACES TO DDAILYTC-DATA
+               MOVE "326" TO DDAILYTC-TC
+               MOVE SD-CODE TO TC326-CORPCODE
+               MOVE WS-RECEIVER TO TC326-RS
+               MOVE SD-ITM TO TC326-ITEM
+               PERFORM 9999-CHAINHD-DPOITEM-PO-I
+               PERFORM 9999-GETNEXT-DPOITEM-PO-I
+                   UNTIL COND-WORD NOT = 0 OR
+                         ITM-NUMBER = TC326-ITEM
+               IF COND-WORD = 0
+                   MOVE ITM-COMPANY TO TC326-COMPANY
+               END-IF
+               PERFORM 9999-PUT-DDAILYTC-DT-O.
+       579-UPDATE.
+      *************************************************************
+      *   WRITE A TRANSACTION 327 (C-ORDER RECEIPT) FOR EVERY     *
+      *   ITEM THAT IS A C-ORDER.  A C-ORDER IS A PURCHASE ORDER  *
+      *   WHOSE ORDERED PRICE UM DIFFERS FROM RECEIVED PRICE UM.  *
+      *************************************************************
+           IF  NOT AN-AKRON-PLANT OR SD-PRICE-QTY-DLVR = ZEROS
+               GO TO 582-UPDATE-USAGE-FILE.
+
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           MOVE SD-CODE                  TO  TC327-CORPCODE.
+           MOVE WS-RECEIVER              TO  TC327-RS.
+           MOVE SD-ITM                   TO  TC327-ITEM.
+           MOVE SD-PRICE-QTY-DLVR        TO  TC327-NONCODED-PRICE-QTY.
+           MOVE SD-PRICE-UM              TO  TC327-PRICE-UM.
+           MOVE SD-UNIT-PRICE            TO  TC327-PO-PRICE.
+           MOVE PO-PRIME                 TO  TC327-PRIME.
+           MOVE SD-CLASS                 TO  TC327-SUB.
+           MOVE SD-SUB-DETL              TO  TC327-SUB-DETAIL.
+           MOVE SD-ADDL-DATA             TO  TC327-ADDL-DATA.
+
+           PERFORM 9999-PUT-DDAILYTC-DT-O.
+
+      *************************************************************
+      *    UPDATE THE USAGE FILE FOR ANY DIRECT DELIVERY ITEMS    *
+      *************************************************************
+       582-UPDATE-USAGE-FILE.
+      *----------  IF AN AUTOMATIC STORE ITEM, CREATE TC325
+           MOVE "N"                      TO  STORE-SW.
+           PERFORM 840-CHECK-IF-STORE THRU 849-EXIT.
+           IF  STORE-SW = "Y"
+               PERFORM 860-CREATE-TC325 THRU 869-EXIT.
+
+           IF  SD-DIRECT-SW NOT = "Y"
+               GO TO 560-UPDATE-STOREROOM.
+
+           MOVE SD-CODE                  TO  CODE-ARG.
+           PERFORM 9999-GETKEY-USAGEFIL-CD-O.
+           IF  NO-ENTRY
+               PERFORM 850-ADD-CODE-TO-USAGE THRU 859-EXIT
+               GO TO 560-UPDATE-STOREROOM.
+
+           ADD SD-STR-QTY-DLVR, K-MTH-USAGE (13)
+                    GIVING K-MTH-USAGE (13) ROUNDED.
+      *----ADD QTY TO DD USAGE FIELD FOR MTD
+           ADD SD-STR-QTY-DLVR, K-MTH-USAGE-DD (13)
+                    GIVING K-MTH-USAGE-DD (13) ROUNDED.
+
+           PERFORM 9999-UPDATE-USAGEFIL-CD-O.
+
+           IF SD-CHATNO NOT = SPACES
+               PERFORM 870-CREATE-TC341 THRU 870-EXIT.
+
+           GO TO 560-UPDATE-STOREROOM.
+      ********************************************************
+      * PUT THE DATA-ENTERED LOT DESCRIPTION IN THE DATABASE *
+      ********************************************************
+       585-UPDATE-LOT-DESC.
+           READ LOT-NUM  AT END
+                        GO TO 589-EXIT.
+           IF  LOT-ITEM           = SD-ITM
+               NEXT SENTENCE
+           ELSE
+               GO TO 585-UPDATE-LOT-DESC.
+
+           MOVE SPACES                   TO  DATAITM-INFO.
+           MOVE 0                        TO  DESC-SUB.
+           MOVE 0                        TO  DATAITM-LINE-NO-9.
+
+       587-PUT-LOT-DESC.
+           IF  DESC-SUB < 15
+               ADD 1                     TO  DESC-SUB
+           ELSE
+               GO TO 589-EXIT.
+
+           IF  LOT-DESC (DESC-SUB) = SPACES
+               GO TO 587-PUT-LOT-DESC.
+
+           MOVE WS-RECEIVER              TO  DATAITM-PO-RCV-NO.
+           MOVE SD-ITM                   TO  DATAITM-ITEM-NO.
+           ADD  1                        TO  DATAITM-LINE-NO-9.
+           MOVE LOT-DESC (DESC-SUB)      TO  DATAITM-INFO.
+
+
+           PERFORM 9999-PUT-DPODATAITM-PO-O.
+
+           GO TO 587-PUT-LOT-DESC.
+       589-EXIT.
+           EXIT.
+       599-EXIT.
+           EXIT.
+
+       600-CALL-BXRAWBAR.
+           IF SFL-PTR < TBL-LIMIT
+               ADD 1                     TO SFL-PTR
+           ELSE
+               GO TO 600-EXIT.
+      *---11/10/97 JSB, GET SUBFILE RECORD
+           READ SUBFILE DISPLAY-FILE
+               INTO SD-LINE
+               FORMAT IS "RCVSFL"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS  NOT = "00"
+               MOVE "ERROR ON READING SFL,RAWBAR" TO BU-DISPLAY-MSG
+               MOVE DISPLAY-STATUS TO FILE-STATUS
+               PERFORM 2100-BLOWUP.
+      *---
+           IF  SD-RAW-FLAG = "Y"
+      *----------  CALL PROGRAM TO SBMJOB FOR A NON CSIS
+      *----------    PROGRAM TO PRINT A BAR CODE.
+      *----------    IF NO PROGRAM TO SUBMIT, RETURN WITHOUT
+      *----------    ANY PROCESSING.
+               MOVE SD-CODE             TO BAR-CODE
+               MOVE SD-PO-QTY-DLVR      TO BAR-QTY
+               MOVE SD-UM               TO BAR-UM
+               MOVE WS-RECEIVER         TO BAR-RECEIVER
+               CALL "BXRAWBAR" USING BAR-CODE BAR-QTY BAR-UM
+                                     BAR-RECEIVER.
+           GO TO 600-CALL-BXRAWBAR.
+       600-EXIT.
+           EXIT.
+
+
+      *************************************************************
+      *    CONVERT A WORKING STORAGE FIELD TO STOREROOM UM        *
+      *************************************************************
+       830-CONVERT-TO-STR-UM.
+           IF  SD-UM = STR-UM
+               MOVE ZEROES               TO  WS-RESULT-FLD
+               ADD WS-CONVERT-FLD        TO  WS-RESULT-FLD ROUNDED
+           ELSE
+               IF  SD-UM = STR-UM1
+                   MULTIPLY WS-CONVERT-FLD BY STR-UM1-CF
+                       GIVING WS-RESULT-FLD ROUNDED
+               ELSE
+                   IF  SD-UM = STR-UM2
+                       MULTIPLY WS-CONVERT-FLD BY STR-UM2-CF
+                           GIVING WS-RESULT-FLD ROUNDED.
+       839-EXIT.
+           EXIT.
+      *************************************************************
+      *  DETERMINE IF ITEM SHOULD BE AUTOMATICALLY STORED         *
+      *************************************************************
+       840-CHECK-IF-STORE.
+      *------IF STORE RECEIPT INTERFACES WITH EXTERNAL SYSTEM AND
+      *------   ALL MATERIALS TO BE AUTO STORED THEN SET SWITCH TO Y
+      *------   JSB, 9/3/97 FOR DES MOINES
+      *------        6/7/01  MOVED THIS CHECK BEFORE THE CHECK FOR
+      *------                DIRECT DELIVERY MATERIAL.
+      *------       7/11/01  DON'T WANT TO SET STORE-SW TO "Y" IF
+      *------                IT'S A NON-STR ITEM.
+           IF SAVE-EXTSYS = "Y" AND SAVE-EXTAUTO = "Y"
+               IF SD-CODE NOT = "NON-STR"
+                   MOVE "Y"                  TO  STORE-SW
+               END-IF
+               GO TO 849-EXIT.
+
+           IF  SD-DIRECT-SW = "Y"
+               MOVE "N"                  TO  STORE-SW
+               GO TO 849-EXIT.
+
+           SET I                         TO  1.
+           SEARCH AUTOSTR-AREA
+                  AT END MOVE "N"        TO  STORE-SW
+                  GO TO 849-EXIT
+                  WHEN AUTOSTORE-GRP (I) = SD-MAJOR-GROUP
+                  GO TO 845-FOUND-GROUP.
+
+       845-FOUND-GROUP.
+           IF  AUTOSTORE-SW (I) = "Y"
+               MOVE "Y"                  TO  STORE-SW.
+       849-EXIT.
+           EXIT.
+      *************************************************************
+      *        ADD A DIRECT DELIVERY ITEM TO THE USAGE FILE       *
+      *************************************************************
+       850-ADD-CODE-TO-USAGE.
+           MOVE SD-CODE                  TO  K-CORP-CODE.
+           MOVE 0  TO K-MTH-USAGE (2) K-MTH-USAGE (3) K-MTH-USAGE (4)
+                      K-MTH-USAGE (5) K-MTH-USAGE (6) K-MTH-USAGE (7)
+                      K-MTH-USAGE (8) K-MTH-USAGE (9) K-MTH-USAGE (10)
+                      K-MTH-USAGE (11) K-MTH-USAGE (12)
+                      K-MTH-USAGE (13) K-MTH-USAGE (14) K-MTH-USAGE (1).
+           MOVE 0 TO K-MTH-USAGE-DD(2) K-MTH-USAGE-DD(3)
+                      K-MTH-USAGE-DD(4)  K-MTH-USAGE-DD(5)
+                      K-MTH-USAGE-DD(6)  K-MTH-USAGE-DD(7)
+                      K-MTH-USAGE-DD(8)  K-MTH-USAGE-DD(9)
+                      K-MTH-USAGE-DD(10) K-MTH-USAGE-DD(11)
+                      K-MTH-USAGE-DD(12) K-MTH-USAGE-DD(13)
+                      K-MTH-USAGE-DD(14) K-MTH-USAGE-DD(1).
+
+           ADD SD-STR-QTY-DLVR, K-MTH-USAGE (13)
+                    GIVING K-MTH-USAGE (13) ROUNDED.
+           ADD SD-STR-QTY-DLVR, K-MTH-USAGE-DD (13)
+                    GIVING K-MTH-USAGE-DD (13) ROUNDED.
+           PERFORM 9999-PUT-USAGEFIL-CD-O.
+
+       859-EXIT.  EXIT.
+      *************************************************************
+      * IF ITEM IS TO BE AUTOMATICALLY STORED, UPDATE MSTOREM     *
+      * FIELDS AND CREATE A 325 TRANSACTION.                      *
+      * IF THIS ITEM HAS A CHAT NUMBER ASSIGNED, ALSO CREATE A    *
+      * 341 TRANSACTION FOR THE CHESS CORPORATE SYSTEM.           *
+      *************************************************************
+       860-CREATE-TC325.
+           IF  SD-MASTER-STOCK > SPACES
+               MOVE SD-MASTER-STOCK      TO  CODE-ARG
+           ELSE
+               MOVE SD-CODE              TO  CODE-ARG.
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+           COMPUTE STR-ONHAND ROUNDED = SD-STR-QTY-DLVR + STR-ONHAND.
+
+      *-------2/18/98, CHECK VENDOR FOR FRANCHISE VENDOR
+           IF FRAN-TABLE NOT = SPACES
+               SET FRAN-IDX TO 1
+               SEARCH FRAN-ENTRY
+                 AT END
+                     MOVE "N" TO FRANCHISE-VENDOR-SW
+                 WHEN FRAN-VEN-CODE(FRAN-IDX) = PO-VEN-CODE
+                     MOVE "Y" TO FRANCHISE-VENDOR-SW
+               END-SEARCH
+           ELSE
+               MOVE "N" TO FRANCHISE-VENDOR-SW
+           END-IF.
+
+      *-------4/30/97, IF FRANCHISE CODE, STORE IN FRAN PRIMARY BIN
+           IF STR-CODE-OWNER  = SPACES OR NOT FRANCHISE-VENDOR
+               COMPUTE STR-LOC-ONHAND (1) ROUNDED =
+                   SD-STR-QTY-DLVR + STR-LOC-ONHAND (1)
+           ELSE
+               MOVE 1 TO FRAN-SUB
+               PERFORM UNTIL FRAN-SUB > 6 OR
+                 STR-CODE-OWNER = STR-BIN-OWNER(FRAN-SUB)
+                      ADD 1 TO FRAN-SUB
+               END-PERFORM
+               IF FRAN-SUB > 6
+                   MOVE 1 TO FRAN-SUB
+               END-IF
+               COMPUTE STR-LOC-ONHAND (FRAN-SUB) ROUNDED =
+                   SD-STR-QTY-DLVR + STR-LOC-ONHAND (FRAN-SUB)
+           END-IF.
+
+      *---------- CORRECTED PROBLEM WITH MOVING "CN" (CENTURY) FIELD TO
+      *---------- "NON-CN" STR-ACT-DATE FIELD.
+           MOVE RCV-DATE-RCVD-CN         TO  STR-ACT-DATE-CN.
+           PERFORM 9999-UPDATE-MSTORERM-CD-O.
+
+      *----------  CREATE TC325
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO  DDAILYTC-TIME.
+           MOVE PLT-NUMBER-PASS TO DDAILYTC-PLT.
+           IF  SD-UNIT-PRICE > 9999999.99
+               GO TO 863-CREATE-TC425.
+      *------ NOTE: ANY CURRENCY CONVERSION OF TC325 PRICE IS DONE
+      *------ IN THE CUTOFF (TCDLYABS)
+           MOVE "325"                    TO  DDAILYTC-TC.
+           IF  SD-MASTER-STOCK > SPACES
+               MOVE SD-MASTER-STOCK      TO  TC325-CORPCODE
+           ELSE
+               MOVE SD-CODE              TO  TC325-CORPCODE.
+           MOVE WS-RECEIVER              TO  TC325-RS.
+           MOVE SD-ITM                   TO  TC325-ITEM.
+           COMPUTE TC325-STORED-QTY ROUNDED =
+                   SD-STR-QTY-DLVR + ZERO-WS.
+           MOVE TC325-STORED-QTY         TO  EXT-QTY.
+           MOVE STR-UM                   TO  TC325-UM.
+           MOVE SAVE-UNIT-PRICE          TO  TC325-PO-UNIT-PRICE.
+           MOVE SD-CLASS                 TO  TC325-CLASS.
+           MOVE PO-CURRENCY-CODE         TO  TC325-CURRENCY-CODE.
+           MOVE FRT-SEQ-RCV              TO  TC325-KELLY-SEQ.
+           IF FRANCHISE-VENDOR
+               MOVE STR-CODE-OWNER       TO  TC325-FRAN-ID
+           ELSE
+               MOVE SPACES               TO  TC425-FRAN-ID.
+           GO TO 867-PUT-TC.
+       863-CREATE-TC425.
+           MOVE "425"                    TO  DDAILYTC-TC.
+           IF  SD-MASTER-STOCK > SPACES
+               MOVE SD-MASTER-STOCK      TO  TC425-CORPCODE
+           ELSE
+               MOVE SD-CODE              TO  TC425-CORPCODE.
+           MOVE WS-RECEIVER-2-14         TO  TC425-RS.
+           MOVE SD-ITM                   TO  TC425-ITEM.
+           COMPUTE TC425-STORED-QTY ROUNDED =
+                   SD-STR-QTY-DLVR + ZERO-WS.
+           MOVE TC425-STORED-QTY         TO  EXT-QTY.
+           MOVE STR-UM                   TO  TC425-UM.
+           MOVE SD-UNIT-PRICE            TO  TC425-PO-UNIT-PRICE.
+           MOVE FRT-SEQ-RCV              TO  TC425-KELLY-SEQ.
+           MOVE PO-CURRENCY-CODE         TO  TC425-CURRENCY-CODE.
+           MOVE SD-CLASS                 TO  TC425-CLASS.
+           IF FRANCHISE-VENDOR
+               MOVE STR-CODE-OWNER       TO  TC425-FRAN-ID
+           ELSE
+               MOVE SPACES               TO  TC425-FRAN-ID.
+
+       867-PUT-TC.
+           PERFORM 9999-PUT-DDAILYTC-DT-O.
+
+           IF SD-CHATNO NOT = SPACES
+               PERFORM 870-CREATE-TC341 THRU 870-EXIT.
+
+      *------9/3/97, JSB - FOR DES MOINES
+      *------IF STORES RECEIPTS INTERFACES WITH AN EXTERNAL SYSTEM
+      *------  CALL THE EXTERNAL INTERFACE PROGRAM TO PASS THE DATA.
+           IF SAVE-EXTSYS = "Y"
+               MOVE SPACES TO EXT-CORRECT
+               CALL "BSTRRCVIFC" USING WS-RECEIVER-2-14
+                                       SD-ITM
+                                       SD-CODE
+                                       EXT-QTY
+                                       STR-UM
+                                       DATE-YMD-OUT
+                                       DATE-UNFORMATTED-TIME-OUT
+                                       EXT-CORRECT.
+       869-EXIT.
+           EXIT.
+
+       870-CREATE-TC341.
+           MOVE SPACES                   TO  BUF-DDAILYTC.
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT             TO  DDAILYTC-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO  DDAILYTC-TIME.
+           MOVE PLT-NUMBER-PASS TO DDAILYTC-PLT.
+           MOVE SPACES TO BUF-TC341.
+           MOVE "341" TO DDAILYTC-TC.
+           IF  SD-MASTER-STOCK > SPACES
+               MOVE SD-MASTER-STOCK      TO TC341-CORPCODE
+           ELSE
+               MOVE SD-CODE              TO TC341-CORPCODE.
+           MOVE SD-CHATNO                TO TC341-CHAT-NO.
+           MOVE SD-PO-QTY-DLVR           TO TC341-QTY-RCVD.
+           MOVE SD-UM                    TO TC341-UM-RCVD.
+      *-----TRY TO CONVERT QTY TO LB
+           MOVE "00" TO UMCF-RET-CODE.
+           IF SD-UM     = "LB"
+               MOVE TC341-QTY-RCVD       TO TC341-QTY-UM-LB
+           ELSE
+               MOVE "LB" TO UMCF-DEST-UM
+               MOVE TC341-UM-RCVD TO UMCF-SOURCE-UM
+               MOVE TC341-QTY-RCVD TO UMCF-SOURCE-QTY
+               CALL "TUMCF" USING UMCF-RET-CODE STR-UM-AREA
+                                  UMCF-QUANTITY-AREA
+               IF UMCF-RET-CODE = "00"
+                   MOVE UMCF-DEST-QTY TO TC341-QTY-UM-LB
+               ELSE
+                   MOVE ZEROS TO TC341-QTY-UM-LB
+               END-IF
+           END-IF.
+
+      *-----TRY TO CONVERT UM TO GL
+           MOVE "00" TO UMCF-RET-CODE.
+           IF SD-UM = "GL"
+               MOVE TC341-QTY-RCVD TO TC341-QTY-UM-GAL
+           ELSE
+               MOVE "GL" TO UMCF-DEST-UM
+               MOVE TC341-UM-RCVD TO UMCF-SOURCE-UM
+               MOVE TC341-QTY-RCVD TO UMCF-SOURCE-QTY
+               CALL "TUMCF" USING UMCF-RET-CODE STR-UM-AREA
+                                  UMCF-QUANTITY-AREA
+               IF UMCF-RET-CODE = "00"
+                   MOVE UMCF-DEST-QTY TO TC341-QTY-UM-GAL
+               ELSE
+                   MOVE ZEROS TO TC341-QTY-UM-GAL
+               END-IF
+           END-IF.
+           PERFORM 9999-PUT-DDAILYTC-DT-O.
+       870-EXIT.
+           EXIT.
+
+       880-GET-REQ-DESC.
+           MOVE SD-CODE                  TO  CODE-ARG.
+           MOVE SPACES                   TO  REQ-DESCRIPTION.
+           IF REQ-MAT-TYPE = "S"
+               MOVE 1                    TO   CDESC-LINES-TO-GET
+               MOVE "N"                  TO   CDESC-LOCAL-DESC-OPTION
+               CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+                 BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA
+               IF BU-DISPLAY-MSG-1 = SPACES
+                   MOVE CDESC (1)        TO   REQ-DESCRIPTION
+               END-IF
+           ELSE
+               MOVE 1                    TO   RQD-NUM-LINES
+               CALL "TNRQDESC" USING RQD-NUM-LINES, BASE, STATUS-AREA,
+                 REQ-ARG, REQ-DESC-AREA, BU-DISPLAY-MSG
+               IF BU-DISPLAY-MSG-1 = SPACES
+                   MOVE RQD-DESC (1)     TO   REQ-DESCRIPTION.
+
+       880-EXIT.
+           EXIT.
+
+       8100-CLEAR-SFL.
+           MOVE B"1" TO IND(71).
+           MOVE B"1" TO IND(72).
+           MOVE B"0" TO IND(73).
+           WRITE SUBFILE DISPLAY-REC FROM SD-LINE
+              FORMAT IS "RCVSFLC"
+              INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+              MOVE "PROBLEM ON INIT SFL WRITE 8100" TO BU-DISPLAY-MSG
+              MOVE DISPLAY-STATUS TO FILE-STATUS
+              PERFORM 2100-BLOWUP.
+           MOVE B"0" TO IND(72).
+       8100-EXIT.
+           EXIT.
+
+       9999-CHAINHD-DPOFREIGHT-PO-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOFREIGHT-PO-REC-I.
+           START DPOFREIGHT-PO-I KEY = PORCVNO OF DPOFREIGHT-PO-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DPOFREIGHT-PO-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DPOITEM-PO-O.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-PO-REC-O.
+           START DPOITEM-PO-O KEY = PORCVNO OF DPOITEM-PO-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DPOITEM-PO-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DPOITEM-PO-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-PO-REC-I.
+           START DPOITEM-PO-I KEY = PORCVNO OF DPOITEM-PO-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DPOITEM-PO-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DREQD-PO-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DREQD-PO-REC-I.
+           START DREQD-PO-I KEY = PORCVNO OF DREQD-PO-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQD-PO-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DVENDITM-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF DVENDITM-CD-REC-O.
+           START DVENDITM-CD-O KEY = CORPCDE OF DVENDITM-CD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DVENDITM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DVENDOR-VN-I.
+           MOVE 0 TO COND-WORD.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-VN-REC-I.
+           START DVENDOR-VN-I KEY = VENCDE OF DVENDOR-VN-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DVENDOR-VN-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CLOSE-STUFF.
+           CLOSE DDAILYTC-DT-O.
+           CLOSE DPODATAITM-PO-O.
+           CLOSE DPODATAITM-PO-I.
+           CLOSE DPOFREIGHT-PO-I.
+            CLOSE DPOFREIGHT-PO-O.
+           CLOSE DPOITEM-PO-O.
+           CLOSE DPOITEM-PO-I.
+           CLOSE DPORECD-PO-O.
+           CLOSE DRCVITEM-PO-O.
+           CLOSE DREQD-PO-I.
+           CLOSE DRAWLOT-CL-O.
+           CLOSE DTALLY-CD-O.
+           CLOSE DVENDITM-CD-O.
+           CLOSE DVENDOR-VN-I.
+           CLOSE MPLTINFO-PK-I.
+           CLOSE MPORCV-PO-I.
+           CLOSE MREQ-RQ-I.
+           CLOSE MSTORERM-CD-O.
+           CLOSE USAGEFIL-CD-O.
+           CLOSE DRCVTRAK.
+           CLOSE CARRIER-FILE.
+           CLOSE DISPLAY-FILE.
+           IF BUYR-FILE-SW = "Y"
+               CLOSE BUYR-I.
+           IF NFTA-FILE-SW = "Y"
+               CLOSE NFTA-IO.
+           IF REQ-FILE-SW = "Y"
+               CLOSE REQ-FILE-IO.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MPORCV-PO-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF MPORCV-PO-REC-I.
+           READ MPORCV-PO-I INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPORCV-PO-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MREQ-RQ-I.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF MREQ-RQ-REC-I.
+           READ MREQ-RQ-I INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MREQ-RQ-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-O.
+           READ MSTORERM-CD-O INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MSTORERM-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY > CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETKEY-USAGEFIL-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF USAGEFIL-CD-REC-O.
+           READ USAGEFIL-CD-O INTO BUF-USAGEFIL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-GETNEXT-DPOFREIGHT-PO-I.
+           MOVE 0 TO COND-WORD.
+           READ DPOFREIGHT-PO-I NEXT INTO BUF-DPOFREIGHT
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DPOFREIGHT-PO-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF PORCVNO OF DPOFREIGHT-PO-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+
+       9999-GETNEXT-DPOITEM-PO-O.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-PO-O NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DPOITEM-PO-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DPOITEM-PO-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF PORCVNO OF DPOITEM-PO-REC-O NOT = PO-ARG
+               PERFORM 9999-RESET-DPOITEM-PO-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DPOITEM-PO-O.
+           MOVE HIGH-VALUES TO PORCVNO OF DPOITEM-PO-REC-O.
+           START DPOITEM-PO-O KEY > PORCVNO OF DPOITEM-PO-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DPOITEM-PO-I.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-PO-I NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DPOITEM-PO-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF PORCVNO OF DPOITEM-PO-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+
+       9999-GETNEXT-DREQD-PO-I.
+           MOVE 0 TO COND-WORD.
+           READ DREQD-PO-I NEXT INTO BUF-DREQD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQD-PO-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF PORCVNO OF DREQD-PO-REC-I NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+
+       9999-GETNEXT-DVENDITM-CD-O.
+           MOVE 0 TO COND-WORD.
+           READ DVENDITM-CD-O NEXT INTO BUF-DVENDITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DVENDITM-CD-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DVENDITM-CD-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF CORPCDE OF DVENDITM-CD-REC-O NOT = CODE-ARG
+               PERFORM 9999-RESET-DVENDITM-CD-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DVENDITM-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF DVENDITM-CD-REC-O.
+           START DVENDITM-CD-O KEY > CORPCDE OF DVENDITM-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DVENDOR-VN-I.
+           MOVE 0 TO COND-WORD.
+           READ DVENDOR-VN-I NEXT INTO BUF-DVENDOR
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DVENDOR-VN-I"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF VENCDE OF DVENDOR-VN-REC-I NOT = VEN-ARG
+               MOVE 15 TO COND-WORD.
+
+      *------ THIS VERSION OF CATREAD ASSUMES THE SET/MSG NUMBER
+      *------ WILL BE IN CATREAD-MSG-NUMBER.
+       999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+           IF MESSAGE-BUFFER-1  = SPACES
+               MOVE "* ERROR ON THIS FIELD *" TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       9999-OPEN-STUFF.
+           OPEN I-O DDAILYTC-DT-O.
+           OPEN I-O DPODATAITM-PO-O.
+           OPEN INPUT DPODATAITM-PO-I.
+           OPEN INPUT DPOFREIGHT-PO-I.
+            OPEN I-O DPOFREIGHT-PO-O.
+           OPEN I-O DPORECD-PO-O.
+           OPEN I-O DPOITEM-PO-O.
+           OPEN INPUT DPOITEM-PO-I.
+           OPEN I-O DRCVITEM-PO-O.
+           OPEN INPUT DREQD-PO-I.
+           OPEN I-O DRAWLOT-CL-O.
+           OPEN I-O DTALLY-CD-O.
+           OPEN I-O DVENDITM-CD-O.
+           OPEN INPUT DVENDOR-VN-I.
+           OPEN INPUT MPLTINFO-PK-I.
+           OPEN INPUT MPORCV-PO-I.
+           OPEN INPUT MREQ-RQ-I.
+           OPEN I-O MSTORERM-CD-O.
+           OPEN I-O USAGEFIL-CD-O.
+           OPEN I-O DRCVTRAK.
+           OPEN INPUT CARRIER-FILE.
+           OPEN I-O DISPLAY-FILE.
+           OPEN INPUT BUYR-I.
+           IF FILE-STATUS NOT = "00"
+               MOVE "N" TO BUYR-FILE-SW
+           ELSE
+               MOVE "Y" TO BUYR-FILE-SW.
+           OPEN I-O NFTA-IO.
+           IF FILE-STATUS NOT = "00"
+               MOVE "N" TO NFTA-FILE-SW
+           ELSE
+               MOVE "Y" TO NFTA-FILE-SW.
+           OPEN I-O REQ-FILE-IO.
+           IF FILE-STATUS NOT = "00"
+               MOVE "N" TO REQ-FILE-SW
+           ELSE
+               MOVE "Y" TO REQ-FILE-SW.
+
+       9999-PUT-DDAILYTC-DT-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DDAILYTC-DT-REC-O FROM BUF-DDAILYTC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DDAILYTC-DT-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DPODATAITM-PO-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DPODATAITM-PO-REC-O FROM BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DPODATAITM-PO-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DRCVITEM-PO-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DRCVITEM-PO-REC-O FROM BUF-DRCVITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DRCVITEM-PO-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DRAWLOT-CL-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DRAWLOT-CL-REC-O FROM BUF-DRAWLOT
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DRAWLOT-CL-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DTALLY-CD-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DTALLY-CD-REC-O FROM BUF-DTALLY
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DTALLY-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DVENDITM-CD-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DVENDITM-CD-REC-O FROM BUF-DVENDITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DVENDITM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-USAGEFIL-CD-O.
+           MOVE 0 TO COND-WORD.
+           WRITE USAGEFIL-CD-REC-O FROM BUF-USAGEFIL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-USAGEFIL-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       COPY SCRNCALL IN COPYLIB.
+       COPY SCRNCL1  IN COPYLIB.
+       COPY SCRNCL2  IN COPYLIB.
+       COPY SCRNCL3  IN COPYLIB.
+
+       9999-UPDATE-DPOITEM-PO-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE DPOITEM-PO-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-DPOITEM-PO-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-DVENDITM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE DVENDITM-CD-REC-O FROM BUF-DVENDITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-DVENDITM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-CD-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-USAGEFIL-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE USAGEFIL-CD-REC-O FROM BUF-USAGEFIL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPD ERR 9999-UPD-USE-CD-O" TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-SEND-NAFTA-MSG.
+           IF BUYR-FILE-SW = "Y"
+      *------------ SEND MESSAGE TO PO BUYER CODE USERID.
+               MOVE PO-BUYER (1:3) TO BUYERCDE OF BUYR-I-REC
+      *------------ BUYER CODE FROM AKRON IS THE FIRST 3 CHARACTERS
+      *------------ OF THE PO-BUYER FIELD.
+      *****    MOVE PO-BUYER-CODE TO BUYERCDE OF BUYR-I-REC
+               READ BUYR-I INTO BUF-BUYRFILE
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS = "00"
+                   MOVE BUYR-USER-ID     TO MCXSNDDST-USER
+                   MOVE BUYR-SYSTEM      TO MCXSNDDST-SYSTEM
+                   PERFORM 9999-CALL-MCXSNDDST
+               END-IF
+      *------------ SEND MESSAGE TO USERS TO GET MESSAGES FOR
+      *------------ ALL RECEIVERS.
+               MOVE "*ALL" TO BUYERCDE OF BUYR-I-REC
+               START BUYR-I KEY = BUYERCDE OF BUYR-I-REC
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-START
+               READ BUYR-I NEXT INTO BUF-BUYRFILE
+                   AT END MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               PERFORM UNTIL FILE-STATUS NOT = "00" OR
+                             BUYR-CODE NOT = "*ALL"
+                   MOVE BUYR-USER-ID     TO MCXSNDDST-USER
+                   MOVE BUYR-SYSTEM      TO MCXSNDDST-SYSTEM
+                   PERFORM 9999-CALL-MCXSNDDST
+                   READ BUYR-I NEXT INTO BUF-BUYRFILE
+                       AT END MOVE FILE-STATUS TO FILE-STATUS
+                   END-READ
+               END-PERFORM.
+
+       9999-CALL-MCXSNDDST.
+           MOVE WS-PO                    TO MCXSNDDST-PO.
+           MOVE WS-RLSE                  TO MCXSNDDST-RLSE.
+           MOVE WS-RS                    TO MCXSNDDST-RCVR.
+           MOVE 1                        TO DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           MOVE DATE-YMD-OUT TO DATE-CYMD-YMD.
+           IF DATE-CYMD-YY > 70
+               MOVE 19 TO DATE-CYMD-CC
+           ELSE
+               MOVE 20 TO DATE-CYMD-CC.
+           MOVE DATE-SLASH-OUT           TO MCXSNDDST-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT  TO MCXSNDDST-TIME.
+           CALL "MCXSNDDST" USING MCXSNDDST-USER
+                                  MCXSNDDST-SYSTEM
+                                  MCXSNDDST-MSG.
+
+       9999-WRITE-NAFTA-TRACK.
+           MOVE SPACES                    TO BUF-NFTAFILE.
+           MOVE "P"                       TO NFTA-PO-RCV-NO (1:1).
+           MOVE WS-PO                     TO NFTA-PO.
+           MOVE WS-RLSE                   TO NFTA-RLSE.
+           MOVE WS-RS                     TO NFTA-RCVR.
+           MOVE PO-VEN-CODE               TO NFTA-VEN-CODE.
+           MOVE DATE-CYMD                 TO NFTA-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT TO NFTA-TIME.
+      **** MOVE PO-BUYER-CODE             TO NFTA-BUYER.
+           MOVE PO-BUYER (1:3)            TO NFTA-BUYER.
+           WRITE NFTA-IO-REC FROM BUF-NFTAFILE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-SEND-EXPEDITE-MSG.
+           MOVE "EXPEDITE    " TO REQNO OF REQ-FILE-IO.
+           READ REQ-FILE-IO INTO BUF-REQ-FILE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE REQF-USER-ID TO HOLD-USER-ID
+               MOVE REQ-ARG      TO REQNO OF REQ-FILE-IO
+               READ REQ-FILE-IO INTO BUF-REQ-FILE
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+               END-READ
+               IF FILE-STATUS = "00"
+                   MOVE REQ-ARG  TO REQ-NOTIFY-REQ-NUMBER-2
+                   MOVE WS-RECEIVER-2-14  TO REQ-NOTIFY-RCV-NUMBER-2
+                   MOVE 1        TO  DATE-MODE
+                   CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS
+                   MOVE DATE-SLASH-OUT TO  REQ-NOTIFY-DATE-2
+                   MOVE DATE-FORMATTED-TIME-OUT TO REQ-NOTIFY-TIME-2
+                   CALL "MCXSNDDST" USING HOLD-USER-ID
+                                          HOLD-SYSTEM-ID
+                                          REQ-NOTIFICATION-2.
+                   DELETE REQ-FILE-IO
+                      INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+

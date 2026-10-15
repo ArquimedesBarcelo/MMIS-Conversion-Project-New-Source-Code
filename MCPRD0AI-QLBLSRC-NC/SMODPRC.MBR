@@ -1,0 +1,826 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SMODPRC.
+       AUTHOR.        KURT MOVSESIAN/JIM COFFMAN (MAINTAINER).
+
+      ******************************************************
+      *                                                    *
+      *D  S M O D P R C                     PU2-10         *
+      *                                                    *
+      *D  THIS SUB PROGRAM MODIFIES PRICE AND UMs VALUES   *
+      *D  FOR CODED REQUIREMENT ORDERS ONLY.               *
+      *D  A MAXIMUM OF 16 ITEMS ARE PUT ON THE SCREEN      *
+      *D  AT ONE TIME FOR MODIFICATION.                    *
+      *                                                    *
+      ******************************************************
+      *   N O T E    T H I S   S U B R O U T I N E   I S   *
+      *         C A L L E D    B Y :                       *
+      *      1. SPOMOD                                     *
+      ******************************************************
+      *C                                                   *
+      *C  04/04/1995    CA ZUBEK    REQ. # 95-009          *
+      *C  ADDED CALL TO "SPOTRACK" TO WRITE TO THE AUDIT   *
+      *C  FILE WHEN UNIT PRICE IS CHANGED.                 *
+      *C                                                   *
+      *C  07/10/1995    CA YODER                           *
+      *C  ADDED PO ITEM NUMBER FIELD TO PARAMETERS PASSED  *
+      *C  TO "SPOTRACK."                                   *
+      *C                                                   *
+      *C  07/18/1996    CA YODER                           *
+      *C  RE-COMPILED PROGRAM TO PICK UP CENTURY DATABASE  *
+      *C  CHANGES.                                         *
+
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER. IBM-AS400.
+       OBJECT-COMPUTER. IBM-AS400.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+012800
+012900 INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN TO WORKSTATION-ZPURORD-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS IS SEQUENTIAL
+                  FILE STATUS IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT MVALIDUM-I
+                  ASSIGN TO DATABASE-MCFLCS0401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC                  PIC X(2000).
+      *    COPY DD-POMOD4-O OF ZPURORD.
+
+       FD  MVALIDUM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MVALIDUM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0401.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+
+003800 WORKING-STORAGE SECTION.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+       77  SUB                         PIC S9(4) BINARY VALUE ZEROS.
+       77  QTY-UM-FIELD-NO             PIC S9(4) BINARY VALUE ZEROS.
+       77  PRICE-UM-FIELD-NO           PIC S9(4) BINARY VALUE ZEROS.
+
+       01  ZBILL-PO-SW                 PIC X           VALUE SPACE.
+           88  ZBILL-PO                                VALUE "1".
+
+      **********************
+      *                    *
+      *  S W I T C H E S   *
+      *                    *
+      **********************
+
+       01  SWITCH-AREA.
+           05  ERR-SW                   PIC X      VALUE SPACES.
+
+       01  PO-ARRAY.
+           05  PO-ARR OCCURS 7 TIMES INDEXED BY P-INDEX.
+               10  PO-CHAR              PIC X.
+
+      *************************************************************
+      **                                                         **
+      **      V I E W   C O M M U N I C A T I O N   A R E A      **
+      **                                                         **
+      *************************************************************
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT              PIC X(66)    VALUE SPACE.
+           05  MSG-FLD               PIC X(10)     VALUE SPACE.
+           05  MSG-FLD-9  REDEFINES  MSG-FLD      PIC Z(9)9.
+
+       01  FIELD-NUMBER              PIC S9(4)    VALUE 1 BINARY.
+
+       COPY DISPDATA IN COPYLIB.
+
+       COPY CATREAD IN COPYLIB.
+
+       COPY IOFEEDBACK IN COPYLIB.
+
+       01  SAVE-ITEM-TABLE.
+           05  SAVE-ITEM-ENTRIES OCCURS 16 TIMES.
+               10  SAVE-ITEM-NO           PIC X(4).
+               10  SAVE-CORP-CODE         PIC X(7).
+               10  SAVE-QTY-UM            PIC X(2).
+               10  SAVE-PRICE             PIC S9(11)V9(4) VALUE ZEROS.
+               10  SAVE-PRICE-UM          PIC X(2).
+               10  UPDATE-SW              PIC X.
+
+
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **             TERMINAL I/O DATA AREA                       **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       01  SCREEN-1.
+           05  TRM-STRM-PO                PIC X(7).
+           05  TRM-STRM-REL               PIC XXX.
+           05  TRM-MSG-TOP                PIC X(40).
+           05  TRM-ITEM                   PIC X(4).
+           05  TRM-CURRENCY-LIT           PIC X(26).
+           05  TRM-ITEM-TABLE  OCCURS 16 TIMES.
+               10  DIS-ITEM               PIC X(4).
+               10  DIS-CORP-CODE          PIC X(7).
+               10  DE-QTY-UM              PIC X(2).
+               10  DE-PRICE               PIC 9(11)V9(4) VALUE ZEROS.
+               10  DE-PRICE-UM            PIC X(2).
+           05  TRM-MSG-BOTTOM             PIC X(40).
+           05  TRM-COMMAND-LINE           PIC X(79).
+           05  TRM-MESSAGE-LINE           PIC X(79).
+
+       01  BUILD-CC-LIT.
+           05  CURRENCY-LIT             PIC X(10).
+           05  FILLER                   PIC X.
+           05  CUR-CODE                 PIC X(2).
+           05  FILLER                   PIC X.
+           05  CUR-CODE-DESC            PIC X(12).
+
+      **************************************************************
+      **************************************************************
+      **                                                          **
+      **                DATABASE I/O BUFFER AREA                  **
+      **                                                          **
+      **************************************************************
+      **************************************************************
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY DPOITEM IN COPYLIB.
+
+       COPY MVALIDUM IN COPYLIB.
+
+       COPY DBSTAT IN COPYLIB.
+
+       01 ITEMS-LISTING.
+           05  ALL-ITEMS              PIC XX    VALUE "@;".
+           05  PO-SEARCH              PIC X(10) VALUE "PO-RCV-NO;".
+
+       01 ARG-VALUES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+           05  PO-ARG                 PIC X(14) VALUE SPACES.
+           05  UM-ARG                 PIC X(2)  VALUE SPACES.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  STC320.SOURCE
+      *
+      ************************************
+
+       COPY STC320 IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SPOMSTRM.SOURCE
+      *
+      ************************************
+
+       COPY SPOMSTRM IN COPYLIB.
+
+      ************************************
+      *
+      *  PARAMETERS FOR CALLING
+      *  SVENPRC.SOURCE
+      *
+      ************************************
+
+       COPY SVENPRC IN COPYLIB.
+
+
+       COPY TBLOWUP IN COPYLIB.
+
+       01  PO-TRACK-DATA.
+           COPY DPOTRACK   IN COPYLIB.
+
+       LINKAGE SECTION.
+
+       01  BASE             PIC X(10).
+
+       01  BUILD-PO-SEARCH.
+           05  PO-PREFIX           PIC X.
+           05  PO-NO               PIC X(7).
+           05  PO-REL              PIC X(3).
+           05  PO-RCV              PIC X(3).
+
+       COPY VCOMLINK IN COPYLIB.
+
+       COPY DPORECD IN COPYLIB.
+
+       01  SWITCH-PARAMETERS.
+           05  FATAL-ERR-SW            PIC X.
+           05  COMPANY-SAVE            PIC X(3).
+
+
+      **************************************
+      *                                    *
+      *  PRINTCNTL IS SET TO 1 THIS CAUSES *
+      *  THE FIELD ON A SCREEN PRINTOUT    *
+      *  TO BE UNDERLINED                  *
+      *                                    *
+      *  PAGECNTL IS SET TO 49 (OCTAL 61)  *
+      *  THIS CAUSE THE LP TO EJECT AFTER  *
+      *  THE SCREEN IS PRINTED             *
+      *                                    *
+      **************************************
+
+       01  SCREEN-PRINT-PARMS.
+           05  PRINTCNTL             PIC S9(4) BINARY.
+           05  PAGECNTL              PIC S9(4) BINARY.
+           05  SPOOLFIL-OPEN-SW      PIC X.
+
+       01  PASSED-SPOOL-PRT          PIC S9(2) BINARY.
+
+       COPY LANGSUB IN COPYLIB.
+
+
+       PROCEDURE DIVISION USING  BASE,
+                                 BUILD-PO-SEARCH,
+                                 VIEW-COMAREA,
+                                 BUF-DPORECD,
+                                 SWITCH-PARAMETERS,
+                                 SCREEN-PRINT-PARMS,
+                                 PASSED-SPOOL-PRT,
+                                 LANGUAGE-PARMS.
+
+       MODIFY-STOREROOM-ITEM SECTION 10.
+       BEGIN-HERE.
+           OPEN INPUT MVALIDUM-I, MSTORERM-I.
+           OPEN I-O DPOITEM-O, DISPLAY-FILE.
+
+           MOVE BUILD-PO-SEARCH  TO  PO-ARG,
+                                     BU-DISPLAY-FLD (1).
+           PERFORM 62-MODIFY-REQUIREMENT-ITEMS  THRU 62-MRI-X.
+
+           CLOSE MVALIDUM-I, MSTORERM-I, DPOITEM-O, DISPLAY-FILE.
+           GOBACK.
+
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           IF FILE-STATUS NUMERIC
+               MOVE FILE-STATUS TO BU-DISPLAY-MSG.
+           MOVE "SMODPRC"  TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+       4-PGM-ERROR.
+           MOVE B"1"       TO IND(FIELD-NUMBER) IND(99).
+           MOVE MESSAGE-BUFFER TO TRM-MESSAGE-LINE.
+
+       4-PGM-ERROR-X.
+           EXIT.
+
+
+       62-MODIFY-REQUIREMENT-ITEMS.
+           MOVE SPACES                  TO  BUILD-CC-LIT.
+           IF PO-CURRENCY-CODE = SPACES
+               NEXT SENTENCE
+           ELSE
+      **         CURRENCY
+               MOVE  3                  TO  LANG-SETNUM
+               MOVE  140                TO  LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE MESSAGE-BUFFER      TO  CURRENCY-LIT
+               MOVE PO-CURRENCY-CODE    TO  UM-ARG
+               MOVE UM-ARG TO VALIDUM OF MVALIDUM-REC-I
+               READ MVALIDUM-I INTO BUF-MVALIDUM
+                   INVALID KEY MOVE "2" TO FILE-STATUS-2 END-READ
+               IF FILE-STATUS-1 = "2"
+                   NEXT SENTENCE
+               ELSE
+               IF FILE-STATUS NOT = "00"
+056300             MOVE "GET MVALIDUM *62-MI" TO BU-DISPLAY-MSG
+056400             MOVE UM-ARG      TO  BU-DISPLAY-FLD (1)
+056500             GO TO 2-BLOWUP
+               ELSE
+056700             MOVE VALID-CURRENCY-DESC  TO  CUR-CODE-DESC
+056800             MOVE PO-CURRENCY-CODE     TO  CUR-CODE.
+
+       62-GETFORM-MODPRICE.
+           MOVE "MODPRICE"  TO  VIEW-NFNAME.
+
+           MOVE SPACES           TO  SCREEN-1.
+           MOVE PO-NO            TO  TRM-STRM-PO.
+           MOVE PO-REL           TO  TRM-STRM-REL.
+           MOVE ZEROS            TO  TRM-ITEM.
+           PERFORM 621-ZERO-OUT-PRICE
+               VARYING SUB FROM 1 BY 1 UNTIL SUB > 16.
+           IF CUR-CODE-DESC = SPACES
+               NEXT SENTENCE
+           ELSE
+               MOVE BUILD-CC-LIT TO  TRM-CURRENCY-LIT.
+      *    *** ENTER BEGINNING ITEM# THEN PRESS 'ENTER' ***
+           MOVE   5 TO LANG-SETNUM
+           MOVE  15 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO TRM-MSG-TOP.
+
+       62-SHOWFORM-SCREEN-1.
+           MOVE SCREEN-1       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-1.
+
+           IF VIEW-LASTKEY = 3
+               GO TO 62-MRI-X
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 7 OR
+              VIEW-LASTKEY = 8
+      *        *** INVALID FUNCTION KEY ***
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-1.
+
+           IF TRM-ITEM = ZEROS
+      *         YOU MUST ENTER AN ITEM NUMBER
+               MOVE 66110 TO CATREAD-MSG-NUMBER
+069800         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+069900         MOVE 3 TO FIELD-NUMBER
+070000         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+070100         GO TO 62-SHOWFORM-SCREEN-1.
+
+           MOVE SPACE    TO  ZBILL-PO-SW.
+           MOVE PO-NO    TO  PO-ARRAY.
+           PERFORM 621-FIND-M VARYING P-INDEX FROM 7 BY -1 UNTIL
+                P-INDEX = 0 OR ZBILL-PO.
+
+      *------ VERIFY ITEM NUMBER EXISTS
+           MOVE PO-ARG           TO  PORCVNO OF DPOITEM-REC-O.
+           MOVE TRM-ITEM         TO  ITEMNO OF DPOITEM-REC-O.
+           READ DPOITEM-O INTO BUF-DPOITEM
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS-1 = "2"
+069500*        *** ITEM NUMBER DOES NOT EXIST ON THIS P.O. ***
+069600         MOVE   9 TO LANG-SETNUM
+069700         MOVE  11 TO LANG-MSGNUM
+069800         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+069900         MOVE 3  TO FIELD-NUMBER
+070000         PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+070100         GO TO 62-SHOWFORM-SCREEN-1
+070200     ELSE
+           IF FILE-STATUS NOT = "00"
+070300         MOVE "GET DPOITEM * 62-FE" TO BU-DISPLAY-MSG
+070400         GO TO 2-BLOWUP.
+
+       62-PUT-BUFFER.
+      *    *** KEY CHANGES AND PRESS 'ENTER' ***
+           MOVE  11 TO LANG-SETNUM.
+           MOVE  12 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO TRM-MSG-TOP.
+           MOVE 1                     TO  SUB.
+           MOVE SPACES                TO  SAVE-ITEM-TABLE.
+           PERFORM 621-LOAD-ITEMS  THRU  621-LI-X.
+
+      *------- DO A START > HIGH-VALUES TO UNLOCK
+           MOVE HIGH-VALUES TO PORCVNO OF DPOITEM-REC-O.
+           START DPOITEM-O KEY > PORCVNO OF DPOITEM-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+      *    *** 'f7' TO REQUEST ANOTHER ITEM ***
+           MOVE   6 TO LANG-SETNUM.
+           MOVE   7 TO LANG-MSGNUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE MESSAGE-BUFFER TO TRM-MSG-BOTTOM.
+
+       62-GET-MODPRICEB-FORM.
+           MOVE "MODPRICE1B"  TO  VIEW-NFNAME.
+
+       62-SHOWFORM-SCREEN-1B.
+           MOVE SCREEN-1       TO DISPLAY-REC.
+           PERFORM 998-WRITE-SCREEN THRU 998-READ-SCREEN.
+           MOVE DISPLAY-REC    TO SCREEN-1.
+
+           IF VIEW-LASTKEY = 3
+               GO TO 62-MRI-X
+           ELSE
+           IF VIEW-LASTKEY = 7
+               GO TO 62-GETFORM-MODPRICE
+           ELSE
+           IF VIEW-LASTKEY = 1 OR
+              VIEW-LASTKEY = 2 OR
+              VIEW-LASTKEY = 4 OR
+              VIEW-LASTKEY = 5 OR
+              VIEW-LASTKEY = 6 OR
+              VIEW-LASTKEY = 8
+      *        *** INVALID FUNCTION KEY ***
+               MOVE   9 TO LANG-SETNUM
+               MOVE  10 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5  TO  FIELD-NUMBER
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-1B.
+
+       62-FIELD-EDITS-1B.
+
+           MOVE SPACES                TO  ERR-SW.
+           MOVE ZEROS                 TO  SUB.
+           PERFORM 63-CHECK-FOR-CHANGES  THRU  63-CFC-X.
+           IF ERR-SW = "Y"
+               PERFORM 4-PGM-ERROR  THRU  4-PGM-ERROR-X
+               GO TO 62-SHOWFORM-SCREEN-1B.
+
+           MOVE ZEROS                 TO  SUB.
+           PERFORM 64-UPDATE-CHANGES  THRU  64-UC-X.
+
+           GO TO 62-GETFORM-MODPRICE.
+
+       62-MRI-X.
+           EXIT.
+
+       621-ZERO-OUT-PRICE.
+           MOVE ZEROS TO DE-PRICE (SUB).
+
+
+      ********************************************
+      *  CHECK TO SEE IF PO IS A MEMO ZBILL BILL
+      *  (LAST DIGIT IS A 'M'). IF SO THEN THE
+      *  MKT COST IS NOT UPDATED SINCE THIS IS A
+      *  REPAIR COST
+      ********************************************
+
+       621-FIND-M.
+           IF PO-CHAR (P-INDEX) = "M"
+               MOVE "1" TO ZBILL-PO-SW
+           ELSE
+               IF PO-CHAR (P-INDEX) NOT = SPACE
+                    SET P-INDEX TO 1.
+
+
+
+       621-LOAD-ITEMS.
+           MOVE ITM-NUMBER            TO  DIS-ITEM (SUB),
+                                          SAVE-ITEM-NO (SUB).
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE "NC"              TO  DIS-CORP-CODE (SUB),
+                                          SAVE-CORP-CODE (SUB)
+           ELSE
+               MOVE ITM-CORP-CODE     TO  DIS-CORP-CODE (SUB),
+                                          SAVE-CORP-CODE (SUB).
+           MOVE ITM-UM                TO  DE-QTY-UM (SUB),
+                                          SAVE-QTY-UM (SUB).
+           MOVE ITM-UNIT-PRICE        TO  DE-PRICE (SUB),
+                                          SAVE-PRICE (SUB).
+           MOVE ITM-PRICE-UM          TO  DE-PRICE-UM (SUB),
+                                          SAVE-PRICE-UM (SUB).
+
+           ADD 1  TO  SUB.
+           IF SUB > 16
+               GO TO 621-LI-X.
+           READ DPOITEM-O NEXT INTO BUF-DPOITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   GO TO 621-LI-X
+               ELSE
+                   MOVE "READ DPOITEM *621-LI" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+           IF PORCVNO OF DPOITEM-REC-O NOT = PO-ARG
+               GO TO 621-LI-X.
+
+           GO TO 621-LOAD-ITEMS.
+
+       621-LI-X.
+           EXIT.
+
+
+       63-CHECK-FOR-CHANGES.
+           ADD 1  TO  SUB.
+           IF SUB > 16
+               GO TO 63-CFC-X.
+           IF DIS-CORP-CODE (SUB) = SPACES
+               GO TO 63-CFC-X.
+           IF DE-QTY-UM (SUB) = SAVE-QTY-UM (SUB)  AND
+              DE-PRICE-UM (SUB) = SAVE-PRICE-UM (SUB)
+               NEXT SENTENCE
+           ELSE
+               PERFORM 631-EDIT-UMS  THRU  631-EU-X
+               IF ERR-SW = "Y"
+                   GO TO 63-CFC-X
+               ELSE
+                   MOVE "Y"           TO  UPDATE-SW (SUB)
+                   GO TO 63-CHECK-FOR-CHANGES.
+           IF DE-PRICE (SUB) = SAVE-PRICE (SUB)
+               MOVE "N"               TO  UPDATE-SW (SUB)
+           ELSE
+               MOVE "Y"               TO  UPDATE-SW (SUB).
+           GO TO 63-CHECK-FOR-CHANGES.
+
+       63-CFC-X.
+           EXIT.
+
+       631-EDIT-UMS.
+           COMPUTE QTY-UM-FIELD-NO = SUB * 6.
+           COMPUTE PRICE-UM-FIELD-NO = (SUB * 6) + 3
+
+           IF DE-QTY-UM (SUB) = SPACES
+      *        YOU MUST ENTER A QUANTITY UM
+076900         MOVE  45055 TO CATREAD-MSG-NUMBER
+077100         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+077200         MOVE QTY-UM-FIELD-NO TO  FIELD-NUMBER
+077300         MOVE "Y" TO ERR-SW
+077400         GO TO 631-EU-X.
+078700
+           IF DE-PRICE-UM (SUB) = SPACES
+      *        YOU MUST ENTER A PRICE UM
+076900         MOVE  45054 TO CATREAD-MSG-NUMBER
+077100         PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+077200         MOVE PRICE-UM-FIELD-NO TO FIELD-NUMBER
+               MOVE "Y" TO ERR-SW
+077400         GO TO 631-EU-X.
+078700
+           IF DIS-CORP-CODE (SUB) = "NC"
+               PERFORM 6311-EDIT-NONCODED-UM  THRU  6311-ENU-X
+           ELSE
+               PERFORM 6311-EDIT-CODED-UM  THRU  6311-ECU-X.
+
+       631-EU-X.
+           EXIT.
+
+       6311-EDIT-NONCODED-UM.
+           IF DE-QTY-UM (SUB) = DE-PRICE-UM (SUB)
+               NEXT SENTENCE
+           ELSE
+      *    QUANTITY AND PRICE UM MUST EQUAL FOR A NON-CODED ITEM
+               MOVE 17  TO  LANG-SETNUM
+               MOVE 14  TO  LANG-MSGNUM
+               PERFORM 999-CATREAD  THRU  999-CATREAD-EXIT
+               MOVE QTY-UM-FIELD-NO  TO  FIELD-NUMBER
+               MOVE "Y"                 TO  ERR-SW
+               GO TO 6311-ENU-X.
+
+           MOVE DE-QTY-UM (SUB)   TO  UM-ARG.
+           MOVE UM-ARG TO VALIDUM OF MVALIDUM-REC-I.
+           START MVALIDUM-I KEY = VALIDUM OF MVALIDUM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+      *        "QUANTITY UNIT OF MEASURE IS INVALID"
+               MOVE  17 TO LANG-SETNUM
+               MOVE  13 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE QTY-UM-FIELD-NO  TO  FIELD-NUMBER
+               MOVE "Y"                 TO  ERR-SW
+               GO TO 6311-ENU-X
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "START MVALIDUM * 6311-ENU" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       6311-ENU-X.
+           EXIT.
+
+
+       6311-EDIT-CODED-UM.
+           MOVE DIS-CORP-CODE (SUB)   TO  CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET MSTORERM * 6311-ECU" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+           IF DE-QTY-UM (SUB) = STR-UM OR STR-UM1 OR STR-UM2
+               NEXT SENTENCE
+           ELSE
+      *        *** QUANTITY UM IS NOT A STOREROOM UM ***
+               MOVE  17 TO LANG-SETNUM
+               MOVE   4 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE QTY-UM-FIELD-NO  TO  FIELD-NUMBER
+               MOVE "Y"  TO  ERR-SW
+               GO TO 6311-ECU-X.
+           IF DE-PRICE-UM (SUB) = STR-UM OR STR-UM1 OR STR-UM2
+               NEXT SENTENCE
+           ELSE
+      *        *** PRICE UM IS NOT A STOREROOM UM ***
+               MOVE  16 TO LANG-SETNUM
+               MOVE  14 TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE PRICE-UM-FIELD-NO  TO  FIELD-NUMBER
+               MOVE "Y"  TO  ERR-SW.
+
+       6311-ECU-X.
+           EXIT.
+
+       64-UPDATE-CHANGES.
+           ADD 1  TO  SUB.
+           IF SUB > 16
+               GO TO 64-UC-X.
+           IF DIS-CORP-CODE (SUB) = SPACES
+               GO TO 64-UC-X.
+           IF UPDATE-SW (SUB) = "Y"
+               NEXT SENTENCE
+           ELSE
+               GO TO 64-UPDATE-CHANGES.
+
+           IF DIS-CORP-CODE (SUB) = "NC"
+               NEXT SENTENCE
+           ELSE
+               PERFORM 641-UPDATE-MSTORERM  THRU  641-UM-X
+               PERFORM 641-UPDATE-VEN-PRICE  THRU  641-UVP-X.
+
+           PERFORM 641-UPDATE-DPOITEM  THRU  641-UD-X.
+
+           PERFORM 641-UPDATE-DDAILYTC  THRU  641-UDD-X.
+
+           GO TO 64-UPDATE-CHANGES.
+
+       64-UC-X.
+           EXIT.
+
+       641-UPDATE-MSTORERM.
+      ***********************************************
+      **   CALL 'SPOMSTRM' TO UPDATE MARKET COST
+      ***********************************************
+           MOVE DIS-CORP-CODE (SUB)     TO  CODE-ARG.
+           MOVE COMPANY-SAVE            TO  SPOMSTRM-COMPANY-SAVE.
+           MOVE ZEROS                   TO  SPOMSTRM-QTY.
+           MOVE DE-QTY-UM (SUB)         TO  SPOMSTRM-QTY-UM.
+           MOVE DE-PRICE (SUB)          TO  SPOMSTRM-PRICE.
+           MOVE DE-PRICE-UM (SUB)       TO  SPOMSTRM-PRICE-UM.
+           MOVE SPACES                  TO  SPOMSTRM-PO-NUM,
+                                            SPOMSTRM-PO-RLSE,
+                                            SPOMSTRM-VEN-CODE.
+           MOVE PO-CURRENCY-CODE        TO  SPOMSTRM-CUR-CODE.
+           CALL "SPOMSTRM" USING BASE,
+                                 CODE-ARG,
+                                 SPOMSTRM-PARMS,
+                                 ZBILL-PO-SW,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               GO TO 2-BLOWUP.
+
+       641-UM-X.
+           EXIT.
+
+
+       641-UPDATE-VEN-PRICE.
+      ******************************************
+      *  CALL 'SVENPRC' TO UPDATE VENDOR LAST  *
+      *  PRICE IN THE DATA SET 'DVENDITM'      *
+      ******************************************
+           MOVE SPACES                  TO  SVENPRC-PARMS.
+           MOVE "U"                     TO  SVENPRC-FLAG.
+           MOVE DIS-CORP-CODE (SUB)     TO  SVENPRC-CODE.
+           MOVE PO-VEN-CODE             TO  SVENPRC-VEN-CODE.
+           MOVE DE-PRICE (SUB)          TO  SVENPRC-PRICE.
+           MOVE DE-PRICE-UM (SUB)       TO  SVENPRC-PRICE-UM.
+           MOVE PO-DATE                 TO  SVENPRC-PO-DATE.
+           CALL "SVENPRC" USING BASE,
+                                SVENPRC-PARMS,
+                                STATUS-AREA,
+                                BU-DISPLAY-MSG,
+                                BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG-1  NOT = SPACES
+               GO TO 2-BLOWUP.
+
+       641-UVP-X.
+           EXIT.
+
+
+       641-UPDATE-DPOITEM.
+           MOVE PO-ARG           TO  PORCVNO OF DPOITEM-REC-O.
+           MOVE DIS-ITEM (SUB)   TO  ITEMNO OF DPOITEM-REC-O.
+           READ DPOITEM-O INTO BUF-DPOITEM
+               INVALID KEY MOVE "2" TO FILE-STATUS-1.
+           IF FILE-STATUS NOT = "00"
+               MOVE "GET DPOITEM * 641-UD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+      *--- IF UNIT PRICE CHANGES, CALL AUDIT TRAIL PROGRAM.
+           INITIALIZE PO-TRACK-DATA.
+           IF DE-PRICE (SUB) NOT = ITM-UNIT-PRICE
+               MOVE DE-PRICE (SUB)    TO  NEW-ITEM-PRICE
+               MOVE ITM-UNIT-PRICE    TO  OLD-ITEM-PRICE
+               MOVE ITM-QTY-ORD       TO  OLD-ITEM-QTY
+                                          NEW-ITEM-QTY
+               MOVE ITM-PO-RCV-NO     TO  PO-NUM-TRACK
+               MOVE ITM-NUMBER        TO  PO-ITEM-NUM
+               CALL "SPOTRACK"  USING PO-TRACK-DATA.
+
+           MOVE DE-QTY-UM (SUB)       TO  ITM-UM.
+           MOVE DE-PRICE (SUB)        TO  ITM-UNIT-PRICE.
+           MOVE DE-PRICE-UM (SUB)     TO  ITM-PRICE-UM.
+           REWRITE DPOITEM-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "UPDATE DPOITEM * 641-UD" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       641-UD-X.
+           EXIT.
+
+       641-UPDATE-DDAILYTC.
+           MOVE SPACES                  TO  STC320-PARMS.
+           MOVE COMPANY-SAVE            TO  STC320-COMPANY-SAVE.
+           MOVE "21"                    TO  STC320-ITEM-TC-ID.
+           MOVE BUILD-PO-SEARCH         TO  STC320-PO-NUM.
+           MOVE ITM-NUMBER              TO  STC320-ITEM.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE "NC"                TO  STC320-CODE
+               MOVE ITM-PRICE-UM        TO  STC320-QTY-UM,
+                                            STC320-PRICE-UM
+               MOVE ITM-UNIT-PRICE      TO  STC320-PRICE
+           ELSE
+               MOVE ITM-CORP-CODE       TO  STC320-CODE
+               MOVE SPOMSTRM-STR-UM     TO  STC320-QTY-UM,
+                                            STC320-PRICE-UM
+               MOVE SPOMSTRM-STR-PRICE  TO  STC320-PRICE.
+           MOVE ZEROS                   TO  STC320-QTY.
+           MOVE ITM-TAX-CODE            TO  STC320-TAX-CODE.
+           MOVE ZEROS                   TO  STC320-OLD-BUDGET-AMT.
+           IF ITM-CLASS = SPACES
+               IF ITM-CORP-CODE = "NON-STR"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE ITM-CORP-CODE TO CORPCDE OF MSTORERM-REC-I
+                   READ MSTORERM-I INTO BUF-MSTORERM
+                       INVALID KEY MOVE "2" TO FILE-STATUS END-READ
+                   IF FILE-STATUS NOT = "00"
+                       MOVE "GET MSTORERM * 641-UD" TO BU-DISPLAY-MSG
+                       GO TO 2-BLOWUP
+                   ELSE
+                       MOVE STR-CLASS   TO  STC320-SUB
+           ELSE
+               MOVE ITM-CLASS           TO  STC320-SUB.
+           MOVE ITM-SUB-DETL            TO  STC320-SUBD.
+           MOVE ITM-ADDL-DATA           TO  STC320-ADDTL-DATA.
+           MOVE PO-BUDGET-NUMBER        TO  STC320-BUDGET-NO.
+           MOVE PO-CURRENCY-CODE        TO  STC320-CUR-CODE.
+           CALL "STC320" USING BASE,
+                               STC320-PARMS,
+                               STATUS-AREA,
+                               BU-DISPLAY-MSG,
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG-1  NOT = SPACES
+               GO TO 2-BLOWUP.
+
+       641-UDD-X.
+           EXIT.
+
+       COPY DISPCALL IN COPYLIB.
+
+       999-CATREAD.
+           IF CATREAD-MSG-NUMBER = ZEROS
+               MOVE LANG-SETNUM TO CATREAD-MSG-SET
+               MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

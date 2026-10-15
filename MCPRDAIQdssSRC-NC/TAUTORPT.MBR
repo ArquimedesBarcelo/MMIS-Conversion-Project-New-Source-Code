@@ -1,0 +1,1539 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TAUTORPT.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER COMPANY.
+      *REMARKS.
+      *C
+      *C   THIS PROGRAM IS CALLED FROM THE JOB SCHEDULER AT THE END
+      *C   OF EACH SHIFT TO CREATE A REPORT OF ACTIVITY FOR THE
+      *C   PREVIOUS SHIFT. THE ZONE PRINTER FILE IS USED TO DETERMINE
+      *C   WHAT PRINTER TO USE FOR EACH ZONE.
+      *C
+      *C   07/17/2003  BRUCE GEISER
+      *C     ADDED MORE ZONES TO THE FAYETTEVILLE SPECIAL LOGIC.
+      *C
+CAY914*C   09/14/2012  CA YODER  RFC# 2626  CPPI# 2012-22236586
+CAY914*C     CHECK TO SEE IF THE TIME-RCVD FIELD IS NUMERIC IN THE
+CAY914*C     CW-DETAIL-RECORD PARAGRAPH BEFORE MOVING IT TO WO-TIME.
+CAY914*C     THIS WILL RESOLVE ABENDS REPORTED BY FAYETTEVILLE DUE
+CAY914*C     TO INVALID DATA.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+       SPECIAL-NAMES.          C01              IS NEW-PAGE
+                               I-O-FEEDBACK     IS I-O-FEEDBACK-AREA
+                               REQUESTOR        IS WORK-STATION
+                               SYSTEM-CONSOLE   IS CONSOLE
+                               LOCAL-DATA       IS LOCAL-DATA-AREA.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ZONE-PRINTER
+                  ASSIGN       TO DATABASE-MCFLZP0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-LAST-NUM-USED
+                  ASSIGN       TO DATABASE-MCFPMM0800
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS RANDOM
+                  RELATIVE KEY IS ARG-NO
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1002
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-PLANNED
+                  ASSIGN       TO DATABASE-MCFLMM1102
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT CURRENT-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1602
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-LABOR
+                  ASSIGN       TO DATABASE-MCFLMM1301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PRINT-FILE
+                  ASSIGN       TO PRINTER-MCPRT.
+
+           SELECT OUT-FILE
+                  ASSIGN       TO DISK-FAUTORPT
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS DYNAMIC
+                  RELATIVE KEY IS ACT-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT SORT-FILE
+                  ASSIGN       TO DISK-SORTFILE.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  ZONE-PRINTER
+           LABEL RECORDS ARE STANDARD.
+       01  ZP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLZP0101.
+
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD.
+       01  WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+
+       FD  WO-BASIC
+           LABEL RECORDS ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1002.
+
+       FD  WO-PLANNED
+           LABEL RECORDS ARE STANDARD.
+       01  PWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1102.
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS ARE STANDARD.
+       01  PERS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  CURRENT-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  LC-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1602.
+
+       FD  WO-LABOR
+           LABEL RECORDS ARE STANDARD.
+       01  WL-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1301.
+
+       FD  PRINT-FILE RECORD CONTAINS 80 CHARACTERS
+           LABEL RECORDS ARE OMITTED
+           DATA RECORD IS PRINT-REC.
+       01  PRINT-REC              PIC X(80).
+
+       FD  OUT-FILE RECORD CONTAINS 105 CHARACTERS
+           LABEL RECORDS ARE OMITTED
+           DATA RECORD IS OUT-REC.
+       01  OUT-REC.
+           05  DEPT-OUT           PIC X(4).
+           05  ZONE-OUT.
+               10  Z-OUT          PIC X(4).
+               10  P-OUT          PIC X.
+               10  FILLER         PIC X.
+           05  SHIFT-OUT          PIC X.
+           05  WOSTAT-OUT         PIC XX.
+           05  WONUM-OUT.
+               10  WONO-OUT       PIC X(7).
+               10  WOSU-OUT       PIC X(3).
+           05  WODESC-OUT         PIC X(30).
+           05  EQNUM-OUT          PIC X(6).
+           05  EQDOWN-OUT         PIC XX.
+           05  DATE-RCVD.
+               10  DATE-RCVD-MM   PIC XX.
+               10  DATE-RCVD-DD   PIC XX.
+               10  DATE-RCVD-YY   PIC XX.
+           05  TIME-RCVD          PIC XXXX.
+           05  TIME-COMP-OUT      PIC XXXX.
+           05  CRAFTSREQ-OUT.
+               10  C1-OUT         PIC XX.
+               10  C2-OUT         PIC XX.
+               10  C3-OUT         PIC XX.
+           05  CMAN-1-OUT         PIC XXXX.
+           05  CMAN-2-OUT         PIC XXXX.
+           05  CMAN-3-OUT         PIC XXXX.
+           05  TSTRT-OUT          PIC XXXX.
+           05  RETM-OUT           PIC XXXX.
+           05  DTIM-OUT           PIC XXXX.
+
+       SD  SORT-FILE RECORD CONTAINS 105 CHARACTERS
+           DATA RECORD IS SORT-REC.
+       01  SORT-REC.
+           05  SORT-DEPT               PIC X(4).
+           05  SORT-ZONE.
+               10  SORT-Z.
+                   15  SORT-FIRST      PIC X(1).
+                   15  FILLER          PIC X(3).
+               10  SORT-P              PIC X.
+               10  FILLER              PIC X.
+           05  SORT-SHIFT              PIC X.
+           05  SORT-WOSTAT             PIC XX.
+           05  SORT-WONUM.
+               10  SORT-WONO           PIC X(7).
+               10  SORT-WOSU           PIC X(3).
+           05  SORT-WODESC             PIC X(30).
+           05  SORT-EQNUM              PIC X(6).
+           05  SORT-EQDOWN             PIC XX.
+           05  SORT-DATE-RCVD.
+               10  SORT-DATE-RCVD-MM   PIC XX.
+               10  SORT-DATE-RCVD-DD   PIC XX.
+               10  SORT-DATE-RCVD-YY   PIC XX.
+           05  SORT-TIME-RCVD          PIC XXXX.
+           05  TIME-COMP-SORT          PIC XXXX.
+           05  SORT-CRAFTSREQ.
+               10  SORT-C1             PIC XX.
+               10  SORT-C2             PIC XX.
+               10  SORT-C3             PIC XX.
+           05  CMAN-1-SORT             PIC XXXX.
+           05  CMAN-2-SORT             PIC XXXX.
+           05  CMAN-3-SORT             PIC XXXX.
+           05  TSTRT-SORT              PIC XXXX.
+           05  RETM-SORT               PIC XXXX.
+           05  DTIM-SORT               PIC XXXX.
+
+       WORKING-STORAGE SECTION.
+       77  ARG-NO              PIC 9999  VALUE 1.
+       77  PRINT-FILE-SW       PIC 9     VALUE 0.
+           88  PRINT-FILE-OPEN           VALUE 1.
+       77  LINE-K              PIC S99.
+       77  WONUM-SAVE          PIC X(10) VALUE SPACES.
+       77  PRTY-CTR            PIC 99999 VALUE 0.
+       77  VP-BUF              PIC X.
+       77  EOF-SW              PIC 9     VALUE 0.
+           88  EOF                       VALUE 1.
+       77  ADV-CTR             PIC 9     VALUE 1.
+       77  RELEASE-FLAG        PIC 9     VALUE 0.
+           88  RELEASE-FLAG-UP           VALUE 1.
+       77  P-SAVE              PIC X     VALUE SPACE.
+       77  STAT-SAVE           PIC X(4)  VALUE SPACES.
+       77  ZONE-HOLD           PIC X(04) VALUE SPACES.
+       77  D-HOLD              PIC XX    VALUE SPACES.
+       77  SUB                 PIC 99    VALUE 0.
+       77  SUBT                PIC 99    VALUE 0.
+       77  ACT-KEY             PIC 9999  VALUE 0.
+       77  JUL-DAY-RECD        PIC S9(8) VALUE 0.
+       77  JUL-DAY-STRT        PIC S9(8) VALUE 0.
+       77  JUL-DAY-COMP        PIC S9(8) VALUE 0.
+       77  JUL-DAYS-LYR        PIC S9(8) VALUE 0.
+       77  JUL-DAY-SAVE        PIC S9(8) VALUE 0.
+       77  TRECD-MIN           PIC S9(4) VALUE 0.
+       77  TSTRT-MIN           PIC S9(4) VALUE 0.
+       77  TCOMP-MIN           PIC S9(4) VALUE 0.
+       77  TSAVE-MIN           PIC S9(4) VALUE 0.
+       77  RECORDS-PROCESSED-SW   PIC X  VALUE SPACE.
+       77  ALL-RECORDS-WRITTEN-SW PIC X  VALUE SPACE.
+       77  HOLD-BUFFER         PIC X(90).
+       77  DATE-WA-SAV1        PIC 99999999.
+       77  DATE-WA-SAV2        PIC 99999999.
+       77  HEADING-2           PIC X(80).
+       77  TERMNUM             PIC S9(2)              COMP.
+       77  WO-TIME             PIC 9999  VALUE 0.
+       77  D-PARM              PIC X.
+       77  L-PARM              PIC X.
+       77  STR-T               PIC S9(4).
+       77  END-T               PIC S9(4).
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X     VALUE "0".
+           05  FILE-STAT-2     PIC X     VALUE "0".
+
+       01  DATE-TEMP.
+           05  DT-MM           PIC XX.
+           05  SLASH1          PIC X.
+           05  DT-DD           PIC XX.
+           05  SLASH2          PIC X.
+           05  DT-YY           PIC XX.
+
+       01  ZONE-PRT-BUFFER.
+           05  ZONE-BUF                  PIC X(04) VALUE SPACES.
+           05  PRINTER-BUFFERS.
+               10  PRINTER-BUF-V.
+                   15  P-BUF-V-1         PIC X     VALUE SPACES.
+                   15  P-BUF-V-2         PIC X     VALUE SPACES.
+               10  PRINT-BUF-V-9 REDEFINES PRINTER-BUF-V PIC 99.
+               10  PRINTER-BUF-P.
+                   15  P-BUF-P-1         PIC X     VALUE SPACES.
+                   15  P-BUF-P-2         PIC X     VALUE SPACES.
+               10  PRINT-BUF-P-9 REDEFINES PRINTER-BUF-P PIC 99.
+               10  PRINTER-BUF-E.
+                   15  P-BUF-E-1         PIC X     VALUE SPACES.
+                   15  P-BUF-E-2         PIC X     VALUE SPACES.
+               10  PRINT-BUF-E-9 REDEFINES PRINTER-BUF-E PIC 99.
+               10  PRINTER-BUF-M.
+                   15  P-BUF-M-1         PIC X     VALUE SPACES.
+                   15  P-BUF-M-2         PIC X     VALUE SPACES.
+               10  PRINT-BUF-M-9 REDEFINES PRINTER-BUF-M PIC 99.
+               10  PRINTER-BUF-X.
+                   15  P-BUF-X-1         PIC X     VALUE SPACES.
+                   15  P-BUF-X-2         PIC X     VALUE SPACES.
+               10  PRINT-BUF-X-9 REDEFINES PRINTER-BUF-X PIC 99.
+
+       01  WO-TIM-TOT.
+           05  WOTIME          PIC 999V9 VALUE 0.
+           05  WOTIM           REDEFINES WOTIME.
+               10  WOT-TRUNC   PIC 9.
+               10  WOT-HR      PIC 99.
+               10  WOT-MIN     PIC 9.
+
+       01  WO-TOT.
+           05  WO-HR.
+               10  WO-HR-1     PIC X.
+               10  WO-HR-2     PIC X.
+           05  WO-DEC          PIC X VALUE ".".
+           05  WO-MIN          PIC X.
+
+       01  STATUS-TABLE.
+           02  STAT-TAB.
+               03  FILLER      PIC XX VALUE "CW".
+               03  FILLER      PIC XX VALUE "IP".
+               03  FILLER      PIC XX VALUE "OO".
+               03  FILLER      PIC XX VALUE "  ".
+           02  STAT-TABLE      REDEFINES STAT-TAB.
+               03  TABLE-STAT  OCCURS 4 TIMES  PIC XX.
+
+       01  TIME-BUFFER.
+           05  CUR-TIME.
+               10  CUR-HRS     PIC XX.
+               10  CUR-MINS    PIC XX.
+           05  CUR-SECS        PIC XXXX.
+
+       01  CURDATE-BUFF-CN.
+           05  CC-BUFFER         PIC XX.
+           05  CURDATE-BUFFER.
+               10  YY-BUFFER     PIC XX.
+               10  MM-BUFFER     PIC XX.
+               10  DD-BUFFER     PIC XX.
+
+       01  GREG-DATE.
+           05  G-YEAR          PIC XXXX.
+           05  G-MONTH         PIC XX.
+           05  G-DAY           PIC XX.
+
+       01  JUL-SIGN            PIC S9(06).
+       01  JUL-DATE            PIC  X(07).
+       01  JULIAN-DATE         REDEFINES JUL-DATE
+                               PIC  9(07).
+       01  FILLER              REDEFINES JUL-DATE.
+           05  J-YEAR          PIC 9999.
+           05  J-DAY           PIC 999.
+
+       01  BUFFER-DEFN.
+           05  SHIFT-BUF       PIC X.
+
+       01  DATE-WA.
+           05  DATE-WA-CC      PIC XX.
+           05  DATE-WA-CC-9    REDEFINES DATE-WA-CC  PIC 99.
+           05  DATE-WA-YY      PIC XX.
+           05  DATE-WA-YY-9    REDEFINES DATE-WA-YY  PIC 99.
+           05  DATE-WA-MM      PIC XX.
+           05  DATE-WA-MM-9    REDEFINES DATE-WA-MM  PIC 99.
+           05  DATE-WA-DD      PIC XX.
+           05  DATE-WA-DD-9    REDEFINES DATE-WA-DD  PIC 99.
+
+       01  DATE-WA-2.
+           05  DATE-WA-CC-2    PIC 99.
+           05  DATE-WA-YY-2    PIC 99.
+           05  DATE-WA-MM-2    PIC 99.
+           05  DATE-WA-DD-2    PIC 99.
+
+       01  DATE-TIME-HOLD.
+           05  DATE-HOLD.
+               10  DHOLD-CC    PIC 99.
+               10  DHOLD-YY    PIC 99.
+               10  DHOLD-MM    PIC 99.
+               10  DHOLD-DD    PIC 99.
+           05  TIME-HOLD.
+               10  THOLD-HH    PIC 99.
+               10  THOLD-MM    PIC 99.
+           05  TIME-HOLD-S     PIC S9999.
+
+       01  WORK-ARGUMENTS.
+           05  ARGUMENT-DEFN.
+               10  ARG12       PIC XX.
+           05  ARG-DEFN.
+               10  WO-NUM-ARG  PIC X(7).
+               10  WO-SUFF-ARG PIC X(3).
+           05  ARG-DEFN-3      PIC X(04).
+
+       01  LABOR-BUFFER.
+           05  L-CC-BUF        PIC XXXX.
+           05  L-CRFT-BUF      PIC XX.
+           05  L-TSTRT-BUF     PIC 9999.
+           05  L-TCOMP-BUF     PIC 9999.
+           05  L-RETM-BUF.
+                10  L-RETM-12.
+                    15  L-RETM-1 PIC X.
+                    15  L-RETM-2 PIC X.
+                10  L-RETM-DEC   PIC X.
+                10  L-RETM-4     PIC X.
+
+       01  LABOR-TAB.
+           05  LABOR-TABLE     OCCURS 10 TIMES PIC X(18).
+
+       01  DETAIL-REC.
+           05  DETAIL-PREFIX.
+               10  WONUM-7     PIC X(7).
+               10  FILLER      PIC X  VALUE "-".
+               10  WONUM-3     PIC X(3).
+               10  FILLER      PIC XX VALUE SPACES.
+               10  EQNUM       PIC X(6).
+               10  DN-DT-1.
+                   15  FILLER  PIC XX VALUE SPACES.
+                   15  EQDOWN  PIC XX.
+                   15  FILLER  PIC XX VALUE SPACE.
+               10  DN-DT-2     REDEFINES DN-DT-1.
+                   15  FILLER  PIC X.
+                   15  EQDTIM  PIC XXXX.
+                   15  FILLER  PIC X.
+               10  WODESC      PIC X(25).
+           05  DREC-OO.
+               10  FILLER      PIC XXX.
+               10  DRCV-OO     PIC X(6).
+               10  FILLER      PIC XXX.
+               10  TRCV-OO     PIC 9(4).
+               10  FILLER      PIC XXX.
+               10  CRAFTSREQ-1-OO      PIC XX.
+               10  FILLER      PIC X.
+               10  CRAFTSREQ-2-OO      PIC XX.
+               10  FILLER      PIC X.
+               10  CRAFTSREQ-3-OO      PIC XX.
+               10  FILLER      PIC XXX.
+           05  DREC-IP         REDEFINES DREC-OO.
+               10  FILLER      PIC XXX.
+               10  CCNUM-IP    PIC XXXX.
+               10  FILLER      PIC XXX.
+               10  TSTR-IP     PIC X(4).
+               10  FILLER      PIC XXX.
+               10  CRAFTSREQ-1-IP      PIC XX.
+               10  FILLER      PIC X(11).
+           05  DREC-CW         REDEFINES DREC-OO.
+               10  FILLER      PIC XX.
+               10  WOTM-CW     PIC ZZZZ.
+               10  FILLER      PIC XX.
+               10  RETM-CW     PIC XXXX.
+               10  FILLER      PIC XX.
+               10  CNTM-CW     PIC 9(4).
+               10  FILLER      PIC XX.
+               10  CCNUM-CW    PIC XXXX.
+               10  FILLER      PIC XX.
+               10  CRAFTSREQ-1-CW      PIC XX.
+               10  FILLER      PIC XX.
+
+       01  SHIFT-DATA.
+           05  ZONE-LINK       PIC X(04).
+           05  TIME-IN.
+               10  HRS-IN      PIC 99.
+               10  MIN-IN      PIC 99.
+           05  CODE-BUF        PIC X.
+           05  SHIFTS.
+               10  S-1         PIC 9999.
+               10  E-1         PIC 9999.
+               10  S-2         PIC 9999.
+               10  E-2         PIC 9999.
+               10  S-3         PIC 9999.
+               10  E-3         PIC 9999.
+               10  S-4         PIC 9999.
+               10  E-4         PIC 9999.
+           05  CURR-SHIFT      PIC 9.
+
+       01  HEADING-DT-TM.
+           05  FILLER  PIC X(20) VALUE SPACES.
+           05  FILLER  PIC X(13) VALUE "PRINT DATE:  ".
+           05  P-DATE  PIC X(08).
+           05  FILLER  PIC X(15) VALUE "        TIME:  ".
+           05  P-TIME  PIC X(04).
+           05  FILLER  PIC X(20) VALUE SPACES.
+
+       01  HEADING-1-H.
+           05  FILLER      PIC X(15) VALUE "   W/O STATUS: ".
+           05  WOSTAT-1-H  PIC X(04).
+           05  FILLER      PIC X(15) VALUE "  MAINT ZONE: ".
+           05  MZ-1-H      PIC X(04).
+           05  FILLER      PIC X(08) VALUE "  DATE: ".
+           05  DATE-1-H    PIC X(08).
+           05  FILLER      PIC X(10) VALUE "   SHIFT: ".
+           05  SHIFT-1-H   PIC X(01).
+           05  FILLER      PIC X(03) VALUE SPACES.
+           05  HWO-TYPE    PIC X(10) VALUE "          ".
+           05  FILLER      PIC X(02) VALUE SPACES.
+
+       01  HEADING-2-OO.
+           05  FILLER          PIC X(13) VALUE "W/O NUM      ".
+           05  FILLER          PIC X(12) VALUE "EQ NUM  DN  ".
+           05  FILLER          PIC X(15) VALUE "W/O DESCRIPTION".
+           05  FILLER          PIC X(10) VALUE SPACES.
+           05  FILLER          PIC X(16) VALUE "   DRCV     TRCV".
+           05  FILLER          PIC X(14) VALUE "   CRFT REQ   ".
+
+       01  HEADING-2-IP.
+           05  FILLER          PIC X(13) VALUE "W/O NUM      ".
+           05  FILLER          PIC X(12) VALUE "EQ NUM  DN  ".
+           05  FILLER          PIC X(15) VALUE "W/O DESCRIPTION".
+           05  FILLER          PIC X(10) VALUE SPACES.
+           05  FILLER          PIC X(17) VALUE "   CC #   TSTR   ".
+           05  FILLER          PIC X(13) VALUE "CRFT IP      ".
+
+       01  HEADING-2-CW.
+           05  FILLER          PIC X(13) VALUE "W/O NUM      ".
+           05  FILLER          PIC X(12) VALUE "EQ NUM  DN  ".
+           05  FILLER          PIC X(15) VALUE "W/O DESCRIPTION".
+           05  FILLER          PIC X(10) VALUE SPACES.
+           05  FILLER          PIC X(18) VALUE "  WOTM  RETM  CWTM".
+           05  FILLER          PIC X(12) VALUE "  CC #  CRFT".
+
+       01  LITERAL-1-L.
+           05  FILLER          PIC X(9) VALUE "PRIORITY:".
+           05  PRTY-1-L        PIC X.
+           05  FILLER          PIC X(15) VALUE " ***TOTAL WORK ".
+           05  FILLER          PIC X(9) VALUE "ORDERS = ".
+           05  NUM-1-L         PIC ZZZ9.
+           05  FILLER          PIC X(42) VALUE SPACES.
+
+       01  DB-ERROR.
+           05  DB-TYPE   PIC X(08) VALUE SPACES.
+           05  FILLER    PIC X(21) VALUE " ERROR - FILE-STAT = ".
+           05  CON-WORD  PIC XX.
+
+           COPY OVRPFDATA      IN COPYLIB.
+
+           COPY CCHKOBJ        IN COPYLIB.
+
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PLANNED-DATA.
+           COPY DWOPLAN        IN COPYLIB.
+
+       01  WO-LABOR-DATA.
+           COPY DWOLABOR       IN COPYLIB.
+
+       01  PER-PERSONNEL-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  LAST-WO-USED-DATA.
+           COPY MLASTWO        IN COPYLIB.
+
+       01  LABOR-CURR-STAT-DATA.
+           COPY DCURRLBR       IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       INITIALIZATION.
+           OPEN INPUT          ZONE-PRINTER.
+           OPEN INPUT          WO-BASIC.
+           OPEN INPUT          WO-PLANNED.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          CURRENT-LABOR.
+           OPEN INPUT          WO-LABOR.
+
+           ACCEPT CURDATE-BUFFER FROM DATE.
+           MOVE 20             TO CC-BUFFER.
+           IF YY-BUFFER > 70
+               MOVE 19         TO CC-BUFFER.
+           MOVE MM-BUFFER      TO DT-MM.
+           MOVE DD-BUFFER      TO DT-DD.
+           MOVE YY-BUFFER      TO DT-YY.
+           MOVE "/"            TO SLASH1 SLASH2.
+
+           MOVE 1              TO DATE-FLAG-SW.
+           MOVE SPACES         TO LAST-WO-USED-DATA.
+           OPEN INPUT          WO-LAST-NUM-USED.
+
+           READ  WO-LAST-NUM-USED INTO LAST-WO-USED-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               DISPLAY "UNABLE TO GET LAST-WO-USED DATA."
+                       "    FILE-STATUS = " FILE-STAT
+               CLOSE           WO-LAST-NUM-USED
+               GO TO C-GOBACK.
+
+           MOVE DATE-FLAG-SW   TO DATE-FLAG.
+           CLOSE               WO-LAST-NUM-USED.
+
+           ACCEPT TIME-BUFFER  FROM TIME.
+
+           MOVE SPACES         TO SHIFT-DATA SHIFT-BUF.
+           MOVE "CLRL"         TO ZONE-LINK.
+           MOVE CUR-TIME       TO TIME-IN.
+           CALL "TGETSHFT"     USING SHIFT-DATA
+                               DBPARAMETERS.
+           IF SHIFT-DATA = SPACES
+               DISPLAY "*********************************************"
+               DISPLAY " FATAL ERROR HAS OCCURRED - PROGRAM TAUTORPT "
+               DISPLAY "   RECORD 'CLRL' IS NOT IN SHIFT-STRUCTURE   "
+               DISPLAY "   CONTACT LOCAL MMIS MANAGER OR             "
+               DISPLAY "   AKRON PROGRAMMING STAFF!                  "
+               DISPLAY "*********************************************"
+               GO TO C-GOBACK.
+
+           MOVE CURR-SHIFT     TO SHIFT-BUF.
+           IF SHIFT-BUF = "1" OR "2" OR "3" OR "4"
+               NEXT SENTENCE
+           ELSE
+               DISPLAY "*********************************************"
+               DISPLAY " FATAL ERROR HAS OCCURRED - PROGRAM TAUTORPT "
+               DISPLAY "   CURRENT SHIFT NOT CALCULATED IN TGETSHFT  "
+               DISPLAY "   CONTACT AKRON PROGRAMMING STAFF           "
+               DISPLAY "*********************************************"
+               GO TO C-GOBACK.
+
+           IF DATE-FLAG = 3
+               MOVE DT-MM      TO D-HOLD
+               MOVE DT-DD      TO DT-MM
+               MOVE D-HOLD     TO DT-DD.
+           MOVE DATE-TEMP      TO P-DATE.
+
+           MOVE "V"            TO VP-BUF.
+           PERFORM B-MAIN-FUNCTIONS THRU B-MAIN-EXIT.
+           MOVE "P"            TO VP-BUF.
+           PERFORM B-MAIN-FUNCTIONS THRU B-MAIN-EXIT.
+           GO TO C-CLOSE-FUNCTIONS.
+
+       B-MAIN-FUNCTIONS.
+           PERFORM BA-SET-RESET.
+           PERFORM BC-SORT-INPUT THRU BC-SI-EXIT.
+           OPEN INPUT          OUT-FILE.
+           PERFORM BDZ-SETUP   THRU BDZ-EXIT.
+           PERFORM BD-DISPLAY-OUTPUT THRU BD-EXIT.
+           GO TO C-CLOSE-FUNCTIONS.
+
+       B-MAIN-EXIT.            EXIT.
+
+       BA-SET-RESET.
+           CALL "CLAUTORPT".
+           MOVE 0              TO ACT-KEY.
+
+           IF VP-BUF = "V"
+               MOVE "VERBAL    " TO HWO-TYPE
+           ELSE
+               MOVE "PLANNED   " TO HWO-TYPE.
+
+           MOVE 0              TO SUBT PRTY-CTR EOF-SW.
+           MOVE SPACES         TO ZONE-HOLD.
+           MOVE 1              TO ADV-CTR.
+           MOVE 0              TO LINE-K.
+           ACCEPT TIME-BUFFER  FROM TIME.
+           MOVE CUR-TIME       TO P-TIME.
+           MOVE SPACES         TO WORK-ARGUMENTS.
+           MOVE SPACES         TO WONUM-SAVE.
+           MOVE "N"            TO RECORDS-PROCESSED-SW
+                                  ALL-RECORDS-WRITTEN-SW.
+
+       BC-SORT-INPUT.
+           IF PLANT-IDENT = "211"
+               SORT SORT-FILE  ASCENDING KEY SORT-Z
+                                             SORT-WOSTAT
+                                             SORT-EQNUM
+                                             SORT-P
+                                             SORT-WONUM
+                                             CMAN-1-SORT
+               INPUT  PROCEDURE    SORT-INPUT-RECORDS
+               OUTPUT PROCEDURE    SORT-WRITE-FILE
+           ELSE
+           SORT SORT-FILE      ASCENDING KEY SORT-Z
+                               SORT-WOSTAT
+                               SORT-P
+                               SORT-WONUM
+                               CMAN-1-SORT
+           INPUT  PROCEDURE    SORT-INPUT-RECORDS
+           OUTPUT PROCEDURE    SORT-WRITE-FILE.
+
+       BC-SI-EXIT.             EXIT.
+
+       BD-DISPLAY-OUTPUT.
+           IF PRINT-FILE-OPEN
+               MOVE 0          TO PRINT-FILE-SW
+               CLOSE           PRINT-FILE.
+
+      *    MOVE 0              TO OVRPRTF-TOFILE-NUM.
+           MOVE "P "           TO OVRPRTF-TOFILE-NUM-X.
+           MOVE ZONE-HOLD      TO ZONEKEY OF ZONE-PRINTER.
+           READ ZONE-PRINTER   INTO ZONE-PRT-BUFFER
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               IF PRINTER-BUF-M IS NUMERIC
+                   MOVE 1      TO PRINT-FILE-SW
+                   MOVE PRINT-BUF-M-9 TO OVRPRTF-TOFILE-NUM
+                   PERFORM 996-OVERRIDE-PRINT-FILE
+                   OPEN OUTPUT PRINT-FILE
+               ELSE
+               MOVE 0          TO PRINT-FILE-SW
+           ELSE
+           DISPLAY "READ ZONE-PRINTER ERROR - " FILE-STAT
+           MOVE 1              TO PRINT-FILE-SW
+           PERFORM 996-OVERRIDE-PRINT-FILE
+           OPEN OUTPUT         PRINT-FILE.
+
+       PRINT-DATA.
+           MOVE 0              TO SUBT LINE-K.
+           MOVE WOSTAT-OUT     TO STAT-SAVE.
+           PERFORM BDAB-STATUS-OUT THRU BDAB-EXIT UNTIL SUBT > 3.
+           IF EOF
+               NEXT SENTENCE
+           ELSE
+               IF PRINT-FILE-OPEN
+                   MOVE 0      TO PRINT-FILE-SW
+                   CLOSE       PRINT-FILE
+                   GO TO BD-DISPLAY-OUTPUT
+               ELSE
+                   GO TO BD-DISPLAY-OUTPUT.
+
+       BD-EXIT.                EXIT.
+
+       BDAB-STATUS-OUT.
+           ADD 1               TO SUBT.
+           IF SUBT > 3 GO      TO BDAB-EXIT.
+           IF WOSTAT-OUT NOT = TABLE-STAT (SUBT)
+               GO TO BDAB-STATUS-OUT.
+           MOVE TABLE-STAT (SUBT) TO WOSTAT-1-H.
+           MOVE Z-OUT          TO ZONE-HOLD MZ-1-H.
+           MOVE DATE-TEMP      TO DATE-1-H.
+           MOVE SHIFT-BUF      TO SHIFT-1-H.
+           PERFORM BDCA-HEADINGS.
+           MOVE P-OUT          TO P-SAVE.
+           MOVE " "            TO ALL-RECORDS-WRITTEN-SW.
+           PERFORM BDC-MAIN    THRU BDC-EXIT UNTIL
+                               ALL-RECORDS-WRITTEN-SW = "Y".
+
+       BDAB-EXIT.              EXIT.
+
+       BDC-MAIN.
+           IF LINE-K > 54
+               MOVE 0          TO LINE-K
+               PERFORM BDCA-HEADINGS.
+
+           MOVE SPACES         TO DETAIL-REC.
+           MOVE WONO-OUT       TO WONUM-7.
+           MOVE WOSU-OUT       TO WONUM-3.
+           MOVE EQNUM-OUT      TO EQNUM.
+           MOVE EQDOWN-OUT     TO EQDOWN.
+           MOVE WODESC-OUT     TO WODESC.
+
+           IF WOSTAT-OUT = "OO"
+               PERFORM OO-DETAIL-RECORD
+           ELSE
+           IF WOSTAT-OUT = "IP"
+               PERFORM IP-DETAIL-RECORD
+           ELSE
+               PERFORM CW-DETAIL-RECORD.
+
+           IF WONUM-OUT = WONUM-SAVE
+               MOVE SPACES     TO DETAIL-PREFIX
+               IF WOSTAT-OUT = "CW"
+                   MOVE ZEROS  TO WOTM-CW
+               ELSE
+                   MOVE WONUM-OUT TO WONUM-SAVE
+           ELSE
+               MOVE WONUM-OUT  TO WONUM-SAVE.
+
+           MOVE DETAIL-REC     TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+
+           ADD 1               TO LINE-K.
+           IF DETAIL-PREFIX NOT = SPACES
+               ADD 1           TO PRTY-CTR.
+           ADD 1               TO ACT-KEY.
+           READ OUT-FILE       INVALID KEY
+               PERFORM BDCF-INVALID-KEY-FUNCTION
+               GO TO BDC-EXIT.
+
+           IF Z-OUT NOT = ZONE-HOLD
+               MOVE Z-OUT      TO ZONE-HOLD
+               MOVE P-SAVE     TO PRTY-1-L
+               PERFORM BDCB-PRTY-LITERAL
+               MOVE SPACES     TO PRINT-REC
+               MOVE "Y"        TO ALL-RECORDS-WRITTEN-SW
+               MOVE 10         TO SUBT
+               IF PRINT-FILE-OPEN
+                   WRITE PRINT-REC AFTER ADVANCING NEW-PAGE
+                   GO TO BDC-EXIT
+               ELSE
+                   GO TO BDC-EXIT.
+
+           IF WOSTAT-OUT = STAT-SAVE
+               NEXT SENTENCE
+           ELSE
+               MOVE WOSTAT-OUT TO STAT-SAVE
+               MOVE "Y"        TO ALL-RECORDS-WRITTEN-SW
+               MOVE 0          TO LINE-K
+               MOVE P-SAVE     TO PRTY-1-L
+               PERFORM BDCB-PRTY-LITERAL.
+
+           IF P-OUT = P-SAVE
+               NEXT SENTENCE
+           ELSE
+               MOVE P-SAVE     TO PRTY-1-L
+               PERFORM BDCB-PRTY-LITERAL.
+
+       BDC-EXIT.               EXIT.
+
+       OO-DETAIL-RECORD.
+           MOVE DATE-RCVD      TO DRCV-OO.
+           MOVE TIME-RCVD      TO TRCV-OO.
+           MOVE C1-OUT         TO CRAFTSREQ-1-OO.
+           MOVE C2-OUT         TO CRAFTSREQ-2-OO.
+           MOVE C3-OUT         TO CRAFTSREQ-3-OO.
+
+       IP-DETAIL-RECORD.
+           MOVE CMAN-1-OUT     TO CCNUM-IP.
+           MOVE TSTRT-OUT      TO TSTR-IP.
+           MOVE C1-OUT         TO CRAFTSREQ-1-IP.
+
+       CW-DETAIL-RECORD.
+CAY914*---- CHECK TO SEE IF TIME-RCVD IS NUMERIC BEFORE MOVING
+CAY914*---- IT TO THE NUMERIC FIELD WO-TIME.
+CAY914     IF TIME-RCVD NOT NUMERIC
+CAY914        MOVE 0           TO TIME-RCVD.
+           MOVE TIME-RCVD      TO WO-TIME.
+           DIVIDE WO-TIME BY 60 GIVING WOTIME ROUNDED.
+           MOVE WOT-HR         TO WO-HR.
+           MOVE WOT-MIN        TO WO-MIN.
+           IF WO-HR-1 = "0"    MOVE SPACE TO WO-HR-1.
+           MOVE WO-TOT         TO WOTM-CW.
+           MOVE RETM-OUT       TO RETM-CW.
+           MOVE TIME-COMP-OUT  TO CNTM-CW.
+           MOVE CMAN-1-OUT     TO CCNUM-CW.
+           MOVE C1-OUT         TO CRAFTSREQ-1-CW.
+
+       BDCA-HEADINGS.
+           MOVE HEADING-DT-TM  TO PRINT-REC.
+           IF PRINT-FILE-OPEN
+               WRITE PRINT-REC AFTER ADVANCING NEW-PAGE.
+           MOVE HEADING-1-H    TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+           MOVE SPACES         TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+
+           IF WOSTAT-OUT = "CW"
+               MOVE HEADING-2-CW TO HEADING-2
+           ELSE
+           IF WOSTAT-OUT = "OO"
+               MOVE HEADING-2-OO TO HEADING-2
+           ELSE
+               MOVE HEADING-2-IP TO HEADING-2.
+
+           MOVE HEADING-2      TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+           MOVE ALL "*"        TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+
+       BDCB-PRTY-LITERAL.
+           MOVE P-OUT          TO P-SAVE.
+           MOVE PRTY-CTR       TO NUM-1-L.
+           MOVE 0              TO PRTY-CTR.
+           MOVE LITERAL-1-L    TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+           MOVE ALL "="        TO HOLD-BUFFER.
+           PERFORM BE-PRINT-FUNCTION.
+           ADD 2               TO LINE-K.
+
+       BDZ-SETUP.
+           MOVE DATE-TEMP      TO DATE-1-H.
+           MOVE SHIFT-BUF      TO SHIFT-1-H.
+           MOVE 1              TO ACT-KEY.
+           READ OUT-FILE       INVALID KEY
+               GO TO C-CLOSE-FUNCTIONS.
+           MOVE Z-OUT          TO ZONE-HOLD MZ-1-H.
+           MOVE WOSTAT-OUT     TO WOSTAT-1-H.
+           MOVE WOSTAT-OUT     TO STAT-SAVE.
+
+       BDZ-EXIT.               EXIT.
+
+       BDCF-INVALID-KEY-FUNCTION.
+           MOVE P-SAVE         TO PRTY-1-L.
+           PERFORM BDCB-PRTY-LITERAL.
+           MOVE SPACES         TO PRINT-REC.
+           IF PRINT-FILE-OPEN
+               WRITE PRINT-REC AFTER ADVANCING NEW-PAGE.
+           MOVE "Y"            TO ALL-RECORDS-WRITTEN-SW.
+           MOVE 10             TO SUBT.
+           MOVE 1              TO EOF-SW.
+
+       BE-PRINT-FUNCTION.
+           MOVE HOLD-BUFFER    TO PRINT-REC.
+           IF PRINT-FILE-OPEN
+               WRITE PRINT-REC AFTER ADVANCING ADV-CTR.
+
+       C-CLOSE-FUNCTIONS.
+           CLOSE OUT-FILE.
+           IF PRINT-FILE-OPEN
+               MOVE 0          TO PRINT-FILE-SW
+               CLOSE           PRINT-FILE.
+           IF VP-BUF NOT = "P" GO TO B-MAIN-EXIT.
+
+       C-GOBACK.
+           CLOSE               ZONE-PRINTER.
+           CLOSE               WO-BASIC.
+           CLOSE               WO-PLANNED.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               CURRENT-LABOR.
+           CLOSE               WO-LABOR.
+           GOBACK.
+
+       COPY OVRPFCALL          IN COPYLIB.
+
+       SORT-INPUT-RECORDS.
+           PERFORM SORT-MAIN   THRU SORT-M-EXIT UNTIL
+                               RECORDS-PROCESSED-SW = "Y".
+
+       SORT-MAIN.
+           ADD 1               TO SUBT.
+           IF SUBT > 3
+               MOVE "Y"        TO RECORDS-PROCESSED-SW
+               GO TO SORT-M-EXIT.
+
+           IF VP-BUF = "P" AND SUBT = 3
+               MOVE "Y"        TO RECORDS-PROCESSED-SW
+               GO TO SORT-M-EXIT.
+
+           MOVE TABLE-STAT (SUBT) TO ARG12.
+
+           IF VP-BUF = "V"
+               MOVE ARG12      TO WOSTATUS OF WO-BASIC
+               START WO-BASIC  KEY = WOSTATUS OF WO-BASIC
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                   END-START
+           ELSE
+               MOVE ARG12       TO WOSTATUS OF WO-PLANNED
+               START WO-PLANNED KEY = WOSTATUS OF WO-PLANNED
+                   INVALID KEY  MOVE FILE-STAT TO FILE-STAT.
+
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   GO TO SORT-M-EXIT
+               ELSE
+                   MOVE "START   " TO DB-TYPE
+                   MOVE FILE-STAT  TO CON-WORD
+                   DISPLAY DB-ERROR
+                   GO TO SORT-M-EXIT.
+
+           PERFORM SORT-DBGET  THRU SORT-DBGET-EXIT.
+
+       SORT-M-EXIT.            EXIT.
+
+       SORT-DBGET.
+           MOVE SPACES         TO SORT-REC.
+           IF VP-BUF = "V"
+               READ WO-BASIC   NEXT INTO WO-BASIC-DATA
+                   AT END      MOVE FILE-STAT TO FILE-STAT
+               END-READ
+           ELSE
+               READ WO-PLANNED NEXT INTO WO-PLANNED-DATA
+                   AT END      MOVE FILE-STAT TO FILE-STAT.
+
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO SORT-DBGET-EXIT
+               ELSE
+                   MOVE "READ    " TO DB-TYPE
+                   MOVE FILE-STAT  TO CON-WORD
+                   DISPLAY DB-ERROR
+                   GO TO SORT-DBGET-EXIT.
+
+           IF VP-BUF = "V" AND WO-STATUS NOT = ARG12
+               GO TO SORT-DBGET-EXIT
+           ELSE
+           IF VP-BUF = "P" AND WO-STATUS-P NOT = ARG12
+               GO TO SORT-DBGET-EXIT.
+
+           IF VP-BUF NOT = "V"
+               IF VP-BUF = WO-CURRENT-TYPE
+                   MOVE SPACES           TO WO-BASIC-DATA
+                   MOVE WO-NUM-PLANNED   TO WO-NUM
+                   MOVE WO-STATUS-P      TO WO-STATUS
+                   MOVE DATE-RECD-P-CN   TO DATE-RECD-CN
+                   MOVE TIME-RECD-P      TO TIME-RECD
+                   MOVE APPROVAL-CODE-P  TO APPROVAL-CODE
+                   MOVE REQUESTER-P      TO REQUESTER-B
+                   MOVE EQUIP-NUM-P      TO EQUIP-NUM
+                   MOVE EQUIP-NAME-P     TO EQUIP-NAME
+                   MOVE TYPE-NUM-P       TO TYPE-NUM
+                   MOVE DEPT-P           TO DEPT
+                   MOVE ZONE-PRIORITY-P  TO ZONE-PRIORITY
+                   MOVE LOCATION-P       TO LOCATION
+                   MOVE EQUIP-DOWN-P     TO EQUIP-DOWN
+                   MOVE EXP-CLASS-P      TO EXP-CLASS
+                   MOVE DESCRIPTION-1-P  TO DESCRIPTION-1
+                   MOVE DATE-STRT-P-CN   TO DATE-STRT-CN
+                   MOVE TIME-STRT-P      TO TIME-STRT
+                   MOVE DATE-COMP-P-CN   TO DATE-COMP-CN
+                   MOVE TIME-COMP-P      TO TIME-COMP
+               ELSE
+                   GO TO SORT-DBGET.
+
+      *  ADDED ZONES A2A AND A2B FOR L. COPPERNOLL 10/3/97   WDR
+      *  ADDED ZONES C, C1, C2, AND C3 FOR L. COPPERNOLL 07/17/2003
+           IF PLANT-IDENT = "211 "
+               IF ZONE = "B1  " OR "B2  " OR "B2F " OR "A2  "
+                                OR "A2A " OR "A2B " OR "D   "
+                                OR "C   " OR "C1  " OR "C2  "
+                                OR "C3  "
+                   NEXT SENTENCE
+               ELSE
+               GO TO SORT-DBGET.
+
+           IF TIME-RECD = SPACES
+               MOVE ZEROS      TO TIME-RECD.
+
+           IF TIME-STRT = SPACES
+               MOVE ZEROS      TO TIME-STRT.
+
+           IF TIME-COMP = SPACES
+               MOVE ZEROS      TO TIME-COMP.
+
+           IF TIME-RECD-HH > 23
+               MOVE 00         TO TIME-RECD-HH.
+
+           IF TIME-STRT-HH > 23
+               MOVE 00         TO TIME-STRT-HH.
+
+           IF TIME-COMP-HH > 23
+               MOVE 00         TO TIME-COMP-HH.
+
+           IF WO-STATUS = "CW"
+               MOVE DATE-COMP-CN  TO DATE-HOLD
+               MOVE TIME-COMP     TO TIME-HOLD
+               MOVE TIME-HOLD     TO TIME-HOLD-S
+           ELSE
+               MOVE 0          TO DATE-HOLD
+               MOVE 0          TO TIME-HOLD TIME-HOLD-S.
+
+           MOVE CURDATE-BUFF-CN TO DATE-WA.
+
+           IF WO-STATUS NOT = "CW" GO TO SORT-DBGET-CONT.
+
+           IF SHIFT-BUF = 1
+               MOVE S-1        TO STR-T
+               MOVE E-1        TO END-T
+               SUBTRACT 1      FROM STR-T
+               ADD      1      TO   END-T
+               IF STR-T < END-T
+                   IF TIME-HOLD-S > STR-T AND < END-T
+                       IF DATE-HOLD = DATE-WA
+                           GO TO SORT-DBGET-CONT
+                       ELSE
+                       GO TO SORT-DBGET
+                   ELSE
+                       GO TO SORT-DBGET
+               ELSE
+               PERFORM SORT-GET-NEXT-GDATE THRU SORT-GNG-EXIT
+               IF TIME-HOLD-S > STR-T AND < 2400
+                   IF DATE-HOLD = DATE-WA-SAV1
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S > 0 AND < END-T
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S = 0
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               GO TO SORT-DBGET.
+
+           IF SHIFT-BUF = 2
+               MOVE S-2        TO STR-T
+               MOVE E-2        TO END-T
+               SUBTRACT 1      FROM STR-T
+               ADD      1      TO   END-T
+               IF STR-T < END-T
+                   IF TIME-HOLD-S > STR-T AND < END-T
+                       IF DATE-HOLD = DATE-WA
+                           GO TO SORT-DBGET-CONT
+                       ELSE
+                       GO TO SORT-DBGET
+                   ELSE
+                       GO TO SORT-DBGET
+               ELSE
+               PERFORM SORT-GET-NEXT-GDATE THRU SORT-GNG-EXIT
+               IF TIME-HOLD-S > STR-T AND < 2400
+                   IF DATE-HOLD = DATE-WA-SAV1
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S > 0 AND < END-T
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S = 0
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               GO TO SORT-DBGET.
+
+           IF SHIFT-BUF = 3
+               MOVE S-3        TO STR-T
+               MOVE E-3        TO END-T
+               SUBTRACT 1      FROM STR-T
+               ADD      1      TO   END-T
+               IF STR-T < END-T
+                   IF TIME-HOLD-S > STR-T AND < END-T
+                       IF DATE-HOLD = DATE-WA
+                           GO TO SORT-DBGET-CONT
+                       ELSE
+                       GO TO SORT-DBGET
+                   ELSE
+                       GO TO SORT-DBGET
+               ELSE
+               PERFORM SORT-GET-NEXT-GDATE THRU SORT-GNG-EXIT
+               IF TIME-HOLD-S > STR-T AND < 2400
+                   IF DATE-HOLD = DATE-WA-SAV1
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S > 0 AND < END-T
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S = 0
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               GO TO SORT-DBGET.
+
+           IF SHIFT-BUF = 4
+               MOVE S-4        TO STR-T
+               MOVE E-4        TO END-T
+               SUBTRACT 1      FROM STR-T
+               ADD      1      TO   END-T
+               IF STR-T < END-T
+                   IF TIME-HOLD-S > STR-T AND < END-T
+                       IF DATE-HOLD = DATE-WA
+                           GO TO SORT-DBGET-CONT
+                       ELSE
+                       GO TO SORT-DBGET
+                   ELSE
+                       GO TO SORT-DBGET
+               ELSE
+               PERFORM SORT-GET-NEXT-GDATE THRU SORT-GNG-EXIT
+               IF TIME-HOLD-S > STR-T AND < 2400
+                   IF DATE-HOLD = DATE-WA-SAV1
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S > 0 AND < END-T
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               IF TIME-HOLD-S = 0
+                   IF DATE-HOLD = DATE-WA-SAV2
+                       GO TO SORT-DBGET-CONT
+                   ELSE
+                   GO TO SORT-DBGET
+               ELSE
+               GO TO SORT-DBGET.
+
+       SORT-DBGET-CONT.
+           MOVE DEPT           TO SORT-DEPT.
+           MOVE ZONE-PRIORITY  TO SORT-ZONE.
+           MOVE SHIFT-BUF      TO SORT-SHIFT.
+           MOVE WO-STATUS      TO SORT-WOSTAT.
+           MOVE WO-NUM         TO SORT-WONUM.
+           MOVE DESCRIPTION-1  TO SORT-WODESC.
+           MOVE EQUIP-NUM      TO SORT-EQNUM.
+           MOVE EQUIP-DOWN     TO SORT-EQDOWN.
+           MOVE CRAFTS-REQD-1  TO SORT-C1.
+           MOVE CRAFTS-REQD-2  TO SORT-C2.
+           MOVE CRAFTS-REQD-3  TO SORT-C3.
+           MOVE CRAFTSMEN-1    TO CMAN-1-SORT.
+           MOVE CRAFTSMEN-2    TO CMAN-2-SORT.
+           MOVE CRAFTSMEN-3    TO CMAN-3-SORT.
+
+           IF ARG12 = "CW"
+               MOVE TIME-COMP  TO TIME-COMP-SORT
+               PERFORM SORT-CALC-COMP-TIMES THRU SORT-CCT-EXIT
+               MOVE DATE-COMP-YY TO SORT-DATE-RCVD-YY
+               MOVE DATE-COMP-MM TO SORT-DATE-RCVD-MM
+               MOVE DATE-COMP-DD TO SORT-DATE-RCVD-DD
+           ELSE
+           IF ARG12 = "OO"
+               MOVE DATE-RECD-YY TO SORT-DATE-RCVD-YY
+               MOVE DATE-RECD-MM TO SORT-DATE-RCVD-MM
+               MOVE DATE-RECD-DD TO SORT-DATE-RCVD-DD
+               MOVE TIME-RECD  TO SORT-TIME-RCVD
+           ELSE
+               MOVE TIME-STRT  TO TSTRT-SORT
+               MOVE SPACES     TO SORT-DATE-RCVD
+               MOVE TIME-STRT  TO SORT-TIME-RCVD
+               IF CRAFTSMEN-2 = SPACES
+                   MOVE CRAFTSMEN-1 TO CMAN-1-SORT
+               ELSE
+               IF CRAFTSMEN-3 = SPACES
+                   MOVE CRAFTSMEN-2 TO CMAN-1-SORT
+               ELSE
+                   MOVE CRAFTSMEN-3 TO CMAN-1-SORT.
+
+           IF SHIFT-BUF = SORT-SHIFT
+               PERFORM SORT-RELEASE-REC THRU SORT-RR-EXIT.
+
+           GO TO SORT-DBGET.
+
+       SORT-DBGET-EXIT.        EXIT.
+
+       SORT-GET-NEXT-GDATE.
+           MOVE 0              TO JUL-DAY-SAVE JUL-DATE.
+           MOVE DATE-WA        TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+           MOVE J-DAY          TO JUL-SIGN.
+           SUBTRACT 1          FROM JUL-SIGN.
+           PERFORM UNTIL       JUL-SIGN > 0
+               ADD 365         TO JUL-SIGN
+               SUBTRACT 1      FROM J-YEAR
+           END-PERFORM.
+           MOVE JUL-SIGN       TO J-DAY.
+           MOVE SPACES         TO GREG-DATE.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+           MOVE GREG-DATE      TO DATE-WA-2.
+           MOVE DATE-WA-2      TO DATE-WA-SAV1.
+           MOVE DATE-WA        TO DATE-WA-SAV2.
+
+       SORT-GNG-EXIT.          EXIT.
+
+       SORT-CALC-COMP-TIMES.
+           IF SPACES = DATE-COMP-CN OR TIME-COMP
+               MOVE SPACES     TO SORT-TIME-RCVD
+               GO TO SORT-CCT-EXIT.
+
+           MOVE 0              TO JUL-DAY-SAVE JUL-DATE.
+           MOVE DATE-COMP-CN   TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+           MOVE JUL-DATE       TO JUL-DAY-COMP.
+
+           IF SPACES = DATE-STRT-CN OR TIME-STRT
+               NEXT SENTENCE
+           ELSE
+           IF ZEROS = DATE-STRT-CN
+               NEXT SENTENCE
+           ELSE
+               MOVE ZEROS      TO JUL-DATE
+               MOVE DATE-STRT-CN TO GREG-DATE
+               MOVE SPACES     TO JUL-DATE D-PARM L-PARM
+               CALL "JULGREG"  USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM
+               MOVE JUL-DATE   TO JUL-DAY-STRT.
+
+           MOVE ZEROS          TO JUL-DATE.
+           MOVE DATE-RECD-CN   TO GREG-DATE.
+           MOVE SPACES         TO JUL-DATE D-PARM L-PARM.
+           CALL "JULGREG"      USING
+                               GREG-DATE
+                               JUL-DATE
+                               D-PARM
+                               L-PARM.
+           MOVE JUL-DATE       TO JUL-DAY-RECD.
+           MOVE 365            TO JUL-DAYS-LYR.
+
+           IF EQUIP-DOWN = "Y "
+               PERFORM SORT-RECD-COMP-CALC THRU SORT-RCC-EXIT
+           ELSE
+               PERFORM SORT-STRT-COMP-CALC THRU SORT-SCC-EXIT.
+
+       SORT-CCT-EXIT.          EXIT.
+
+       SORT-RECD-COMP-CALC.
+           MOVE 0              TO JUL-DAY-SAVE.
+           IF SPACES = DATE-RECD-CN OR TIME-RECD
+               MOVE SPACES     TO SORT-TIME-RCVD
+               GO TO SORT-RCC-EXIT.
+
+           IF ZEROS = DATE-RECD-CN
+               MOVE SPACES     TO SORT-TIME-RCVD
+               GO TO SORT-RCC-EXIT.
+
+           IF JUL-DAY-RECD > JUL-DAY-COMP
+               ADD JUL-DAYS-LYR TO JUL-DAY-SAVE.
+
+           IF JUL-DAY-RECD NOT = JUL-DAY-COMP
+               ADD JUL-DAY-COMP TO JUL-DAY-SAVE
+               SUBTRACT JUL-DAY-RECD FROM JUL-DAY-SAVE
+               MULTIPLY 1440 BY JUL-DAY-SAVE.
+
+           MULTIPLY 60 BY TIME-RECD-HH GIVING TRECD-MIN.
+           ADD TIME-RECD-MM    TO TRECD-MIN.
+           MULTIPLY 60 BY TIME-COMP-HH GIVING TCOMP-MIN.
+           ADD TIME-COMP-MM    TO TCOMP-MIN.
+           SUBTRACT TRECD-MIN  FROM TCOMP-MIN GIVING TSAVE-MIN.
+           ADD JUL-DAY-SAVE    TO TSAVE-MIN.
+           MOVE TSAVE-MIN      TO SORT-TIME-RCVD.
+
+       SORT-RCC-EXIT.          EXIT.
+
+       SORT-STRT-COMP-CALC.
+           MOVE 0              TO JUL-DAY-SAVE.
+           IF SPACES = DATE-STRT-CN OR TIME-STRT
+               MOVE SPACES     TO SORT-TIME-RCVD
+               GO TO SORT-SCC-EXIT.
+
+           IF ZEROS = DATE-STRT-CN
+               MOVE SPACES     TO SORT-TIME-RCVD
+               GO TO SORT-SCC-EXIT.
+
+           IF JUL-DAY-STRT > JUL-DAY-COMP
+               ADD JUL-DAYS-LYR TO JUL-DAY-SAVE.
+
+           IF JUL-DAY-STRT NOT = JUL-DAY-COMP
+               ADD JUL-DAY-COMP TO JUL-DAY-SAVE
+               SUBTRACT JUL-DAY-STRT FROM JUL-DAY-SAVE
+               MULTIPLY 1440 BY JUL-DAY-SAVE.
+
+           MULTIPLY 60 BY TIME-STRT-HH GIVING TSTRT-MIN.
+           ADD TIME-STRT-MM    TO TSTRT-MIN.
+           MULTIPLY 60 BY TIME-COMP-HH GIVING TCOMP-MIN.
+           ADD TIME-COMP-MM    TO TCOMP-MIN.
+           SUBTRACT TSTRT-MIN  FROM TCOMP-MIN GIVING TSAVE-MIN.
+           ADD JUL-DAY-SAVE    TO TSAVE-MIN.
+           MOVE TSAVE-MIN      TO SORT-TIME-RCVD.
+
+       SORT-SCC-EXIT.          EXIT.
+
+       SORT-RELEASE-REC.
+           IF ARG12 = "IP"
+               PERFORM IP-CHECK-LABOR
+               GO TO SORT-RR-EXIT.
+
+           IF ARG12 = "CW"
+               NEXT SENTENCE
+           ELSE
+               RELEASE SORT-REC
+               GO TO SORT-RR-EXIT.
+
+           MOVE 0              TO SUB.
+           MOVE 1              TO RELEASE-FLAG.
+           MOVE WO-NUM         TO WONUM OF WO-LABOR.
+           START WO-LABOR      KEY = WONUM OF WO-LABOR
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+               IF SUB < 1
+                   RELEASE SORT-REC
+                   GO TO SORT-RR-EXIT
+               ELSE
+                   GO TO SORT-RR-EXIT.
+
+           IF FILE-STAT NOT = "00"
+               MOVE "START   " TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               DISPLAY DB-ERROR
+               GO TO SORT-RR-EXIT.
+
+           MOVE SPACES         TO LABOR-TAB.
+           PERFORM SORT-GET-REC THRU SORT-GR-EXIT
+                               UNTIL SUB > 9.
+
+           MOVE 0              TO SUB.
+           PERFORM SORT-READ-TABLE THRU SORT-RT-EXIT
+                               UNTIL SUB > 9.
+
+       SORT-RR-EXIT.           EXIT.
+
+       IP-CHECK-LABOR.
+           MOVE SPACES         TO CMAN-1-SORT.
+           MOVE WO-NUM         TO WONUM OF CURRENT-LABOR.
+           START CURRENT-LABOR KEY = WONUM OF CURRENT-LABOR
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT-1 = "2"
+                   MOVE SPACES     TO CMAN-1-SORT
+                   MOVE SPACES     TO TSTRT-SORT SORT-C1
+                   RELEASE SORT-REC
+               ELSE
+                   MOVE "START   " TO DB-TYPE
+                   MOVE FILE-STAT  TO CON-WORD
+                   DISPLAY DB-ERROR
+                   GO TO SORT-M-EXIT
+           ELSE
+               PERFORM IP-DBGET THRU IP-DBG-EXIT.
+
+       IP-DBGET.
+           READ CURRENT-LABOR  NEXT INTO LABOR-CURR-STAT
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   IF CMAN-1-SORT = SPACES
+                       MOVE SPACES TO TSTRT-SORT SORT-C1
+                       RELEASE SORT-REC
+                       GO TO IP-DBG-EXIT
+                   ELSE
+                       GO TO IP-DBG-EXIT
+               ELSE
+                   MOVE "READ    " TO DB-TYPE
+                   MOVE FILE-STAT  TO CON-WORD
+                   DISPLAY DB-ERROR
+                   GO TO SORT-M-EXIT.
+
+           IF WO-NUM NOT = LCS-WO-NUM
+               IF CMAN-1-SORT = SPACES
+                   MOVE SPACES TO TSTRT-SORT SORT-C1
+                   RELEASE SORT-REC
+                   GO TO IP-DBG-EXIT
+               ELSE
+                   GO TO IP-DBG-EXIT.
+
+           MOVE LCS-EMPL-NUM   TO CMAN-1-SORT.
+           MOVE LCS-START-TIME TO TSTRT-SORT.
+           PERFORM IP-GET-CRAFT.
+           RELEASE SORT-REC.
+           GO TO IP-DBGET.
+
+       IP-DBG-EXIT.            EXIT.
+
+       IP-GET-CRAFT.
+           MOVE LCS-EMPL-NUM   TO PERCCNUM OF PER-PERSONNEL.
+           READ PER-PERSONNEL  INTO PER-PERSONNEL-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE "READ    " TO DB-TYPE
+               MOVE FILE-STAT  TO CON-WORD
+               DISPLAY DB-ERROR
+               GO TO SORT-M-EXIT.
+
+           MOVE PER-CRAFT      TO SORT-C1.
+
+       SORT-GET-REC.
+           ADD 1               TO SUB.
+           READ WO-LABOR       NEXT INTO WO-LABOR-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   IF RELEASE-FLAG-UP
+                       RELEASE SORT-REC
+                       MOVE 10 TO SUB
+                       GO TO SORT-GR-EXIT
+                   ELSE
+                       MOVE 10 TO SUB
+                       GO TO SORT-GR-EXIT
+               ELSE
+                   MOVE "READ    " TO DB-TYPE
+                   MOVE FILE-STAT  TO CON-WORD
+                   DISPLAY DB-ERROR
+                   GO TO SORT-GR-EXIT.
+
+           IF WO-NUM NOT = LBR-WO-NUM
+               IF RELEASE-FLAG-UP
+                   RELEASE SORT-REC
+                   MOVE 10     TO SUB
+                   GO TO SORT-GR-EXIT
+               ELSE
+                   MOVE 10     TO SUB
+                   GO TO SORT-GR-EXIT.
+
+           IF DATE-WA = SPACES
+               NEXT SENTENCE
+           ELSE
+               IF LBR-COMPL-DATE-CN = DATE-WA-SAV1 OR DATE-WA-SAV2
+                                   OR DATE-WA
+                   NEXT SENTENCE
+               ELSE
+                   SUBTRACT 1  FROM SUB
+                   GO TO SORT-GR-EXIT.
+
+           MOVE 0              TO RELEASE-FLAG.
+           MOVE LBR-EMPL-NUM   TO  L-CC-BUF.
+           MOVE LBR-CRAFT      TO  L-CRFT-BUF.
+           MOVE LBR-START-TIME TO  L-TSTRT-BUF.
+           MOVE LBR-COMPL-TIME TO  L-TCOMP-BUF.
+
+           IF SHIFT-BUF = LBR-SHIFT-1
+               MOVE LBR-HRS1   TO L-RETM-12
+               MOVE "."        TO L-RETM-DEC
+               MOVE LBR-HRS2   TO L-RETM-4
+           ELSE
+               MOVE SPACES     TO  L-RETM-BUF.
+
+           IF L-RETM-1 = "0"   MOVE SPACE TO L-RETM-1.
+
+           MOVE LABOR-BUFFER   TO  LABOR-TABLE (SUB).
+
+       SORT-GR-EXIT.           EXIT.
+
+       SORT-READ-TABLE.
+           ADD 1               TO SUB.
+           MOVE LABOR-TABLE (SUB) TO LABOR-BUFFER.
+           IF L-CC-BUF = SPACES
+               MOVE 10         TO SUB
+               GO TO SORT-RT-EXIT.
+
+           MOVE L-CC-BUF       TO CMAN-1-SORT.
+           MOVE L-CRFT-BUF     TO SORT-C1.
+           MOVE L-TSTRT-BUF    TO TSTRT-SORT.
+           MOVE L-TCOMP-BUF    TO TIME-COMP-SORT.
+           MOVE L-RETM-BUF     TO RETM-SORT.
+
+           RELEASE SORT-REC.
+
+       SORT-RT-EXIT.           EXIT.
+
+       SORT-WRITE-FILE.
+           OPEN OUTPUT         OUT-FILE.
+           PERFORM SORT-READ-LOOP THRU SORT-RL-EXIT.
+           CLOSE               OUT-FILE.
+
+       SORT-READ-LOOP.
+           RETURN SORT-FILE    AT END
+               GO TO SORT-RL-EXIT.
+           ADD 1               TO ACT-KEY.
+           MOVE SORT-REC       TO OUT-REC.
+           IF SORT-WOSTAT = "OO  "
+               MOVE SORT-DATE-RCVD-YY TO DATE-RCVD-YY
+               MOVE SORT-DATE-RCVD-MM TO DATE-RCVD-MM
+               MOVE SORT-DATE-RCVD-DD TO DATE-RCVD-DD.
+           WRITE OUT-REC       INVALID KEY
+               DISPLAY "WRITE OUT-FILE ERR"
+               GO TO SORT-RL-EXIT.
+           GO TO SORT-READ-LOOP.
+
+       SORT-RL-EXIT.           EXIT.
+

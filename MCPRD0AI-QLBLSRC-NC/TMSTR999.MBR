@@ -1,0 +1,588 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.      TMSTR999.
+       AUTHOR.          CA YODER.
+       DATE-WRITTEN.    MARCH 2003.
+      **************************************************************
+      *                                                            *
+      *D  T M S T R 9 9 9                                          *
+      *                                                            *
+      *D    THIS PROGRAM CREATES MASTER REQUIREMENT ORDERS FOR     *
+      *D    NON-ARIBA PLANTS FROM A FILE CONTAINING ITEM           *
+      *D    INFORMATION.                                           *
+      *                                                            *
+      **************************************************************
+      *C
+      *C  CHANGES:
+      *C
+      *C  02/19/2004   CA YODER
+      *C     ADDED LOGIC TO PROCESS UPDATES TO PIN REQUIREMENT ORDER
+      *C     ITEMS.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       SPECIAL-NAMES.  I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT CATALOG-FILE       ASSIGN TO DATABASE-MCFLAB2802
+                  ORGANIZATION IS INDEXED
+                  ACCESS IS DYNAMIC
+                  FILE STATUS FILE-STATUS
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES.
+
+           SELECT MPORCV-I
+                  ASSIGN TO DATABASE-MCFLCS0101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-PO-CD-IO
+                  ASSIGN TO DATABASE-MCFLCS1003
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPODATAITM-IO
+                  ASSIGN TO DATABASE-MCFLCS1101
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-IO
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT RPT-FILE
+               ASSIGN         TO DISK-MSTR999FL
+               FILE STATUS    IS FILE-STATUS.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  CATALOG-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  CATALOG-REC.
+           COPY DDS-ALL-FORMATS OF MCFLAB2802.
+
+       FD  MPORCV-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPORCV-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0101.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-O.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  DPOITEM-PO-CD-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-PO-CD-REC-IO.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1003.
+
+       FD  DPODATAITM-IO
+           LABEL RECORDS ARE STANDARD.
+       01  DPODATAITM-REC-IO.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1101.
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0201.
+
+       FD  MPLTINFO-IO
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-IO.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0501.
+
+       FD  RPT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 133 CHARACTERS
+           DATA RECORD IS RPT-REC.
+       01  RPT-REC.
+           05  CTL                       PIC X(1).
+           05  RPT-LINE                  PIC X(132).
+
+       WORKING-STORAGE SECTION.
+       77  SUB                           PIC S99    VALUE ZEROS.
+       77  HOLD-CORP-CODE                PIC X(7)   VALUE SPACES.
+       77  HOLD-VEN-CODE                 PIC X(10)  VALUE SPACES.
+       77  VEN-FILE-EOF                  PIC X      VALUE "N".
+       77  CATALOG-EOF-SW                PIC X      VALUE "N".
+       77  VENDOR-FOUND-SW               PIC X      VALUE "N".
+       77  HOLD-CURR-CODE                PIC X(2)   VALUE SPACES.
+       77  SAVE-COMPANY                  PIC X(3)   VALUE SPACES.
+       77  SAVE-PRIME                    PIC X(3)   VALUE SPACES.
+       77  HOLD-ERR-MSG                  PIC X(101)  VALUE SPACES.
+       77  HOLD-PO-NUM                   PIC X(14)  VALUE SPACES.
+
+       01  TOTAL-ITEM-CTR                PIC 9(4).
+       01  TOTAL-ITEM-CTR-X  REDEFINES TOTAL-ITEM-CTR
+                                         PIC X(4).
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X      VALUE "0".
+           05  FILE-STATUS-2             PIC X      VALUE "0".
+
+       COPY TDATECHK IN COPYLIB.
+
+       01  BUILD-PO-SEARCH.
+           05  PO-PREFIX                 PIC X      VALUE "P".
+           05  PO-NO                     PIC X(7)   VALUE SPACES.
+           05  PO-REL                    PIC X(3)   VALUE SPACES.
+           05  PO-RCV                    PIC X(3)   VALUE SPACES.
+
+       01  SEQ-NO-SAVE.
+           05  SEQ-ITEM-NO-SAVE          PIC 9(4)  VALUE ZEROS.
+           05  LINE-NO-SAVE              PIC 99    VALUE ZEROS.
+
+       COPY VCOMAREA IN COPYLIB.
+
+       01  CURRENT-DATE-CN.
+           05  CUR-DATE-CC               PIC XX.
+           05  CUR-DATE.
+               10  CUR-DATE-YY           PIC XX.
+               10  FILLER                PIC X(4).
+
+       01  HDR-LINE-1.
+           05  FILLER                PIC X(4).
+           05  H1-DATE               PIC X(8).
+           05  FILLER                PIC X(7).
+           05  FILLER                PIC X(37)    VALUE
+                    "MASTER REQUIREMENT ORDER ERROR REPORT".
+           05  FILLER                PIC X(7).
+           05  H1-TIME               PIC X(8).
+
+       01  HDR-LINE-2.
+           05  FILLER                PIC X(132)   VALUE ALL "-".
+
+       01  RPT-INFO.
+           05  FILLER                PIC X(4).
+           05  FILLER                PIC X(7)     VALUE "VEND:  ".
+           05  RPT-VEND              PIC X(10).
+           05  FILLER                PIC X(10)    VALUE "   CODE:  ".
+           05  RPT-CODE              PIC X(7).
+           05  FILLER                PIC X(8)     VALUE "   MSG: ".
+           05  RPT-MSG               PIC X(101).
+
+       01  CFINDPO-PARAMETERS.
+           05  CFINDPO-MAJOR-GROUP      PIC X(02).
+           05  CFINDPO-VENDOR-CODE      PIC X(10).
+           05  CFINDPO-BUYER-CODE       PIC X(04).
+           05  CFINDPO-PO-NUMBER        PIC X(14).
+
+       01  CLASTNUM-PARAMETERS.
+           05  CLASTNUM-PO-NUMBER       PIC X(14).
+           05  CLASTNUM-ITEM-NUMBER     PIC X(04).
+           05  CLASTNUM-ITEM-NUMBER-9 REDEFINES CLASTNUM-ITEM-NUMBER
+                                        PIC 9(04).
+
+      **************************************************************
+      **                DATABASE I/O BUFFER AREA                  **
+      **************************************************************
+
+       COPY DARIBACAT   IN COPYLIB.
+
+       COPY MSTORERM    IN COPYLIB.
+
+       COPY DPODATA     IN COPYLIB.
+
+       COPY MPORCV      IN COPYLIB.
+
+       COPY DPORECD     IN COPYLIB.
+
+       COPY DPOITEM     IN COPYLIB.
+
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTP01  IN COPYLIB.
+       COPY MPLTM999 IN COPYLIB.
+
+       COPY DATAB IN COPYLIB.
+
+       01 ARG-VALUES.
+           05  CODE-ARG               PIC X(8)  VALUE SPACES.
+           05  PLT-ARG                PIC X(4)  VALUE SPACES.
+           05  PO-ARG.
+               10  FILLER             PIC X     VALUE "P".
+               10  PO-ARG-NUM         PIC X(13) VALUE SPACES.
+           05  TAX-ARG                PIC X(2)  VALUE SPACES.
+
+       COPY STC320 IN COPYLIB.
+
+       COPY LANGUAGE IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+      **************************************************************
+      **           P R O C E D U R E   D I V I S I O N            **
+      **************************************************************
+
+       PROCEDURE DIVISION.
+
+       0-BEGIN.
+           PERFORM 1-HSK.
+
+           PERFORM 6-MAIN THROUGH 6-MAIN-X
+               UNTIL CATALOG-EOF-SW = "Y".
+
+           PERFORM 2-EOJ.
+
+           GOBACK.
+
+      **************************************************************
+       1-HSK.
+      **************************************************************
+           OPEN I-O  DPOITEM-O, DPOITEM-PO-CD-IO,
+                     DPODATAITM-IO, MPLTINFO-IO,
+                     CATALOG-FILE.
+           OPEN INPUT MSTORERM-I, MPORCV-I, DPORECD-I.
+           OPEN EXTEND RPT-FILE.
+
+           MOVE "P 01"         TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-IO.
+           READ MPLTINFO-IO INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "1-HSK"   TO  BU-DISPLAY-MSG
+               MOVE PLT-ARG   TO  BU-DISPLAY-FLD (3)
+               PERFORM 2-BLOWUP.
+           MOVE MPLTINFO-COMPANY TO SAVE-COMPANY.
+           MOVE MPLTINFO-PRIME   TO SAVE-PRIME.
+
+           ACCEPT CUR-DATE FROM DATE.
+           MOVE "20"                     TO  CUR-DATE-CC.
+
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO  H1-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  H1-TIME.
+
+           STRING "*" CUR-DATE DELIMITED BY SIZE INTO RPT-REC.
+           WRITE RPT-REC.
+
+           MOVE 1           TO   CTL.
+           MOVE HDR-LINE-1  TO   RPT-LINE.
+           WRITE RPT-REC.
+           MOVE 1           TO   CTL.
+           MOVE HDR-LINE-2  TO   RPT-LINE.
+           WRITE RPT-REC.
+
+           PERFORM 999-START-CATALOG.
+           PERFORM 999-READN-CATALOG.
+
+      **************************************************************
+       2-EOJ.
+      **************************************************************
+      *--------- KEEP TRACK OF LAST UPDATE.
+           MOVE "M999"         TO  PLT-ARG.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-IO.
+           READ MPLTINFO-IO INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE SPACES    TO  BUF-MPLTINFO
+               MOVE "M999"    TO  MPLTINFO-KEY
+               WRITE MPLTINFO-REC-IO FROM BUF-MPLTINFO
+                   INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           MOVE CURRENT-DATE-CN  TO MPLTINFO-M999-RQ-DATE.
+           MOVE DATE-UNFORMATTED-TIME-OUT   TO  MPLTINFO-M999-RQ-TIME.
+           REWRITE MPLTINFO-REC-IO FROM BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+           CLOSE  DPORECD-I, DPOITEM-O, MPORCV-I, DPOITEM-PO-CD-IO,
+                  DPODATAITM-IO, MPLTINFO-IO, MSTORERM-I,
+                  RPT-FILE.
+
+      **************************************************************
+       2-BLOWUP.
+      **************************************************************
+           MOVE "TMSTR999"  TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+      **************************************************************
+       6-MAIN.
+      **************************************************************
+           MOVE SPACES                       TO  CFINDPO-PARAMETERS
+                                                 HOLD-ERR-MSG.
+           MOVE ARIBACAT-VENDOR-CODE         TO  CFINDPO-VENDOR-CODE.
+           MOVE ARIBACAT-CORP-CODE (1:2)     TO  CFINDPO-MAJOR-GROUP.
+           CALL "CFINDPO" USING CFINDPO-PARAMETERS.
+           IF CFINDPO-BUYER-CODE = SPACES
+               MOVE "NO BUYER CODE ASSIGNED FOR THIS MAJOR GROUP"
+                                             TO  HOLD-ERR-MSG
+           ELSE
+               IF CFINDPO-PO-NUMBER = SPACES
+                   MOVE "NO PO NUMBER ASSIGNED FOR THIS VENDOR CODE"
+                                             TO  HOLD-ERR-MSG.
+
+           IF HOLD-ERR-MSG > SPACES
+               MOVE HOLD-ERR-MSG TO RPT-MSG
+               PERFORM 999-WRITE-RPT
+               GO TO 6-READ-CATALOG.
+
+           MOVE CFINDPO-PO-NUMBER TO PO-ARG.
+           PERFORM 999-FIND-MPORCV.
+           IF FILE-STATUS NOT = "00"
+               MOVE "REQUIREMENT ORDER DOES NOT EXIST"  TO HOLD-ERR-MSG
+               MOVE HOLD-ERR-MSG TO RPT-MSG
+               PERFORM 999-WRITE-RPT
+               GO TO 6-READ-CATALOG.
+           PERFORM 999-FIND-DPOITEM.
+           IF FILE-STATUS = "00"
+               STRING "ITEM ALREADY EXISTS ON THIS PO:  " PO-ARG
+                   DELIMITED BY SIZE  INTO  RPT-MSG
+               PERFORM 999-WRITE-RPT
+               GO TO 6-READ-CATALOG
+           ELSE
+               MOVE PO-ARG TO CLASTNUM-PO-NUMBER
+               CALL "CLASTNUM" USING CLASTNUM-PARAMETERS
+               IF CLASTNUM-ITEM-NUMBER NUMERIC
+                      AND CLASTNUM-ITEM-NUMBER-9 = 999
+                   MOVE "PO CONTAINS 999 ITEMS; CANNOT ADD ITEM"
+                                                        TO RPT-MSG
+                   PERFORM 999-WRITE-RPT
+               ELSE
+                   PERFORM 60-ADD-ITEM.
+
+       6-READ-CATALOG.
+           PERFORM 999-READN-CATALOG.
+
+       6-MAIN-X.
+           EXIT.
+
+      **************************************************************
+       60-ADD-ITEM.
+      **************************************************************
+           MOVE SPACES                  TO  HOLD-ERR-MSG.
+           PERFORM 999-READ-MSTORERM.
+           IF FILE-STATUS = "00"
+               PERFORM 999-VALIDATE-FIELDS.
+           IF HOLD-ERR-MSG = SPACES
+               IF PO-ARG NOT = HOLD-PO-NUM
+                   PERFORM 999-FIND-DPORECD
+                   MOVE PO-ARG TO HOLD-PO-NUM
+               END-IF
+               PERFORM 61-CREATE-DPOITEM
+               PERFORM 999-WRITE-DPODATAITM.
+
+      **************************************************************
+       61-CREATE-DPOITEM.
+      **************************************************************
+           INITIALIZE BUF-DPOITEM.
+           MOVE PO-ARG              TO  ITM-PO-RCV-NO.
+           MOVE SAVE-COMPANY        TO  ITM-COMPANY.
+           MOVE SAVE-PRIME          TO  ITM-PRIME.
+           MOVE PO-ADDL-DATA        TO  ITM-ADDL-DATA.
+           MOVE PO-SUB-DET          TO  ITM-SUB-DETL.
+           IF CLASTNUM-ITEM-NUMBER > SPACES
+               MOVE CLASTNUM-ITEM-NUMBER TO TOTAL-ITEM-CTR-X
+           ELSE
+               MOVE 0               TO  TOTAL-ITEM-CTR.
+           MOVE TOTAL-ITEM-CTR      TO  ITM-NUMBER.
+           MOVE STR-CLASS           TO  ITM-CLASS.
+           MOVE STR-TAX-CODE        TO  ITM-TAX-CODE.
+           MOVE STR-STD-INST        TO  ITM-STD-INST.
+           MOVE STR-RCV-STD-INST    TO  ITM-RCV-STD-INST.
+           MOVE STR-QS9000-TRACK    TO  ITM-QS9000-TRACK.
+           MOVE ARIBACAT-CORP-CODE  TO  ITM-CORP-CODE.
+           MOVE ARIBACAT-QTY-UM     TO  ITM-UM
+                                        ITM-PRICE-UM.
+           MOVE ARIBACAT-CONVER-PRICE TO  ITM-UNIT-PRICE.
+           MOVE PO-TERMS            TO  ITM-TERMS.
+           MOVE "X"                 TO  ITM-PIN-INDIC.
+           WRITE DPOITEM-REC-O FROM BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               STRING "PROBLEM WITH DPOITEM WRITE:  " PO-ARG
+                   DELIMITED BY SIZE  INTO  RPT-MSG
+               PERFORM 999-WRITE-RPT
+           ELSE
+               PERFORM 62-BUILD-DDAILYTC-320.
+
+      **************************************************************
+       62-BUILD-DDAILYTC-320.
+      **************************************************************
+           MOVE SPACES                  TO  STC320-PARMS.
+           MOVE SAVE-COMPANY            TO  STC320-COMPANY-SAVE.
+           MOVE "20"                    TO  STC320-ITEM-TC-ID.
+           MOVE ITM-PO-RCV-NO           TO  STC320-PO-NUM.
+           MOVE ITM-NUMBER              TO  STC320-ITEM.
+           IF ITM-CORP-CODE = "NON-STR"
+               MOVE "NC"                TO  STC320-CODE
+               MOVE ITM-PRICE-UM        TO  STC320-QTY-UM,
+                                            STC320-PRICE-UM
+               MOVE ITM-UNIT-PRICE      TO  STC320-PRICE
+           ELSE
+               MOVE ITM-CORP-CODE       TO  STC320-CODE
+               MOVE STR-UM              TO  STC320-QTY-UM,
+                                            STC320-PRICE-UM
+               IF ITM-PRICE-UM = STR-UM
+                   MOVE ITM-UNIT-PRICE  TO  STC320-PRICE
+               ELSE
+               IF ITM-PRICE-UM = STR-UM1
+                   DIVIDE ITM-UNIT-PRICE  BY STR-UM1-CF
+                                        GIVING STC320-PRICE ROUNDED
+               ELSE
+               IF ITM-PRICE-UM = STR-UM2
+                   DIVIDE ITM-UNIT-PRICE  BY STR-UM2-CF
+                                        GIVING STC320-PRICE ROUNDED
+               ELSE
+                   MOVE ZEROS           TO  STC320-PRICE.
+           MOVE ZEROS                   TO  STC320-QTY.
+           MOVE ITM-TAX-CODE            TO  STC320-TAX-CODE.
+           MOVE ZEROS                   TO  STC320-OLD-BUDGET-AMT.
+           IF ITM-CLASS = SPACES
+               IF ITM-CORP-CODE = "NON-STR"
+                   NEXT SENTENCE
+               ELSE
+                   MOVE STR-CLASS       TO  STC320-SUB
+           ELSE
+               MOVE ITM-CLASS           TO  STC320-SUB.
+           MOVE ITM-COMPANY             TO  STC320-COMPANY.
+           MOVE ITM-PRIME               TO  STC320-PRIME.
+           MOVE ITM-SUB-DETL            TO  STC320-SUBD.
+           MOVE ITM-ADDL-DATA           TO  STC320-ADDTL-DATA.
+           MOVE PO-BUDGET-NUMBER        TO  STC320-BUDGET-NO.
+           MOVE PO-CURRENCY-CODE        TO  STC320-CUR-CODE.
+           CALL "STC320" USING BASE,
+                               STC320-PARMS,
+                               STATUS-AREA,
+                               BU-DISPLAY-MSG,
+                               BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG-1  NOT = SPACES
+               PERFORM 2-BLOWUP.
+
+      **************************************************************
+       999-FIND-MPORCV.
+      **************************************************************
+           MOVE PO-ARG TO PORCVNO OF MPORCV-REC-I.
+           READ MPORCV-I INTO BUF-MPORCV
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      **************************************************************
+       999-FIND-DPORECD.
+      **************************************************************
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           READ DPORECD-I INTO BUF-DPORECD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      **************************************************************
+       999-FIND-DPOITEM.
+      **************************************************************
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-PO-CD-IO.
+           MOVE ARIBACAT-CORP-CODE TO CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF DPOITEM-PO-CD-IO.
+           READ DPOITEM-PO-CD-IO INTO BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      **************************************************************
+       999-WRITE-DPODATAITM.
+      **************************************************************
+           MOVE SPACES               TO  BUF-DPODATAITM.
+           MOVE PO-ARG               TO  DATAITM-PO-RCV-NO.
+           MOVE TOTAL-ITEM-CTR       TO  SEQ-ITEM-NO-SAVE.
+           MOVE 1                    TO  LINE-NO-SAVE.
+           MOVE SEQ-NO-SAVE          TO  DATAITM-LINE.
+           STRING ARIBACAT-MANUFACT-NAME (1:26)
+                  " "
+                  ARIBACAT-MANUFACT-PARTNO (1:20)
+               DELIMITED BY SIZE
+                                     INTO DATAITM-INFO.
+           WRITE DPODATAITM-REC-IO FROM BUF-DPODATAITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               STRING "PROBLEM WITH DPODATAITM WRITE:  " PO-ARG
+                   DELIMITED BY SIZE  INTO  RPT-MSG
+               PERFORM 999-WRITE-RPT.
+
+      **************************************************************
+       999-START-CATALOG.
+      **************************************************************
+           INITIALIZE CATALOG-REC.
+
+           MOVE  LOW-VALUES           TO ARIBACAT-CORP-CODE.
+           MOVE  SPACES               TO ARIBACAT-VENDOR-CODE.
+
+           START CATALOG-FILE
+                 KEY IS NOT < EXTERNALLY-DESCRIBED-KEY
+                 INVALID KEY MOVE FILE-STATUS TO FILE-STATUS
+           END-START.
+
+      **************************************************************
+       999-READN-CATALOG.
+      **************************************************************
+           READ CATALOG-FILE  NEXT RECORD INTO BUF-DARIBCAT
+               AT END MOVE "Y" TO CATALOG-EOF-SW.
+           MOVE ARIBACAT-VENDOR-CODE  TO  RPT-VEND.
+           MOVE ARIBACAT-CORP-CODE    TO  RPT-CODE.
+           MOVE SPACES                TO  RPT-MSG.
+
+      **************************************************************
+       999-READ-MSTORERM.
+      **************************************************************
+           MOVE ARIBACAT-CORP-CODE      TO  CODE-ARG.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-REC-I.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS END-READ.
+           IF FILE-STATUS NOT = "00"
+               MOVE "INVALID CORPORATE CODE" TO HOLD-ERR-MSG.
+
+      **************************************************************
+       999-WRITE-RPT.
+      **************************************************************
+           MOVE 1           TO   CTL.
+           MOVE RPT-INFO    TO   RPT-LINE.
+           WRITE RPT-REC.
+
+      **************************************************************
+       999-VALIDATE-FIELDS.
+      **************************************************************
+           IF ARIBACAT-CONVER-PRICE NOT NUMERIC
+               MOVE "INVALID ITEM UNIT PRICE" TO HOLD-ERR-MSG
+           ELSE
+           IF ARIBACAT-CONVER-PRICE = 0
+               MOVE "UNIT PRICE EQUAL ZERO"   TO HOLD-ERR-MSG.
+

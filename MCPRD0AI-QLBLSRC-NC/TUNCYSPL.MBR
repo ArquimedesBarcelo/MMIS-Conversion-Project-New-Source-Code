@@ -1,0 +1,655 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TUNCYSPL.
+      *REMARKS.
+      *D    THIS PROGRAM GRABS THE CURRENT DATE AND SETS A MONTH RANGE
+      *D    TO ABSTRACT REQUISITION INFORMATION FOR ALL CHECKBOOK PLANTS
+      *D    TO GATHER COST INFORMATION AGAINST THE BUDGET AMOUNTS.
+      *C
+      *C    OCT-NOV 1997 ADDED CODE TO RESTRICT REQUISITIONS THAT ARE
+      *C    INCLUDED IN THE FILE PASSED TO THE CHECKBOOK ROUTINES.
+      *C    REQS WITHOUT A FIRST APPROVER'S APPROVAL WILL NO LONGER
+      *C    BE INCLUDED.
+      *C
+      *C    OCTOBER 1998 ADDED NEW CODE TO CLOSE A LOOP IN THE PROGRAM
+      *C    WHEREBY A USER COULD CONCEIVABLY INITIATE A REQUISITION IN
+      *C    A PREVIOUS MONTH AND NOT GET THE 1ST APPROVAL UNTIL THE
+      *C    CURRENT MONTH. THE ORIGINAL PROGRAMMING ONLY LOOKED AT
+      *C    REQUISITIONS WITH A REQ-DATE IN MCFPCS2000 THAT FIT THE
+      *C    CURRENT MONTH AS PULLED FROM MCFPCA0100 'MY'' RECORD. THESE
+      *C    PREVIOUS MONTH/APPROVED THIS MONTH REQS WOULD NEVER GET
+      *C    INCLUDED IN THE PLANT'S CHECKBOOK DATA.
+      *C
+      *C    JANUARY 2001 JE COFFMAN
+      *C    ADDED CODE AT DANVILLE'S REQUEST TO USE THE LAST REPAIR
+      *C    COST FOR THE ITEM INSTEAD OF THE MARKET COST IF THE USER
+      *C    FAILS TO INPUT AN ITEM COST ON A REPAIR ORDER REQUISITION.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+       COPY SPECIALN OF COPYLIB.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DATRANGE
+                  ASSIGN TO DATABASE-MCDATRANGE
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQITM
+                  ASSIGN TO DATABASE-MCFLCS2201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQQUE
+                  ASSIGN TO DATABASE-MCFLCS4401
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQQUE-2
+                  ASSIGN TO DATABASE-MCFLCS4406
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MACCOUNT-INFO
+                  ASSIGN TO DATABASE-MCFLCA0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ
+                  ASSIGN TO DATABASE-MCFLCS2001
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+            SELECT MSTORERM
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT PRINT-FILE
+               ASSIGN TO PRINTER-MCPRT.
+
+            SELECT REQ-FILE
+                  ASSIGN TO DATABASE-REQSFI01
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE IS SEQUENTIAL
+                  FILE STATUS IS FILE-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DATRANGE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DATRANGE-REC.
+       01  DATRANGE-REC.
+           05  DATE-START        PIC X(8).
+           05  DATE-STOP         PIC X(8).
+
+       FD  DREQITM
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DREQITM-REC.
+       01  DREQITM-REC.
+           COPY DDS-MCRPCS2200  OF MCFLCS2201.
+
+       FD  DREQQUE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DREQQUE-REC.
+       01  DREQQUE-REC.
+           COPY DDS-MCRPCS4400  OF MCFLCS4401.
+
+       FD  DREQQUE-2
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS DREQQUE-REC-2.
+       01  DREQQUE-REC-2.
+           COPY DDS-MCRPCS4400  OF MCFLCS4406.
+
+       FD  MACCOUNT-INFO
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MACCOUNT-INFO-REC.
+       01  MACCOUNT-INFO-REC.
+           COPY DDS-MCRPCA0100  OF MCFLCA0101.
+
+       FD  MPLTINFO
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MPLTINFO-REC.
+       01  MPLTINFO-REC.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MREQ
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MREQ-REC.
+       01  MREQ-REC.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  MSTORERM
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS MSTORERM-REC.
+       01  MSTORERM-REC.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  PRINT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINTF.
+       01  PRINTF                PIC X(132).
+
+       FD  REQ-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS REQ-FILE-REC.
+       01  REQ-FILE-REC.
+           05  REQ-FILE-NUM      PIC X(12).
+           05  REQ-FILE-DATE     PIC X(8).
+           05  REQ-FILE-CLASS    PIC X(3).
+           05  REQ-FILE-DEPT     PIC X(4).
+           05  REQ-FILE-EXPNW    PIC X(6).
+           05  REQ-FILE-BUDNO    PIC X(10).
+           05  REQ-FILE-TYPE     PIC XX.
+           05  REQ-FILE-ORIG     PIC X(4).
+           05  REQ-FILE-COST     PIC S9(8)V9(4).
+           05  FILLER            PIC X(19).
+       WORKING-STORAGE SECTION.
+       77  FIN-OR-FIR-SW         PIC X.
+       77  FINAL-APPROVER        PIC X.
+       77  FIRST-APPROVER        PIC X.
+       77  HANDLE-BLOWUP-FLAG    PIC X(1)   VALUE "Y".
+       77  LINE-CTR              PIC 99.
+
+       01 ARG-VALUES.
+           05  MACCT-ARG         PIC X(4)  VALUE SPACES.
+           05  REQ-ARG           PIC X(12) VALUE SPACES.
+
+       01  CUR-DATE.
+           05  CUR-DATE-YY       PIC 99.
+           05  CUR-DATE-MM       PIC 99.
+           05  CUR-DATE-DD       PIC 99.
+
+       COPY DATAB    IN COPYLIB.
+
+       01  DATE-RANGE.
+           05  DATE-LOW.
+               10  DATE-LOW-CC      PIC 99.
+               10  DATE-LOW-YMD.
+                   15  DATE-LOW-YY  PIC 99.
+                   15  DATE-LOW-MM  PIC 99.
+                   15  DATE-LOW-DD  PIC 99.
+           05  DATE-HIGH.
+               10  DATE-HIGH-CC     PIC 99.
+               10  DATE-HIGH-YMD.
+                   15  DATE-HIGH-YY PIC 99.
+                   15  DATE-HIGH-MM PIC 99.
+                   15  DATE-HIGH-DD PIC 99.
+
+       01  DETAIL-LINE.
+           05  DETAIL-DEF-1.
+               10  D-REQNO       PIC X(12).
+               10  FILLER        PIC XX.
+               10  D-REQDAT      PIC X(8).
+               10  FILLER        PIC XX.
+               10  D-REQSUB      PIC X(3).
+               10  FILLER        PIC XX.
+               10  D-REQDEPT     PIC X(4).
+               10  FILLER        PIC XX.
+               10  D-REQEXPNW    PIC X(6).
+               10  FILLER        PIC XX.
+               10  D-REQBUD.
+                   15  D-RB-3    PIC XXX.
+                   15  D-DASH1   PIC X.
+                   15  D-RB-4-5  PIC XX.
+                   15  D-DASH2   PIC X.
+                   15  D-RB-6-7  PIC XX.
+                   15  D-DASH3   PIC X.
+                   15  D-RB-8-10 PIC XXX.
+               10  FILLER        PIC X.
+               10  D-REQTYPE     PIC XX.
+               10  FILLER        PIC X.
+               10  D-REQORIG     PIC X(4).
+               10  FILLER        PIC X.
+               10  D-REQCOST     PIC Z(7)9.9(4).
+               10  FILLER        PIC X.
+
+       COPY DREQITM  IN COPYLIB.
+
+       COPY DREQQUE  IN COPYLIB.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1     PIC X.
+           05  FILE-STATUS-2     PIC X.
+
+       01  HEADER-1.
+           05  FILLER            PIC X(19) VALUE SPACES.
+           05  FILLER            PIC X(13) VALUE "REQUISITIONS ".
+           05  FILLER            PIC X(08) VALUE "REPORTED".
+           05  FILLER            PIC X(18) VALUE " ON DURING CURRENT".
+           05  FILLER            PIC X(22) VALUE " RUN".
+
+       01  HEADER-2.
+           05  FILLER            PIC X(12) VALUE "   REQ NO   ".
+           05  FILLER            PIC XX    VALUE SPACES.
+           05  FILLER            PIC X(8)  VALUE "REQ DATE".
+           05  FILLER            PIC XX    VALUE SPACES.
+           05  FILLER            PIC XXX   VALUE "CLS".
+           05  FILLER            PIC XX    VALUE SPACES.
+           05  FILLER            PIC X(4)  VALUE "DEPT".
+           05  FILLER            PIC XX    VALUE SPACES.
+           05  FILLER            PIC X(6)  VALUE "EXP/NW".
+           05  FILLER            PIC XX    VALUE SPACES.
+           05  FILLER            PIC X(13) VALUE "BUDGET NUMBER".
+           05  FILLER            PIC X     VALUE SPACE.
+           05  FILLER            PIC XX    VALUE "ST".
+           05  FILLER            PIC X     VALUE SPACE.
+           05  FILLER            PIC X(4)  VALUE "ORIG".
+           05  FILLER            PIC XX    VALUE SPACES.
+           05  FILLER            PIC X(12) VALUE "    COST    ".
+
+       01  HEADER-3.
+           05  FILLER            PIC X(80) VALUE ALL "-".
+
+       COPY MACTINFO IN COPYLIB.
+
+       COPY MPLT0    IN COPYLIB.
+
+       COPY MPLTPREQ IN COPYLIB.
+
+       COPY MREQ     IN COPYLIB.
+
+       COPY MSTORERM IN COPYLIB.
+
+       01  OVRDBF-PARM1  PIC X(80) VALUE SPACES.
+       01  OVRDBF-PARM2  PIC S9(10)V9(5) COMP-3 VALUE 80.
+
+       COPY OVRPFDATA IN COPYLIB.
+
+       01  WORK-DATE.
+           05  WORK-DATE-CC           PIC XX.
+           05  WORK-DATE-YMD.
+               10  WORK-DATE-YY       PIC XX.
+               10  WORK-DATE-MM       PIC XX.
+               10  WORK-DATE-DD       PIC XX.
+
+       COPY TBLOWUP   IN COPYLIB.
+
+       PROCEDURE DIVISION.
+       BEGIN-HERE.
+           PERFORM 1-HSK THRU 1-H-X.
+           PERFORM 6-MAIN  THRU 6-M-X.
+
+       2-EOJ.
+           CLOSE DATRANGE.
+           MOVE "CLRPFM FILE(*LIBL/MCDATRANGE)" TO OVRDBF-PARM1.
+           CALL "QCMDEXC" USING OVRDBF-PARM1, OVRDBF-PARM2.
+           CLOSE DREQITM, MACCOUNT-INFO, MREQ, MSTORERM, DREQQUE.
+           CLOSE DREQQUE-2.
+           CLOSE MPLTINFO.
+           CLOSE PRINT-FILE.
+           CLOSE REQ-FILE.
+           GOBACK.
+
+       1-HSK.
+           OPEN I-O    DATRANGE.
+           OPEN INPUT  DREQITM, DREQQUE, DREQQUE-2.
+           OPEN INPUT  MACCOUNT-INFO, MREQ, MSTORERM.
+           OPEN INPUT  MPLTINFO.
+           READ DATRANGE
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               NEXT SENTENCE
+           ELSE
+           IF DATRANGE-REC = SPACES
+               NEXT SENTENCE
+           ELSE
+           MOVE DATE-START     TO  DATE-LOW
+           MOVE DATE-STOP      TO  DATE-HIGH
+           GO TO 1-HSK-CONT.
+           MOVE "MY"           TO  MACCT-ARG.
+           MOVE MACCT-ARG TO INFOKEY OF MACCOUNT-INFO-REC.
+           READ MACCOUNT-INFO INTO BUF-MACCT-INFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               ACCEPT CUR-DATE FROM DATE
+           ELSE
+           MOVE MACCT-MONTH    TO  CUR-DATE-MM
+           MOVE MACCT-YEAR     TO  CUR-DATE-YY
+           MOVE "01"           TO  CUR-DATE-DD.
+           MOVE CUR-DATE-YY    TO  DATE-LOW-YY,
+                                   DATE-HIGH-YY.
+           MOVE CUR-DATE-MM    TO  DATE-LOW-MM,
+                                   DATE-HIGH-MM.
+           MOVE "01"           TO  DATE-LOW-DD.
+           IF CUR-DATE-MM = "01" OR "03" OR "05" OR "07" OR "08"
+               OR "10" OR "12"
+               MOVE "31"       TO  DATE-HIGH-DD
+           ELSE
+           IF CUR-DATE-MM = "02"
+               MOVE "29"       TO  DATE-HIGH-DD
+           ELSE
+           MOVE "30"           TO  DATE-HIGH-DD.
+           IF CUR-DATE-YY > "70"
+               MOVE "19"       TO  DATE-LOW-CC,
+                                   DATE-HIGH-CC
+           ELSE
+           MOVE "20"           TO  DATE-LOW-CC,
+                                   DATE-HIGH-CC.
+           DISPLAY "DATE LOW  = " DATE-LOW.
+           DISPLAY "DATE HIGH = " DATE-HIGH.
+           MOVE "PREQ"         TO  PLTINFOKEY OF MPLTINFO-REC.
+           READ MPLTINFO INTO BUF-MPLTINFO
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "N"                TO FIN-OR-FIR-SW
+           ELSE
+           MOVE MPLTINFO-FIN-OR-FIR-SW TO FIN-OR-FIR-SW.
+       1-HSK-CONT.
+           MOVE 60 TO LINE-CTR.
+           MOVE "MCPRT"        TO  OVRPRTF-FILE.
+           MOVE "P"            TO  OVRPRTF-TOFILE-NUM-X.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT PRINT-FILE.
+           OPEN OUTPUT REQ-FILE.
+       1-H-X.
+           EXIT.
+
+      *********************************************
+      *                                           *
+      *  BLOWUP ROUTINE EXECUTES WHENEVER A       *
+      *  FATAL ERROR OCCURS                       *
+      *                                           *
+      *********************************************
+
+       2-BLOWUP.
+           MOVE "TUNCYSPL"     TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, DUMMY-KSAM-STAT, BU-DISPLAY-MSG,
+                       BU-DISPLAY-FLDS.
+
+       6-MAIN.
+           READ MREQ NEXT INTO BUF-MREQ
+               AT END     GO TO 6-M-SPECIAL.
+           IF FILE-STATUS NOT = "00"
+               MOVE "READ ERROR IN MREQ" TO BU-DISPLAY-MSG
+               MOVE FILE-STATUS          TO BU-DISPLAY-FLD (1)
+               PERFORM 2-BLOWUP.
+           MOVE REQ-DATE       TO  WORK-DATE-YMD.
+           IF WORK-DATE-YY > "70"
+               MOVE "19"       TO  WORK-DATE-CC
+           ELSE
+           MOVE "20"           TO  WORK-DATE-CC.
+           IF WORK-DATE NOT LESS THAN DATE-LOW
+               AND WORK-DATE NOT GREATER THAN DATE-HIGH
+                   NEXT SENTENCE
+           ELSE
+           GO TO 6-MAIN.
+           IF REQ-ADDTL-DATA > "010000" GO TO 6-MAIN.
+           IF REQ-APPROVALS-LEFT = "  "
+               IF REQ-HOLD-STATUS-CODE = "RE" OR "RT" OR "MC"
+                       OR "EA"
+                   GO TO 6-MAIN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF REQ-APPROVALS-LEFT = "00"
+               IF REQ-STATUS = "SS"
+                   IF REQ-HOLD-STATUS-CODE = "RE" OR "RT" OR "MC"
+                           OR "EA"
+                       GO TO 6-MAIN
+                   ELSE
+                   IF REQ-RELEASE-STAT = "  "
+                       IF REQ-AUTH-CODE-FLAG = " "
+                           GO TO 6-MAIN
+                       ELSE
+                       IF FIN-OR-FIR-SW = "Y"
+                           PERFORM 60-CHECK-FINAL-APPROVER THRU
+                               60-CFINA-X
+                           IF FINAL-APPROVER = "Y"
+                               PERFORM 61-WRITE-RECORDS
+                               GO TO 6-MAIN
+                           ELSE
+                           GO TO 6-MAIN
+                       ELSE
+                       PERFORM 60-CHECK-FIRST-APPROVER THRU 60-CFA-X
+                       IF FIRST-APPROVER = "N"
+                           GO TO 6-MAIN
+                       ELSE
+                       NEXT SENTENCE
+                   ELSE
+                   IF REQ-AUTH-CODE-FLAG = "X"
+                       IF FIN-OR-FIR-SW = "Y"
+                           PERFORM 60-CHECK-FINAL-APPROVER THRU
+                               60-CFINA-X
+                           IF FINAL-APPROVER = "Y"
+                               PERFORM 61-WRITE-RECORDS
+                               GO TO 6-MAIN
+                           ELSE
+                           GO TO 6-MAIN
+                       ELSE
+                       PERFORM 60-CHECK-FIRST-APPROVER THRU 60-CFA-X
+                       IF FIRST-APPROVER = "N"
+                           GO TO 6-MAIN
+                       ELSE
+                       NEXT SENTENCE
+                   ELSE
+                   NEXT SENTENCE
+               ELSE
+               IF REQ-HOLD-STATUS-CODE = "RE" OR "RT" OR "MC"
+                       OR "EA"
+                   GO TO 6-MAIN
+               ELSE
+               IF FIN-OR-FIR-SW = "Y"
+                   PERFORM 60-CHECK-FINAL-APPROVER THRU 60-CFINA-X
+                   IF FINAL-APPROVER = "Y"
+                       PERFORM 61-WRITE-RECORDS
+                       GO TO 6-MAIN
+                   ELSE
+                   GO TO 6-MAIN
+               ELSE
+               IF FIN-OR-FIR-SW = "Y"
+                   PERFORM 60-CHECK-FINAL-APPROVER THRU 60-CFINA-X
+                   IF FINAL-APPROVER = "Y"
+                       PERFORM 61-WRITE-RECORDS
+                       GO TO 6-MAIN
+                   ELSE
+                   GO TO 6-MAIN
+               ELSE
+               PERFORM 60-CHECK-FIRST-APPROVER THRU 60-CFA-X
+               IF FIRST-APPROVER = "N"
+                   GO TO 6-MAIN
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF FIN-OR-FIR-SW = "Y"
+               PERFORM 60-CHECK-FINAL-APPROVER THRU 60-CFINA-X
+               IF FINAL-APPROVER = "Y"
+                   PERFORM 61-WRITE-RECORDS
+                   GO TO 6-MAIN
+               ELSE
+               GO TO 6-MAIN
+           ELSE
+           PERFORM 60-CHECK-FIRST-APPROVER THRU 60-CFA-X
+           IF FIRST-APPROVER = "N" GO TO 6-MAIN.
+           PERFORM 61-WRITE-RECORDS.
+           GO TO 6-MAIN.
+
+       6-M-SPECIAL.
+           IF FIN-OR-FIR-SW = "Y" GO TO 6-M-X.
+           MOVE DATE-LOW TO QUEAPPDTE OF DREQQUE-REC-2.
+           START DREQQUE-2 KEY >= QUEAPPDTE OF DREQQUE-REC-2
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               GO TO 6-M-X.
+       6-M-SPECIAL-LOOP.
+           READ DREQQUE-2 NEXT INTO BUF-DREQQUE
+               AT END GO TO 6-M-X.
+           IF FILE-STATUS NOT = "00" GO TO 6-M-X.
+           IF DRQQ-APPROVE-DATE-CN > DATE-HIGH
+               GO TO 6-M-X.
+           IF DRQQ-LEVEL-NUM = "00" GO TO 6-M-SPECIAL-LOOP.
+           IF DRQQ-ORDER = "0002"
+               NEXT SENTENCE
+           ELSE
+           GO TO 6-M-SPECIAL-LOOP.
+           MOVE DRQQ-REQ-NUMBER TO REQNO OF MREQ-REC.
+           READ MREQ INTO BUF-MREQ
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 6-M-SPECIAL-LOOP.
+           IF REQ-DATE-CN < DATE-LOW
+               MOVE DRQQ-APPROVE-DATE-CN TO WORK-DATE
+               PERFORM 61-WRITE-RECORDS.
+           GO TO 6-M-SPECIAL-LOOP.
+
+       6-M-X.
+           EXIT.
+
+       60-CHECK-FIRST-APPROVER.
+           MOVE "N" TO FIRST-APPROVER.
+           PERFORM 9999-CHAINHD-DREQQUE.
+       60-CFA-LOOP.
+           PERFORM 9999-GETNEXT-DREQQUE.
+           IF END-OF-CHAIN
+               MOVE "N" TO  FIRST-APPROVER
+               GO TO 60-CFA-X.
+           IF DRQQ-LEVEL-NUM = "00" GO TO 60-CFA-LOOP.
+           IF DRQQ-EMPL-QUEUED = "WOAP" GO TO 60-CFA-LOOP.
+           IF DRQQ-APPROVE-DATE-CN = "        "
+               GO TO 60-CFA-LOOP.
+           IF DRQQ-APPROVE-DATE-CN NOT LESS THAN DATE-LOW
+               AND DRQQ-APPROVE-DATE-CN NOT GREATER THAN DATE-HIGH
+                   MOVE "Y" TO FIRST-APPROVER.
+       60-CFA-X.    EXIT.
+
+       60-CHECK-FINAL-APPROVER.
+           MOVE "N" TO FINAL-APPROVER.
+           MOVE MREQ-NUMBER TO REQNO OF DREQQUE-REC.
+           START DREQQUE KEY > REQNO OF DREQQUE-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 60-CFINA-X.
+       60-CFINA-LOOP.
+           READ DREQQUE PRIOR INTO BUF-DREQQUE
+               AT END    MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00" GO TO 60-CFINA-X.
+           IF DRQQ-REQ-NUMBER NOT = MREQ-NUMBER GO TO 60-CFINA-X.
+           IF DRQQ-EMPL-QUEUED = "WOAP" GO TO 60-CFINA-LOOP.
+           IF DRQQ-APPROVE-DATE-CN = "        " GO TO 60-CFINA-X.
+           IF DRQQ-APPROVE-DATE-CN NOT LESS THAN DATE-LOW
+               AND DRQQ-APPROVE-DATE-CN NOT GREATER THAN DATE-HIGH
+                   MOVE "Y" TO FINAL-APPROVER.
+       60-CFINA-X.    EXIT.
+
+       61-WRITE-RECORDS.
+           MOVE SPACES TO DETAIL-LINE.
+           MOVE MREQ-NUMBER    TO  REQ-FILE-NUM,
+                                   D-REQNO.
+           MOVE WORK-DATE      TO  REQ-FILE-DATE,
+                                   D-REQDAT.
+           MOVE REQ-SUB        TO  REQ-FILE-CLASS,
+                                   D-REQSUB.
+           MOVE REQ-SUBD       TO  REQ-FILE-DEPT,
+                                   D-REQDEPT.
+           MOVE REQ-ADDTL-DATA TO  REQ-FILE-EXPNW,
+                                   D-REQEXPNW.
+           MOVE REQ-BUDGET-NO  TO  REQ-FILE-BUDNO.
+           MOVE REQ-BUDGET-NO-1-3
+                               TO  D-RB-3.
+           MOVE REQ-BUDGET-NO-4-5
+                               TO  D-RB-4-5.
+           MOVE REQ-BUDGET-NO-6-7
+                               TO  D-RB-6-7.
+           MOVE REQ-BUDGET-NO-8-10
+                               TO  D-RB-8-10.
+           MOVE "-"            TO  D-DASH1,
+                                   D-DASH2,
+                                   D-DASH3.
+           MOVE REQ-STATUS     TO  REQ-FILE-TYPE,
+                                   D-REQTYPE.
+           MOVE REQ-ORIGINATOR TO  REQ-FILE-ORIG,
+                                   D-REQORIG.
+           MOVE MREQ-NUMBER    TO  REQNO OF DREQITM-REC.
+           START DREQITM KEY = REQNO OF DREQITM-REC
+               INVALID KEY    MOVE FILE-STATUS TO FILE-STATUS.
+           READ DREQITM NEXT INTO BUF-DREQITM
+               AT END   MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               DISPLAY "REQ NUMBER " MREQ-NUMBER
+                   " HAS NO MATCHING DREQITM SEGMENT"
+               MOVE ZEROES       TO  REQ-FILE-COST
+           ELSE
+           IF REQITM-REQ-NUMBER NOT = MREQ-NUMBER
+               DISPLAY "REQ NUMBER " MREQ-NUMBER
+                   " HAS NO MATCHING DREQITM SEGMENT"
+               MOVE ZEROES       TO  REQ-FILE-COST
+           ELSE
+           MULTIPLY REQITM-UNIT-PRICE BY REQITM-QTY-TO-ORD
+               GIVING REQ-FILE-COST.
+           IF REQ-STATUS = "SS"
+               IF REQ-FILE-COST > ZEROES
+                   NEXT SENTENCE
+               ELSE
+               MOVE REQITM-CORP-CODE TO CORPCDE OF MSTORERM-REC
+               READ MSTORERM INTO BUF-MSTORERM
+               IF REQ-REPAIR-INDIC = "X"
+                   MULTIPLY STR-OUT-REPAIR-COST BY
+                       REQITM-QTY-TO-ORD GIVING REQ-FILE-COST
+               ELSE
+               MULTIPLY STR-MKT-COST BY REQITM-QTY-TO-ORD
+                   GIVING REQ-FILE-COST.
+           MOVE REQ-FILE-COST    TO   D-REQCOST.
+           WRITE REQ-FILE-REC.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 60
+               MOVE 0 TO LINE-CTR
+               WRITE PRINTF FROM HEADER-1 AFTER ADVANCING NEW-PAGE
+               WRITE PRINTF FROM HEADER-2 AFTER ADVANCING 2 LINES
+               WRITE PRINTF FROM HEADER-3 AFTER ADVANCING 1 LINES
+               ADD 5 TO LINE-CTR.
+           WRITE PRINTF FROM DETAIL-LINE AFTER ADVANCING 2 LINES.
+
+       9999-CHAINHD-DREQQUE.
+           MOVE 0 TO COND-WORD.
+           MOVE MREQ-NUMBER TO REQNO OF DREQQUE-REC.
+           START DREQQUE KEY = REQNO OF DREQQUE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQQUE"
+                       TO BU-MSG-AREA
+                   PERFORM 2-BLOWUP.
+
+       9999-GETNEXT-DREQQUE.
+           MOVE 0 TO COND-WORD.
+           READ DREQQUE NEXT INTO BUF-DREQQUE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQQUE"
+                           TO BU-MSG-AREA
+                       PERFORM 2-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQQUE-REC NOT = MREQ-NUMBER
+               MOVE 15 TO COND-WORD.
+
+       COPY OVRPFCALL IN COPYLIB.

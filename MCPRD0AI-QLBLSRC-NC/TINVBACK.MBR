@@ -1,0 +1,571 @@
+       PROCESS OPTIONS NOFS21DUPKEY
+000200 IDENTIFICATION DIVISION.
+000300 PROGRAM-ID.    TINVBACK.
+000400 AUTHOR.        KURT MOVSESIAN.
+000600 INSTALLATION.  GOODYEAR TIRE AND RUBBER CO.
+000500 DATE-WRITTEN.  MAY 22, 1984.
+000700
+000800*REMARKS.        INVOICE PROCESSING.
+000900*
+001000**************************************************************
+001100*                                                            *
+001200*   T I N V B A C K                                          *
+001300*                                                            *
+001400*   THIS SUB PROGRAM BACKS OUT AN INVOICE WHEN IT IS         *
+001500*   EITHER PLACED ON HOLD OR DELETED.  THE FOLLOWING         *
+001600*   FUNCTIONS ARE PERFORMED:                                 *
+001700*       1) QUANTITY PAID FOR ALL ITEMS IS BACKED OUT IN THE  *
+001800*          PO ITEM SEGMENTS.                                 *
+001900*       2) COLLECT FREIGHT BILLS REMOVED FROM THE REGISTER   *
+002000*          LINK.                                             *
+002100*       3) ZBILL INFORMATION IS REMOVED FROM INVOICE         *
+002200*       4) PAYMENT INDICATOR IS SPACED OUT                   *
+002300*       5) ALL CALCULATIONS ARE SET BACK TO ZERO             *
+002400*  ONCE THESE FUNCTIONS ARE DONE THE USER MUST RUN THE       *
+002500*  INVOICE CREATE PGM AND USE THE RESTART OPTION TO TAKE AN  *
+002600*  INVOICE OUT OF THE HOLD STATUS.                           *
+002700*                                                            *
+002800**************************************************************
+002900*   N O T E    T H I S   S U B R O U T I N E   I S           *
+003000*         C A L L E D    B Y :                               *
+003100*      1. TINVHOLD.SOURCE - PUT INVOICE ON HOLD              *
+003200*      2. TINVDELT.SOURCE - DELETE AN INVOICE                *
+003300**************************************************************
+      *                                                            *
+      *C*  07/12/1996    CA YODER                                  *
+      *C*    RE-COMPILED TO PICK UP CENTURY DATABASE CHANGES.      *
+      **************************************************************
+003500
+003600 ENVIRONMENT DIVISION.
+003700 CONFIGURATION SECTION.
+003800 SOURCE-COMPUTER.    HP-3000.
+003900 OBJECT-COMPUTER.    HP-3000.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DPOITEM-O
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+004000
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+004000
+           SELECT DPOFREIGHT-O
+                  ASSIGN TO DATABASE-MCFLCS2404
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+004000
+           SELECT DINVITM-O
+                  ASSIGN TO DATABASE-MCFLCS2601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+004100 DATA DIVISION.
+       FILE SECTION.
+       FD  DPOITEM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS1002.
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-I-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+       FD  DPOFREIGHT-O
+           LABEL RECORDS ARE STANDARD.
+       01  DPOFREIGHT-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2404.
+       FD  DINVITM-O
+           LABEL RECORDS ARE STANDARD.
+       01  DINVITM-O-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS2601.
+004200
+004300 WORKING-STORAGE SECTION.
+004400 77  CALC-ADDRESS              PIC S9(9)    VALUE ZERO COMP-4.
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+004500
+       01  FILE-STATUS2.
+           05  FILE-STATUS2-1           PIC X  VALUE "0".
+           05  FILE-STATUS2-2           PIC X  VALUE "0".
+004500
+       01  FILE-STATUS3.
+           05  FILE-STATUS3-1           PIC X  VALUE "0".
+           05  FILE-STATUS3-2           PIC X  VALUE "0".
+004500
+       01  FILE-STATUS4.
+           05  FILE-STATUS4-1           PIC X  VALUE "0".
+           05  FILE-STATUS4-2           PIC X  VALUE "0".
+004500
+       01  FILE-STATUS5.
+           05  FILE-STATUS5-1           PIC X  VALUE "0".
+           05  FILE-STATUS5-2           PIC X  VALUE "0".
+004500
+004600*************************************************************
+004700**                                                         **
+004800**                   S A V E   A R E A S                   **
+004900**                                                         **
+005000*************************************************************
+005100
+005200 01  MISC-SAVE-AREAS-9.
+005300     05  FRT-SUB               PIC S9(4) COMP-4  VALUE ZEROS.
+005400     05  SUB                   PIC S9(4) COMP-4  VALUE ZEROS.
+005500
+005600 01  VARIABLES.
+005700     05  V-OLD-UM              PIC X(2).
+005800     05  V-NEW-UM              PIC X(2).
+005900     05  V-OLD-QTY             PIC S9(8)V9(4).
+006000
+006100 01  ITEM-CALC-AREAS.
+006200     05  C-NEW-QTY             PIC S9(8)V9(4) VALUE ZERO.
+006300     05  C-ALT-CF              PIC S9(6)V9(8) VALUE ZERO.
+006600
+006700 01  FREIGHT-ADDRESS-TABLE.
+006800     05  FRT-ENTRY  OCCURS  10  TIMES.
+006900         10  FRT-ADDR          PIC S9(9)    COMP-4.
+007100
+007200*************************************************************
+007300**                                                         **
+007400**  D A T A B A S E   C O M M U N I C A T I O N   A R E A  **
+007500**                                                         **
+007600*************************************************************
+007700
+007800 COPY DBMODES IN COPYLIB.
+007900
+008000 COPY DBSTAT  IN COPYLIB.
+008100
+008200 01  DATASET-NAMES.
+008300     05  DSET-DINVRCD          PIC X(16)    VALUE "DINVRCD;".
+008400     05  DSET-DINVITM          PIC X(16)    VALUE "DINVITM;".
+008500     05  DSET-MSTORERM         PIC X(16)    VALUE "MSTORERM;".
+008600     05  DSET-DPOITEM          PIC X(16)    VALUE "DPOITEM;".
+008700     05  DSET-DPOFREIGHT       PIC X(16)    VALUE "DPOFREIGHT;".
+008800
+008900 01  ITEMS-LISTING.
+009000     05  ALL-ITEMS             PIC X(2)     VALUE "@;".
+009100     05  PO-KEY-NAME           PIC X(10)    VALUE "PO-RCV-NO;".
+009200     05  REG-KEY-NAME          PIC X(16)
+009300          VALUE "REGISTER-NUMBER;".
+009400
+009500 01  DB-LOG-TEXT.
+009600     05  FILLER            PIC X(8)  VALUE "TINVBACK".
+009700
+009800 01  DB-LOG-TEXT-LEN       PIC S9(4) COMP-4 VALUE -8.
+009900
+010200*************************************************************
+010300**                                                         **
+010400**             D A T A B A S E   B U F F E R S             **
+010500**                                                         **
+010600*************************************************************
+010700
+010800 COPY DPOITEM IN COPYLIB.
+010900
+011000 COPY DINVITM IN COPYLIB.
+011100
+011200 COPY DFREIGHT IN COPYLIB.
+011300
+011400 COPY MSTORERM IN COPYLIB.
+011600
+011700 COPY TBLOWUP  IN COPYLIB.
+011800
+011900*************************************************************
+012000**                                                         **
+012100**                L I N K A G E   A R E A                  **
+012200**                                                         **
+012300*************************************************************
+012400
+012500 LINKAGE SECTION.
+012600
+012700 01  BASE                      PIC X(10).
+012800
+012900 01  ARGUMENT-VALUES.
+013000     05  PLT-ARG               PIC X(4).
+013100     05  PO-ARG                PIC X(14).
+013200     05  VEN-ARG.
+013300         10  VEN-ARG1-7        PIC X(7).
+013400         10  VEN-ARG8-10       PIC X(3).
+013500     05  CODE-ARG              PIC X(8).
+013600     05  REGISTER-ARG          PIC X(6).
+013700
+013800 COPY DINVRCD IN COPYLIB.
+013900
+014000
+014100
+014200 PROCEDURE DIVISION USING  BASE,
+014300                           ARGUMENT-VALUES,
+014400                           BUF-DINVRCD.
+014500
+014600
+014700 BACKOUT-INVOICE SECTION 04.
+014800     PERFORM  6-OPEN-FILES.
+014900     PERFORM  6-BACK-OUT-INVOICE  THRU  6-BACK-OUT-INVOICE-X.
+           PERFORM  6-CLOSE-FILES.
+015000     GOBACK.
+015100
+015200 2-BLOWUP.
+015300     MOVE "TINVBACK"    TO  BU-PGM-NAME.
+015400     MOVE REGISTER-ARG  TO  BU-DISPLAY-FLD (1).
+015500     CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+015600         DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+015700                 BU-DISPLAY-FLDS.
+015800
+015900 2-BLOWUP-X.
+016000     EXIT.
+016100
+       6-OPEN-FILES.
+           OPEN INPUT MSTORERM-I.
+           OPEN I-O   DPOFREIGHT-O,
+                      DINVITM-O,
+                      DPOITEM-O.
+016200
+       6-CLOSE-FILES.
+           CLOSE MSTORERM-I, DPOFREIGHT-O, DINVITM-O,
+                 DPOITEM-O.
+
+016300 6-BACK-OUT-INVOICE.
+016400     IF INV-STATUS = "H" OR "I"
+016500         GO TO 6-BACK-OUT-INVOICE-X.
+016600
+017300     PERFORM 60-FLAG-MANIFEST  THRU  60-FM-X.
+017400
+017500     PERFORM 61-UPDATE-QTY-PAID  THRU  61-UPDATE-QTY-PAID-X.
+017600
+017700     PERFORM 62-BACKOUT-FREIGHT  THRU  62-BACKOUT-FREIGHT-X.
+017800
+017900     PERFORM 63-UPDATE-DINVRCD  THRU  63-UPDATE-DINVRCD-X.
+018000
+018800 6-BACK-OUT-INVOICE-X.
+018900     EXIT.
+019000
+019100 60-FLAG-MANIFEST.
+019200     CALL "TFLAGMAN" USING BASE,
+019300                           ARGUMENT-VALUES,
+019400                           BUF-DINVRCD.
+019500
+019600 60-FM-X.
+019700     EXIT.
+019800
+019900
+020000 61-UPDATE-QTY-PAID.
+           MOVE 0 TO COND-WORD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DINVITM-O-REC.
+           START DINVITM-O KEY = REGISTERNO OF DINVITM-O-REC
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+020100*    CALL "DBFIND" USING  BASE,
+020200*                         DSET-DINVITM,
+020300*                         MODE1,
+020400*                         STATUS-AREA,
+020500*                         REG-KEY-NAME,
+020600*                         REGISTER-ARG.
+020700     IF COND-WORD NOT = ZERO
+020800         MOVE "DBFIND DINVITM*61-UQP"  TO  BU-DISPLAY-MSG
+020900         GO TO  2-BLOWUP.
+021000
+           MOVE 0 TO COND-WORD.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-O-REC.
+           START DPOITEM-O KEY = PORCVNO OF DPOITEM-O-REC
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+021100*    CALL "DBFIND" USING  BASE,
+021200*                         DSET-DPOITEM,
+021300*                         MODE1,
+021400*                         STATUS-AREA,
+021500*                         PO-KEY-NAME,
+021600*                         PO-ARG.
+021700     IF COND-WORD NOT = ZERO
+021800         MOVE "DBFIND DPOITEM*61-UQP"  TO  BU-DISPLAY-MSG
+021900         MOVE PO-ARG  TO  BU-DISPLAY-FLD (2)
+022000         GO TO  2-BLOWUP.
+022100
+022200 61-DINVITM-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DINVITM-O NEXT INTO BUF-DINVITM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF REGISTERNO OF DINVITM-O-REC NOT = REGISTER-ARG
+               MOVE 15 TO COND-WORD.
+022300*    CALL "DBGET" USING  BASE,
+022400*                        DSET-DINVITM,
+022500*                        MODE5,
+022600*                        STATUS-AREA,
+022700*                        ALL-ITEMS,
+022800*                        BUF-DINVITM,
+022900*                        REGISTER-ARG.
+023000     IF COND-WORD NOT = ZERO
+023100         IF COND-WORD = 15
+023200             GO TO  61-UPDATE-QTY-PAID-X
+023300         ELSE
+023400             MOVE "DBGET5 DINVITM*61-DL"  TO  BU-DISPLAY-MSG
+023500             GO TO  2-BLOWUP.
+023600
+023700     IF INVITM-HOLD-INDIC = "X" OR
+023800        INVITM-MEMO-INDIC = "X"
+023900         GO TO 61-DINVITM-LOOP.
+024000
+024100     IF INVITM-PO-UPRICE < ZEROS
+024200         MULTIPLY -1 BY INVITM-PO-QTY-PD.
+024300     IF INVITM-INV-UPRICE < ZEROS
+024400         MULTIPLY -1 BY INVITM-INV-QTY-PD.
+024500
+024600     IF INVITM-CORPCODE = "NON-STR"
+024700         GO TO  61-DPOITEM-LOOP.
+024800
+024900     MOVE INVITM-CORPCODE  TO  CODE-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-I-REC.
+           READ MSTORERM-I INTO BUF-MSTORERM
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+025000*    CALL "DBGET" USING  BASE,
+025100*                        DSET-MSTORERM,
+025200*                        MODE7,
+025300*                        STATUS-AREA,
+025400*                        ALL-ITEMS,
+025500*                        BUF-MSTORERM,
+025600*                        CODE-ARG.
+025700     IF COND-WORD NOT = ZERO
+025800         MOVE "DBGET7 MSTORERM*61-DL"  TO  BU-DISPLAY-MSG
+025900         MOVE CODE-ARG  TO  BU-DISPLAY-FLD (2)
+026000         GO TO  2-BLOWUP.
+026100
+026200 61-DPOITEM-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOITEM-O NEXT INTO BUF-DPOITEM
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF PORCVNO OF DPOITEM-O-REC NOT = PO-ARG
+               MOVE 15 TO COND-WORD.
+026300*    CALL "DBGET" USING  BASE,
+026400*                        DSET-DPOITEM,
+026500*                        MODE5,
+026600*                        STATUS-AREA,
+026700*                        ALL-ITEMS,
+026800*                        BUF-DPOITEM,
+026900*                        PO-ARG.
+027000     IF COND-WORD NOT = ZERO
+027100         MOVE "DBGET5 DPOITEM*61-UD"  TO  BU-DISPLAY-MSG
+027200         MOVE PO-ARG  TO  BU-DISPLAY-FLD (2)
+027300         GO TO  2-BLOWUP.
+027400
+027500     IF INVITM-ITEM-NO = ITM-NUMBER
+027600         NEXT SENTENCE
+027700     ELSE
+027800     IF INVITM-ITEM-NO < ITM-NUMBER
+027900         MOVE "ITEM LOGIC FAILED *61-DPOITEM-LOOP"
+028000             TO BU-DISPLAY-MSG
+028100         MOVE PO-ARG  TO  BU-DISPLAY-FLD (2)
+028200         GO TO 2-BLOWUP
+028300     ELSE
+028400         GO TO  61-DPOITEM-LOOP.
+028500
+029900     MOVE ITM-PRICE-UM      TO  V-OLD-UM.
+030000     MOVE ITM-UM            TO  V-NEW-UM.
+030100
+030200     IF INV-PAYMENT-IND = "P"
+030300         MOVE INVITM-PO-QTY-PD   TO  V-OLD-QTY
+030400     ELSE
+030500     IF INV-PAYMENT-IND = "I"
+030600         MOVE INVITM-INV-QTY-PD  TO  V-OLD-QTY
+030700     ELSE
+030800         MOVE "NO PAYMENT-IND * 61-DL" TO BU-DISPLAY-MSG
+030900         MOVE PO-ARG                   TO BU-DISPLAY-FLD (2)
+031000         GO TO 2-BLOWUP.
+031100     PERFORM 611-CALC-NEW-QTY  THRU  611-CALC-NEW-QTY-X.
+031200     SUBTRACT C-NEW-QTY        FROM  ITM-QTY-PAID.
+031300
+           MOVE 0 TO COND-WORD.
+           REWRITE DPOITEM-O-REC FROM BUF-DPOITEM
+               INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+031400*    CALL "DBUPDATE" USING  BASE,
+031500*                           DSET-DPOITEM,
+031600*                           MODE1,
+031700*                           STATUS-AREA,
+031800*                           ALL-ITEMS,
+031900
+032000     IF COND-WORD NOT = ZERO
+032100         MOVE "DBUPDATE DPOITEM*61-UD"  TO  BU-DISPLAY-MSG
+032200         MOVE PO-ARG  TO  BU-DISPLAY-FLD (2)
+032300         GO TO  2-BLOWUP.
+032400
+033400     GO TO  61-DINVITM-LOOP.
+033500
+033600 61-UPDATE-QTY-PAID-X.
+033700     EXIT.
+033800
+033900
+034000 611-CALC-NEW-QTY.
+034100     IF INVITM-CORPCODE = "NON-STR"
+034200         MOVE V-OLD-QTY           TO  C-NEW-QTY
+034300         GO TO 611-CALC-NEW-QTY-X.
+034400
+034500     IF V-NEW-UM = V-OLD-UM
+034600         MOVE V-OLD-QTY  TO  C-NEW-QTY
+034700     ELSE
+034800     IF V-OLD-UM = STR-UM
+034900         IF V-NEW-UM = STR-UM1
+035000             DIVIDE V-OLD-QTY BY STR-UM1-CF
+035100                               GIVING  C-NEW-QTY ROUNDED
+035200         ELSE
+035300             DIVIDE V-OLD-QTY BY STR-UM2-CF
+035400                                GIVING  C-NEW-QTY ROUNDED
+035500     ELSE
+035600     IF V-NEW-UM = STR-UM
+035700         IF V-OLD-UM = STR-UM1
+035800             MULTIPLY V-OLD-QTY BY STR-UM1-CF
+035900                                 GIVING  C-NEW-QTY ROUNDED
+036000         ELSE
+036100             MULTIPLY V-OLD-QTY BY STR-UM2-CF
+036200                                 GIVING  C-NEW-QTY ROUNDED
+036300     ELSE
+036400     IF V-NEW-UM = STR-UM1
+036500         DIVIDE STR-UM2-CF BY STR-UM1-CF
+036600                           GIVING  C-ALT-CF ROUNDED
+036700         MULTIPLY V-OLD-QTY BY C-ALT-CF
+036800                             GIVING  C-NEW-QTY ROUNDED
+036900     ELSE
+037000         DIVIDE STR-UM1-CF BY STR-UM2-CF
+037100                           GIVING  C-ALT-CF ROUNDED
+037200         MULTIPLY V-OLD-QTY BY C-ALT-CF
+037300                             GIVING  C-NEW-QTY ROUNDED.
+037400
+037500 611-CALC-NEW-QTY-X.
+037600     EXIT.
+037700
+037800
+037900 62-BACKOUT-FREIGHT.
+           MOVE 0 TO COND-WORD.
+           MOVE REGISTER-ARG TO REGISTERNO OF DPOFREIGHT-O-REC.
+           START DPOFREIGHT-O KEY = REGISTERNO OF DPOFREIGHT-O-REC
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+039000     IF COND-WORD NOT = ZERO
+039100         IF COND-WORD = 17
+039200             GO TO  62-BACKOUT-FREIGHT-X
+039300         ELSE
+039400             MOVE "DBFIND DPOFREIGHT*62-FD"  TO  BU-DISPLAY-MSG
+039500             GO TO  2-BLOWUP.
+039600
+039700 62-DPOFREIGHT-LOOP.
+           MOVE 0 TO COND-WORD.
+           READ DPOFREIGHT-O NEXT INTO BUF-DPOFREIGHT
+               AT END MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF REGISTERNO OF DPOFREIGHT-O-REC NOT = REGISTER-ARG
+               MOVE 15 TO COND-WORD.
+040500     IF COND-WORD NOT = ZERO
+040600         IF COND-WORD = 15
+040700             GO TO  62-BACKOUT-FREIGHT-X
+               ELSE
+                   MOVE "DBGET5 DPOFREIGHT*62-DL" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+041100
+           MOVE 0 TO COND-WORD
+046400     IF FRT-PO-RCV-NO = PO-ARG
+               DELETE DPOFREIGHT-O INVALID KEY
+                   MOVE "2" TO FILE-STATUS-1
+           ELSE
+               MOVE SPACES TO FRT-REG-NO, FRT-PAID-FLAG
+               REWRITE DPOFREIGHT-O-REC FROM BUF-DPOFREIGHT
+                   INVALID KEY MOVE 99 TO COND-WORD.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+047400     IF COND-WORD NOT = ZERO
+047500         MOVE "DEL/UP DPOFREIGHT*62-BF"  TO  BU-DISPLAY-MSG
+047600         GO TO  2-BLOWUP.
+047700
+047800     GO TO 62-DPOFREIGHT-LOOP.
+047900
+       62-BACKOUT-FREIGHT-X.
+049000     EXIT.
+
+049900 63-UPDATE-DINVRCD.
+051400     MOVE ZERO                 TO  INV-I-MATL-EXT,
+051500                                   INV-P-MATL-EXT,
+051600                                   INV-ADD-VFRT,
+051700                                   INV-ADD-INS,
+051800                                   INV-ADD-TAX,
+051900                                   INV-ADD-CTNRS,
+052000                                   INV-ADD-OTHER,
+052100                                   INV-NET-DUE-VENDOR,
+052200                                   INV-TOTAL-CFRT,
+052300                                   INV-ATAX-AMT (1),
+052400                                   INV-ATAX-AMT (2),
+052500                                   INV-ATAX-AMT (3),
+052600                                   INV-ATAX-AMT (4),
+052700                                   INV-ADJ-OTHER,
+052800                                   INV-DIST-COST.
+052900     MOVE "H"                  TO  INV-STATUS.
+053000     MOVE SPACES               TO  INV-PAYMENT-IND,
+053100                                   INV-MFEST-NO,
+053200                                   INV-CPW-CODE,
+053300                                   INV-FREE-VERB.
+053400     PERFORM 631-ZERO-OUT-CE   THRU  631-ZOC-X
+053500         VARYING SUB FROM 2 BY 1
+053600             UNTIL SUB > 10.
+053700*
+      *    MOVE 0 TO COND-WORD.
+      *    REWRITE
+      *        INVALID KEY MOVE 99 TO COND-WORD.
+      *    IF FILE-STATUS NOT = "00"
+      *        MOVE 99 TO COND-WORD.
+053800*    CALL "DBUPDATE" USING  BASE,
+053900*                           DSET-DINVRCD,
+054000*                           MODE1,
+054100*                           STATUS-AREA,
+054200*                           ALL-ITEMS,
+054300*                           BUF-DINVRCD
+054400*    IF COND-WORD NOT = ZERO
+054500*        MOVE "DBUPDATE DINVRCD*63-UD"  TO  BU-DISPLAY-MSG
+054600*        GO TO  2-BLOWUP.
+054700*
+055600 63-UPDATE-DINVRCD-X.
+055700     EXIT.
+055800
+055900 631-ZERO-OUT-CE.
+056000     MOVE ZEROS            TO  CE-VALUE (SUB).
+056100     MOVE SPACES           TO  CE-CODE (SUB),
+056200                               CE-ACCTG-DATA (SUB).
+056300
+056400 631-ZOC-X.
+056500     EXIT.

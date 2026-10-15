@@ -1,0 +1,692 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             SPMRENUM.
+       AUTHOR.                 J S  BUNGO.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+       DATE-WRITTEN.           AUGUST 5, 1992.
+       DATE-COMPILED.
+      *REMARKS.
+      **********************************************************************
+      *D SPMRENUM -  THIS PROGRAM WILL RENUMBER THE TASKS FOR A PM MASTER
+      *D             JOBPLAN GIVEN THE JOBPLAN NAME, NEW STARTING TASK
+      *D             NUMBER, AND THE NEW INCREMENT BETWEEN TASK NUMBERS
+      *
+      *  THE JOBPLAN NAME IS COPIED INTO A TEMPORARY JOBPLAN WITH THE TASK
+      *  NUMBERS BEING CHANGED.  THE CURRENT JOBPLAN IS THEN DELETED. NEXT
+      *  THE TEMPORARY JOBPLAN (WITH NEW TASK NUMBERS) IS COPIED BACK AS THE
+      *  ORIGINAL JOBPLAN.  THE TEMPORARY JOBPLAN IS THEN DELETED.  THIS FOUR
+      *  STEP PROCESS IS USED TO PREVENT ANY LOSS OF DATA DURING PROCESSING.
+      *  DURING THIS FOUR STEP PROCESS A PROCESSING FLAG IS SET IN THE JOBPLAN
+      *  RECORD KEY (PM-JOBPLAN-KEYS WITH REC-KEY = "KEYREC").  THESE FLAGS ARE:
+      *      "  " = NO PROCESSING BEING DONE OR NORMAL
+      *      "R1" = COPY JOBPLAN TO TEMPORARY JOBPLAN WITH CHANGES
+      *      "R2" = DELETE JOBPLAN WITH OLD TASKS
+      *             DELETE TASKHD RECORDS FOR JOBPLAN IN PM-JOBPLAN-KEYS
+      *      "R3" = COPY TEMPORARY JOBPLAN WITH CHANGES BACK
+      *             ADD NEW TASKHD RECORDS FOR JOBPLAN
+      *      "R4" = DELETE TEMPORARY JOBPLAN
+      *
+      *
+      *  ANY MESSAGES WILL BE PASSED BACK IN LINKAGE VARIABLE E1 AND "0" OR
+      *  "1" IN LINKAGE VARIABLE RETURN-BYTE FOR SUCCESSFUL OR UNSUCCESFUL
+      *  RENUMBERING, RESPECTIVELY.
+      ***********************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        IBM-AS400.
+       OBJECT-COMPUTER.        IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PM-JOBPLAN
+                  ASSIGN       TO DATABASE-MCFLMM4101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-JOBP-TEMP
+                  ASSIGN       TO DATABASE-MCFLMM4201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-JOBPLAN-KEYS
+                  ASSIGN       TO DATABASE-MCFLMM4002
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT PM-JOBP-KEYS-2
+                  ASSIGN       TO DATABASE-MCFLMM4003
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PM-JOBPLAN
+           LABEL RECORDS ARE STANDARD.
+       01  PM-JOBPLAN-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4101.
+
+       FD  PM-JOBP-TEMP
+           LABEL RECORDS ARE STANDARD.
+       01  PM-JOBP-TEMP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4201.
+
+       FD  PM-JOBPLAN-KEYS
+           LABEL RECORDS ARE STANDARD.
+       01  PM-JOBP-KEYS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4002.
+
+       FD  PM-JOBP-KEYS-2
+           LABEL RECORDS ARE STANDARD.
+       01  PM-JOBP-KEYS-REC-2.
+           COPY DDS-ALL-FORMATS OF MCFLMM4003.
+
+       WORKING-STORAGE SECTION.
+       01  FILE-STAT               PIC X(02).
+       01  BASE                    PIC X(16).
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "SPMRENUM".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A1    PIC X(30) VALUE
+                   "MASTER JOBPLAN RENUMBER TASKS ".
+               10  PROG-DESC-A2    PIC X(30) VALUE SPACES.
+               10  PROG-DESC-B1    PIC X(30) VALUE SPACES.
+               10  PROG-DESC-B2    PIC X(30) VALUE SPACES.
+               10  PROG-FUNCTION1  PIC X(30) VALUE
+                   "RUNS FROM PROGRAM XPMMAINT.   ".
+               10  PROG-FUNCTION2  PIC X(30) VALUE
+                   "                              ".
+           05  PASSWORD-FLAG       PIC X.
+
+       01  DB-ERROR.
+           05  DB-TYPE   PIC X(08) VALUE SPACES.
+           05  DB-FILE   PIC X(18) VALUE SPACES.
+           05  FILLER    PIC X(21) VALUE " ERROR - COND-WORD = ".
+           05  CON-WORD  PIC -9999.
+
+       01  PROCESSING-FLAG     PIC X(2).
+       01  PROCESSING-FLAG-DEF.
+           05  RENUM1          PIC X(2)  VALUE "R1".
+           05  RENUM2          PIC X(2)  VALUE "R2".
+           05  RENUM3          PIC X(2)  VALUE "R3".
+           05  RENUM4          PIC X(2)  VALUE "R4".
+           05  PROCESS-ERROR   PIC X(2)  VALUE "XX".
+           05  PROCESS-RESET   PIC X(2)  VALUE SPACES.
+       01  SET-FLAG            PIC X(2).
+
+       01  REPLACEMENT-TASK    PIC 9(04).
+       01  CURRENT-OLD-TASK    PIC 9(04).
+       01  PREVIOUS-TASKHD     PIC X(04).
+
+           COPY TBLOWUP        IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY DBSTAT         IN COPYLIB.
+
+       01  MESSAGE-DATA.       COPY ERRORLIN IN COPYLIB.
+
+       01  PM-JOBPLAN-DATA.    COPY DPMJBPLN IN COPYLIB.
+
+       01  PM-JOBP-TEMP-DATA.  COPY DPMJBTMP IN COPYLIB.
+
+       01  PM-JOBP-KEYS-DATA.  COPY DPMJBKEY IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS  IN COPYLIB.
+
+       01  RETURN-MSG.
+           05  E1              PIC X(78).
+           05  E5              PIC S9(4).
+
+           COPY VCOMLINK       IN COPYLIB.
+
+           COPY LANGSUB        IN COPYLIB.
+
+       01  RENUM-NAME          PIC X(10).
+       01  RENUM-START-TASK    PIC 9(04).
+       01  RENUM-INCREMENT     PIC 9(04).
+       01  EDITOR-CC           PIC X(04).
+
+       PROCEDURE DIVISION USING DBPARAMETERS
+                                RETURN-MSG
+                                VIEW-COMAREA
+                                LANGUAGE-PARMS
+                                RENUM-NAME
+                                RENUM-START-TASK
+                                RENUM-INCREMENT
+                                EDITOR-CC.
+       BEGIN.
+            MOVE "MMISA;" TO BASE.
+            MOVE SPACES TO E1.
+            MOVE ZEROS TO E5.
+            MOVE ZEROS TO RETURN-BYTE.
+            MOVE LOW-VALUES TO STATUS-AREA.
+            MOVE LOW-VALUES TO PREVIOUS-TASKHD.
+      *----OPEN ALL DATABASE FILES
+            OPEN I-O PM-JOBPLAN
+                     PM-JOBP-TEMP
+                     PM-JOBPLAN-KEYS.
+            OPEN INPUT PM-JOBP-KEYS-2.
+
+            PERFORM GET-PROCESSING-FLAG THRU GET-PROCESSING-FLAG-EXIT.
+            PERFORM CHECK-FOR-FIX THRU CHECK-FOR-FIX-EXIT.
+            IF PROCESSING-FLAG = SPACES
+                PERFORM SET-RENUM1-FLAG THRU SET-RENUM1-FLAG-EXIT.
+            IF PROCESSING-FLAG = RENUM1
+                PERFORM COPY-TO-TEMP THRU COPY-TO-TEMP-EXIT.
+            IF PROCESSING-FLAG = RENUM2
+                PERFORM REMOVE-TASKHD THRU REMOVE-TASKHD-EXIT
+                IF PROCESSING-FLAG NOT = PROCESS-ERROR
+                    PERFORM REMOVE-OLD-TASK THRU REMOVE-OLD-TASK-EXIT.
+            IF PROCESSING-FLAG = RENUM3
+                PERFORM COPY-FROM-TEMP THRU COPY-FROM-TEMP-EXIT.
+            IF PROCESSING-FLAG = RENUM4
+                PERFORM REMOVE-TEMP THRU REMOVE-TEMP-EXIT.
+            IF PROCESSING-FLAG NOT = PROCESS-ERROR
+                PERFORM RESET-PROCESS-FLAG THRU RESET-PROCESS-FLAG-EXIT.
+            IF PROCESSING-FLAG = SPACES
+      ******************************************************************
+      *M    MESSAGE 046/044:
+      *M  TASK RENUMBERING HAS COMPLETED SUCCESSFULLY
+      ******************************************************************
+                MOVE 46   TO CATREAD-MSG-SET
+                MOVE 44   TO CATREAD-MSG-NUM
+                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                MOVE CATREAD-MSG-TEXT TO E1.
+
+       END-OF-JOB.
+            CLOSE PM-JOBPLAN
+                  PM-JOBPLAN-KEYS
+                  PM-JOBP-TEMP
+                  PM-JOBP-KEYS-2.
+            GOBACK.
+
+       GET-PROCESSING-FLAG.
+            MOVE SPACES         TO PM-JOBP-KEYS-DATA.
+            MOVE RENUM-NAME TO PMJOBPKEY OF PM-JOBPLAN-KEYS.
+            START PM-JOBPLAN-KEYS KEY = PMJOBPKEY OF PM-JOBPLAN-KEYS
+                INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+      ******************************************************************
+      *M    MESSAGE 036/008:
+      *M  JOBPLAN DOES NOT EXIST
+      ******************************************************************
+               MOVE 36   TO CATREAD-MSG-SET
+               MOVE 08   TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE CATREAD-MSG-TEXT TO E1
+               MOVE 7 TO E5
+               MOVE "1" TO RETURN-BYTE
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+               GO TO GET-PROCESSING-FLAG-EXIT.
+
+            READ PM-JOBPLAN-KEYS NEXT INTO PM-JOBP-KEYS-DATA
+                AT END MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD COND-WORD
+               MOVE "DBGET   " TO DB-TYPE
+               MOVE "PM-JOBP-KEYS" TO DB-FILE
+               MOVE DB-ERROR   TO E1
+               MOVE 7 TO E5
+               MOVE "1" TO RETURN-BYTE
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+            ELSE
+               MOVE HIGH-VALUES TO PMJOBPKEY OF PM-JOBPLAN-KEYS
+               START PM-JOBPLAN-KEYS KEY > PMJOBPKEY OF PM-JOBPLAN-KEYS
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-START
+               IF PMJPK-JOBP-KEY = RENUM-NAME
+                      AND RECORD-KEY = "KEYREC"
+                  MOVE PROCESS-FLAG TO PROCESSING-FLAG
+               ELSE
+      ******************************************************************
+      *M    MESSAGE 036/008:
+      *M  JOBPLAN DOES NOT EXIST
+      ******************************************************************
+                  MOVE 36   TO LANG-SETNUM
+                  MOVE 08   TO LANG-MSGNUM
+                  PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                  MOVE CATREAD-MSG-TEXT TO E1
+                  MOVE 7 TO E5
+                  MOVE "1" TO RETURN-BYTE
+                  MOVE PROCESS-ERROR TO PROCESSING-FLAG.
+       GET-PROCESSING-FLAG-EXIT.
+            EXIT.
+
+       CHECK-FOR-FIX.
+            IF PROCESSING-FLAG = RENUM1
+                 MOVE RENUM4 TO SET-FLAG  PROCESSING-FLAG
+                 PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT
+            ELSE IF PROCESSING-FLAG = RENUM3
+                 MOVE RENUM2 TO SET-FLAG  PROCESSING-FLAG
+                 PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT.
+       CHECK-FOR-FIX-EXIT.
+            EXIT.
+
+       SET-RENUM1-FLAG.
+            MOVE RENUM1 TO SET-FLAG  PROCESSING-FLAG.
+            PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT.
+       SET-RENUM1-FLAG-EXIT.
+            EXIT.
+
+       COPY-TO-TEMP.
+            MOVE SPACES         TO PM-JOBPLAN-DATA.
+            MOVE RENUM-NAME TO PMJOBPKEY OF PM-JOBPLAN.
+            START PM-JOBPLAN KEY = PMJOBPKEY OF PM-JOBPLAN
+                INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD COND-WORD
+               MOVE "DBFIND  " TO DB-TYPE
+               MOVE "PM-JOBPLAN" TO DB-FILE
+               MOVE DB-ERROR   TO E1
+               MOVE 7 TO E5
+               MOVE "1" TO RETURN-BYTE
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+               GO TO COPY-TO-TEMP-EXIT.
+
+      ***** GET FIRST VALID RECORD AND PROCESS WITH STARTING TASK NUMBER
+            PERFORM READ-OLD-JOBNAME THRU READ-OLD-JOBNAME.
+            IF (FILE-STAT = "10" OR "14" OR "46")
+                  OR (PROCESSING-FLAG = PROCESS-ERROR)
+               GO TO COPY-TO-TEMP-EXIT.
+
+            MOVE RENUM-START-TASK TO REPLACEMENT-TASK.
+
+            MOVE PM-JOBPLAN-DATA TO PM-JOBP-TEMP-DATA.
+            MOVE REPLACEMENT-TASK TO PMJPT-SEQ  PMJPT-SEQN.
+            MOVE PMJP-SEQ TO CURRENT-OLD-TASK.
+
+            PERFORM WRITE-TO-TEMP THRU WRITE-TO-TEMP-EXIT.
+            IF PROCESSING-FLAG = PROCESS-ERROR
+               GO TO COPY-TO-TEMP-EXIT.
+
+      *---- PROCESS REST OF THE RECORDS FOR JOBPLAN NAME
+       COPY-TEMP-LOOP.
+            PERFORM READ-OLD-JOBNAME THRU READ-OLD-JOBNAME.
+            IF PROCESSING-FLAG = PROCESS-ERROR
+               GO TO COPY-TO-TEMP-EXIT.
+            IF FILE-STAT = "10" OR "14" OR "46"
+      *---- AT END OF CHAIN (SUCCESSFUL COPY) SET FLAG TO R2
+               MOVE RENUM2 TO SET-FLAG  PROCESSING-FLAG
+               PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT
+               GO TO COPY-TO-TEMP-EXIT.
+
+      *---- CHECK FOR CHANGE IN TASK NUMBER
+            IF PMJP-SEQ NOT = CURRENT-OLD-TASK
+               MOVE PMJP-SEQ TO CURRENT-OLD-TASK
+               ADD RENUM-INCREMENT TO REPLACEMENT-TASK
+                   ON SIZE ERROR
+                       PERFORM REMOVE-TEMP THRU REMOVE-TEMP-EXIT
+                       PERFORM RESET-PROCESS-FLAG THRU
+                               RESET-PROCESS-FLAG-EXIT
+      ******************************************************************
+      *M       MESSAGE 046/043:
+      *M    TASK NUMBER WOULD HAVE EXCEEDED 9999, FUNCTION UNSUCCESSFUL
+      ******************************************************************
+                       MOVE 46   TO CATREAD-MSG-SET
+                       MOVE 43   TO CATREAD-MSG-NUM
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE CATREAD-MSG-TEXT TO E1
+                       MOVE 9 TO E5
+                       MOVE PROCESS-ERROR TO PROCESSING-FLAG
+                       MOVE "0" TO RETURN-BYTE
+                       GO TO COPY-TO-TEMP-EXIT
+               END-ADD
+            END-IF.
+
+            MOVE PM-JOBPLAN-DATA TO PM-JOBP-TEMP-DATA.
+            MOVE REPLACEMENT-TASK TO PMJPT-SEQ  PMJPT-SEQN.
+            PERFORM WRITE-TO-TEMP THRU WRITE-TO-TEMP-EXIT.
+            IF PROCESSING-FLAG NOT = PROCESS-ERROR
+               GO TO COPY-TEMP-LOOP.
+       COPY-TO-TEMP-EXIT.
+            EXIT.
+
+       READ-OLD-JOBNAME.
+            READ PM-JOBPLAN NEXT INTO PM-JOBPLAN-DATA
+                AT END MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+               IF FILE-STAT  = "10" OR "14" OR "46"
+                   GO TO READ-OLD-JOBNAME-EXIT
+               ELSE
+                   MOVE FILE-STAT  TO CON-WORD COND-WORD
+                   MOVE "DBGET   " TO DB-TYPE
+                   MOVE "PM-JOBPLAN" TO DB-FILE
+                   MOVE DB-ERROR   TO E1
+                   MOVE 7 TO E5
+                   MOVE "1" TO RETURN-BYTE
+                   MOVE PROCESS-ERROR TO PROCESSING-FLAG.
+            IF JOBPLAN-KEY NOT = RENUM-NAME
+                MOVE HIGH-VALUES TO PMJOBPKEY OF PM-JOBPLAN
+                START PM-JOBPLAN KEY > PMJOBPKEY OF PM-JOBPLAN
+                    INVALID KEY MOVE FILE-STAT TO FILE-STAT
+                END-START
+                MOVE "10" TO FILE-STAT.
+       READ-OLD-JOBNAME-EXIT.
+            EXIT.
+
+       WRITE-TO-TEMP.
+            WRITE PM-JOBP-TEMP-REC FROM PM-JOBP-TEMP-DATA
+                INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT TO CON-WORD COND-WORD
+               MOVE RENUM-NAME TO BU-DISPLAY-FLD (2)
+               MOVE PMJP-SEQ-LINE TO BU-DISPLAY-FLD (3)
+               MOVE "DBPUT ERR - WRITE-TO-TEMP" TO BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+            MOVE SPACES TO PM-JOBPLAN-DATA  PM-JOBP-TEMP-DATA.
+       WRITE-TO-TEMP-EXIT.
+            EXIT.
+
+       REMOVE-TASKHD.
+           MOVE RENUM-NAME TO PMJOBPKEY OF PM-JOBPLAN-KEYS.
+           START PM-JOBPLAN-KEYS KEY = PMJOBPKEY OF PM-JOBPLAN-KEYS
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT TO CON-WORD COND-WORD
+               MOVE "DBFIND" TO DB-TYPE
+               MOVE "PM-JOBP-KEYS" TO DB-FILE
+               MOVE DB-ERROR TO E1
+               MOVE "1" TO RETURN-BYTE
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+               GO TO REMOVE-TASKHD-EXIT.
+       REMOVE-TASKHD-LOOP.
+           READ PM-JOBPLAN-KEYS NEXT INTO PM-JOBP-KEYS-DATA
+               AT END MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO REMOVE-TASKHD-EXIT
+               ELSE
+                   MOVE COND-WORD TO CON-WORD
+                   MOVE "DBGET" TO DB-TYPE
+                   MOVE DB-ERROR TO E1
+                   MOVE "1" TO RETURN-BYTE
+                   MOVE PROCESS-ERROR TO PROCESSING-FLAG
+                   GO TO REMOVE-TASKHD-EXIT.
+           IF PMJPK-JOBP-KEY NOT = RENUM-NAME
+               MOVE HIGH-VALUES TO PMJOBPKEY OF PM-JOBPLAN-KEYS
+               START PM-JOBPLAN-KEYS KEY > PMJOBPKEY OF PM-JOBPLAN-KEYS
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-START
+               MOVE "10" TO FILE-STAT
+               GO TO REMOVE-TASKHD-EXIT.
+           IF RECORD-KEY = "TASKHD"
+               DELETE PM-JOBPLAN-KEYS
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-DELETE
+               IF FILE-STAT NOT = "00"
+                   MOVE FILE-STAT TO CON-WORD COND-WORD
+                   MOVE DB-ERROR TO E1
+                   MOVE "1" TO RETURN-BYTE
+                   MOVE PROCESS-ERROR TO PROCESSING-FLAG
+                   MOVE RENUM-NAME TO BU-DISPLAY-FLD (2)
+                   MOVE PMJPK-JOBP-SEQ-KEY TO BU-DISPLAY-FLD (3)
+                   MOVE "DBDELETE ERR - REMOVE-TASKHD" TO BU-DISPLAY-MSG
+                   PERFORM 999-BLOWUP.
+           GO TO REMOVE-TASKHD-LOOP.
+       REMOVE-TASKHD-EXIT.
+           EXIT.
+
+       REMOVE-OLD-TASK.
+           CALL "SPMJPDEL" USING DBPARAMETERS
+                                 E1
+                                 VIEW-COMAREA
+                                 LANGUAGE-PARMS
+                                 RENUM-NAME.
+           IF RETURN-BYTE = "1"
+               MOVE 7 TO E5
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+           ELSE
+               MOVE ZEROS TO RETURN-BYTE
+               MOVE RENUM3 TO SET-FLAG  PROCESSING-FLAG
+               PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT.
+       REMOVE-OLD-TASK-EXIT.
+           EXIT.
+
+       COPY-FROM-TEMP.
+           MOVE SPACES         TO PM-JOBPLAN-DATA.
+           MOVE RENUM-NAME TO PMJOBPKEY OF PM-JOBP-TEMP.
+           START PM-JOBP-TEMP KEY = PMJOBPKEY OF PM-JOBP-TEMP
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD COND-WORD
+               MOVE "DBFIND  " TO DB-TYPE
+               MOVE "PM-JOBP-TEMP" TO DB-FILE
+               MOVE DB-ERROR   TO E1
+               MOVE 5 TO E5
+               MOVE "1" TO RETURN-BYTE
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+               GO TO COPY-FROM-TEMP-EXIT.
+
+           PERFORM LOOP-WRITE-COPY THRU LOOP-WRITE-COPY-EXIT
+               UNTIL FILE-STAT NOT = "00" OR
+                     PROCESSING-FLAG = PROCESS-ERROR
+           IF PROCESSING-FLAG NOT = PROCESS-ERROR
+               MOVE RENUM4 TO SET-FLAG  PROCESSING-FLAG
+               PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT.
+       COPY-FROM-TEMP-EXIT.
+           EXIT.
+
+       LOOP-WRITE-COPY.
+           READ PM-JOBP-TEMP NEXT INTO PM-JOBP-TEMP-DATA
+               AT END MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "10" OR "14" OR "46"
+               GO TO LOOP-WRITE-COPY-EXIT
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD COND-WORD
+               MOVE "DBGET   " TO DB-TYPE
+               MOVE "PM-JOBP-TEMP" TO DB-FILE
+               MOVE DB-ERROR   TO E1
+               MOVE 5 TO E5
+               MOVE "1" TO RETURN-BYTE
+               MOVE PROCESS-ERROR TO PROCESSING-FLAG
+               GO TO LOOP-WRITE-COPY-EXIT.
+           IF JOBPLAN-TEMP-KEY NOT = RENUM-NAME
+               MOVE "10" TO FILE-STAT
+               GO TO LOOP-WRITE-COPY-EXIT.
+
+      *---- IF CHANGE IN TASK NUMBER, BUILD A TASKHD RECORD
+           IF PMJPT-SEQ NOT = PREVIOUS-TASKHD
+               MOVE PMJPT-SEQ TO PREVIOUS-TASKHD
+               PERFORM BUILD-TASKHD THRU BUILD-TASKHD-EXIT.
+
+           MOVE PM-JOBP-TEMP-DATA TO PM-JOBPLAN-DATA.
+           PERFORM WRITE-COPY THRU WRITE-COPY-EXIT.
+       LOOP-WRITE-COPY-EXIT.
+           EXIT.
+
+       WRITE-COPY.
+           WRITE PM-JOBPLAN-REC FROM PM-JOBPLAN-DATA
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT TO CON-WORD COND-WORD
+               MOVE RENUM-NAME TO BU-DISPLAY-FLD (2)
+               MOVE PMJP-SEQ-LINE TO BU-DISPLAY-FLD (3)
+               MOVE "DBPUT ERR - WRITE-COPY" TO BU-DISPLAY-MSG
+               PERFORM 999-BLOWUP.
+
+           MOVE SPACES         TO PM-JOBPLAN-DATA.
+       WRITE-COPY-EXIT.
+           EXIT.
+
+       BUILD-TASKHD.
+           MOVE PMJPT-KEY-SEQ TO JOBPWOSEQ OF PM-JOBP-KEYS-2
+           START PM-JOBP-KEYS-2 KEY = JOBPWOSEQ OF PM-JOBP-KEYS-2
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE SPACES TO PM-JOBP-KEYS-DATA
+               MOVE "TASKHD" TO RECORD-KEY
+               MOVE JOBPLAN-TEMP-KEY TO PMJPK-JOBP-KEY
+               MOVE PMJPT-SEQ TO PMJPK-TASK-NUM
+               MOVE PMJPT-KEY-SEQ TO PMJPK-JOBP-SEQ-KEY
+               MOVE EDITOR-CC TO PMJPK-ORIGINATOR
+               ACCEPT PMJPK-DATE-STAMP FROM DATE
+               IF PMJPK-DATE-STAMP-YY > 70
+                   MOVE 19     TO PMJPK-DATE-STAMP-CC
+               ELSE
+                   MOVE 20     TO PMJPK-DATE-STAMP-CC
+               END-IF
+               ACCEPT PMJPK-TIME-STAMP FROM TIME
+               WRITE PM-JOBP-KEYS-REC FROM PM-JOBP-KEYS-DATA
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+               IF FILE-STAT NOT = "00"
+                   MOVE FILE-STAT TO CON-WORD COND-WORD
+                   MOVE RENUM-NAME TO BU-DISPLAY-FLD (2)
+                   MOVE PMJPK-JOBP-SEQ-KEY TO BU-DISPLAY-FLD (3)
+                   MOVE "DBPUT ERR - BUILD-TASKHD" TO BU-DISPLAY-MSG
+                   PERFORM 999-BLOWUP.
+       BUILD-TASKHD-EXIT.
+           EXIT.
+
+       REMOVE-TEMP.
+           MOVE SPACES         TO PM-JOBP-TEMP-DATA.
+           MOVE RENUM-NAME TO PMJOBPKEY OF PM-JOBP-TEMP.
+           START PM-JOBP-TEMP KEY = PMJOBPKEY OF PM-JOBP-TEMP
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT = "00"
+               PERFORM LOOP-REMOVE-TEMP THRU LOOP-REMOVE-TEMP-EXIT
+                   UNTIL FILE-STAT NOT = "00" OR
+                          PROCESSING-FLAG = PROCESS-ERROR.
+       REMOVE-TEMP-EXIT.
+           EXIT.
+
+       LOOP-REMOVE-TEMP.
+           READ PM-JOBP-TEMP NEXT INTO PM-JOBP-TEMP-DATA
+               AT END MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               IF FILE-STAT = "10" OR "14" OR "46"
+                   GO TO LOOP-REMOVE-TEMP-EXIT
+               ELSE
+                   MOVE FILE-STAT TO CON-WORD COND-WORD
+                   MOVE "DBGET   " TO DB-TYPE
+                   MOVE "PM-JOBP-TEMP" TO DB-FILE
+                   MOVE DB-ERROR   TO E1
+                   MOVE 7 TO E5
+                   MOVE "1" TO RETURN-BYTE
+                   MOVE PROCESS-ERROR TO PROCESSING-FLAG
+                   GO TO LOOP-REMOVE-TEMP-EXIT
+           END-IF.
+           IF JOBPLAN-TEMP-KEY NOT = RENUM-NAME
+               MOVE "10" TO FILE-STAT
+               GO TO LOOP-REMOVE-TEMP-EXIT.
+
+           PERFORM DELETE-TEMP-JOBPLAN THRU DELETE-TEMP-JOBPLAN-EXIT.
+       LOOP-REMOVE-TEMP-EXIT.
+           EXIT.
+
+       DELETE-TEMP-JOBPLAN.
+           DELETE PM-JOBP-TEMP
+               INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT TO CON-WORD COND-WORD
+               MOVE RENUM-NAME TO BU-DISPLAY-FLD (2)
+               MOVE PMJP-SEQ-LINE TO BU-DISPLAY-FLD (3)
+               MOVE "DBDELETE ERR - DELETE-TEMP-JOBPLAN"
+                  TO BU-DISPLAY-MSG
+               MOVE FILE-STAT TO BU-DISPLAY-FLD (4)
+               PERFORM 999-BLOWUP.
+           MOVE SPACES  TO PM-JOBP-TEMP-DATA.
+       DELETE-TEMP-JOBPLAN-EXIT.
+           EXIT.
+
+       SET-PROCESS-FLAG.
+            MOVE SPACES TO PM-JOBP-KEYS-DATA.
+            MOVE RENUM-NAME TO PMJOBPKEY OF PM-JOBPLAN-KEYS.
+            START PM-JOBPLAN-KEYS KEY = PMJOBPKEY OF PM-JOBPLAN-KEYS
+                INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+      ******************************************************************
+      *M    MESSAGE 036/008:
+      *M  JOBPLAN DOES NOT EXIST
+      ******************************************************************
+                MOVE 36   TO CATREAD-MSG-SET
+                MOVE 08   TO CATREAD-MSG-NUM
+                PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                MOVE CATREAD-MSG-TEXT TO E1
+                MOVE 7 TO E5
+                MOVE "1" TO RETURN-BYTE
+                MOVE PROCESS-ERROR TO PROCESSING-FLAG
+            ELSE
+                READ PM-JOBPLAN-KEYS NEXT INTO PM-JOBP-KEYS-DATA
+                    AT END MOVE FILE-STAT TO FILE-STAT
+                END-READ
+                IF FILE-STAT NOT = "00" OR
+                      PMJPK-JOBP-KEY NOT = RENUM-NAME
+                    MOVE FILE-STAT TO CON-WORD COND-WORD
+                    MOVE "DBGET   " TO DB-TYPE
+                    MOVE "PM-JOBP-KEYS" TO DB-FILE
+                    MOVE DB-ERROR TO E1
+                    MOVE 7 TO E5
+                    MOVE "1" TO RETURN-BYTE
+                    MOVE PROCESS-ERROR TO PROCESSING-FLAG
+                ELSE
+                    IF RECORD-KEY NOT = "KEYREC"
+      ******************************************************************
+      *M    MESSAGE 036/008:
+      *M  JOBPLAN DOES NOT EXIST
+      ******************************************************************
+                        MOVE 36   TO CATREAD-MSG-SET
+                        MOVE 08   TO CATREAD-MSG-NUM
+                        PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                        MOVE CATREAD-MSG-TEXT TO E1
+                        MOVE 7 TO E5
+                        MOVE "1" TO RETURN-BYTE
+                        MOVE PROCESS-ERROR TO PROCESSING-FLAG
+                    ELSE
+                        MOVE SET-FLAG TO PROCESS-FLAG
+                        PERFORM UPDATE-JOBPLAN-KEYS THRU
+                                UPDATE-JOBPLAN-KEYS-EXIT.
+       SET-PROCESS-FLAG-EXIT.
+           EXIT.
+
+       UPDATE-JOBPLAN-KEYS.
+            REWRITE PM-JOBP-KEYS-REC FROM PM-JOBP-KEYS-DATA
+                INVALID KEY MOVE FILE-STAT TO FILE-STAT.
+            IF FILE-STAT NOT = "00"
+                MOVE FILE-STAT TO CON-WORD COND-WORD
+                MOVE PMJPK-JOBP-KEY TO BU-DISPLAY-FLD (2)
+                MOVE RECORD-KEY TO BU-DISPLAY-FLD (3)
+                MOVE PROCESS-FLAG TO BU-DISPLAY-FLD (4)
+                MOVE "DBUPDATE ERR - UPDATE-JOBPLAN-KEYS"
+                  TO BU-DISPLAY-MSG
+                PERFORM 999-BLOWUP.
+       UPDATE-JOBPLAN-KEYS-EXIT.
+            EXIT.
+
+       RESET-PROCESS-FLAG.
+            MOVE PROCESS-RESET TO SET-FLAG  PROCESSING-FLAG.
+            PERFORM SET-PROCESS-FLAG THRU SET-PROCESS-FLAG-EXIT.
+       RESET-PROCESS-FLAG-EXIT.
+           EXIT.
+
+       999-CATREAD.
+           MOVE SPACES TO CATREAD-MSG-TEXT.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           IF CATREAD-MSG-NOT-FOUND
+                MOVE "*ERROR ON THIS FIELD" TO CATREAD-MSG-TEXT.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       999-BLOWUP.
+           MOVE "SPMRENUM" TO BU-PGM-NAME.
+           MOVE VIEW-NFNAME TO BU-DISPLAY-FLD (1).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+                                VIEW-COMAREA, COND-WORD,
+                                BU-DISPLAY-MSG, BU-DISPLAY-FLDS.
+      *******************>>>  END OF FILE  <<<*********************

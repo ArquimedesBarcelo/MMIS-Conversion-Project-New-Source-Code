@@ -1,0 +1,1282 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.   TINITPLN.
+       INSTALLATION.  GOODYEAR TIRE & RUBBER CO.
+
+      *****************************************************************
+      *REMARKS.   ****THIS PROGRAM INITIATES A PLANNED WORK ORDER;
+      *               SUBROUTINES CALLED:
+      *                   TADDWOII
+      *                   TNEWWONU
+      *****************************************************************
+
+
+      *****************************************************************
+      **                   MODIFICATION   HISTORY
+      *****************************************************************
+      *C 06/03/92  BK DISMUKES  REQUEST 6193
+      *C    1. ADDED LOGIC TO CHECK FOR SAFETY EQUIPMENT FLAG
+      *C       IN CHECK EDITS PARAGRAPH.
+      *----------------------------------------------------------------
+      *C 02/2593  JSB  REQ #6306
+      *C    ADDED "PR" AS A NEW WO STATUS FOR PRE-RELEASE.
+      *----------------------------------------------------------------
+      *C SEPTEMBER 1996  JE COFFMAN  REQ# 6619
+      *C    EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *----------------------------------------------------------------
+      *    APR 20 2005  D. RAUCH     DCR01      REQUEST# 2005-78291
+      *       1)  ADDED CALL TO EQUIPMENT SELECTION PROGRAM - F5
+      *----------------------------------------------------------------
+      *    MMM DD 200?  XXXNAMEXXXXX XXX01      REQUEST# 200?-NNNNN
+      *    XXXXXXXXXXXXXXXXX DESCRIPTION XXXXXXXXXXXXXXXXXXXXXXXXXX
+      *****************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    AS400.
+       OBJECT-COMPUTER.    AS400.
+       SPECIAL-NAMES. LOCAL-DATA IS LOCAL-DATA-AREA
+                      I-O-FEEDBACK IS I-O-FEEDBACK-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZTINITPLN-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT EQUIP-NUM-FILE
+               ASSIGN TO DATABASE-MCFLMM0201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS ENF-STATUS.
+           SELECT MVALIDPLTDATA-FILE
+               ASSIGN TO DATABASE-MCFLCS1701
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS MVF-STATUS.
+           SELECT WO-STATUS-MSTR-FILE
+               ASSIGN TO DATABASE-MCFLMM0401
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WSMF-STATUS.
+           SELECT WO-ZONE-PRTY-FILE
+               ASSIGN TO DATABASE-MCFLMM0501
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WZPF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                   PIC X(2000).
+       FD  EQUIP-NUM-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  ENFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0201.
+       FD  MVALIDPLTDATA-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  MVFREC.
+           COPY DDS-ALL-FORMATS OF MCFLCS1701.
+       FD  WO-STATUS-MSTR-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  WSMFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0401.
+       FD  WO-ZONE-PRTY-FILE
+           LABEL RECORDS ARE STANDARD.
+       01  WZPFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0501.
+       WORKING-STORAGE SECTION.
+       77  ARG-NO                              PIC 9(9).
+       77  DATA-ENTERED-OK-SW                  PIC X.
+       77  FIRST-READ-SW                       PIC 9.
+       77  WO-STATUS-BUF2-SAVE                 PIC XX.
+       01  ADD-ERROR-MSG.
+           05  FILLER  PIC X(47) VALUE SPACES.
+           05  A-CW    PIC 9(04) VALUE ZEROES.
+           05  FILLER  PIC X(29) VALUE SPACES.
+       01  ARG-DEFN                            PIC X(10).
+       01  ARG-KEY-1.
+           05  ARG-1-3                         PIC X(4).
+           05  ARG-2-3                         PIC X.
+           05  ARG-3-3                         PIC X.
+       01  ARG-KEY-2.
+           05  ARG-1-2                         PIC X.
+           05  ARG-2-2                         PIC X.
+           05  FILLER                          PIC X(8).
+       01  BLOWUP-BASE                         PIC X(16).
+       01  BUDGET-IN.
+           05  B-IN-1-3                        PIC XXX.
+           05  B-IN-DASH1                      PIC X.
+           05  B-IN-4-5                        PIC XX.
+           05  B-IN-DASH2                      PIC X.
+           05  B-IN-6-7                        PIC XX.
+           05  B-IN-DASH3                      PIC X.
+           05  B-IN-8-10                       PIC XXX.
+           05  B-IN-REV                        PIC X.
+           05  B-IN-REVNO                      PIC XX.
+
+
+DCR01  01  WS-MY-MISC-FLDS.
+DCR01      03  WS-EQUIP-SEL-PGM    PIC X(10) VALUE "SEQUIPSEL".
+DCR01      03  WS-EQUIP-NBR        PIC X(06) VALUE SPACE.
+
+DCR01      03  WS-CRAFT-SEL-PGM    PIC X(10) VALUE "SMCRAFT".
+DCR01      03  WS-CRAFT            PIC X(06) VALUE SPACE.
+DCR01      03  WS-CRAFT-FLAG       PIC X(06) VALUE SPACE.
+DCR01      03  WS-CRAFT-DESC       PIC X(36) VALUE SPACE.
+DCR01      03  WS-CRAFT-DISP       PIC X(01) VALUE "S".
+
+
+       01  BUFFER-DEFINITION.
+           05  BUFFER                          PIC X(1087).
+      *
+      *    BUFFER-2
+      *
+           05  BUFFER-DEFN-2  REDEFINES  BUFFER.
+               10  BUFFER-DEFN2.
+                   15  WO-NUMBER-BUF2          PIC X(10).
+                   15  WO-STATUS-BUF2.
+                       20  WO-STATUS-BUF2-1-2  PIC XX.
+                   15  DATE-RECD-BUF2.
+                       20  DATE-RECD-MD-BUF2   PIC 99.
+                       20  DATE-RECD-DM-BUF2   PIC 99.
+                       20  DATE-RECD-YY-BUF2   PIC 99.
+                       20  DATE-RECD-YY-BUF2-X REDEFINES
+                           DATE-RECD-YY-BUF2   PIC XX.
+                   15  TIME-RECD-BUF2.
+                       20  TIME-RECD-HH-BUF2   PIC 99.
+                       20  TIME-RECD-MD-BUF2   PIC 99.
+                   15  APPROVAL-CODE-BUF2      PIC X.
+                   15  REQUESTER-BUF2          PIC X(16).
+                   15  EQUIP-DATA-BUF2.
+                       20  EQUIP-NUM-BUF2      PIC X(6).
+                       20  EQUIP-NAME-BUF2     PIC X(50).
+                       20  TYPE-NUM-BUF2       PIC X(8).
+                       20  DEPT-BUF2           PIC X(4).
+                       20  ZONE-BUF2           PIC X(4).
+                       20  LOCATION-BUF2       PIC X(8).
+                       20  PRIORITY-BUF2       PIC 9.
+                       20  RIME-BUF2           PIC 99.
+                   15  EQUIP-DOWN-BUF2         PIC X.
+                   15  EXP-CLASS-BUF2.
+                       20  ECB-1-2.
+                           25  ECB-1           PIC X.
+                           25  ECB-2           PIC X.
+                       20  ECB-3               PIC X.
+                       20  ECB-4               PIC X.
+                       20  ECB-5               PIC X.
+                       20  ECB-6               PIC X.
+                       20  ECB-7               PIC X.
+                       20  ECB-8               PIC X.
+                   15  ECB-AREA REDEFINES EXP-CLASS-BUF2.
+                       20  ECB-A OCCURS 8 TIMES.
+                           25 ECB              PIC X.
+                   15  DATE-REQD-BUF2.
+                       20  DATE-REQD-MD-BUF2   PIC 99.
+                       20  DATE-REQD-DM-BUF2   PIC 99.
+                       20  DATE-REQD-YY-BUF2   PIC 99.
+                   15  TIME-REQD-BUF2.
+                       20  TIME-REQD-HH-BUF2   PIC 99.
+                       20  TIME-REQD-MD-BUF2   PIC 99.
+                   15  DESCRIPTION-1-BUF2      PIC X(30).
+                   15  DESCRIPTION-2-BUF2      PIC X(66).
+                   15  DESCRIPTION-3-BUF2      PIC X(66).
+                   15  DESCRIPTION-4-BUF2      PIC X(66).
+                   15  DESCRIPTION-5-BUF2      PIC X(66).
+                   15  SPECL-INSTR-1-BUF2      PIC X(66).
+                   15  SPECL-INSTR-2-BUF2      PIC X(66).
+                   15  SPECL-EQUIP-BUF2        PIC X(66).
+                   15  SAFETY-NOTE-BUF2        PIC X(66).
+                   15  ENGINEER-BUF2           PIC X(4).
+                   15  PLANNER-BUF2            PIC X(4).
+                   15  SCHEDULER-BUF2          PIC X(4).
+                   15  DATE-SCHD-BUF2.
+                       20  DATE-SCHD-MD-BUF2   PIC 99.
+                       20  DATE-SCHD-DM-BUF2   PIC 99.
+                       20  DATE-SCHD-YY-BUF2   PIC 99.
+                   15  TIME-SCHD-BUF2.
+                       20  TIME-SCHD-HH-BUF2   PIC 99.
+                       20  TIME-SCHD-MD-BUF2   PIC 99.
+                   15  BUDGET-NO-BUF2.
+                       20  BGT-NO-1-3-BUF2     PIC XXX.
+                       20  BGT-NO-4-5-BUF2     PIC XX.
+                       20  BGT-NO-6-7-BUF2     PIC XX.
+                       20  BGT-NO-8-10-BUF2    PIC XXX.
+                       20  BGT-NO-REVNO        PIC XX.
+                   15  REQ-NO-BUF2             PIC X(12).
+                   15  FILLER                  PIC X(26).
+               10  MESSAGE-BUF2                PIC X(79).
+               10  MSGTWO-BUF2                 PIC X(79).
+               10  BUFFER-CMD-LINE             PIC X(79).
+               10  BUFFER-ERR-LINE             PIC X(79).
+       COPY CATREAD OF COPYLIB.
+       01  CHANGE-DATA-MSG                     PIC X(80).
+       01  COND-CODE                           PIC X.
+       COPY CPYIND  OF COPYLIB.
+       COPY TDATESUB OF COPYLIB.
+       01  ENTRY-POINT                         PIC X(10).
+       01  EQUIP-DATA.                       COPY MEQPFILE OF COPYLIB.
+       01  ERROR-BUFFER.
+           05  FILLER                          PIC X(76).
+           05  ERROR-DELAY                     PIC XXXX.
+       01  ERROR-SW                            PIC 9(4) COMP-4.
+       01  FILE-STATUS-AREA.
+            05  BMF-STATUS                     PIC XX.
+            05  DSPLY-STATUS                   PIC XX.
+            05  ENF-STATUS                     PIC XX.
+            05  MR-STATUS                      PIC XX.
+            05  MVF-STATUS                     PIC XX.
+            05  NNF-STATUS                     PIC XX.
+            05  WSMF-STATUS                    PIC XX.
+            05  WZPF-STATUS                    PIC XX.
+       COPY IOFEEDBACK OF COPYLIB.
+       COPY JCWAREA    OF COPYLIB.
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TINITPLN".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A     PIC X(60) VALUE
+                   "SINGLE PLANNED W/O INITIATE PROGRAM".
+               10  PROG-DESC-B     PIC X(60) VALUE SPACES.
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  RETURN-ERROR.
+           05  ERROR-TEXT                      PIC X(68).
+           05  ERROR-NUM                       PIC 9(8).
+       01  RETURN-SW                           PIC XXX.
+       01  RIGHT-JUSTIFY-WA.
+           05  RJ-WA OCCURS 2                  PIC X.
+       01  SAVE-VIEW-CFNAME                    PIC X(16).
+       01  SCREEN-ERROR                        PIC X(80).
+       COPY DBSTAT OF COPYLIB.
+       COPY TBLOWUP IN COPYLIB.
+       01  TEMP-BGT.
+           05  TB-P                            PIC X.
+           05  TB-YY                           PIC XX.
+       01  TMP-DATE-AREA.
+           05  MONTH-30-W                      PIC 99.
+           05  FILLER                          PIC X.
+           05  DAY-30-W                        PIC 99.
+           05  FILLER                          PIC X.
+           05  YEAR-30-W                       PIC 99.
+       01  TMP-TIME-AREA.
+           05  HRS-MIN-30-W                    PIC X(4).
+           05  FILLER                          PIC XX.
+       01  TRUE-VAL                            PIC 1 VALUE B"1".
+       01  WHO-PARMS.
+           05  USERNAME                            PIC X(10).
+           05  TERMNUM                             PIC X(10).
+           05  CURRLIB                             PIC X(10).
+           05  JOBLIBX                             PIC X.
+       01  WO-ENTERED-MSG.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  WO-ENT  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(58) VALUE SPACES.
+       01  WO-PLANNED-DATA.                  COPY DWOPLAN OF COPYLIB.
+       01  WORK-ORDER-NUMBER.
+           05  WO-NUM-ALL.
+               10  WO-NUM-PRIMARY.
+                   15  WO-NUM-NUMBER           PIC X(6).
+                   15  WO-NUM-YEAR             PIC X.
+               10  WO-NUM-SUFFIX               PIC XXX.
+       01  WO-TRACK-DATA.                    COPY DWOTRACK OF COPYLIB.
+       COPY WSCONTROL OF COPYLIB.
+       LINKAGE SECTION.
+       01  DBPARAMETERS.                     COPY DBPARMS OF COPYLIB.
+       01  LAST-WO-BUFF.                     COPY MLASTWO OF COPYLIB.
+       01  ERROR-SWITCH.
+           05  ERR-SW                   PIC S9(4) COMP SYNC.
+       COPY VCOMLINK OF COPYLIB.
+       PROCEDURE DIVISION USING DBPARAMETERS LAST-WO-BUFF
+                           ERROR-SWITCH VIEW-COMAREA.
+       BEGIN.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X UNTIL RETURN-SW = "END".
+       2-EOJ.
+           CLOSE DISPLAY-FILE
+                 EQUIP-NUM-FILE
+                 MVALIDPLTDATA-FILE
+                 WO-STATUS-MSTR-FILE
+                 WO-ZONE-PRTY-FILE.
+           GOBACK.
+      ****************************************************************
+      *    HOUSEKEEPING                                              *
+      ****************************************************************
+       1-HSK.
+           OPEN I-O   DISPLAY-FILE.
+           OPEN INPUT EQUIP-NUM-FILE.
+           OPEN INPUT MVALIDPLTDATA-FILE.
+           OPEN INPUT WO-STATUS-MSTR-FILE.
+           OPEN INPUT WO-ZONE-PRTY-FILE.
+           MOVE LOW-VALUES TO STATUS-AREA.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               MOVE "  PWORD" TO BLOWUP-BASE
+               MOVE "FAILED PASSWORD CHECK - TINITPLN"
+                   TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP.
+           MOVE SPACES TO RETURN-SW.
+           MOVE SPACES TO BUFFER SCREEN-ERROR.
+           MOVE 0 TO ERR-SW.
+           MOVE 0 TO FIRST-READ-SW.
+           MOVE 27015 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO CHANGE-DATA-MSG.
+           CALL "CLWHO" USING USERNAME TERMNUM CURRLIB JOBLIBX.
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+      *****************************************************************
+      *    MAIN LOGIC                                                 *
+      *****************************************************************
+       6-MAIN.
+           PERFORM 61-ENTER-DATA.
+      *
+      *    STANDARD INPUTS TO BUF2.
+      *
+           MOVE "OO" TO WO-STATUS-BUF2.
+           MOVE 1 TO DATE-MODE.
+           MOVE DATE-FLAG TO DATE-CODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO TMP-DATE-AREA.
+           MOVE MONTH-30-W TO DATE-RECD-MD-BUF2.
+           MOVE DAY-30-W TO DATE-RECD-DM-BUF2.
+           MOVE YEAR-30-W TO DATE-RECD-YY-BUF2.
+           ACCEPT TMP-TIME-AREA FROM TIME.
+           MOVE HRS-MIN-30-W TO TIME-RECD-BUF2.
+           MOVE "U" TO APPROVAL-CODE-BUF2.
+           MOVE "N" TO DATA-ENTERED-OK-SW.
+           PERFORM 62-CHECK-INPUTS-AND-CORRECT
+               UNTIL DATA-ENTERED-OK-SW = "Y".
+       6-MAIN-X.
+           EXIT.
+      ****************************************************************
+      *    CLEAR FORM, FORM BUFFER, AND WO-PLANNED BUFFER              *
+      ****************************************************************
+       61-ENTER-DATA.
+           IF PLANT-IDENT = "285"
+               IF ZONE-BUF2 = "Z6MM"
+                   MOVE SPACES TO WO-PLANNED-DATA
+                                  EQUIP-DATA-BUF2
+               ELSE
+               MOVE SPACES TO WO-PLANNED-DATA BUFFER
+           ELSE
+           MOVE SPACES TO WO-PLANNED-DATA BUFFER.
+           MOVE "FINITPLN" TO VIEW-CFNAME.
+           MOVE 31042 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MESSAGE-BUF2.
+           IF WO-ENT = SPACES
+               MOVE SPACES TO MSGTWO-BUF2
+           ELSE
+           MOVE WO-ENTERED-MSG TO MSGTWO-BUF2
+           MOVE SPACES TO WO-ENTERED-MSG.
+      **** MOVE 52011 TO CATREAD-MSG-NUMBER.
+DCR01      MOVE 52012 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO BUFFER-CMD-LINE.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE BUFFER TO DSPLY-REC.
+           PERFORM 629-CALL-TSCREEN.
+           MOVE DSPLY-REC TO BUFFER.
+           IF VIEW-LASTKEY = 1
+               GO TO 2-EOJ
+           END-IF.
+
+           IF VIEW-LASTKEY = 3
+               MOVE "END" TO RETURN-SW
+               GO TO 6-MAIN-X
+           END-IF.
+
+DCR01      IF VIEW-LASTKEY = 5
+DCR01         PERFORM 800-CALL-EQUIP-SELECTION THRU 800-EQP-EXIT
+DCR01      END-IF.
+
+       62-CHECK-INPUTS-AND-CORRECT.
+           PERFORM 620-CHECK-INPUTS THRU 620-CHECK-INPUTS-X.
+           IF ERROR-SW = 1
+               IF VIEW-CFNAME = "FINITPLN"
+                   MOVE ERROR-BUFFER TO SCREEN-ERROR
+                   MOVE CHANGE-DATA-MSG TO MESSAGE-BUF2
+                   MOVE SPACES TO MSGTWO-BUF2
+      **********   MOVE 52011 TO CATREAD-MSG-NUMBER
+DCR01              MOVE 52012 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO BUFFER-CMD-LINE
+                   MOVE SCREEN-ERROR TO BUFFER-ERR-LINE
+                   MOVE BUFFER TO DSPLY-REC
+                   PERFORM 629-CALL-TSCREEN
+                   MOVE DSPLY-REC TO BUFFER
+                   MOVE SPACES TO SCREEN-ERROR
+                   MOVE 0 TO ERROR-SW
+                   IF VIEW-LASTKEY = 1
+                       GO TO 2-EOJ
+                   ELSE
+                   IF VIEW-LASTKEY = 3
+                       MOVE "END" TO RETURN-SW
+                       GO TO 6-MAIN-X
+                   ELSE
+                   GO TO 62-CHECK-INPUTS-AND-CORRECT
+               ELSE
+               MOVE ERROR-BUFFER TO SCREEN-ERROR
+               MOVE CHANGE-DATA-MSG TO MESSAGE-BUF2
+               MOVE SPACES TO MSGTWO-BUF2 BUFFER-CMD-LINE
+               MOVE SCREEN-ERROR TO BUFFER-ERR-LINE
+               MOVE BUFFER TO DSPLY-REC
+               PERFORM 629-CALL-TSCREEN
+               MOVE DSPLY-REC TO BUFFER
+               MOVE SPACES TO SCREEN-ERROR
+               MOVE 0 TO ERROR-SW
+               IF VIEW-LASTKEY = 1
+                   GO TO 2-EOJ
+               ELSE
+               IF VIEW-LASTKEY = 3
+                   MOVE "END" TO RETURN-SW
+                   GO TO 6-MAIN-X
+               ELSE
+               GO TO 62-CHECK-INPUTS-AND-CORRECT.
+           PERFORM 623-MOVE-BUF2-TO-WO-PLANNED.
+           MOVE 42065 TO CATREAD-MSG-NUMBER.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE ERROR-BUFFER TO MESSAGE-BUF2.
+           MOVE SPACES TO MSGTWO-BUF2.
+           MOVE SPACES TO BUFFER-CMD-LINE.
+           MOVE BUFFER TO DSPLY-REC.
+           PERFORM 629-CALL-TSCREEN.
+           MOVE DSPLY-REC TO BUFFER.
+           MOVE WO-STATUS-BUF2 TO WO-STATUS-BUF2-SAVE.
+           IF VIEW-LASTKEY = 3 GO TO 2-EOJ.
+           IF VIEW-LASTKEY = 2
+               MOVE "FINITPL2" TO VIEW-CFNAME
+               MOVE 29041 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO MESSAGE-BUF2
+               MOVE SPACES TO BUFFER-CMD-LINE
+               MOVE BUFFER TO DSPLY-REC
+               PERFORM 629-CALL-TSCREEN
+               MOVE DSPLY-REC TO BUFFER
+               GO TO 62-CHECK-INPUTS-AND-CORRECT.
+           MOVE "Y" TO DATA-ENTERED-OK-SW.
+           CALL "TNEWWONU" USING DBPARAMETERS STATUS-AREA
+                             WORK-ORDER-NUMBER ERROR-SWITCH.
+           IF ERR-SW = 99 GO TO 2-EOJ.
+           IF VIEW-CFNAME = "FINITPL2"
+               MOVE WORK-ORDER-NUMBER TO WO-NUM-PLANNED
+               MOVE "0" TO COND-CODE
+               MOVE 0 TO ERROR-SW
+               CALL "TADDWOII" USING DBPARAMETERS STATUS-AREA
+                                 WO-PLANNED-DATA COND-CODE ERROR-SW
+               IF ERROR-SW NOT = 0
+                   MOVE 29051 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE ERROR-BUFFER TO ADD-ERROR-MSG
+                   MOVE COND-WORD TO A-CW
+                   MOVE ADD-ERROR-MSG TO BUFFER-ERR-LINE
+                   MOVE BUFFER TO DSPLY-REC
+                   PERFORM 629-CALL-TSCREEN
+                   MOVE DSPLY-REC TO BUFFER
+                   MOVE "  MMISA" TO BLOWUP-BASE
+                   MOVE ADD-ERROR-MSG TO BU-DISPLAY-MSG
+                   PERFORM 998-BLOWUP
+               ELSE
+               MOVE WORK-ORDER-NUMBER TO WO-NUM-PLANNED
+               MOVE 49015 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO WO-ENTERED-MSG
+               MOVE WO-NUM-PLANNED TO WO-ENT
+               MOVE SPACES TO WO-TRACK-DATA
+               MOVE USERNAME TO USER-NAME
+               MOVE TERMNUM TO USER-TERM
+               MOVE WO-NUM-PLANNED TO WO-NUM-TRACK
+               MOVE YEAR-30-W  TO DATE-STAMP-YY
+               PERFORM 620-SET-CENTURY
+               MOVE MONTH-30-W TO DATE-STAMP-MM
+               MOVE DAY-30-W   TO DATE-STAMP-DD
+               MOVE TMP-TIME-AREA TO TIME-STAMP
+               MOVE WO-START-STATUS TO WO-TYPE-STATUS
+               MOVE USERNAME TO USER-ID
+               MOVE "    " TO CLOCK-CARD
+               MOVE WO-STATUS-P TO WO-STATUS-TRACK
+               MOVE "TINITPLN" TO PROGRAM-NAME
+               CALL "TWOTRACK" USING WO-TRACK-DATA
+           ELSE
+           MOVE WORK-ORDER-NUMBER TO WO-NUM-PLANNED
+           MOVE "0" TO COND-CODE
+           MOVE 0 TO ERROR-SW
+           CALL "TADDWOII" USING DBPARAMETERS STATUS-AREA
+                             WO-PLANNED-DATA COND-CODE ERROR-SW
+           IF ERROR-SW NOT = 0
+               MOVE 29051 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE ERROR-BUFFER TO ADD-ERROR-MSG
+               MOVE COND-WORD TO A-CW
+               MOVE BUFFER TO DSPLY-REC
+               PERFORM 629-CALL-TSCREEN
+               MOVE DSPLY-REC TO BUFFER
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE ADD-ERROR-MSG TO BU-DISPLAY-MSG
+               PERFORM 998-BLOWUP
+           ELSE
+           MOVE WORK-ORDER-NUMBER TO WO-NUM-PLANNED
+           MOVE 49015 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE ERROR-BUFFER TO WO-ENTERED-MSG
+           MOVE WO-NUM-PLANNED TO WO-ENT
+           MOVE SPACES TO WO-TRACK-DATA
+           MOVE USERNAME TO USER-NAME
+           MOVE TERMNUM TO USER-TERM
+           MOVE WO-NUM-PLANNED TO WO-NUM-TRACK
+           MOVE YEAR-30-W   TO DATE-STAMP-YY
+           PERFORM 620-SET-CENTURY
+           MOVE MONTH-30-W  TO DATE-STAMP-MM
+           MOVE DAY-30-W    TO DATE-STAMP-DD
+           MOVE TMP-TIME-AREA TO TIME-STAMP
+           MOVE WO-START-STATUS TO WO-TYPE-STATUS
+           MOVE USERNAME TO USER-ID
+           MOVE "    " TO CLOCK-CARD
+           MOVE WO-STATUS-P TO WO-STATUS-TRACK
+           MOVE "TINITPLN" TO PROGRAM-NAME
+           CALL "TWOTRACK" USING WO-TRACK-DATA
+           MOVE "0" TO COND-CODE.
+
+       620-SET-CENTURY.
+           IF DATE-STAMP-YY > 70
+               MOVE 19 TO DATE-STAMP-CC
+           ELSE
+           MOVE 20 TO DATE-STAMP-CC.
+
+      ****************************************************************
+      *    CHECK THE INPUTS                                          *
+      ****************************************************************
+
+       620-CHECK-INPUTS.
+           MOVE 0 TO ERROR-SW.
+      *
+      *    WO STATUS CHECK
+      *
+           IF WO-STATUS-BUF2 = "HP" OR "HV" OR "HE" OR "CW" OR "LV"
+                   OR "VO" OR "DW" OR "FF"
+               MOVE 35001 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (01) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+      *    DETERMINE IF WO-STATUS IS IN DATABASE.
+           PERFORM 69-START-WO-STATUS-MSTR-FILE.
+           IF COND-WORD =  17
+               MOVE 35001 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (01) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+      *
+      *    DATE RECD CHECK
+      *
+           IF DATE-FLAG = 3
+               IF DATE-RECD-MD-BUF2 > 0 AND < 32
+                   IF DATE-RECD-DM-BUF2 > 0 AND < 13
+                       IF DATE-RECD-YY-BUF2-X NUMERIC
+                           NEXT SENTENCE
+                       ELSE
+                       MOVE 35032 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 1 TO ERROR-SW
+                       MOVE TRUE-VAL TO INDS (6) INDS (99)
+                       GO TO 620-CHECK-INPUTS-X
+                   ELSE
+                   MOVE 35030 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (5) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X
+               ELSE
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (4) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           IF DATE-RECD-MD-BUF2 > 0 AND < 13
+               IF DATE-RECD-DM-BUF2 > 0 AND < 32
+                   IF DATE-RECD-YY-BUF2-X NUMERIC
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE 35032 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (6) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X
+               ELSE
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (5) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           MOVE 35030 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (4) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+      *
+      *    TIME RECD CHECK
+      *
+           IF TIME-RECD-HH-BUF2 < 24
+               IF TIME-RECD-MD-BUF2 < 60
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35054 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (08) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           MOVE 35055 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (07) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+      *
+      *    APPROVAL CODE CHECK.
+      *
+           IF APPROVAL-CODE-BUF2 = "A" OR "U" OR "R"
+               NEXT SENTENCE
+           ELSE
+           MOVE 35023 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (9) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+
+           IF PLANT-IDENT = "126"
+               NEXT SENTENCE
+           ELSE
+           IF APPROVAL-CODE-BUF2 = "U"
+               IF WO-STATUS-BUF2 = "OO" OR "HA"
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35082 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (01) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+           IF APPROVAL-CODE-BUF2 = "A"
+               IF WO-STATUS-BUF2 = "HA" OR "HM" OR "HS" OR "IP"
+                   OR "SD" OR "SW" OR "OO" OR "PR"
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE 35083 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (01) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X.
+      *
+      *    EQUIP-NUM CHECK
+      *
+      *    DETERMINE IF EQUIP-NUMBER IS IN DATABASE.
+           IF EQUIP-NUM-BUF2 = "      "
+               MOVE 35004 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (11) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+           PERFORM 69-START-EQUIP-NUM-FILE.
+           IF COND-WORD = 17
+               MOVE 35004 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (11) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+           PERFORM 69-READ-EQUIP-NUM-FILE.
+           IF EQP-EQUIP-NAME NOT = SPACES
+               MOVE EQP-EQUIP-NAME TO EQUIP-NAME-BUF2
+           ELSE
+           MOVE SPACES TO EQUIP-NAME-BUF2.
+           IF EQP-TYPE NOT = SPACES
+               MOVE EQP-TYPE TO TYPE-NUM-BUF2
+           ELSE
+           MOVE SPACES TO TYPE-NUM-BUF2.
+           IF EQP-DEPT NOT = SPACES
+               MOVE EQP-DEPT TO DEPT-BUF2
+           ELSE
+           MOVE SPACES TO DEPT-BUF2.
+           IF EQP-MAINT-ZONE NOT = SPACES
+               MOVE EQP-MAINT-ZONE TO ZONE-BUF2
+           ELSE
+           MOVE SPACES TO ZONE-BUF2.
+           IF EQP-LOCATION NOT = SPACES
+               MOVE EQP-LOCATION TO LOCATION-BUF2
+           ELSE
+           MOVE SPACES TO LOCATION-BUF2.
+           IF EXP-CLASS-BUF2 NOT = SPACES
+               NEXT SENTENCE
+           ELSE
+           IF PLANT-IDENT = "112 "
+               IF EQP-EXP-CLASS NOT = SPACES
+                   MOVE EQP-EXP-CLASS TO EXP-CLASS-BUF2
+               ELSE
+               MOVE SPACES TO EXP-CLASS-BUF2
+           ELSE
+           MOVE EQP-EXP-CLASS TO EXP-CLASS-BUF2.
+      *
+      *    DETERMINE IF EQUIPMENT IS SAFETY EQUIPMENT
+      *
+           IF EQP-SAFETY-FLG = "X"
+               MOVE 29125 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (11) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+      *
+      *    PRIORITY CHECK.
+      *
+           IF EQUIP-DOWN-BUF2 = "Y"
+               MOVE 1 TO PRIORITY-BUF2.
+           PERFORM 69-START-WO-ZONE-PRTY-FILE.
+           IF COND-WORD = 17
+               MOVE 35081 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (17) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+           IF EQUIP-DOWN-BUF2 = "Y" OR "N" OR "?"
+               NEXT SENTENCE
+           ELSE
+           MOVE 35079 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (19) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+      *
+      *    EXP-CLASS CHECK.
+      *
+      *    PROGRAM READ WO-LAST-NUM-USED HERE
+           IF EXP-CLASS-BUF2 = "        "
+               MOVE 35009 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (20) INDS (99)
+               GO TO 620-CHECK-INPUTS-X.
+      *************************************************************
+      *    LOGIC ADDED 3-24-86 TO MAKE THE USER INPUT AN          *
+      *    EXPENSE CLASS IF ONE IS NOT ABSTRACTABLE FROM          *
+      *    THE EQUIPMENT FILE                                     *
+      *************************************************************
+           IF ECB (8) = " "
+               IF ECB (7) = " "
+                   IF ECB (6) = " "
+                       IF ECB (5) = " "
+                           IF ECB (4) = " "
+                               IF ECB (3) = " "
+                                   IF ECB (2) = " "
+                                       MOVE ECB (1) TO ECB (8)
+                                       MOVE "0" TO ECB (7) ECB (6)
+                                           ECB (5) ECB (4) ECB (3)
+                                           ECB (2) ECB (1)
+
+                                   ELSE
+                                   MOVE ECB (2) TO ECB (8)
+                                   MOVE ECB (1) TO ECB (7)
+                                   MOVE "0" TO ECB (6) ECB (5) ECB (4)
+                                               ECB (3) ECB (2) ECB (1)
+                               ELSE
+                               MOVE ECB (3) TO ECB (8)
+                               MOVE ECB (2) TO ECB (7)
+                               MOVE ECB (1) TO ECB (6)
+                               MOVE "0" TO ECB (5) ECB (4) ECB (3)
+                                           ECB (2) ECB (1)
+                           ELSE
+                           MOVE ECB (4) TO ECB (8)
+                           MOVE ECB (3) TO ECB (7)
+                           MOVE ECB (2) TO ECB (6)
+                           MOVE ECB (1) TO ECB (5)
+                           MOVE "0" TO ECB (4) ECB (3) ECB (2) ECB (1)
+                       ELSE
+                       MOVE ECB (5) TO ECB (8)
+                       MOVE ECB (4) TO ECB (7)
+                       MOVE ECB (3) TO ECB (6)
+                       MOVE ECB (2) TO ECB (5)
+                       MOVE ECB (1) TO ECB (4)
+                       MOVE "0" TO ECB (3) ECB (2) ECB (1)
+                   ELSE
+                   MOVE ECB (6) TO ECB (8)
+                   MOVE ECB (5) TO ECB (7)
+                   MOVE ECB (4) TO ECB (6)
+                   MOVE ECB (3) TO ECB (5)
+                   MOVE ECB (2) TO ECB (4)
+                   MOVE ECB (1) TO ECB (3)
+                   MOVE "0" TO ECB (2) ECB (1)
+               ELSE
+               MOVE ECB (7) TO ECB (8)
+               MOVE ECB (6) TO ECB (7)
+               MOVE ECB (5) TO ECB (6)
+               MOVE ECB (4) TO ECB (5)
+               MOVE ECB (3) TO ECB (4)
+               MOVE ECB (2) TO ECB (3)
+               MOVE ECB (1) TO ECB (2)
+               MOVE "0" TO ECB (1).
+           IF PLANT-IDENT = "112"
+               NEXT SENTENCE
+           ELSE
+           MOVE EXP-CLASS-BUF2 TO ARG-KEY-2
+           MOVE "E" TO ARG-1-2
+           MOVE "C" TO ARG-2-2
+           PERFORM 69-READ-MVALIDPLTDATA-FILE
+           IF COND-WORD NOT = 0
+               MOVE "N" TO ARG-1-2
+               MOVE "W" TO ARG-2-2
+               PERFORM 69-READ-MVALIDPLTDATA-FILE
+               IF COND-WORD NOT = 0
+                   MOVE 35009 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (20) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X.
+       620-CI-CONT.
+      *
+      *    CALCULATE RIME
+      *
+           IF EQP-RIME = "  "
+               MOVE 01 TO RIME-BUF2
+           ELSE
+           MOVE EQP-RIME TO RIME-BUF2.
+           IF PRIORITY-BUF2 = 1 MULTIPLY 9 BY RIME-BUF2.
+           IF PRIORITY-BUF2 = 2 MULTIPLY 6 BY RIME-BUF2.
+           IF PRIORITY-BUF2 = 3 MULTIPLY 4 BY RIME-BUF2.
+           IF PRIORITY-BUF2 = 4 MULTIPLY 2 BY RIME-BUF2.
+           IF PRIORITY-BUF2 = 5 MULTIPLY 1 BY RIME-BUF2.
+           IF DATE-REQD-BUF2 = "      "
+               NEXT SENTENCE
+           ELSE
+           MOVE DATE-REQD-MD-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO DATE-REQD-MD-BUF2
+           MOVE DATE-REQD-DM-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO DATE-REQD-DM-BUF2
+           MOVE DATE-REQD-YY-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO DATE-REQD-YY-BUF2
+           IF DATE-FLAG = 3
+               IF DATE-REQD-MD-BUF2 > 0 AND < 32
+                   IF DATE-REQD-DM-BUF2 > 0 AND < 13
+                       IF DATE-REQD-YY-BUF2 = "00"
+                           MOVE 35032 TO CATREAD-MSG-NUMBER
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE 1 TO ERROR-SW
+                           MOVE TRUE-VAL TO INDS (23) INDS (99)
+                           GO TO 620-CHECK-INPUTS-X
+                       ELSE
+                       IF DATE-REQD-YY-BUF2 NUMERIC
+                           NEXT SENTENCE
+                       ELSE
+                       MOVE 35032 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 1 TO ERROR-SW
+                       MOVE TRUE-VAL TO INDS (23) INDS (99)
+                       GO TO 620-CHECK-INPUTS-X
+                   ELSE
+                   MOVE 35031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (22) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X
+               ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (21) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           IF DATE-REQD-MD-BUF2 > 0 AND < 13
+               IF DATE-REQD-DM-BUF2 > 0 AND < 32
+                   IF DATE-REQD-YY-BUF2 = "00"
+                       MOVE 35032 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 1 TO ERROR-SW
+                       MOVE TRUE-VAL TO INDS (23) INDS (99)
+                       GO TO 620-CHECK-INPUTS-X
+                   ELSE
+                   IF DATE-REQD-YY-BUF2 NUMERIC
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE 35032 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (23) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X
+               ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (22) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           MOVE 35031 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (21) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+           IF TIME-REQD-BUF2 = "    "
+               NEXT SENTENCE
+           ELSE
+           MOVE TIME-REQD-HH-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO TIME-REQD-HH-BUF2
+           MOVE TIME-REQD-MD-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO TIME-REQD-MD-BUF2
+           IF TIME-REQD-HH-BUF2 < 24
+               IF TIME-REQD-MD-BUF2 < 60
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35054 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (25) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           MOVE 35055 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (24) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+           IF DATE-SCHD-BUF2 = "      "
+               NEXT SENTENCE
+           ELSE
+           MOVE DATE-SCHD-MD-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO DATE-SCHD-MD-BUF2
+           MOVE DATE-SCHD-DM-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO DATE-SCHD-DM-BUF2
+           MOVE DATE-SCHD-YY-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO DATE-SCHD-YY-BUF2
+           IF DATE-FLAG = 3
+               IF DATE-SCHD-MD-BUF2 > 0 AND < 32
+                   IF DATE-SCHD-DM-BUF2 > 0 AND < 13
+                       IF DATE-SCHD-YY-BUF2 = "00"
+                           MOVE 35032 TO CATREAD-MSG-NUMBER
+                           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                           MOVE 1 TO ERROR-SW
+                           MOVE TRUE-VAL TO INDS (40) INDS (99)
+                           GO TO 620-CHECK-INPUTS-X
+                       ELSE
+                       IF DATE-SCHD-YY-BUF2 NUMERIC
+                           NEXT SENTENCE
+                       ELSE
+                       MOVE 35032 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 1 TO ERROR-SW
+                       MOVE TRUE-VAL TO INDS (40) INDS (99)
+                       GO TO 620-CHECK-INPUTS-X
+                   ELSE
+                   MOVE 35031 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (39) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X
+               ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (38) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           IF DATE-SCHD-MD-BUF2 > 0 AND < 13
+               IF DATE-SCHD-DM-BUF2 > 0 AND < 32
+                   IF DATE-SCHD-YY-BUF2 = "00"
+                       MOVE 35032 TO CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE 1 TO ERROR-SW
+                       MOVE TRUE-VAL TO INDS (40) INDS (99)
+                       GO TO 620-CHECK-INPUTS-X
+                   ELSE
+                   IF DATE-SCHD-YY-BUF2 NUMERIC
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE 35032 TO CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1 TO ERROR-SW
+                   MOVE TRUE-VAL TO INDS (40) INDS (99)
+                   GO TO 620-CHECK-INPUTS-X
+               ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (39) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           MOVE 35031 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (38) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+           IF TIME-SCHD-BUF2 = "    "
+               NEXT SENTENCE
+           ELSE
+           MOVE TIME-SCHD-HH-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO TIME-SCHD-HH-BUF2
+           MOVE TIME-SCHD-MD-BUF2 TO RIGHT-JUSTIFY-WA
+           PERFORM 6201-RIGHT-JUSTIFY-2 THRU 6201-RJ2-EXIT
+           MOVE RIGHT-JUSTIFY-WA TO TIME-SCHD-MD-BUF2
+           IF TIME-SCHD-HH-BUF2 < 41
+               IF TIME-SCHD-MD-BUF2 < 60
+                   NEXT SENTENCE
+               ELSE
+               MOVE 35054 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1 TO ERROR-SW
+               MOVE TRUE-VAL TO INDS (42) INDS (99)
+               GO TO 620-CHECK-INPUTS-X
+           ELSE
+           MOVE 35055 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE 1 TO ERROR-SW
+           MOVE TRUE-VAL TO INDS (41) INDS (99)
+           GO TO 620-CHECK-INPUTS-X.
+
+       620-CHECK-INPUTS-X.
+           EXIT.
+
+       6201-RIGHT-JUSTIFY-2.
+           IF RJ-WA (2) = " "
+              IF RJ-WA (1) = " "
+                  MOVE "0" TO RJ-WA (1) RJ-WA (2)
+              ELSE
+              MOVE RJ-WA (1) TO RJ-WA (2)
+              MOVE "0" TO RJ-WA (1).
+
+       6201-RJ2-EXIT.    EXIT.
+
+       623-MOVE-BUF2-TO-WO-PLANNED.
+           MOVE WO-STATUS-BUF2-1-2      TO WO-STATUS-P.
+           MOVE 3                       TO DATE-MODE.
+           MOVE DATE-RECD-BUF2          TO DATE-VALIDATE-IN.
+           CALL "TDATECK2" USING DATE-CHECK-AREA.
+           MOVE DATE-DB                 TO DATE-RECD-P.
+           IF DATE-RECD-P-YY > "70"
+               MOVE "19"                TO DATE-RECD-P-CC
+           ELSE
+           MOVE "20"                    TO DATE-RECD-P-CC.
+           MOVE TIME-RECD-BUF2          TO TIME-RECD-P.
+           MOVE APPROVAL-CODE-BUF2      TO APPROVAL-CODE-P.
+           MOVE REQUESTER-BUF2          TO REQUESTER-P.
+           MOVE EQUIP-NUM-BUF2          TO EQUIP-NUM-P.
+           MOVE EQUIP-NAME-BUF2         TO EQUIP-NAME-P.
+           MOVE TYPE-NUM-BUF2           TO TYPE-NUM-P.
+           MOVE DEPT-BUF2               TO DEPT-P.
+           MOVE ZONE-BUF2               TO ZONE-P.
+           MOVE LOCATION-BUF2           TO LOCATION-P.
+           MOVE PRIORITY-BUF2           TO PRIORITY-P.
+           MOVE EQUIP-DOWN-BUF2         TO EQUIP-DOWN-P.
+           MOVE EXP-CLASS-BUF2          TO EXP-CLASS-P.
+           MOVE RIME-BUF2               TO RIME-P.
+           IF DATE-REQD-BUF2 = "      "
+               MOVE SPACES              TO DATE-REQD-CN
+           ELSE
+           MOVE 3                       TO DATE-MODE
+           MOVE DATE-REQD-BUF2          TO DATE-VALIDATE-IN
+           CALL "TDATECK2" USING DATE-CHECK-AREA
+           MOVE DATE-DB                 TO DATE-REQD
+           IF DATE-REQD-P-YY > "70"
+               MOVE "19"                TO DATE-REQD-P-CC
+           ELSE
+           MOVE "20"                    TO DATE-REQD-P-CC.
+           IF TIME-REQD-BUF2 = "    "
+               MOVE TIME-REQD-BUF2      TO TIME-REQD
+           ELSE
+           MOVE TIME-REQD-HH-BUF2       TO TIME-REQD-P-HH
+           MOVE TIME-REQD-MD-BUF2       TO TIME-REQD-P-MM.
+           MOVE DESCRIPTION-1-BUF2      TO DESCRIPTION-1-P.
+           MOVE DESCRIPTION-2-BUF2      TO DESCRIPTION-2-1-P.
+           MOVE DESCRIPTION-3-BUF2      TO DESCRIPTION-2-2-P.
+           MOVE DESCRIPTION-4-BUF2      TO DESCRIPTION-3-1-P.
+           MOVE DESCRIPTION-5-BUF2      TO DESCRIPTION-3-2-P.
+           MOVE SPECL-INSTR-1-BUF2      TO  SPECL-INSTR-1.
+           MOVE SPECL-INSTR-2-BUF2      TO SPECL-INSTR-2.
+           MOVE SPECL-EQUIP-BUF2        TO SPECL-EQUIP.
+           MOVE SAFETY-NOTE-BUF2        TO SAFETY-NOTE.
+           IF JCW-MJCW-260 = 1
+               MOVE "E"                 TO WO-START-TYPE
+               MOVE "E"                 TO WO-CURRENT-TYPE
+               IF ENGINEER-BUF2 = "    "
+                   MOVE "INIT"          TO ENGINEER-P
+                                           ENGINEER-BUF2
+                   MOVE "    "          TO PLANNER-P SCHEDULER-P
+               ELSE
+               MOVE ENGINEER-BUF2       TO ENGINEER-P
+               MOVE "    "              TO PLANNER-P SCHEDULER-P
+           ELSE
+           IF JCW-MJCW-260 = 2
+               MOVE "P"                 TO WO-START-TYPE
+               MOVE "P"                 TO WO-CURRENT-TYPE
+               IF PLANNER-BUF2 = "    "
+                   MOVE "INIT"          TO PLANNER-P
+                                           PLANNER-BUF2
+                   MOVE "    "          TO ENGINEER-P SCHEDULER-P
+               ELSE
+               MOVE PLANNER-BUF2        TO PLANNER-P
+               MOVE "    "              TO ENGINEER-P SCHEDULER-P
+           ELSE
+           MOVE "P"                     TO WO-START-TYPE
+           MOVE "P"                     TO WO-CURRENT-TYPE.
+           IF PLANNER-BUF2 = "    "
+               MOVE "INIT"              TO PLANNER-P
+               MOVE ENGINEER-BUF2       TO ENGINEER-P
+               MOVE SCHEDULER-BUF2      TO SCHEDULER-P
+           ELSE
+           MOVE PLANNER-BUF2            TO PLANNER-P
+           MOVE ENGINEER-BUF2           TO ENGINEER-P
+           MOVE SCHEDULER-BUF2          TO SCHEDULER-P.
+      ****************************************************************
+      *    THE ABOVE STATEMENTS WERE ASTERISKED OUT 1-22-88 TO       *
+      *    ALLOW THE USER TO ENTER ALL THREE FIELDS - PLANNER,       *
+      *    ENGINEER, AND SCHEDULER AT WORK ORDER INTIATION TIME      *
+      ****************************************************************
+           MOVE PLANNER-BUF2            TO PLANNER-P.
+           MOVE ENGINEER-BUF2           TO ENGINEER-P.
+           MOVE SCHEDULER-BUF2          TO SCHEDULER-P.
+           IF WO-CURRENT-TYPE = "E"
+               IF ENGR-RESP-IND = "R "
+                   NEXT SENTENCE
+               ELSE
+               MOVE "R " TO ENGR-RESP-IND
+               MOVE "  " TO PLNR-RESP-IND SCHD-RESP-IND
+           ELSE
+           IF WO-CURRENT-TYPE = "P"
+               IF PLNR-RESP-IND = "R "
+                   NEXT SENTENCE
+               ELSE
+               MOVE "R " TO PLNR-RESP-IND
+               MOVE "  " TO ENGR-RESP-IND SCHD-RESP-IND
+           ELSE
+           IF WO-STATUS-P = "SD" OR "PR"
+               MOVE "R " TO SCHD-RESP-IND
+               MOVE "  " TO ENGR-RESP-IND PLNR-RESP-IND.
+           IF DATE-SCHD-BUF2 = "      "
+               MOVE SPACES            TO DATE-SCHD-CN
+           ELSE
+           IF DATE-FLAG = 3
+               MOVE DATE-SCHD-MD-BUF2 TO DATE-SCHD-P-DD
+               MOVE DATE-SCHD-DM-BUF2 TO DATE-SCHD-P-MM
+               MOVE DATE-SCHD-YY-BUF2 TO DATE-SCHD-P-YY
+           ELSE
+           MOVE DATE-SCHD-MD-BUF2 TO DATE-SCHD-P-MM
+           MOVE DATE-SCHD-DM-BUF2 TO DATE-SCHD-P-DD
+           MOVE DATE-SCHD-YY-BUF2 TO DATE-SCHD-P-YY.
+           IF DATE-SCHD-P-YY = "  "
+               NEXT SENTENCE
+           ELSE
+           IF DATE-SCHD-P-YY > "70"
+               MOVE "19"              TO DATE-SCHD-P-CC
+           ELSE
+           MOVE "20"                  TO DATE-SCHD-P-CC.
+           IF TIME-SCHD-BUF2 = "    "
+               MOVE TIME-SCHD-BUF2 TO TIME-SCHD
+           ELSE
+           MOVE TIME-SCHD-HH-BUF2 TO TIME-SCHD-P-HH
+           MOVE TIME-SCHD-MD-BUF2 TO TIME-SCHD-P-MM.
+           IF BUDGET-NO-BUF2 = SPACES
+               MOVE BUDGET-NO-BUF2 TO BUDGET-NO
+           ELSE
+           MOVE BGT-NO-1-3-BUF2 TO BUDGET-NO-1-3
+           MOVE BGT-NO-4-5-BUF2 TO BUDGET-NO-4-5
+           MOVE BGT-NO-6-7-BUF2 TO BUDGET-NO-6-7
+           MOVE BGT-NO-8-10-BUF2 TO BUDGET-NO-8-10
+           MOVE "-" TO BUDGET-NO-DASH-1 BUDGET-NO-DASH-2
+               BUDGET-NO-DASH-3.
+           MOVE "R" TO BUDGET-NO-REV.
+           MOVE BGT-NO-REVNO TO BUDGET-NO-REVNO.
+           MOVE REQ-NO-BUF2 TO REQUEST-NO.
+
+       629-CALL-TSCREEN.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE "  MMISA" TO BLOWUP-BASE
+               MOVE "SCREEN PROCESSING ERROR" TO BU-DISPLAY-MSG
+               MOVE "VIEW ERROR = " TO BU-DISPLAY-FLD (1)
+               MOVE DSPLY-STATUS   TO BU-DISPLAY-FLD9 (1)
+               PERFORM 998-BLOWUP.
+
+       69-START-EQUIP-NUM-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE EQUIP-NUM-BUF2 TO EQPNUM OF ENFREC.
+           START EQUIP-NUM-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF ENF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-EQUIP-NUM-FILE.
+           MOVE 0 TO COND-WORD.
+           READ EQUIP-NUM-FILE NEXT INTO EQUIP-DATA
+               AT END    MOVE 17 TO COND-WORD.
+           IF ENF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-MVALIDPLTDATA-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ARG-KEY-2 TO VALDTAKEY OF MVFREC.
+           START MVALIDPLTDATA-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF MVF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-START-WO-STATUS-MSTR-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-STATUS-BUF2 TO WOSTATUS OF WSMFREC.
+           START WO-STATUS-MSTR-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF WSMF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-START-WO-ZONE-PRTY-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ZONE-BUF2 TO ARG-1-3.
+           MOVE PRIORITY-BUF2 TO ARG-2-3.
+           MOVE SPACE TO ARG-3-3.
+           MOVE ARG-KEY-1 TO ZONEPRTY OF WZPFREC.
+           START WO-ZONE-PRTY-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE 17 TO COND-WORD.
+           IF WZPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+           MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+       998-BLOWUP.
+           MOVE "TINITPLN" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BLOWUP-BASE BU-PGM-NAME STATUS-AREA
+                            VIEW-COMAREA DUMMY-KSAM-STAT
+                            BU-DISPLAY-MSG BU-DISPLAY-FLDS.
+
+DCR01  800-CALL-EQUIP-SELECTION.
+
+           MOVE SPACE         TO  WS-EQUIP-NBR.
+           CALL WS-EQUIP-SEL-PGM  USING WS-EQUIP-NBR.
+
+           IF WS-EQUIP-NBR NOT = SPACES
+              MOVE WS-EQUIP-NBR  TO EQUIP-NUM-BUF2
+           END-IF.
+
+DCR01  800-EQP-EXIT.
+DCR01       EXIT.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.

@@ -1,0 +1,953 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             SPMPRINT.
+       AUTHOR.                 W. ROXBURY.
+      *REMARKS.                PLANNER'S PREVIEW WORKSHEET.
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        HP-3000.
+       OBJECT-COMPUTER.        HP-3000.
+       SPECIAL-NAMES.          I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                               C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZPMMAINT-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS DISPLAY-STATUS
+                  CONTROL-AREA IS WS-CONTROL.
+
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS SEQUENTIAL
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT MSTORERM
+                  ASSIGN       TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT PM-JOBPLAN
+                  ASSIGN       TO DATABASE-MCFLMM4101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT PM-JOBPLAN-KEYS
+                  ASSIGN       TO DATABASE-MCFLMM4002
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT CH-PRINT-FILE
+                  ASSIGN       TO PRINTER-MCPRT
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT OUT-FILE
+                  ASSIGN       TO DISK-OPMPRINT
+                  ORGANIZATION IS RELATIVE
+                  ACCESS MODE  IS DYNAMIC
+                  RELATIVE KEY IS ACT-KEY
+                  FILE STATUS  IS FILE-STATUS.
+
+           SELECT SORT-FILE
+                  ASSIGN       TO DISK-SORTFILE.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       FD  PER-PERSONNEL
+           LABEL RECORDS       ARE STANDARD.
+       01  PER-PERSONNEL-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  MSTORERM
+           LABEL RECORDS       ARE STANDARD.
+       01  MSTORERM-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS0201.
+
+       FD  PM-JOBPLAN
+           LABEL RECORDS       ARE STANDARD.
+       01  PM-JOBPLAN-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4101.
+
+       FD  PM-JOBPLAN-KEYS
+           LABEL RECORDS       ARE STANDARD.
+       01  PM-JOBP-KEYS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM4002.
+
+       FD  CH-PRINT-FILE
+           LABEL RECORD        IS OMITTED
+           RECORD CONTAINS     132 CHARACTERS.
+       01  CH-PRINT-RECORD.
+           05  CH-CARRIAGE-CTL PIC X.
+           05  CH-PRINT-AREA   PIC X(131).
+
+       FD  OUT-FILE RECORD     CONTAINS 200 CHARACTERS
+           LABEL RECORDS ARE OMITTED
+           DATA RECORD IS OUT-REC.
+       01  OUT-REC.
+           05  OUT-KEY         PIC X(18).
+           05  OUT-CRAFT       PIC X(02).
+           05  OUT-DATA        PIC X(180).
+
+       SD  SORT-FILE RECORD    CONTAINS 200 CHARACTERS
+           DATA RECORD         IS SORT-REC.
+       01  SORT-REC.
+           05  SORT-KEY.
+               10  SORT-KEY-NAME      PIC X(10).
+               10  SORT-KEY-SEQ-LINE  PIC X(08).
+           05  SORT-CRAFT             PIC XX.
+           05  SORT-DATA              PIC X(180).
+
+       WORKING-STORAGE SECTION.
+       77  SUBSYS-SW           PIC 9 VALUE 0.
+       77  JOBP-EST-TIME-WORK  PIC 9(5)V9.
+       77  JOBPLAN-LABOR-EST   PIC 9(8)V99.
+       77  JOBPLAN-PARTS-EST   PIC 9(11)V9(4).
+       77  PAGE-CTR            PIC 99 VALUE 0.
+       77  LINE-CTR            PIC 99 VALUE 0.
+       77  RTN-STATUS          PIC S9  COMP VALUE 0.
+       77  RTN-ERR-MSG         PIC X(75) VALUE SPACES.
+       77  NUM-COPIES          PIC S99 COMP VALUE 1.
+       77  PRTY                PIC S9  COMP VALUE 0.
+       77  SAVE-JOBPSEQ        PIC 9999 VALUE 0.
+       77  RET-CC              PIC X(08).
+       77  BASE-ST             PIC X(24) VALUE SPACES.
+       77  STOR-PASS           PIC X(08) VALUE "JADE;".
+       77  DSET-NAME-P         PIC X(16) VALUE "PER-PERSONNEL;".
+       77  DSET-PART           PIC X(16) VALUE "MSTORERM;".
+       77  DSET-PMKY           PIC X(16) VALUE "PM-JOBPLAN-KEYS;".
+       77  ITEM-JPKY           PIC X(16) VALUE "PM-JOBPLAN-KEY;".
+       77  ASTERISK-LINE       PIC X(80) VALUE ALL "*".
+       77  LINES-LINE          PIC X(80) VALUE ALL "=".
+       77  PRTSTAT             PIC S9(4) COMP.
+       77  JOBPLAN-CRAFT       PIC XX    VALUE SPACES.
+       77  CRAFT-SAVE          PIC XX    VALUE SPACES.
+       77  RET-CODE            PIC XX.
+       77  RETURN-CODE         PIC XX.
+       77  OUTPUT-SW           PIC XX    VALUE SPACES.
+       77  COMP-VALUE          PIC X(50)
+           VALUE "                                                 >".
+       77  LEVEL-CODE          PIC XX VALUE "00".
+       77  LEVEL-CODE-9        REDEFINES LEVEL-CODE
+                               PIC 99.
+
+       77  ACT-KEY             PIC 9(4).
+       77  MAX-KEY             PIC 9(4).
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "SPMPRINT".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "MA".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A     PIC X(60) VALUE
+           "PRINT ROUTINE TO PREVIEW MSTR JOBPLANS BY SELECTED LEVELS.".
+               10  PROG-DESC-B     PIC X(60) VALUE
+           "MAY BE SORTED BY CRAFT IF DESIRED.                        ".
+               10  PROG-FUNCTION   PIC X(60) VALUE
+           "                                                          ".
+           05  PASSWORD-FLAG   PIC X.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1   PIC X.
+           05  FILE-STATUS-2   PIC X.
+
+       01  DISPLAY-STATUS      PIC X(02).
+       01  WS-CONTROL.
+           05  FUNCTION-NUM    PIC X(02).
+           05  TERMINAL-ID     PIC X(10).
+           05  FORMAT-NAME     PIC X(10).
+       01  SRF-INDICATORS.
+           05  IND             OCCURS 99 TIMES PIC 1 INDICATOR 01.
+       COPY IOFEEDBACK         IN COPYLIB.
+
+       01  SCREEN-BUFFER.
+           05  NAME-BUF        PIC X(10).
+           05  LEVEL-BUF.
+               10  LBUF-1      PIC X.
+               10  LBUF-2      PIC X.
+           05  LEVEL-BUF-9     REDEFINES LEVEL-BUF
+                               PIC 99.
+           05  SORT-SW         PIC X.
+           05  CMDMSG          PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+       01  CURR-DATE.
+           05  CURR-YY         PIC X(02).
+           05  CURR-MM         PIC X(02).
+           05  CURR-DD         PIC X(02).
+
+       01  TIME-BUFFER.
+           05  TIME-BUF.
+               10  HRS         PIC XX.
+               10  MIN         PIC XX.
+               10  SEC         PIC XX.
+           05  TIME-EXP.
+               10  TIME-H      PIC XX.
+               10  FILLER      PIC X  VALUE ":".
+               10  TIME-M      PIC XX.
+               10  FILLER      PIC X  VALUE ":".
+               10  TIME-S      PIC XX.
+
+       01  RENUMBER-SCREEN.
+           05  RENUM-JP-BUF    PIC X(10).
+           05  RENUM-START-BUF PIC 9(04).
+           05  RENUM-INCR-BUF  PIC 9(04).
+           05  RENUM-EDITOR    PIC X(04).
+
+       01  LEVEL-DISP.
+           05  FILLER  PIC X(07) VALUE " LEVEL:".
+           05  JP-LEV  PIC Z9.
+           05  FILLER  PIC X     VALUE SPACE.
+
+       01  CRAFT-DISP.
+           05  FILLER  PIC X(07) VALUE " CRAFT:".
+           05  JP-CFT  PIC XX.
+           05  FILLER  PIC X     VALUE SPACE.
+
+       01  HEADER-DT.
+           05  FILLER  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(07) VALUE "DATE:  ".
+           05  PL-DAT.
+               10  PL-DAT-MM  PIC X(02)  VALUE SPACES.
+               10  FILLER     PIC X(01)  VALUE "/".
+               10  PL-DAT-DD  PIC X(02)  VALUE SPACES.
+               10  FILLER     PIC X(01)  VALUE "/".
+               10  PL-DAT-YY  PIC X(02)  VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(07) VALUE "TIME:  ".
+           05  PL-TIM  PIC X(08) VALUE SPACES.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  FILLER  PIC X(05) VALUE "PAGE:".
+           05  ZPAGE   PIC ZZZ   VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE SPACES.
+
+       01  HEADER-TITLE.
+           05  FILLER  PIC X(17) VALUE "      PREVENTIVE ".
+           05  FILLER  PIC X(20) VALUE "MAINTENANCE JOBPLAN ".
+           05  JPNAME  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(05) VALUE SPACES.
+           05  LEVDIS  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(02) VALUE SPACES.
+           05  CFTDIS  PIC X(10) VALUE SPACES.
+           05  FILLER  PIC X(06) VALUE SPACES.
+
+       01  JB-HEADER0.
+           05  FILLER  PIC X(58) VALUE SPACES.
+           05  FILLER  PIC X(22) VALUE "MACH    LABOR    CLOCK".
+
+       01  JB-HEADER1.
+           05  FILLER  PIC X(06) VALUE "TASK  ".
+           05  FILLER  PIC X(11) VALUE "DESCRIPTION".
+           05  FILLER  PIC X(42) VALUE SPACES.
+           05  FILLER  PIC X(21) VALUE "DT   CRAFTS MEN  HRS ".
+
+       01  JB-LINE-1.
+           05  JB-SEQ-X.
+               10  JB-SEQ-9    PIC 9999   VALUE ZEROES.
+               10  JB-SEQ-Z    REDEFINES JB-SEQ-9
+                               PIC ZZZZ.
+           05  TEXT-A.
+               10  FILLER      PIC X(02) VALUE SPACES.
+               10  JB-DESC     PIC X(50) VALUE SPACES.
+               10  FILLER      PIC X     VALUE SPACES.
+           05  TEXT-B REDEFINES TEXT-A.
+               10  FILLER      PIC X(02).
+               10  LEV-LIT     PIC X(06).
+               10  JB-LEVL     PIC X(02).
+               10  FILLER      PIC X(02).
+               10  FLG-LIT     PIC X(05).
+               10  JB-FLAG     PIC X(02).
+               10  FILLER      PIC X(02).
+               10  SS-LIT      PIC X(10).
+               10  JB-SS       PIC X(04).
+               10  FILLER      PIC X(18).
+           05  TEXT-C.
+               10  JB-MDT-X.
+                   15  JB-MDTH PIC XXX   VALUE SPACES.
+                   15  JB-MDEC PIC X     VALUE SPACE.
+                   15  JB-MDTP PIC X     VALUE SPACE.
+               10  FILLER      PIC X     VALUE SPACES.
+               10  JB-CR1      PIC XX    VALUE SPACES.
+               10  FILLER      PIC X     VALUE SPACES.
+               10  JB-CR2      PIC XX    VALUE SPACES.
+               10  FILLER      PIC X     VALUE SPACES.
+               10  JB-CR3      PIC XX    VALUE SPACES.
+               10  FILLER      PIC X     VALUE SPACES.
+               10  JB-MEN      PIC XX    VALUE SPACES.
+               10  FILLER      PIC X     VALUE SPACES.
+               10  JB-CLK-X.
+                   15  JB-CLKH PIC XXX   VALUE SPACES.
+                   15  JB-CDEC PIC X     VALUE SPACE.
+                   15  JB-CLKP PIC X     VALUE SPACE.
+
+       01  PT-LINE-1.
+           05  FILLER  PIC X(16) VALUE "          CSIS: ".
+           05  PT-PART PIC X(07) VALUE SPACES.
+           05  FILLER  PIC X(05) VALUE " QTY:".
+           05  PT-QTY  PIC ZZZ.
+           05  FILLER  PIC X     VALUE SPACE.
+           05  PT-UM   PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACES.
+           05  PT-TEXT PIC X(40) VALUE SPACES.
+           05  FILLER  PIC X(05) VALUE SPACES.
+
+       01  PT-LINE-2.
+           05  FILLER  PIC X(14) VALUE "      KEYWORD:".
+           05  PTKWD   PIC X(20) VALUE SPACES.
+           05  FILLER  PIC X(12) VALUE "   MODIFIER:".
+           05  PTMOD   PIC X(30) VALUE SPACES.
+           05  FILLER  PIC X(04) VALUE SPACES.
+
+      **** OLD FORMAT FOR TL-EST-LINE - RETAINED FOR POSSIBLE FUTURE USE  *
+      *01  TL-EST-LINE.                                                   *
+      *    05  FILLER      PIC X(6)  VALUE "S EST ".                      *
+      *    05  TL-STORES   PIC Z(11).99.                                  *
+      *    05  FILLER      PIC X     VALUE SPACE.                         *
+      *    05  FILLER      PIC X(6)  VALUE "P EST ".                      *
+      *    05  TL-PURCH    PIC Z(11).99.                                  *
+      *    05  FILLER      PIC X     VALUE SPACE.                         *
+      *    05  FILLER      PIC X(6)  VALUE "L EST ".                      *
+      *    05  TL-LABOR    PIC Z(11).99.                                  *
+      *    05  FILLER      PIC X     VALUE SPACE.                         *
+      *    05  FILLER      PIC X(6)  VALUE "T EST ".                      *
+      *    05  TL-TOTAL    PIC Z(11).99.                                  *
+      *********************************************************************
+
+       01  TL-EST-LINE.
+           05  FILLER      PIC X(12) VALUE "  PARTS EST:".
+           05  TL-PARTS    PIC Z(11).99.
+           05  FILLER      PIC X(12) VALUE "  LABOR EST:".
+           05  TL-LABOR    PIC Z(11).99.
+           05  FILLER      PIC X(12) VALUE "  TOTAL EST:".
+           05  TL-TOTAL    PIC Z(11).99.
+           05  FILLER      PIC X(02) VALUE SPACES.
+
+       01  TOTALS-WORKAREA.
+           05  TOTAL-PARTS-EST PIC S9(12)V99.
+           05  TOTAL-PURCH-EST PIC S9(12)V99.
+           05  TOTAL-LABOR-EST PIC S9(12)V99.
+           05  TOTAL-TOTAL-EST PIC S9(12)V99.
+
+       01  DB-ERROR.
+           05  DB-TYPE   PIC X(08) VALUE SPACES.
+           05  FILLER    PIC X(21) VALUE " ERROR - COND-WORD = ".
+           05  CON-WORD  PIC -9999.
+
+       01  RETURN-MSG.
+           05  E1              PIC X(78).
+           05  E5              PIC S9(4).
+
+           COPY OVRPFDATA      IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY DBSTAT         IN COPYLIB.
+
+           COPY MSTORERM       IN COPYLIB.
+
+       01  PERSONNEL-DATA.     COPY MPERSONL IN COPYLIB.
+
+       01  MSG-BUFFER-DATA.    COPY ERRORLIN IN COPYLIB.
+
+       01  PM-JOBPLAN-DATA.    COPY DPMJBPLN IN COPYLIB.
+
+       01  PM-JP-KEY-DATA.     COPY DPMJBKEY IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.       COPY DBPARMS  IN COPYLIB.
+
+           COPY VCOMLINK       IN COPYLIB.
+
+           COPY LANGSUB        IN COPYLIB.
+
+       PROCEDURE DIVISION USING DBPARAMETERS
+                                VIEW-COMAREA
+                                LANGUAGE-PARMS.
+       BEGIN-SORT SECTION 01.
+       CALL-PASSWRD.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N"
+               GO TO 2-EOJ.
+           CALL "CLPMPRINT".
+
+       1-HSK.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          PER-PERSONNEL
+                               MSTORERM
+                               PM-JOBPLAN
+                               PM-JOBPLAN-KEYS.
+           MOVE "VPMEXTRACT"   TO VIEW-NFNAME.
+
+       6-MAIN.
+           MOVE 0              TO SUBSYS-SW LEVEL-CODE-9
+                                  PAGE-CTR LINE-CTR SAVE-JOBPSEQ
+                                  TOTAL-PARTS-EST TOTAL-LABOR-EST
+                                  TOTAL-PURCH-EST TOTAL-TOTAL-EST.
+           MOVE SPACES         TO RET-CODE JOBPLAN-CRAFT
+                                  CRAFT-SAVE RETURN-CODE OUTPUT-SW.
+           MOVE SPACES         TO SCREEN-BUFFER.
+           MOVE "N"            TO SORT-SW.
+
+       6-SHOWFORM.
+           MOVE SCREEN-BUFFER TO DISPLAY-REC.
+           PERFORM 999-SHOWFORM.
+           IF VIEW-LASTKEY = 3 OR 8
+               GO TO 2-EOJ.
+
+           IF VIEW-LASTKEY NOT = 0
+               GO TO 6-SHOWFORM.
+
+       6-EDIT-SCREEN.
+           MOVE NAME-BUF TO PMJOBPKEY OF PM-JOBPLAN.
+           START PM-JOBPLAN KEY = PMJOBPKEY OF PM-JOBPLAN
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 036/005:
+      *M  JOBPLAN SEQUENCE DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   5        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           READ PM-JOBPLAN NEXT INTO PM-JOBPLAN-DATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "10" OR "14" OR "46"
+      *M********************************************************************
+      *M    MESSAGE 036/005:
+      *M  JOBPLAN SEQUENCE DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   5        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE FILE-STATUS TO CON-WORD
+               MOVE "DBGET  6" TO DB-TYPE
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+           IF JOBPLAN-KEY NOT = NAME-BUF
+      *M********************************************************************
+      *M    MESSAGE 036/005:
+      *M  JOBPLAN SEQUENCE DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   5        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           MOVE NAME-BUF       TO JPNAME.
+
+           IF LEVEL-BUF = "AL"
+               MOVE "ALL LEVELS" TO LEVDIS
+               GO TO 6-EDIT-CONTINUE.
+
+           IF LEVEL-BUF = "  "
+      *M********************************************************************
+      *M    MESSAGE 038/013:
+      *M LEVEL NUMBER IS REQUIRED
+      *M********************************************************************
+               MOVE  38        TO LANG-SETNUM
+               MOVE  13        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   2        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           IF LBUF-2 = " "
+               MOVE LBUF-1     TO LBUF-2
+               MOVE "0"        TO LBUF-1.
+
+           IF LEVEL-BUF NOT NUMERIC
+      *M********************************************************************
+      *M    MESSAGE 038/014:
+      *M LEVEL NUMBER MUST BE NUMERIC
+      *M********************************************************************
+               MOVE  38        TO LANG-SETNUM
+               MOVE  14        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE   2        TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           MOVE LEVEL-BUF-9    TO JP-LEV.
+           MOVE LEVEL-DISP     TO LEVDIS.
+           MOVE LEVEL-BUF-9    TO LEVEL-CODE-9.
+           ADD 1               TO LEVEL-CODE-9.
+
+       6-EDIT-CONTINUE.
+           IF SORT-SW = " " OR "N"
+               MOVE SPACES     TO CFTDIS
+               MOVE "N"        TO SORT-SW
+           ELSE
+               MOVE "Y"        TO SORT-SW.
+
+       6-CHECK-KEY-RECORD.
+           MOVE NAME-BUF TO PMJOBPKEY OF PM-JOBPLAN-KEYS.
+           START PM-JOBPLAN-KEYS KEY = PMJOBPKEY OF PM-JOBPLAN-KEYS
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+      *M********************************************************************
+      *M    MESSAGE 036/008:
+      *M JOBPLAN DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   8        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           READ PM-JOBPLAN-KEYS NEXT INTO PM-JP-KEY-DATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "10" OR "14" OR "46"
+      *M********************************************************************
+      *M    MESSAGE 036/008:
+      *M JOBPLAN DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   8        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE FILE-STATUS TO CON-WORD
+               MOVE "DBGET  K" TO DB-TYPE
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+           IF PMJPK-JOBP-KEY NOT = NAME-BUF
+      *M********************************************************************
+      *M    MESSAGE 036/008:
+      *M JOBPLAN DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   8        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           IF RECORD-KEY NOT = "KEYREC"
+      *M********************************************************************
+      *M    MESSAGE 036/008:
+      *M JOBPLAN DOES NOT EXIST
+      *M********************************************************************
+               MOVE  36        TO LANG-SETNUM
+               MOVE   8        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+
+           IF PROCESS-FLAG NOT = "  "
+               MOVE NAME-BUF   TO RENUM-JP-BUF
+               MOVE 9999       TO RENUM-START-BUF
+                                  RENUM-INCR-BUF
+               MOVE SPACES     TO RENUM-EDITOR
+               CALL "SPMRENUM" USING DBPARAMETERS
+                                     RETURN-MSG
+                                     VIEW-COMAREA
+                                     LANGUAGE-PARMS
+                                     RENUM-JP-BUF
+                                     RENUM-START-BUF
+                                     RENUM-INCR-BUF
+                                     RENUM-EDITOR
+               IF RETURN-BYTE NOT = "0"
+      *M********************************************************************
+      *M    MESSAGE 036/014:
+      *M JOBPLAN IS CORRUPTED - A PRIOR RENUMBERING SEQUENCE HAS FAILED
+      *M********************************************************************
+                   MOVE  36    TO LANG-SETNUM
+                   MOVE  14    TO LANG-MSGNUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 1      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 6-SHOWFORM.
+
+       6-SORT-ROUTINE.
+           OPEN OUTPUT OUT-FILE.
+           MOVE 0              TO ACT-KEY.
+           IF SORT-SW = "N"
+               SORT SORT-FILE  ASCENDING KEY SORT-KEY
+                   INPUT  PROCEDURE SORT-INPUT-PROC
+                   OUTPUT PROCEDURE SORT-OUTPUT-PROC
+           ELSE
+               SORT SORT-FILE  ASCENDING KEY SORT-CRAFT
+                                             SORT-KEY
+                   INPUT  PROCEDURE SORT-INPUT-PROC
+                   OUTPUT PROCEDURE SORT-OUTPUT-PROC.
+           CLOSE OUT-FILE.
+
+           IF ACT-KEY = 0
+      *M********************************************************************
+      *M    MESSAGE 040/011:
+      *M NO RECORDS FOUND WHICH MATCH YOUR SELECTION
+      *M********************************************************************
+               MOVE  40        TO LANG-SETNUM
+               MOVE  11        TO LANG-MSGNUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 6-SHOWFORM.
+
+       6-OUTPUT-ROUTINE.
+           OPEN INPUT OUT-FILE.
+           ACCEPT CURR-DATE    FROM DATE.
+           MOVE CURR-YY        TO PL-DAT-YY.
+           MOVE CURR-MM        TO PL-DAT-MM.
+           MOVE CURR-DD        TO PL-DAT-DD.
+           ACCEPT TIME-BUF     FROM TIME.
+           MOVE HRS            TO TIME-H.
+           MOVE MIN            TO TIME-M.
+           MOVE SEC            TO TIME-S.
+           MOVE TIME-EXP       TO PL-TIM.
+           MOVE 0              TO ACT-KEY PAGE-CTR.
+
+           MOVE 0 TO OVRPRTF-TOFILE-NUM.
+           MOVE "MCPRT" TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+
+           OPEN OUTPUT         CH-PRINT-FILE.
+           PERFORM 61-GET-JOBPLAN-LOOP THRU 61-GJL-EXIT.
+           IF LINE-CTR > 55    PERFORM 61-PRINT-HEADING.
+           MOVE ASTERISK-LINE  TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES.
+           MOVE TOTAL-PARTS-EST TO TL-PARTS.
+           MOVE TOTAL-LABOR-EST TO TL-LABOR.
+           MOVE TOTAL-TOTAL-EST TO TL-TOTAL.
+           MOVE TL-EST-LINE TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE ASTERISK-LINE  TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+
+           MOVE 1              TO NUM-COPIES.
+           MOVE 0              TO PRTY VIEW-STATUS.
+           CLOSE               CH-PRINT-FILE
+                               OUT-FILE.
+           GO TO 6-MAIN.
+
+       61-GET-JOBPLAN-LOOP.
+           ADD 1               TO ACT-KEY.
+           MOVE SPACES         TO OUT-REC.
+           READ OUT-FILE       INVALID KEY
+               GO TO 61-GJL-EXIT.
+           IF ACT-KEY > MAX-KEY
+               GO TO 61-GJL-EXIT.
+
+           MOVE OUT-DATA       TO PM-JOBPLAN-DATA.
+           IF ACT-KEY = 1
+               MOVE OUT-CRAFT  TO CRAFT-SAVE JP-CFT
+               MOVE CRAFT-DISP TO CFTDIS
+               PERFORM 61-PRINT-HEADING.
+           PERFORM 61-PRINT-JOBINFO.
+           GO TO 61-GET-JOBPLAN-LOOP.
+
+       61-GJL-EXIT.    EXIT.
+
+       61-PRINT-JOBINFO.
+           IF SORT-SW = "Y"
+               IF OUT-CRAFT NOT = CRAFT-SAVE
+                   MOVE OUT-CRAFT  TO CRAFT-SAVE JP-CFT
+                   MOVE CRAFT-DISP TO CFTDIS
+                   PERFORM 61-PRINT-HEADING.
+
+           IF PMJP-SEQ = SAVE-JOBPSEQ
+               MOVE SPACES     TO JB-SEQ-X TEXT-C
+           ELSE
+           IF LINE-CTR > 54
+               PERFORM 61-PRINT-HEADING
+               MOVE 1          TO SUBSYS-SW
+               MOVE PMJP-SEQ   TO JB-SEQ-Z SAVE-JOBPSEQ
+               MOVE SPACES     TO TEXT-A
+               MOVE "LEVEL:"   TO LEV-LIT
+               MOVE PMJP-LEVEL TO JB-LEVL
+               MOVE "FLAG:"    TO FLG-LIT
+               MOVE PMJP-FLAG  TO JB-FLAG
+               MOVE "SUBSYSTEM:" TO SS-LIT
+               MOVE PMJP-SS    TO JB-SS
+           ELSE
+               MOVE 1          TO SUBSYS-SW
+               MOVE PMJP-SEQ   TO JB-SEQ-Z SAVE-JOBPSEQ
+               MOVE SPACES     TO TEXT-A
+               MOVE "LEVEL:"   TO LEV-LIT
+               MOVE PMJP-LEVEL TO JB-LEVL
+               MOVE "FLAG:"    TO FLG-LIT
+               MOVE PMJP-FLAG  TO JB-FLAG
+               MOVE "SUBSYSTEM:" TO SS-LIT
+               MOVE PMJP-SS    TO JB-SS.
+
+           IF SUBSYS-SW = 0
+               MOVE PMJP-DESC  TO JB-DESC.
+
+           IF PMJP-DT = SPACES
+               MOVE SPACES     TO JB-MDT-X
+           ELSE
+           MOVE PMJP-DT-HRS    TO JB-MDTH
+           MOVE "."            TO JB-MDEC
+           MOVE PMJP-DT-DEC    TO JB-MDTP.
+
+           MOVE PMJP-CFT1      TO JB-CR1.
+           MOVE PMJP-CFT2      TO JB-CR2.
+           MOVE PMJP-CFT3      TO JB-CR3.
+
+           IF PMJP-MNX = "00"
+               MOVE SPACES     TO JB-MEN
+           ELSE
+               MOVE PMJP-MEN   TO JB-MEN.
+
+           IF PMJP-EST = SPACES
+               MOVE SPACES     TO JB-CLK-X
+           ELSE
+           MOVE PMJP-EST-HRS   TO JB-CLKH
+           MOVE "."            TO JB-CDEC
+           MOVE PMJP-EST-DEC   TO JB-CLKP
+
+           IF PMJP-MEN NOT NUMERIC OR PMJP-ESTV NOT NUMERIC
+               MOVE ZEROS TO JOBP-EST-TIME-WORK
+           ELSE
+               MULTIPLY PMJP-MEN   BY PMJP-ESTV
+                               GIVING JOBP-EST-TIME-WORK ROUNDED
+           END-IF
+           MOVE OUT-CRAFT      TO JOBPLAN-CRAFT
+           PERFORM 611-SET-LABOR-RATE THRU 611-SLR-EXIT
+           MULTIPLY JOBP-EST-TIME-WORK BY PER-LABOR-RATE GIVING
+                               JOBPLAN-LABOR-EST
+           ADD JOBPLAN-LABOR-EST TO TOTAL-LABOR-EST
+                                    TOTAL-TOTAL-EST.
+
+           IF SUBSYS-SW = 0
+               MOVE SPACES     TO TEXT-C.
+
+           IF JB-DESC NOT = COMP-VALUE
+               IF SUBSYS-SW = 1
+                   MOVE JB-LINE-1  TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   ADD 2           TO LINE-CTR
+               ELSE
+                   MOVE JB-LINE-1  TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+                   ADD 1           TO LINE-CTR.
+
+           IF SUBSYS-SW = 1
+               IF PMJP-DESC NOT = COMP-VALUE
+                   MOVE 0         TO SUBSYS-SW
+                   MOVE SPACES    TO JB-LINE-1
+                   MOVE PMJP-DESC TO JB-DESC
+                   MOVE JB-LINE-1 TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+                   ADD 1          TO LINE-CTR
+               ELSE
+                   MOVE 0         TO SUBSYS-SW.
+
+           IF PMJP-PRT-NUM NOT = SPACES
+               PERFORM 611-GET-PART-COST THRU 611-GPC-EXIT
+               MOVE PMJP-PRT-NUM   TO PT-PART
+               IF PMJP-EST-QTY-9 NOT NUMERIC
+                   MOVE ZEROS TO PT-QTY
+               ELSE
+                   MOVE PMJP-EST-QTY-9 TO PT-QTY
+               END-IF
+               MOVE PMJP-UNIT-MEAS TO PT-UM
+               MOVE PMJP-TEXT      TO PT-TEXT
+               MOVE PT-LINE-1      TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1               TO LINE-CTR.
+
+           IF LINE-CTR > 59    PERFORM 61-PRINT-HEADING.
+
+       611-SET-LABOR-RATE.
+           IF JOBPLAN-CRAFT = "  "
+               MOVE ZEROS TO PER-LABOR-RATE
+               GO TO 611-SLR-EXIT.
+           READ PER-PERSONNEL INTO PERSONNEL-DATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               CLOSE PER-PERSONNEL
+               OPEN INPUT PER-PERSONNEL
+               MOVE ZEROS TO PER-LABOR-RATE
+               GO TO 611-SLR-EXIT.
+           IF JOBPLAN-CRAFT NOT = PER-CRAFT GO TO 611-SET-LABOR-RATE.
+           IF PER-LABOR-RATE NOT NUMERIC
+               MOVE ZEROS TO PER-LABOR-RATE.
+
+       611-SLR-EXIT.    EXIT.
+
+       611-GET-PART-COST.
+           MOVE PMJP-CORP-CODE TO RET-CC.
+           MOVE RET-CC TO CORPCDE OF MSTORERM.
+           READ MSTORERM INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               GO TO 611-GPC-EXIT.
+
+           IF PMJP-EST-QTY-9 NOT NUMERIC
+               MOVE ZEROS TO JOBPLAN-PARTS-EST
+           ELSE
+               MULTIPLY PMJP-EST-QTY-9 BY STR-AVG-COST
+                               GIVING JOBPLAN-PARTS-EST.
+           ADD JOBPLAN-PARTS-EST TO TOTAL-PARTS-EST
+                                    TOTAL-TOTAL-EST.
+
+       611-GPC-EXIT.    EXIT.
+
+       61-PRINT-HEADING.
+           ADD  1              TO PAGE-CTR.
+           MOVE PAGE-CTR       TO ZPAGE.
+           MOVE HEADER-DT      TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE.
+           MOVE LINES-LINE     TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE HEADER-TITLE   TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE LINES-LINE     TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE JB-HEADER0 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE JB-HEADER1 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE 6              TO LINE-CTR.
+
+       COPY OVRPFCALL IN COPYLIB.
+
+       2-EOJ.
+           CLOSE               DISPLAY-FILE
+                               MSTORERM
+                               PER-PERSONNEL
+                               PM-JOBPLAN
+                               PM-JOBPLAN-KEYS.
+           GOBACK.
+
+       65-ERROR.
+           MOVE B"1" TO IND (FIELD-NUMBER)  IND (99).
+
+       999-CATREAD.
+           MOVE SPACES         TO CATREAD-MSG-TEXT.
+           MOVE LANG-SETNUM TO CATREAD-MSG-SET.
+           MOVE LANG-MSGNUM TO CATREAD-MSG-NUM.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           IF CATREAD-MSG-NOT-FOUND
+                MOVE "**ERROR ON FIELD**" TO ERRMSG
+           ELSE
+                MOVE CATREAD-MSG-TEXT TO ERRMSG.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       999-SHOWFORM.
+           WRITE DISPLAY-REC FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               GO TO 2-EOJ.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           READ DISPLAY-FILE FORMAT IS VIEW-NFNAME
+               INDIC ARE SRF-INDICATORS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+           MOVE DISPLAY-REC TO SCREEN-BUFFER.
+
+       SORT-INPUT-PROC SECTION 02.
+       SORT-INPUT.
+           PERFORM SORT-MAIN   THRU SORT-M-EXIT.
+           GO TO SORT-IP-EXIT.
+
+       SORT-MAIN.
+           MOVE NAME-BUF TO PMJOBPKEY OF PM-JOBPLAN.
+           START PM-JOBPLAN KEY = PMJOBPKEY OF PM-JOBPLAN
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               GO TO SORT-M-EXIT.
+
+           PERFORM SORT-DBGET  THRU SORT-DBGET-EXIT
+                               UNTIL FILE-STATUS NOT = "00".
+
+       SORT-M-EXIT.    EXIT.
+
+       SORT-DBGET.
+           MOVE SPACES         TO SORT-REC.
+           READ PM-JOBPLAN NEXT INTO PM-JOBPLAN-DATA
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "10" OR "14" OR "46"
+               GO TO SORT-DBGET-EXIT
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE "DBGET   " TO DB-TYPE
+               MOVE FILE-STATUS TO CON-WORD
+               MOVE DB-ERROR   TO ERRMSG
+               MOVE 1          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 6-SHOWFORM.
+           IF JOBPLAN-KEY NOT = NAME-BUF
+               MOVE "10" TO FILE-STATUS
+               GO TO SORT-DBGET-EXIT.
+
+           IF LEVEL-BUF = "AL"
+               NEXT SENTENCE
+           ELSE
+           IF PMJP-LEVEL < LEVEL-CODE
+               IF PMJP-FLAG > LEVEL-BUF
+                   NEXT SENTENCE
+               ELSE
+                   GO TO SORT-DBGET-EXIT
+           ELSE
+               GO TO SORT-DBGET-EXIT.
+
+           MOVE JOBPLAN-KEY     TO  SORT-KEY-NAME.
+           MOVE PMJP-SEQ-LINE   TO  SORT-KEY-SEQ-LINE.
+           MOVE PMJP-CFT1       TO  SORT-CRAFT.
+           MOVE PM-JOBPLAN-DATA TO  SORT-DATA.
+           RELEASE SORT-REC.
+
+           IF SORT-SW = "Y"
+               IF PMJP-CFT2 NOT = "  "
+                   MOVE PMJP-CFT2 TO SORT-CRAFT
+                   RELEASE SORT-REC
+                   IF PMJP-CFT3 NOT = "  "
+                       MOVE PMJP-CFT3 TO SORT-CRAFT
+                       RELEASE SORT-REC.
+
+       SORT-DBGET-EXIT.    EXIT.
+
+       SORT-IP-EXIT.    EXIT.
+
+       SORT-OUTPUT-PROC SECTION 03.
+       SORT-OUTPUT.
+           RETURN SORT-FILE AT END
+               MOVE ACT-KEY    TO MAX-KEY
+               GO TO SORT-WF-EXIT.
+           ADD 1               TO ACT-KEY.
+           MOVE SORT-REC       TO OUT-REC.
+           WRITE OUT-REC       INVALID KEY
+               DISPLAY "WRITE OUT-FILE ERR"
+               GO TO SORT-WF-EXIT.
+           GO TO SORT-OUTPUT-PROC.
+
+       SORT-WF-EXIT.    EXIT.
+
+      ******************  END OF FILE  ********************************

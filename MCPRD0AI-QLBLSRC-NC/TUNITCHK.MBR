@@ -1,0 +1,1101 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.           TUNITCHK.
+       AUTHOR.               MK MADDEN.
+       DATE-WRITTEN.         MAY 30, 1985.
+      *INSTALLATION.         GOODYEAR TIRE AND RUBBER CO.
+      *D REMARKS.              THIS PROGRAM WILL READ THROUGH THE
+      *D                       MATERIAL ACCUM MASTER DATA SET
+      *D                       AND CALCULATE ONHAND UNITS FROM ACCOUNTING
+      *D                       TOTALS AND FIND ALL THOSE THAT SHOW A
+      *D                       DIFFERENCE FROM CSIS UNITS.
+      *C
+      *C   07MAR1994    DAVE PLUM
+      *C     ADDED CALL TO THE COBOL ERROR HANDLER - MCXCBLERR.
+      *C
+      *C   JUNE 13, 1994   CR KALMAN     REQUEST# 6514
+      *C     ADDED A TABLE AND ANOTHER SORT FILE TO HANDLE THE NEW
+      *C     REPORT DESCRIBED IN REQUEST 93-011.  THIS CHANGE WAS
+      *C     MADE ONLY ON THE AS/400.
+      *C
+      *C   06DEC1994   DAVE PLUM
+      *C     CORRECTED A MINOR LOGIC PROBLEM WHICH ALLOWED THE PROGRAM
+      *C     TO TRY AND ACCESS ENTRY NUMBER 101 OF A 100 ENTRY TABLE.
+      *C
+      *C   20DEC1994   DAVE PLUM
+      *C     REVISED LOGIC TO PREVENT CODE "NON-STR" FROM BEING
+      *C     PLACED ON THE 2ND REPORT (CONFLICTING ENDING BLANCES).
+      *C
+      *C   14FEB1995   CATHY ZUBEK
+      *C     ADDED OPEN RECEIVER UNITS AND DOLLARS TO FORMULAS THAT
+      *C     COMPUTE ENDING BALANCES.
+      *C
+      *C   09SEP1996   DAVE PLUM
+      *C     REVISED FOR CENTURY DATABASE CHANGES.
+      *C
+      *C   10FEB1997   DAVE PLUM
+      *C     REVISED PROGRAM TO HANDLE AN 8 CHARACTER DATE FOR THE
+      *C     DHOLDTRAN DATASET (MCFPCA0900).  THIS FILE WAS UNEXPECTEDLY
+      *C     MODIFIED FOR THE J.01 RELEASE.  THIS CHANGE IS A J.01 FIX.
+      *C     BASICALLY, WE ARE RECOMPILING THIS PROGRAM TO PICK UP A
+      *C     PROPER RECORD LAYOUT FOR DHOLDTRAN FROM COPYLIB.
+      *C
+DP9803*C   20MAR1998  DAVE PLUM
+DP9803*C     REVISED TO COMPUTE THE VALUE OF SORT-CSIS-UNITS USING THE
+DP9803*C     BIN ONHAND QUANTITIES FOR BINS THAT ARE NOT OWNED BY A
+DP9803*C     VENDOR.  THIS CHANGE IS NEEDED TO ACCOMMODATE THE OWNERSHIP
+DP9803*C     BY BIN LOCATION CONCEPT WHICH WAS CREATED FOR USE IN
+DP9803*C     DANVILLE FOR MATERIALS OWNED BY THE ISC.
+DP9803*C
+      *C   30MAR1998  JIM COFFMAN
+      *C     CHANGED LOGIC TO INCLUDE TC333 IF IT IS A GOODYEAR-OWNED
+      *C     PART WHEN CALULATING THE CSIS UNPROCESSED UNITS. OUTSOURCED
+      *C     VENDOR ISSUES SHOULD NOT BE INCLUDED.
+      *C
+      *C   27APR1998  JIM COFFMAN
+      *C     ADDED TC532 TO TRANSACTIONS CHECKED IN 300-PROCESS-DDAILYTCS
+      *C     PARAGRAPH TO HANDLE BIN ADJUSTMENTS BETWEEN GOODYEAR AND ISC.
+      *C
+      *C   05OCT1998  JIM COFFMAN
+      *C     BACKED OUT 532 CHECK AS 332'S ARE WRITTEN PAIRED WITH ALL 532'S
+      *C     AND DANVILLE WAS GETTING A DOUBLE COUNT.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.      HP-3000.
+       OBJECT-COMPUTER.      HP-3000.
+       COPY SPECIALN OF COPYLIB.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MMATL-ACCUM-MC-I
+               ASSIGN TO DATABASE-MCFLCA0601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-DT-I
+               ASSIGN TO DATABASE-MCFLCS1601
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DHOLDTRAN-TD-I
+               ASSIGN TO DATABASE-MCFLCA0901
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-CD-I
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT ONLINE-PRT ASSIGN TO PRINTER-MCPRT.
+
+           SELECT SORT-FILE  ASSIGN TO DISK-SORT.
+9406CK     SELECT SORT-FILE2 ASSIGN TO DISK-SORT.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  MMATL-ACCUM-MC-I
+           LABEL RECORDS ARE STANDARD.
+       01  MMATL-ACCUM-MC-REC-I.
+           COPY DDS-MCRPCA0600  OF MCFLCA0601.
+
+       FD  DDAILYTC-DT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-DT-REC-I.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+
+       FD  DHOLDTRAN-TD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DHOLDTRAN-TD-REC-I.
+           COPY DDS-MCRPCA0900  OF MCFLCA0901.
+
+       FD  MSTORERM-CD-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+
+       FD  ONLINE-PRT
+           DATA RECORD IS PRT-REC
+           RECORD CONTAINS 133 CHARACTERS
+           LABEL RECORDS ARE OMITTED.
+
+       01  PRT-REC                       PIC X(133).
+
+       SD  SORT-FILE
+           DATA RECORD IS SORT-REC
+           RECORD CONTAINS 68  CHARACTERS.
+
+       01  SORT-REC.
+           05  SORT-CLASS               PIC X(4).
+           05  SORT-STORES-CODE         PIC X(8).
+           05  SORT-ACCTG-UNITS-PD      PIC S9(10).
+           05  SORT-ACCTG-UNITS-OPEN    PIC S9(10).
+           05  SORT-DDAILYTC-UNITS  REDEFINES
+               SORT-ACCTG-UNITS-OPEN    PIC S9(10).
+           05  SORT-CSIS-UNITS          PIC S9(10).
+           05  SORT-UNIT-MEASURE        PIC XX.
+           05  SORT-ACT-DATE.
+               10 SORT-ACT-DATE-CC      PIC X(2).
+               10 SORT-ACT-DATE-YYMMDD  PIC X(6).
+           05  SORT-RECORD-TYPE         PIC X.
+           05  SORT-STD-COST            PIC S9(11)V9(4).
+
+9406CK SD  SORT-FILE2
+  .        DATA RECORD IS SORT-REC2
+  .        RECORD CONTAINS 36  CHARACTERS.
+  .
+  .    01  SORT-REC2.
+  .        05  SORT2-CLASS               PIC X(4).
+  .        05  SORT2-STORES-CODE         PIC X(8).
+  .        05  SORT2-END-UNITS           PIC S9(10).
+9406CK     05  SORT2-END-DOLLARS         PIC S9(12)V99.
+
+       WORKING-STORAGE SECTION.
+
+       77  NO-MORE-SORT                 PIC XXX     VALUE SPACES.
+       77  LINE-CNT                     PIC 99     VALUE 0.
+       77  PAGE-CNT                     PIC 9(4)    VALUE 0.
+       77  TOTAL-UNITS                  PIC S9(10)  VALUE 0.
+       77  TOTAL-DOLLARS                PIC S9(12)V99  VALUE 0.
+9406CK 77  END-UNITS-BALANCE            PIC S9(10).
+  .    77  END-DOLLARS-BALANCE          PIC S9(12)V99.
+  .    77  TBL-IX                       PIC 999 COMP VALUE ZEROS.
+  .    77  EOF-SORTFILE2                PIC X.
+  .    77  END-OF-TABLE                 PIC X.
+  .    77  BAD-BALANCES-FOUND           PIC X.
+9406CK 77  TABLE-FILLED                 PIC X.
+       77  TC-QUALIFIES-SW              PIC X       VALUE SPACES.
+       77  SAVE-CORP-CODE               PIC X(8)    VALUE SPACES.
+       77  SAVE-ACCTG-UNITS-PD          PIC S9(10) VALUE ZEROS.
+       77  SAVE-ACCTG-UNITS-OPEN        PIC S9(10) VALUE ZEROS.
+       77  SAVE-CSIS-UNITS              PIC S9(10) VALUE ZEROS.
+       77  SAVE-STD-COST                PIC S9(11)V9(4) VALUE ZEROS.
+       77  CSIS-DDAILYTC-QTY            PIC S9(10) VALUE ZEROS.
+       77  SAVE-DIFF-UNITS              PIC S9(10) VALUE ZEROS.
+       77  ENTRY-FROM-CSAS              PIC X      VALUE SPACES.
+       77  CODES-IN-ERROR               PIC S9(5) BINARY VALUE ZEROS.
+       77  MCXCBLERR-SCOPE              PIC X(1)   VALUE "C".
+DP9803 77  SUB                          PIC S9(4) BINARY VALUE ZEROS.
+
+       COPY SOPNRAV IN COPYLIB.
+
+      ************************************************************
+      **     REPORT PRINT LINES                                 **
+      ************************************************************
+
+9406CK*--------------- PRINT LINES FOR REPORT 1 -----------------------
+
+       01  HEADER1.
+           05  FILLER                     PIC X      VALUE SPACES.
+           05  FILLER                     PIC X(19)
+               VALUE "TUNITCHK".
+           05  FILLER                     PIC X(42)
+               VALUE "CORPORATE STORES ACCOUNTING SYSTEM".
+           05  FILLER                     PIC X(5)   VALUE "DATE ".
+           05  DATE-H1                    PIC X(8)   VALUE SPACES.
+           05  FILLER                     PIC X(6)   VALUE SPACES.
+
+       01  HEADER2.
+           05  FILLER                     PIC X      VALUE SPACES.
+           05  FILLER                     PIC X(6)   VALUE "PAGE".
+           05  PAGE-H2                    PIC ZZZ9   VALUE ZERO.
+           05  FILLER                     PIC X(06)  VALUE SPACES.
+           05  FILLER                     PIC X(45)
+               VALUE "DIFFERENCE IN ACCOUNTING AND CSIS UNITS".
+           05  FILLER                     PIC X(5)   VALUE "TIME ".
+           05  TIME-H2                    PIC X(8)   VALUE SPACES.
+
+       01  HEADER3.
+           05  FILLER  PIC X(20) VALUE SPACES.
+           05  FILLER  PIC X(25)
+               VALUE "ACCOUNTING     ACCOUNTING".
+           05  FILLER  PIC X(15) VALUE "           CSIS".
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE "TOTAL ACCTG".
+           05  FILLER  PIC X(33) VALUE SPACES.
+           05  FILLER  PIC X(14) VALUE "LAST STOREROOM".
+
+       01  HEADER4.
+           05  FILLER                     PIC X(35)
+               VALUE "MATERIAL CODE  UM  (UNITS PAID  +  ".
+           05  FILLER                     PIC X(40)
+               VALUE "UNITS OPEN  +  UNPROCESSED UNITS)  =    ".
+           05  FILLER                     PIC X(27)
+               VALUE "UNITS         CSIS UNITS   ".
+           05  FILLER                     PIC X(31)
+               VALUE "DIFFERENCE    ACTIVITY DATE    ".
+
+       01  DETAIL-LINE.
+           05  PRT-CLASS                  PIC X(3)   VALUE SPACES.
+           05  PRT-HYPHEN                 PIC X      VALUE SPACES.
+           05  PRT-MATLCODE               PIC X(7)   VALUE SPACES.
+           05  FILLER                     PIC X(4)   VALUE SPACES.
+           05  PRT-UM                     PIC XX     VALUE SPACES.
+           05  FILLER                     PIC X(3)   VALUE SPACES.
+           05  PRT-ACCTG-UNITS-PD         PIC Z(9)9-.
+           05  FILLER                     PIC X(4)   VALUE SPACES.
+           05  PRT-ACCTG-UNITS-OPEN       PIC Z(9)9-.
+           05  FILLER                     PIC X(9)   VALUE SPACES.
+           05  PRT-DDAILYTC-UNITS         PIC Z(9)9-.
+           05  FILLER                     PIC X(7)   VALUE SPACES.
+           05  PRT-ACCTG-UNITS-TOTAL      PIC Z(9)9-.
+           05  FILLER                     PIC X(5)    VALUE SPACES.
+           05  PRT-CSIS-UNITS             PIC Z(9)9-.
+           05  FILLER                     PIC X(2)   VALUE SPACES.
+           05  PRT-DIFF-UNITS             PIC Z(9)9-.
+           05  FILLER                     PIC X(5)   VALUE SPACES.
+           05  PRT-ACT-DATE               PIC X(8)   VALUE SPACES.
+
+       01  DETAIL-LINE-2.
+           05  PRT-CLASS-2                PIC X(3)  VALUE SPACES.
+           05  PRT-HYPHEN-2               PIC X(1)  VALUE SPACES.
+           05  PRT-MATLCODE-2             PIC X(7)  VALUE SPACES.
+           05  FILLER                     PIC X(4)  VALUE SPACES.
+           05  FILLER                     PIC X(4)  VALUE "*** ".
+           05  FILLER                     PIC X(21)
+                       VALUE "NO STANDARD COST HAS ".
+           05  FILLER                     PIC X(22)
+                       VALUE "BEEN ASSIGNED TO THIS ".
+           05  FILLER                     PIC X(12)
+                       VALUE "RAW MATERIAL".
+           05  FILLER                     PIC X(4)  VALUE " ***".
+
+       01  NO-CODES-MSG.
+           05  FILLER  PIC X(28)
+               VALUE "  ***** NO CODES WERE FOUND ".
+           05  FILLER  PIC X(32)
+               VALUE "WITH DIFFERENT ONHAND VALUES IN ".
+           05  FILLER  PIC X(19)
+               VALUE "CSAS AND CSIS *****".
+
+       01  TOTAL-CODES-MSG.
+           05  FILLER  PIC X(8)  VALUE "  ***** ".
+           05  PRT-CODE-COUNT  PIC ZZZZ9.
+           05  FILLER  PIC X(15) VALUE " CODE(S) FOUND ".
+           05  FILLER  PIC X(32)
+               VALUE "WITH DIFFERENT ONHAND VALUES IN ".
+           05  FILLER  PIC X(19)
+               VALUE "CSAS AND CSIS *****".
+
+9406CK*--------------- PRINT LINES FOR REPORT 2 -----------------------
+  .
+  .    01  HDR2-1.
+  .        05          PIC X(8)    VALUE "TUNITCHK".
+  .        05          PIC X(13)   VALUE SPACES.
+  .        05          PIC X(17)   VALUE "CORPORATE STORES ".
+  .        05          PIC X(17)   VALUE "ACCOUNTING SYSTEM".
+  .        05          PIC X(12)   VALUE SPACES.
+  .        05          PIC X(5)    VALUE "DATE ".
+  .        05  HDR2-DT PIC X(8)    VALUE SPACES.
+  .
+  .    01  HDR2-2.
+  .        05          PIC X(5)   VALUE "PAGE ".
+  .        05  HDR2-PG PIC ZZ9    VALUE ZERO.
+  .        05          PIC X(7)   VALUE SPACES.
+  .        05          PIC X(29)  VALUE "STORES CODES WITH CONFLICTING".
+  .        05          PIC X(16)  VALUE " ENDING BALANCES".
+  .        05          PIC X(7)   VALUE SPACES.
+  .        05          PIC X(5)   VALUE "TIME ".
+  .        05  HDR2-TM PIC X(8)   VALUE SPACES.
+9406CK
+9502CZ 01  HDR2-2B.
+  .        05          PIC X(21)   VALUE SPACES.
+  .        05          PIC X(17)   VALUE "  (EXCLUDING RAW ".
+  .        05          PIC X(17)   VALUE "MATERIAL CODES)  ".
+9502CZ     05          PIC X(25)   VALUE SPACES.
+9406CK
+  .    01  HDR2-3.
+  .        05  PIC X(8)   VALUE SPACES.
+  .        05  PIC X(13)  VALUE "MATERIAL CODE".
+  .        05  PIC X(5)   VALUE SPACES.
+  .        05  PIC X(19)  VALUE "UNIT ENDING BALANCE".
+  .        05  PIC X(6)   VALUE SPACES.
+  .        05  PIC X(21)  VALUE "DOLLAR ENDING BALANCE".
+  .        05  PIC X(8)   VALUE SPACES.
+  .
+  .    01  HDR2-4.
+  .        05  PIC X(8)   VALUE SPACES.
+  .        05  PIC X(13)  VALUE "-------------".
+  .        05  PIC X(5)   VALUE SPACES.
+  .        05  PIC X(19)  VALUE "-------------------".
+  .        05  PIC X(6)   VALUE SPACES.
+  .        05  PIC X(21)  VALUE "---------------------".
+  .        05  PIC X(8)   VALUE SPACES.
+  .
+  .    01  DTL2-1.
+  .        05               PIC X(9)  VALUE SPACES.
+  .        05  DTL2-CLASS   PIC X(3)  VALUE SPACES.
+  .        05               PIC X(1)  VALUE "-".
+  .        05  DTL2-CODE    PIC X(7)  VALUE SPACES.
+  .        05               PIC X(9)  VALUE SPACES.
+  .        05  DTL2-UNITS   PIC Z,ZZZ,ZZZ,ZZ9-.
+  .        05               PIC X(9)  VALUE SPACES.
+  .        05  DTL2-DOLLARS PIC ZZZ,ZZZ,ZZZ,ZZ9.99-.
+  .        05               PIC X(9)  VALUE SPACES.
+  .
+  .    01  TABLE-FILLED-MSG.
+  .        05  PIC X(27)   VALUE "ONLY 100 CODES ARE SHOWN.  ".
+  .        05  PIC X(31)   VALUE "PLEASE CORRECT ABOVE CODES AND ".
+  .        05  PIC X(22)   VALUE "RUN THIS REPORT AGAIN.".
+  .
+  .    01  NO-BAD-CODES-MSG.
+  .        05  PIC X(25)   VALUE "THERE WERE NO CODES WITH ".
+  .        05  PIC X(24)   VALUE "OPPOSITE BALANCES FOUND.".
+9406CK     05  PIC X(31)   VALUE SPACES.
+
+       COPY TDATECHK IN COPYLIB.
+
+      ************************************************************
+      **                                                        **
+      **           D A T A B A S E   B U F F E R S              **
+      **                                                        **
+      ************************************************************
+
+      *********************
+      **  MMATL-ACCUM    **
+      *********************
+
+       COPY MATLACUM IN COPYLIB.
+
+      *********************
+      **  DHOLDTRAN      **
+      *********************
+
+       COPY DHOLDTRN IN COPYLIB.
+
+      *****************
+      *   MSTORERM    *
+      *****************
+
+       COPY MSTORERM IN COPYLIB.
+
+      *************************
+      **   DDAILYTC          **
+      *************************
+
+       COPY DDAILYTC IN COPYLIB.
+
+       COPY TC325 IN COPYLIB.
+
+       COPY TC330 IN COPYLIB.
+
+       COPY TC331 IN COPYLIB.
+
+       COPY TC332 IN COPYLIB.
+
+       COPY TC333 IN COPYLIB.
+
+       COPY TC335 IN COPYLIB.
+
+       COPY TC336 IN COPYLIB.
+
+       COPY TC532 IN COPYLIB.
+
+9406CK 01  BAD-BALANCES-TABLE.
+  .        05  BAD-TABLE-ENTRY          OCCURS 100 TIMES.
+  .            10  BAD-CLASS            PIC X(4).
+  .            10  BAD-STORES-CODE      PIC X(8).
+  .            10  BAD-UNITS-BALANCE    PIC S9(10).
+9406CK         10  BAD-DOLLARS-BALANCE  PIC S9(12)V99.
+
+      **********************************************************
+      *              D A T A    B A S E                        *
+      **********************************************************
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1   PIC X(1) VALUE "0".
+           05  FILE-STATUS-2   PIC X(1) VALUE "0".
+
+       COPY DBCSACCT IN COPYLIB.
+
+       01  STORES-BASE          PIC X(10)   VALUE "  STORES;".
+       01  STORES-PASSWORD      PIC X(8)    VALUE "JADE; ".
+
+       COPY DBMODES IN COPYLIB.
+
+       COPY DBSTAT IN COPYLIB.
+
+       01  DATASET-NAMES.
+           05  DSET-MMATL-ACCUM PIC X(16)  VALUE "MMATL-ACCUM;".
+           05  DSET-MSTORERM    PIC X(16)  VALUE "MSTORERM;".
+           05  DSET-DDAILYTC    PIC X(16)  VALUE "DDAILYTC;".
+           05  DSET-DHOLDTRAN   PIC X(16)  VALUE "DHOLDTRAN;".
+
+       01  ITEMS-LISTING.
+           05  ALL-ITEMS        PIC X(2)   VALUE "@;".
+           05  MATL-KEY         PIC X(10)  VALUE "MATL-CODE;".
+           05  PO-KEY           PIC X(10)  VALUE "PO-NUMBER;".
+           05  CORP-KEY         PIC X(10)  VALUE "CORP-CODE;".
+
+       01  IMAGE-ARGS.
+           05  CODE-ARG          PIC X(8)  VALUE SPACES.
+           05  DUMMY-ARG         PIC X(6)  VALUE SPACES.
+
+      *******************************************************
+      *   PARAMETERS USED IN 'TBLOWUP' ROUTINE (PRINTS      *
+      *   ERRORS AND ABORTS PROGRAM.  RUN XBLPRT.OBJECT TO  *
+      *   READ ERRORS).                                     *
+      *******************************************************
+
+       COPY TBLOWUP IN COPYLIB.
+
+      ******************************************
+      **   PARAMETERS FOR CALLING 'CBLOWSRT'
+      ******************************************
+
+       COPY CBLOWSRT IN COPYLIB.
+
+       PROCEDURE DIVISION.
+
+       001-BEGIN SECTION.
+       010-MAINLINE.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+
+      *******************************************************
+      **   CALL 'CBLOWSRT' FIRST BEFORE GOING INTO THE
+      **   SORT VERB.  THE FIRST CALL TO 'CBLOWSRT' OPENS
+      **   UP A NEW TEMPORARY FILE 'BLUPDATA' THAT IS USED
+      **   TO WRITE THE BLOWUP INFORMATION IF A BLOWUP
+      **   OCCURS
+      *******************************************************
+
+           CALL "CBLOWSRT" USING CBLOWSRT-PARMS,
+                                 ACCTG-BASE,
+                                 BU-PGM-NAME,
+                                 STATUS-AREA,
+                                 DUMMY-VIEW-AREA,
+                                 FILE-STATUS,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+
+           SORT SORT-FILE ON ASCENDING KEY SORT-CLASS
+                                           SORT-STORES-CODE
+                                           SORT-RECORD-TYPE
+           INPUT PROCEDURE IS 050-PROCESS-TRANS
+           OUTPUT PROCEDURE IS 700-CREATE-REPORT.
+
+9406CK     SORT SORT-FILE2 ON ASCENDING KEY SORT2-CLASS
+  .                                         SORT2-STORES-CODE
+  .        INPUT  PROCEDURE IS 055-READ-TABLE
+9406CK     OUTPUT PROCEDURE IS 800-CREATE-REPORT-2.
+
+           PERFORM 1000-CLOSE-FILES.
+           GOBACK.
+
+       050-PROCESS-TRANS SECTION.
+       050-PROCESS-TRANS-PARA.
+           PERFORM 100-BEGIN.
+           PERFORM 200-PROCESS-MASTER
+               UNTIL END-OF-FILE.
+
+           MOVE SPACES                  TO SORT-REC.
+           MOVE ZEROS                   TO SORT-ACCTG-UNITS-PD,
+                                           SORT-ACCTG-UNITS-OPEN,
+                                           SORT-CSIS-UNITS.
+
+      *******************************************************
+      **                                                   **
+      **   PROCESS ENTRIES IN THE DDAILYTC DATA SET        **
+      **                                                   **
+      *******************************************************
+
+           PERFORM 9999-INIT-DDAILYTC-DT-I.
+           PERFORM 400-GET-DDAILYTC.
+           PERFORM 300-PROCESS-DDAILYTCS THRU 300-GET-NEXT-DDAILYTC
+               UNTIL END-OF-FILE.
+
+      *******************************************************
+      **                                                   **
+      **   PROCESS ENTRIES IN THE DHOLDTRAN DATA SET       **
+      **                                                   **
+      *******************************************************
+
+           PERFORM 9999-INIT-DHOLDTRAN-TD-I.
+           PERFORM 400-GET-DHOLDTRAN.
+           PERFORM 350-PROCESS-DHOLDTRAN
+               UNTIL END-OF-FILE.
+
+      **********************************************************
+      *  TRANSFER CONTROL TO LAST STATEMENT IN INPUT PROCEDURE *
+      *  FOR SORTING OF RECORDS.                               *
+      **********************************************************
+
+           GO TO 699-PROCESS-EXIT.
+
+       100-BEGIN.
+           PERFORM 9999-OPEN-STUFF.
+           INITIALIZE BAD-BALANCES-TABLE, TBL-IX, BAD-BALANCES-FOUND.
+
+           PERFORM 9999-INIT-MMATL-ACCUM-MC-I.
+           PERFORM 400-GET-MMATL-ACCUM.
+
+       200-PROCESS-MASTER.
+           PERFORM 500-GET-MSTORERM.
+           IF NO-ENTRY OR CODE-ARG = "NON-STR"
+               NEXT SENTENCE
+9502CZ     ELSE
+  .            PERFORM 600-CALCULATE-UNITS
+9502CZ         PERFORM 610-BUILD-BAD-BALANCES-TABLE.
+
+9406CK*****PERFORM 610-BUILD-BAD-BALANCES-TABLE.  *REPLACED 20DEC1994*
+
+9502CZ*    IF CODE-ARG = "NON-STR"
+  .   *        NEXT SENTENCE
+  .   *    ELSE
+9502CZ*        PERFORM 610-BUILD-BAD-BALANCES-TABLE.
+
+           PERFORM 400-GET-MMATL-ACCUM.
+
+       300-PROCESS-DDAILYTCS.
+           MOVE "N"                     TO TC-QUALIFIES-SW.
+           IF DDAILYTC-TC = "325"
+               IF TC325-FRAN-ID = " "
+                   MOVE TC325-STORED-QTY    TO SORT-DDAILYTC-UNITS
+                   MOVE TC325-CLASS         TO SORT-CLASS
+                   MOVE "Y"                 TO TC-QUALIFIES-SW
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF DDAILYTC-TC = "330"
+               MOVE TC330-QTY           TO SORT-DDAILYTC-UNITS
+               MOVE TC330-CLASS         TO SORT-CLASS
+               MOVE "Y"                 TO TC-QUALIFIES-SW
+           ELSE
+           IF DDAILYTC-TC = "331"
+               MOVE TC331-QTY           TO SORT-DDAILYTC-UNITS
+               MOVE TC331-CLASS         TO SORT-CLASS
+               MOVE "Y"                 TO TC-QUALIFIES-SW
+           ELSE
+           IF DDAILYTC-TC = "332"
+               MOVE TC332-ADJ-QTY       TO SORT-DDAILYTC-UNITS
+               MOVE TC332-CLASS         TO SORT-CLASS
+               MOVE "Y"                 TO TC-QUALIFIES-SW
+           ELSE
+           IF DDAILYTC-TC = "333"
+               IF TC333-FRAN-ID = " "
+                   COMPUTE SORT-DDAILYTC-UNITS = TC333-QTY * - 1
+                   MOVE TC333-CLASS     TO SORT-CLASS
+                   MOVE "Y"             TO TC-QUALIFIES-SW
+               ELSE
+               NEXT SENTENCE
+           ELSE
+           IF DDAILYTC-TC = "335"
+               COMPUTE SORT-DDAILYTC-UNITS = TC335-QTY * -1
+               MOVE TC335-CLASS         TO SORT-CLASS
+               MOVE "Y"                 TO TC-QUALIFIES-SW
+           ELSE
+           IF DDAILYTC-TC = "336"
+               MOVE TC336-QTY           TO SORT-DDAILYTC-UNITS
+               MOVE TC336-CLASS         TO SORT-CLASS
+               MOVE "Y"                 TO TC-QUALIFIES-SW.
+      *    ELSE
+      *    IF DDAILYTC-TC = "532"
+      *        IF TC532-FRAN-ID = " "
+      *            MOVE TC532-ADJ-QTY   TO SORT-DDAILYTC-UNITS
+      *            MOVE TC532-CLASS     TO SORT-CLASS
+      *            MOVE "Y"             TO TC-QUALIFIES-SW.
+
+           IF TC-QUALIFIES-SW = "Y"
+               MOVE DDAILYTC-CODE       TO SORT-STORES-CODE,
+                                           CODE-ARG
+               MOVE ZEROS               TO SORT-CSIS-UNITS
+               PERFORM 500-GET-MSTORERM
+               MOVE "2"                 TO SORT-RECORD-TYPE
+               RELEASE SORT-REC.
+
+       300-GET-NEXT-DDAILYTC.
+           PERFORM 400-GET-DDAILYTC.
+
+       350-PROCESS-DHOLDTRAN.
+      ****** 09SEP1996 THE BUFFERS FOR DATASETS DHOLDTRAN AND DDAILYTC
+      ****** WILL NO LONGER BE IDENTICAL BEGINING WITH RELEASE J.01.
+      ****** THE DATE FIELD IN DHOLDTRAN IS BEING EXPANDED TO 8 BYTES,
+      ****** WHILE THE DDAILYTC DATE FIELD WILL REMAIN 6 BYTES IN LENGTH.
+      ****** WE MUST NOW MOVE INDIVIDUAL BUF-HOLDTRAN FIELDS TO THE
+      ****** CORRESPONDING BUF-DDAILYTC FIELDS.
+      *****MOVE BUF-DHOLDTRAN           TO BUF-DDAILYTC.
+           MOVE DHOLDTRAN-DATE          TO DDAILYTC-DATE.
+           MOVE DHOLDTRAN-TIME          TO DDAILYTC-TIME.
+           MOVE DHOLDTRAN-TC            TO DDAILYTC-TC.
+           MOVE DHOLDTRAN-PLT           TO DDAILYTC-PLT,
+           MOVE DHOLDTRAN-DATA-62       TO DDAILYTC-DATA.
+           PERFORM 300-PROCESS-DDAILYTCS.
+
+           PERFORM 400-GET-DHOLDTRAN.
+
+       400-GET-MMATL-ACCUM.
+           PERFORM 9999-DBGET2-MMATL-ACCUM-MC-I.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF END-OF-FILE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET MMATL-ACCUM * 400-GMA" TO
+                        BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+           MOVE MATL-STORES-CODE        TO CODE-ARG.
+
+       400-GET-DDAILYTC.
+           PERFORM 9999-DBGET2-DDAILYTC-DT-I.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF END-OF-FILE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET DDAILYTC * 400-GD" TO
+                        BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+
+       400-GET-DHOLDTRAN.
+           PERFORM 9999-DBGET2-DHOLDTRAN-TD-I.
+           IF GOOD-CALL
+               NEXT SENTENCE
+           ELSE
+               IF END-OF-FILE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "DBGET DHOLDTRAN * 400-GD" TO
+                        BU-DISPLAY-MSG
+                   PERFORM 990-BLOWUP.
+
+       500-GET-MSTORERM.
+           PERFORM 9999-DBGET7-MSTORERM-CD-I.
+           IF GOOD-CALL
+DP9803*********MOVE STR-ONHAND          TO SORT-CSIS-UNITS
+DP9803         MOVE +0 TO SORT-CSIS-UNITS
+DP9803         PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+DP9803             IF STR-BIN-OWNER (SUB) = SPACES
+DP9803                 ADD STR-LOC-ONHAND (SUB) TO SORT-CSIS-UNITS
+DP9803             END-IF
+DP9803         END-PERFORM
+      *********MOVE STR-ACT-DATE        TO SORT-ACT-DATE
+               MOVE STR-ACT-DATE-CN     TO SORT-ACT-DATE
+               MOVE STR-CLASS           TO SORT-CLASS
+               MOVE STR-STD-COST        TO SORT-STD-COST
+           ELSE
+               IF NO-ENTRY
+9406CK*            DISPLAY "NO ENTRY IN MSTORERM FOR " CODE-ARG
+9406CK             CONTINUE
+               ELSE
+                   MOVE "DBGET MSTORERM * 500-GM" TO BU-DISPLAY-MSG
+                   MOVE CODE-ARG TO BU-DISPLAY-FLD (1)
+                   PERFORM 990-BLOWUP.
+
+
+       600-CALCULATE-UNITS.
+      ********************************************************
+      **   CALL 'SOPNRAV' TO GET STOREROOM OPEN RECEIVER
+      **   UNITS
+      ********************************************************
+           MOVE CODE-ARG                TO SOPNRAV-MATL-CODE.
+           CALL "SOPNRAV" USING ACCTG-BASE,
+                                SOPNRAV-PARMS,
+                                STATUS-AREA,
+                                BU-DISPLAY-MSG,
+                                BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               PERFORM 990-BLOWUP.
+
+           COMPUTE SORT-ACCTG-UNITS-PD = MATL-BEG-BAL-UNITS +
+              MATL-RCPT-UNITS +
+              MATL-RTNVAL-UNITS +
+              MATL-ACCTG-UNIT-CORR + MATL-ADJ-UNITS +
+              MATL-RTN-UNITS - MATL-ISSUE-UNITS.
+
+           MOVE S-STR-OPEN-RCVR-UNITS   TO SORT-ACCTG-UNITS-OPEN.
+
+           IF (SORT-ACCTG-UNITS-PD + SORT-ACCTG-UNITS-OPEN)
+                 NOT = SORT-CSIS-UNITS
+               MOVE MATL-STORES-CODE    TO SORT-STORES-CODE
+               MOVE MATL-CLASS          TO SORT-CLASS
+               MOVE MATL-UNIT-MEASURE   TO SORT-UNIT-MEASURE
+               MOVE "1"                 TO SORT-RECORD-TYPE
+               RELEASE SORT-REC
+           ELSE
+               IF (MATL-CLASS > 099  AND MATL-CLASS < 200) OR
+                  (MATL-CLASS > 399  AND MATL-CLASS < 500)
+                   IF STR-STD-COST = ZEROS
+                       MOVE MATL-STORES-CODE  TO SORT-STORES-CODE
+                       MOVE MATL-CLASS        TO SORT-CLASS
+                       MOVE MATL-UNIT-MEASURE TO SORT-UNIT-MEASURE
+                       MOVE "1"               TO SORT-RECORD-TYPE
+                       RELEASE SORT-REC.
+
+           MOVE SPACES                  TO SORT-REC.
+           MOVE 0                       TO SORT-ACCTG-UNITS-PD
+                                           SORT-ACCTG-UNITS-OPEN
+                                           SORT-CSIS-UNITS.
+
+9406CK 610-BUILD-BAD-BALANCES-TABLE.
+  .
+  .        COMPUTE END-UNITS-BALANCE   =   MATL-BEG-BAL-UNITS
+  .                                      + MATL-RCPT-UNITS
+  .                                      + MATL-ADJ-UNITS
+  .                                      + MATL-RTN-UNITS
+  .                                      + MATL-RTNVAL-UNITS
+  .                                      + MATL-ACCTG-UNIT-CORR
+9406CK                                   - MATL-ISSUE-UNITS
+9502CZ                                   + S-STR-OPEN-RCVR-UNITS.
+9406CK
+  .        COMPUTE END-DOLLARS-BALANCE =   MATL-BEG-BAL-DOLLARS
+  .                                      + MATL-INV-DOLLARS
+  .                                      + MATL-TOT-ADJ-DOLLARS
+  .                                      + MATL-RTN-DOLLARS
+  .                                      + MATL-RTNVAL-DOLLARS
+  .                                      + MATL-ACCTG-DOLLAR-CORR
+9406CK                                   - MATL-TOT-ISS-DOLLARS
+9502CZ                                   + S-STR-OPEN-RCVR-DLRS.
+9406CK
+  .   *----ENDING UNITS AND DOLLARS SHOULD BE THE SAME SIGN. IF THEY
+  .   *----ARE DIFFERENT AND THERE IS STILL SPACE, PUT THE STORES CODE
+  .   *----IN THE TABLE FOR THE ERROR REPORT.
+  .
+  .   *****IF TBL-IX <= 100   *REPLACED 06DEC1994 - DAVE PLUM*
+
+           IF TBL-IX < 100
+  .           IF   (END-UNITS-BALANCE > 0 AND END-DOLLARS-BALANCE < 0)
+  .             OR (END-UNITS-BALANCE < 0 AND END-DOLLARS-BALANCE > 0)
+  .                ADD 1 TO TBL-IX
+  .                MOVE MATL-CLASS TO                BAD-CLASS (TBL-IX)
+  .                MOVE MATL-STORES-CODE TO    BAD-STORES-CODE (TBL-IX)
+  .                MOVE END-UNITS-BALANCE TO BAD-UNITS-BALANCE (TBL-IX)
+  .                MOVE END-DOLLARS-BALANCE TO
+  .                                        BAD-DOLLARS-BALANCE (TBL-IX).
+  .   *            DISPLAY "BAD-TABLE-ENTRY ( " TBL-IX ") = "
+9406CK*               BAD-TABLE-ENTRY (TBL-IX).
+
+       699-PROCESS-EXIT.
+           EXIT.
+
+9406CK 055-READ-TABLE SECTION.
+  .
+  .    055-BUILD-SORT-FILE2.
+  .
+  .        MOVE "N" TO TABLE-FILLED.
+  .        IF TBL-IX = 0
+  .           MOVE "N" TO BAD-BALANCES-FOUND
+  .        ELSE
+  .           MOVE "Y" TO BAD-BALANCES-FOUND.
+  .        INITIALIZE TBL-IX, END-OF-TABLE.
+  .        ADD 1 TO TBL-IX.
+9406CK
+9503CZ     PERFORM 055-MOVE-DATA UNTIL END-OF-TABLE = "Y".
+  .
+  .        GO TO 055-SECTION-EXIT.
+  .
+9503CZ 055-MOVE-DATA.
+  .        IF BAD-STORES-CODE (TBL-IX) = SPACES
+  .           MOVE "Y" TO END-OF-TABLE
+  .        ELSE
+9503CZ*------- EXCLUDE RAW MATERIALS FROM THE REPORT.
+  .        IF (BAD-CLASS (TBL-IX) > 099 AND BAD-CLASS (TBL-IX) < 200) OR
+  .           (BAD-CLASS (TBL-IX) > 399 AND BAD-CLASS (TBL-IX) < 500)
+9503CZ        ADD 1 TO TBL-IX
+  .        ELSE
+  .           MOVE BAD-TABLE-ENTRY (TBL-IX) TO SORT-REC2
+  .           RELEASE SORT-REC2
+  .           ADD 1 TO TBL-IX
+  .           IF TBL-IX > 100
+  .              MOVE "Y" TO TABLE-FILLED, END-OF-TABLE
+  .           END-IF
+  .        END-IF.
+  .
+  .    055-SECTION-EXIT.
+9406CK     EXIT.
+
+       700-CREATE-REPORT SECTION.
+       700-CREATE-REPORT-PARA.
+           DISPLAY "BEGIN REPORT".
+           PERFORM 710-BEGIN-REPORT.
+           PERFORM 720-MOVE-DATA
+              UNTIL NO-MORE-SORT = "YES".
+
+      **************************************************
+      **   PRINT TRAILER MESSAGE STATING THE NUMBER OF
+      **   CODES IN ERROR
+      **************************************************
+
+           IF CODES-IN-ERROR = ZEROS
+               MOVE NO-CODES-MSG        TO PRT-REC
+           ELSE
+               MOVE CODES-IN-ERROR      TO PRT-CODE-COUNT
+               MOVE TOTAL-CODES-MSG     TO PRT-REC.
+           WRITE PRT-REC AFTER 2.
+
+      **************************************************
+      **  BRANCH TO LAST STATEMENT OF OUTPUT SECTION  **
+      **  TO COMPLETE PROCESSING OF REPORT            **
+      **************************************************
+
+           GO TO 799-CREATE-EXIT.
+
+       710-BEGIN-REPORT.
+           OPEN OUTPUT ONLINE-PRT.
+
+           MOVE 1                       TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT          TO DATE-H1.
+           MOVE DATE-FORMATTED-TIME-OUT TO TIME-H2.
+
+           PERFORM 750-PRINT-HEADINGS.
+           RETURN SORT-FILE
+              AT END
+                  MOVE "YES" TO NO-MORE-SORT.
+
+       720-MOVE-DATA.
+           MOVE SORT-STORES-CODE        TO SAVE-CORP-CODE.
+           MOVE ZEROS                   TO CSIS-DDAILYTC-QTY.
+           MOVE SPACES                  TO ENTRY-FROM-CSAS.
+           PERFORM 730-PROCESS-CODE
+               UNTIL SORT-STORES-CODE NOT = SAVE-CORP-CODE  OR
+                     NO-MORE-SORT = "YES".
+           PERFORM 740-PRINT-CODE.
+
+       730-PROCESS-CODE.
+           IF SORT-RECORD-TYPE = "1"
+               MOVE SORT-CLASS          TO PRT-CLASS
+               MOVE "-"                 TO PRT-HYPHEN
+               MOVE SORT-STORES-CODE    TO PRT-MATLCODE
+               MOVE SORT-UNIT-MEASURE   TO PRT-UM
+      *********MOVE SORT-ACT-DATE       TO DATE-VALIDATE-IN
+               MOVE SORT-ACT-DATE-YYMMDD TO DATE-VALIDATE-IN
+               MOVE 4                   TO DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT      TO PRT-ACT-DATE
+               MOVE SORT-ACCTG-UNITS-PD TO SAVE-ACCTG-UNITS-PD
+               MOVE SORT-ACCTG-UNITS-OPEN  TO SAVE-ACCTG-UNITS-OPEN
+               MOVE SORT-CSIS-UNITS     TO SAVE-CSIS-UNITS
+               MOVE SORT-STD-COST       TO SAVE-STD-COST
+               MOVE "Y"                 TO ENTRY-FROM-CSAS
+           ELSE
+               ADD SORT-DDAILYTC-UNITS  TO CSIS-DDAILYTC-QTY
+               MOVE SORT-CSIS-UNITS     TO SAVE-CSIS-UNITS.
+
+           RETURN SORT-FILE
+              AT END
+                  MOVE "YES" TO NO-MORE-SORT.
+
+       740-PRINT-CODE.
+           IF ENTRY-FROM-CSAS = "Y"
+               COMPUTE PRT-ACCTG-UNITS-TOTAL = SAVE-ACCTG-UNITS-PD +
+                                               SAVE-ACCTG-UNITS-OPEN +
+                                               CSIS-DDAILYTC-QTY
+               COMPUTE SAVE-DIFF-UNITS = (SAVE-ACCTG-UNITS-PD +
+                                          SAVE-ACCTG-UNITS-OPEN +
+                                          CSIS-DDAILYTC-QTY) -
+                                          SAVE-CSIS-UNITS
+               IF SAVE-DIFF-UNITS = ZEROS
+                   NEXT SENTENCE
+               ELSE
+                   ADD 1                      TO CODES-IN-ERROR
+                   MOVE SAVE-DIFF-UNITS       TO PRT-DIFF-UNITS
+                   MOVE SAVE-ACCTG-UNITS-PD   TO PRT-ACCTG-UNITS-PD
+                   MOVE SAVE-ACCTG-UNITS-OPEN TO PRT-ACCTG-UNITS-OPEN
+                   MOVE SAVE-CSIS-UNITS       TO PRT-CSIS-UNITS
+                   MOVE CSIS-DDAILYTC-QTY     TO PRT-DDAILYTC-UNITS
+                   WRITE PRT-REC FROM DETAIL-LINE AFTER 1
+                   ADD 1 TO LINE-CNT
+                   IF LINE-CNT > 55
+                       PERFORM 750-PRINT-HEADINGS.
+
+           IF ENTRY-FROM-CSAS = "Y"
+               IF (PRT-CLASS > 099 AND PRT-CLASS < 200) OR
+                  (PRT-CLASS > 399 AND PRT-CLASS < 500)
+                   IF SAVE-STD-COST = ZEROS
+                       MOVE PRT-CLASS     TO PRT-CLASS-2
+                       MOVE "-"           TO PRT-HYPHEN-2
+                       MOVE PRT-MATLCODE  TO PRT-MATLCODE-2
+                       WRITE PRT-REC FROM DETAIL-LINE-2 AFTER 1
+                       ADD 1              TO LINE-CNT
+                       IF LINE-CNT > 55
+                           PERFORM 750-PRINT-HEADINGS.
+
+           MOVE SPACES                  TO PRT-REC
+                                           DETAIL-LINE.
+
+       750-PRINT-HEADINGS.
+           ADD 1                        TO PAGE-CNT.
+           MOVE PAGE-CNT TO PAGE-H2.
+           WRITE PRT-REC FROM HEADER1 AFTER ADVANCING NEW-PAGE.
+           WRITE PRT-REC FROM HEADER2 AFTER 1.
+           WRITE PRT-REC FROM HEADER3 AFTER 2.
+           WRITE PRT-REC FROM HEADER4 AFTER 1.
+           MOVE SPACES                  TO PRT-REC.
+           WRITE PRT-REC AFTER 1.
+           MOVE 6                       TO LINE-CNT.
+
+       799-CREATE-EXIT.
+           EXIT.
+
+9406CK 800-CREATE-REPORT-2 SECTION.
+  .    800-CREATE-REPORT-PARA.
+  .
+  .        MOVE 1                       TO DATE-MODE.
+  .        CALL "TDATECHK" USING DATE-CHECK-AREA.
+  .        MOVE DATE-SLASH-OUT          TO HDR2-DT.
+  .        MOVE DATE-FORMATTED-TIME-OUT TO HDR2-TM.
+  .        INITIALIZE EOF-SORTFILE2, PAGE-CNT, LINE-CNT.
+  .
+  .        PERFORM 850-PRINT-HEADINGS.
+  .        IF BAD-BALANCES-FOUND = "N"
+  .           WRITE PRT-REC FROM NO-BAD-CODES-MSG
+  .           GO TO 899-SECTION-EXIT.
+  .
+  .        RETURN SORT-FILE2
+  .           AT END MOVE "Y" TO EOF-SORTFILE2.
+  .
+  .        PERFORM UNTIL EOF-SORTFILE2 = "Y"
+  .           IF LINE-CNT > 55
+  .              PERFORM 850-PRINT-HEADINGS
+  .           END-IF
+  .
+  .           MOVE SORT2-CLASS       TO DTL2-CLASS
+  .           MOVE SORT2-STORES-CODE TO DTL2-CODE
+  .           MOVE SORT2-END-UNITS   TO DTL2-UNITS
+  .           MOVE SORT2-END-DOLLARS TO DTL2-DOLLARS
+  .           WRITE PRT-REC FROM DTL2-1 AFTER 1
+  .           ADD 1 TO LINE-CNT
+  .
+  .           RETURN SORT-FILE2
+  .              AT END MOVE "Y" TO EOF-SORTFILE2
+  .           END-RETURN
+  .        END-PERFORM.
+  .
+  .        IF TABLE-FILLED = "Y"
+  .           IF LINE-CNT > 55
+  .              PERFORM 850-PRINT-HEADINGS
+  .           END-IF
+  .           WRITE PRT-REC FROM TABLE-FILLED-MSG AFTER 2.
+  .
+  .        GO TO 899-SECTION-EXIT.
+  .
+  .    850-PRINT-HEADINGS.
+  .        ADD 1                        TO PAGE-CNT.
+  .        MOVE PAGE-CNT TO HDR2-PG.
+  .        WRITE PRT-REC FROM HDR2-1 AFTER ADVANCING NEW-PAGE.
+9406CK     WRITE PRT-REC FROM HDR2-2 AFTER 1.
+9502CZ     WRITE PRT-REC FROM HDR2-2B AFTER 1.
+9406CK     WRITE PRT-REC FROM HDR2-3 AFTER 2.
+  .        WRITE PRT-REC FROM HDR2-4 AFTER 1.
+  .        MOVE SPACES                  TO PRT-REC.
+  .        WRITE PRT-REC AFTER 1.
+  .        MOVE 6                       TO LINE-CNT.
+  .
+  .    899-SECTION-EXIT.
+9406CK     EXIT.
+
+       900-ERROR SECTION.
+
+       990-BLOWUP.
+      ***************************************************************
+      **   CALL 'CBLOWSRT' INSTEAD OF 'TBLOWUP' WHEN A BLOWUP      **
+      **   SITUATION OCCURS SINCE THIS PROGRAM USES THE 'SORT'     **
+      **   VERB.  'CBLOWSRT' WRITES ALL THE BLOWUP INFORMATION     **
+      **   TO A TEMPORARY FILE 'BLUPDATA' (WHICH WAS OPENED AT     **
+      **   THE BEGINNING OF THE PROGRAM) THE CLOSES IT. THEN IT    **
+      **   CREATESA A SON PROCESS 'XBLOWSRT' THAT READS THE        **
+      **   BLOWUP INFORMATION OUT OF 'BLUPDATA' AND CALLS          **
+      **   'TBLOWUP' USING THIS INFO.  SINCE THE NEW PROCESS       **
+      **   'XBLOWSRT' HAS ITS OWN STACK THE STACK OVERFLOW         **
+      **   PROBLEM IS AVOIDED.                                     **
+      ***************************************************************
+
+           MOVE "TUNITCHK"              TO  BU-PGM-NAME.
+           CALL "CBLOWSRT" USING CBLOWSRT-PARMS,
+                                 ACCTG-BASE,
+                                 BU-PGM-NAME,
+                                 STATUS-AREA,
+                                 DUMMY-VIEW-AREA,
+                                 FILE-STATUS,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+
+       1000-CLOSE-FILES.
+           CLOSE ONLINE-PRT.
+           PERFORM 9999-CLOSE-STUFF.
+
+       9999-DBGET2-MMATL-ACCUM-MC-I.
+           MOVE 0 TO COND-WORD.
+           READ MMATL-ACCUM-MC-I NEXT INTO BUF-MATLACUM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1" OR FILE-STATUS = "46"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-INIT-MMATL-ACCUM-MC-I.
+           MOVE SPACES TO MATLCODE OF MMATL-ACCUM-MC-REC-I.
+           START MMATL-ACCUM-MC-I KEY >= MATLCODE OF
+              MMATL-ACCUM-MC-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-DBGET2-DDAILYTC-DT-I.
+           MOVE 0 TO COND-WORD.
+           READ DDAILYTC-DT-I NEXT INTO BUF-DDAILYTC
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1" OR FILE-STATUS = "46"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-INIT-DDAILYTC-DT-I.
+           MOVE SPACES TO DLYTCDTE OF DDAILYTC-DT-REC-I.
+           START DDAILYTC-DT-I KEY >= DLYTCDTE OF DDAILYTC-DT-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-DBGET2-DHOLDTRAN-TD-I.
+           MOVE 0 TO COND-WORD.
+           READ DHOLDTRAN-TD-I NEXT INTO BUF-DHOLDTRAN
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1" OR FILE-STATUS = "46"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-INIT-DHOLDTRAN-TD-I.
+           MOVE SPACES TO TRANSDATE OF DHOLDTRAN-TD-REC-I.
+           START DHOLDTRAN-TD-I KEY >= TRANSDATE OF DHOLDTRAN-TD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-DBGET7-MSTORERM-CD-I.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-I.
+           READ MSTORERM-CD-I INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+
+       9999-OPEN-STUFF.
+           OPEN INPUT MMATL-ACCUM-MC-I     .
+           OPEN INPUT DDAILYTC-DT-I        .
+           OPEN INPUT DHOLDTRAN-TD-I       .
+           OPEN INPUT MSTORERM-CD-I        .
+
+       9999-CLOSE-STUFF.
+           CLOSE      MMATL-ACCUM-MC-I     .
+           CLOSE      DDAILYTC-DT-I        .
+           CLOSE      DHOLDTRAN-TD-I       .
+           CLOSE      MSTORERM-CD-I        .

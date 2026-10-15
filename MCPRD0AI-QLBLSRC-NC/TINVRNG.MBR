@@ -1,0 +1,1124 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.       TINVRNG.
+       AUTHOR.           DALE HOERLE.
+      *INSTALLATION.     GOODYEAR TIRE & RUBBER CO.
+      *DATE-WRITTEN.     JULY 1985.
+       DATE-COMPILED.    CURRENT-DATE.
+      *REMARKS.
+      *    STOREROOM INVENTORY WORKSHEET CREATE BATCH JOB.
+      *  THIS JOB IS STREAMED OUT OF 'TINVWS' THE CREATE INVENTORY
+      *  WORKSHEET SCREEN PROGRAM.
+
+      *C  07/24/1992        DAVE PLUM       REQUEST #6250
+      *C  CHANGED THE BIN LOCATION VALUE WHICH IS MOVED TO SORT-BIN
+      *C  WHEN CODES ARE BEING SELECTED BY BIN LOCATION.  PRIOR TO
+      *C  THIS CHANGE THE PRIMARY BIN LOCATION (1) WAS ALWAYS BEING
+      *C  USED.  WITH THIS CHANGE, THE BIN LOCATION WHICH QUALIFIED THE
+      *C  CODE FOR THE WORKSHEET WITH BE USED AS THE SORT-BIN.
+      *C  ---COMPLETED THIS CHANGE 13AUG1992
+      *C
+      *C  11/30/92       BK DISMUKES    REQUEST #6315
+      *C     CHANGED PRINT OUT TO INCLUDE 2 MORE LINES OF DESCRIPTION.
+      *C     MADE LOGICAL CHANGES IN 7010-RETURN-LOOP,
+      *C     8060-PRINT-DESCRIPTION AND 8070-MOVE-BIN.  ALSO CHANGED
+      *C     HEADER-2 IN THE PRINT AREA OF WORKING STORAGE TO REPLACE
+      *C     "<DESCRIPTION>" WITH KEYWORD/MODIFIER.
+      *C
+      *C  01/31/94       JS BUNGO
+      *C     ADDED CALL TO ESTABLISH THE COBOL ERROR HANDLER FOR
+      *C     THIS BATCH PROGRAM.
+      *C  11/02/94       JS BUNGO
+      *C     ADDED CHECK TO SEE IF ANY CODES WERE FROZEN FOR THIS
+      *C     WORKSHEET.  IF NO CODES WERE FROZEN, THEN THE WORKSHEET
+      *C     IS DELETED AND A MESSAGE IS PRINTED ON THE LAST PAGE
+      *C     OF THE PRINTED WORKSHEET REPORT.
+      *C
+      *C 06/12/96       JEFF BUNGO
+      *C     EXPANDED DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     INCLUDE CENTURY FOR LAST ACTIVITY AND INVENTORY DATES.
+      *C     ALSO INCLUDE CENTURY IN CALCULATION OF OVERDUE INVENTORY.
+      *C
+      *C  06/20/2002    CA YODER    LAWTON REQUEST
+      *C  ADDED LOGIC TO PROCESS NEW OPTION IN TINVWS PROGRAM.  FOR
+      *C  "FREEZE ALL CODES DUE TO BE INVENTORIED," ADDED OPTION TO
+      *C  SPECIFY MAXIMUM NUMBER OF CODES TO FREEZE AT ONE TIME.
+      *C
+      *C  12/03/2002    CA YODER    UNION CITY REQUEST
+      *C  ADDED LOGIC TO PROCESS NEW OPTION IN TINVWS PROGRAM.  FOR
+      *C  FREEZING A RANGE OF CODES, ADDED THE ABILITY TO SELECT CODES
+      *C  WITH NO ACTIVITY FOR A CERTAIN NUMBER OF MONTHS.
+      *C
+      *C  05/25/2004    CA YODER
+      *C  FIXED DISPLAY OF BLOWUP MESSAGES TO PROVIDE MORE INFORMATION.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.   HP-3000.
+       OBJECT-COMPUTER.   HP-3000.
+       COPY SPECIALN IN COPYLIB.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT INVFILE ASSIGN TO DATABASE-INVFILE.
+           SELECT PRINTFILE ASSIGN TO PRINTER-MCPRT.
+           SELECT SORT-FILE ASSIGN TO DISK-SORT.
+       DATA DIVISION.
+       FILE SECTION.
+       FD INVFILE
+           RECORD CONTAINS 7 CHARACTERS
+           DATA RECORD IS INV-RECORD.
+       01  INV-RECORD.
+           05  INV-CODE                  PIC X(7).
+
+       FD PRINTFILE
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-RECORD.
+       01 PRINT-RECORD.
+           05  FILLER                    PIC X(132).
+
+       SD  SORT-FILE
+           RECORD CONTAINS 86 CHARACTERS
+           DATA RECORD IS SORT-REC.
+       01  SORT-REC.
+           05  SORT-NOTHING              PIC X(1).
+           05  SORT-CODE                 PIC X(8).
+           05  SORT-BIN                  PIC X(12).
+           05  SORT-CLASS                PIC X(4).
+           05  SORT-DATE                 PIC X(8).
+           05  SORT-PRINT-STATUS         PIC X.
+           05  SORT-HU                   PIC X(2).
+           05  SORT-KEYWORD-ADJ          PIC X(50).
+
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MSTORERM-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-O.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+      *------ FD STATEMENT AREA FOR IBM ONLY ------*
+
+       WORKING-STORAGE SECTION.
+       01  DUIN-FLAG                     PIC X(1).
+       01  HIGH-USE-FLAG                 PIC X(1).
+       01  BIN-FLAG                      PIC X(1).
+       01  HOLD-INV-DATE                 PIC X(8).
+       01  SAVE-PRT-INV-FLAG             PIC X(1).
+       01  SUB                           PIC S9(4) COMP VALUE 0.
+       01  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+       01  PRT-LINE-CTR                  PIC S9(2)   VALUE 0.
+       01  ALL-ITEMS                     PIC XX    VALUE "@;".
+       01  CODE-ON-WORKSHEET             PIC X     VALUE "N".
+       01  SAVE-NUM-CODES                PIC 9(4)  VALUE 0.
+
+       01  MCXCBLERR-SCOPE               PIC X     VALUE "C".
+
+      *----------  USED TO ADD DESCRIPTION LINES TO PRT-LINE-CTR
+      *            TO SEE IF ITEM WOULD CONTINUE ON TO NEXT PAGE.
+       01  PAGE-BREAK-LINE               PIC S9(4)   VALUE 0.
+
+       01  HD-RET-CODE                   PIC S9(4) COMP VALUE 0.
+       01  HD-FILE-NAME                  PIC X(17) VALUE "DHDR26.PUB" .
+       01  FNUM                          PIC S9(4) COMP VALUE 0.
+
+       COPY ESCNAM2   IN COPYLIB.
+      * ***************************************************************
+      * *                  SUBSCRIPTS AND COUNTERS                    *
+      * ***************************************************************
+
+       01  STR-INDEX                     PIC 99.
+       01  DESC-INDEX                    PIC 99.
+
+       01  COUNTERS.
+           05  PAGE-K                    PIC 99         VALUE 0.
+           05  LINE-K                    PIC 99         VALUE 99.
+           05  CODES-ON-PAGE-COUNT       PIC 9          VALUE 5.
+
+      *****************************************************************
+      **                                                             **
+      **        S U B P R O G R A M   A R E A S                      **
+      **                                                             **
+      *****************************************************************
+       COPY CDESC      IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY CCRTFILE   IN COPYLIB.
+       COPY OVRPFDAT   IN COPYLIB.
+       COPY CCHKOBJ    IN COPYLIB.
+       COPY COMMAND    IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY VCOMLINK   IN COPYLIB.
+
+       01  OVR-FROMFILE                  PIC X(26) VALUE "INVFILE".
+       01  OVR-TOFILE.
+           05  OVR-TOFILE-PREFIX         PIC X(4)  VALUE "DINV".
+           05  OVR-TOFILE-NUMBER         PIC 9(4).
+           05  FILLER                    PIC X(18)  VALUE SPACES.
+
+       01  DLTF-FILENAME                 PIC X(26).
+
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT.
+               10  MESSAGE-BUFFER-1        PIC X(1).
+               10  FILLER                  PIC X(63).
+           05  MSG-FLD                     PIC X(14).
+           05  MSG-FLD-9 REDEFINES MSG-FLD PIC Z(13)9.
+
+      *****************************************************************
+      **                                                             **
+      **      D A T A B A S E   W O R K                              **
+      **                                                             **
+      *****************************************************************
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+      *******************************************************
+      **  BASE AND DBSTAT IS IN LINKAGE SECTION ON THE HP  **
+      *******************************************************
+       01  BASE                          PIC X(10).
+       COPY DBSTAT IN COPYLIB.
+
+       COPY DBMODES IN COPYLIB.
+       01  PLT-ARG                       PIC X(4) VALUE "PIPT".
+       01  CODE-ARG                      PIC X(8).
+       01  DSET-NAME                     PIC X(16).
+       01  DSET-MPLTINFO                 PIC X(16)  VALUE "MPLTINFO;".
+       01  DSET-MSTORERM                 PIC X(16)  VALUE "MSTORERM;".
+
+      *****************************************************************
+      **                                                             **
+      **       D A T A B A S E   B U F F E R S                       **
+      **                                                             **
+      *****************************************************************
+       COPY MSTORERM   IN COPYLIB.
+       COPY DPOITEM    IN COPYLIB.
+       COPY DRCVITEM   IN COPYLIB.
+       COPY DWLITEM    IN COPYLIB.
+
+       01  BUF-MWRKLIST.
+           05  MWL-KEY                   PIC X(6).
+           05  WL-DATE                   PIC 9(4).
+           05  FILLER                    PIC XX.
+
+       01  BUF-MPLTINFO.
+           05  MPLTINFO-KEY              PIC X(4).
+           05  MPLTINFO-DATA             PIC X(60).
+           05  MPLTINFO-PRINTER REDEFINES MPLTINFO-DATA.
+               10  MPLTINFO-JSPOOLER     PIC X(2).
+               10  MPLTINFO-JSPOOL-TYPE  PIC X(2).
+               10  FILLER                PIC X(56).
+
+       COPY MPLTPIPT   IN COPYLIB.
+
+      *********************
+      *                   *
+      *    DATES          *
+      *                   *
+      *********************
+
+       01  JULIANS.
+           05  TODAYS-JULIAN             PIC S9(4)  COMP.
+           05  LAST-INVS-JULIAN          PIC S9(4)  COMP.
+           05  DIFF                      PIC S9(5).
+           05  YEAR-DIFF                 PIC S9(2).
+           05  YEAR-DAYS                 PIC S9(5).
+           05  LAST-YEAR                 PIC 9999.
+           05  TODAYS-YEAR               PIC 9999.
+
+       01  CENTURY-YEAR.
+           05  CENTURY                   PIC 99 VALUE 19.
+           05  YEAR                      PIC 99.
+
+       01  GREGORIAN-DATE.
+           05  GREGORIAN-YEAR            PIC X(2).
+           05  GREGORIAN-MONTH           PIC X(2).
+           05  GREGORIAN-DAY             PIC X(2).
+
+      *01  JULIAN-DATE.
+      *    05  FILLER                    PIC X(2).
+      *    05  JULIAN-DATE-NUM           PIC X(3).
+
+       01  JULIAN-DATE.
+           05  JD-YY        PIC 99   VALUE ZEROES.
+           05  JD-DDD       PIC 999  VALUE ZEROES.
+           05  JULIAN-DATE-NUM REDEFINES JD-DDD
+                            PIC X(3).
+
+       01  DAYS-AGO-60      PIC X(8) VALUE SPACES.
+       01  DAYS-AGO-RED REDEFINES DAYS-AGO-60.
+           05  DAR-CC         PIC 99.
+           05  DAYS-AGO-YMD.
+               10  DAR-YY     PIC 99.
+               10  DAR-MM     PIC 99.
+               10  DAR-DD     PIC 99.
+
+       01  TODAYS-DATE-CYMD.
+           05  TODAYS-DATE-CC   PIC 99.
+           05  TODAYS-DATE-YMD.
+               10  TODAYS-DATE-YY   PIC 99.
+               10  TODAYS-DATE-MM   PIC 99.
+               10  TODAYS-DATE-DD   PIC 99.
+
+       01  CHECK-DATE-CYMD.
+           05  CHECK-DATE-CCYY      PIC 9(4).
+           05  CHECK-DATE-MM        PIC 9(2).
+           05  CHECK-DATE-DD        PIC 9(2).
+
+
+      ***********************************************************
+      *                PRINT AREA                               *
+      ***********************************************************
+
+       01  PRINT-LINES.
+           03  HEADER-0.
+               05  FILLER                PIC X(21)
+                    VALUE " ********************".
+           03  HEADER-1.
+               05  FILLER                PIC X(5)    VALUE SPACES.
+               05  FILLER                PIC X(5) VALUE "PAGE ".
+               05  PAGE-NO               PIC ZZ9.
+               05  FILLER                PIC X(17)   VALUE SPACES.
+               05  FILLER                PIC X(26)
+                   VALUE "CODES FROZEN FOR INVENTORY".
+               05  FILLER                PIC X(5)   VALUE SPACES.
+               05  FILLER                PIC X(12)
+                     VALUE "WORK SHEET #".
+               05  P-WS-NUM              PIC 9(4).
+           03  HEADER-1A.
+               05  FILLER                PIC X(6)  VALUE "SORT: ".
+               05  PRT-SORT-KEY          PIC X(18) VALUE SPACES.
+               05  FILLER                PIC X(1)  VALUE SPACES.
+               05  FILLER                PIC X(8)  VALUE "SELECT: ".
+               05  PRT-SELECT-KEY        PIC X(18) VALUE SPACES.
+               05  FILLER                PIC X(1)  VALUE SPACES.
+               05  PRT-LOW-VALUE         PIC X(12) VALUE SPACES.
+               05  FILLER                PIC X(3)  VALUE " - ".
+               05  PRT-HIGH-VALUE        PIC X(12) VALUE SPACES.
+               05  FILLER                PIC X(2)  VALUE SPACES.
+               05  PRT-OTHER-LIT         PIC X(20) VALUE SPACES.
+               05  PRT-OTHER-NUM         PIC ZZZ9.
+           03  PRINT-LINE1.
+               05  FILLER                PIC X(1)   VALUE SPACES.
+               05  FILLER                PIC X(7)   VALUE "CODE - ".
+               05  P-CODE                PIC X(8)   VALUE SPACES.
+               05  FILLER                PIC X(9)   VALUE "    UM - ".
+               05  P-UM                  PIC XX     VALUE SPACES.
+               05  FILLER                PIC X(12)  VALUE
+                   "    CLASS - ".
+               05  P-CLASS               PIC X(4)   VALUE SPACES.
+               05  FILLER                PIC X(5)   VALUE SPACES.
+               05  P-MESG                PIC X(32)  VALUE SPACES.
+           03  LOCAL-CODE-MSG.
+               05  FILLER                PIC X(13)  VALUE
+                   "LOCAL CODE - ".
+               05  P-LC                  PIC X(12)  VALUE SPACES.
+               05  FILLER                PIC X(7)   VALUE SPACES.
+           03  P-LINE-2.
+               05  P-DESC                PIC X(80)  VALUE SPACES.
+           03  PRINT-LINE2 REDEFINES P-LINE-2.
+               05  P-DESC-2              PIC X(40).
+               05  P-DESC-3              PIC X(40).
+           03  HEADER-2.
+               05  P-DESC-HEAD           PIC X(51) VALUE SPACES.
+               05  FILLER                PIC X(29)
+      *             VALUE "¦ <BIN LOCATIONS>".
+                    VALUE "* <BIN LOCATIONS>".
+           03  PRINT-LINE3.
+               05  P-BIN-LOC             PIC X(12)  VALUE SPACES.
+               05  P-UNDERLINE           PIC X(4)   VALUE "____".
+           03  PRINT-LINE4.
+               05  P-DESC-4              PIC X(51) VALUE SPACES.
+               05  FILLER                PIC X(2)  VALUE "* ".
+      *        05  FILLER                PIC X(2)  VALUE "¦ ".
+               05  P-BIN                 PIC X(16) VALUE SPACES.
+               05  P-BIN-ONHAND          PIC Z(8).
+           03  NO-CODES-PRINT-LINES.
+               05  P-NO-CODE-BANNER.
+                   10 FILLER             PIC X(20) VALUE SPACES.
+                   10 FILLER             PIC X(40) VALUE ALL "*".
+               05  P-NO-CODE-SKIP.
+                   10 FILLER             PIC X(20) VALUE SPACES.
+                   10  FILLER            PIC X(2)  VALUE "**".
+                   10  FILLER            PIC X(36) VALUE SPACES.
+                   10  FILLER            PIC X(2)  VALUE "**".
+               05  P-NO-CODE-LINE1.
+                   10 FILLER             PIC X(20) VALUE SPACES.
+                   10 FILLER             PIC X(40) VALUE
+                   "**  THIS WORKSHEET WAS NOT CREATED    **".
+               05  P-NO-CODE-LINE2.
+                   10 FILLER             PIC X(20) VALUE SPACES.
+                   10 FILLER             PIC X(40) VALUE
+                   "**  BECAUSE NO CODES COULD BE FROZEN. **".
+               05  P-NO-CODE-LINE3.
+                   10  FILLER            PIC X(20) VALUE SPACES.
+                   10  FILLER            PIC X(40) VALUE
+                   "**  SEE ERROR MESSAGE FOR EACH CODE.  **".
+
+       LINKAGE SECTION.
+      *******************************************************************
+      *  LANGSUB AND VCOMLINK ARE IN LINKAGE SECTION OF THE HP, BUT NOT *
+      *    ON THE IBM.                                                  *
+      *******************************************************************
+       COPY THDPRTB IN COPYLIB.
+       01  OPTION-REC.
+           05  SF-FREEZE-UNFREEZE        PIC X.
+           05  SF-FREEZE-TYPE            PIC X.
+               88  SINGLE-CODES             VALUE "1".
+               88  RANGE-OF-CODES           VALUE "2".
+               88  RANGE-OF-BIN             VALUE "3".
+               88  RANGE-OF-CLASS           VALUE "4".
+               88  ALL-CODES                VALUE "5".
+               88  ALL-CODES-DUIN           VALUE "6".
+               88  RANGE-HIGHUSE            VALUE "7".
+               88  WIPE-OUT-WORKSHEET       VALUE "D".
+           05  SF-SORT-OPTION            PIC X.
+           05  SF-LOW-VALUE              PIC X(12).
+           05  SF-HIGH-VALUE             PIC X(12).
+           05  SF-SPOOL-PRT              PIC 9(2).
+           05  SF-NUM                    PIC 9(4).
+           05  SF-CLASS-SELECT           PIC X(4).
+           05  SF-MAX-CODES              PIC 9(4).
+           05  SF-NUM-MONTHS             PIC 9(2).
+           05  FILLER                    PIC X(37).
+           05  FILLER                    PIC X(81).
+       PROCEDURE DIVISION USING HD-ROUTE-DATA, OPTION-REC.
+       MAIN SECTION.
+       1000-HOUSEKEEPING.
+           MOVE "C" TO MCXCBLERR-SCOPE.
+           CALL "MCXCBLERR" USING MCXCBLERR-SCOPE.
+           PERFORM 9999-OPEN-STUFF.
+
+      **********************************************
+      * GET THE DATE 60 DAYS AGO.  THIS IS FOR THE *
+      * DUIN SELECTION MODE (TYPE 6).  ITEMS WITH  *
+      * ZERO ONHAND WILL ONLY BE FROZEN IF THEY    *
+      * HAVEN'T BEEN INVENTORIED IN OVER 60 DAYS   *
+      * OR THEY'VE PASSED THEIR INVENTORY CYCLE.   *
+      **********************************************
+           ACCEPT JULIAN-DATE FROM DAY.
+           IF JD-DDD > 60
+             SUBTRACT 60 FROM JD-DDD
+           ELSE
+             ADD 305 TO JD-DDD
+             IF JD-YY > 0
+                 SUBTRACT 1 FROM JD-YY
+             ELSE
+                 MOVE 99 TO JD-YY.
+           MOVE JD-YY TO YEAR.
+           IF YEAR > 70
+              MOVE 19 TO CENTURY
+           ELSE
+              MOVE 20 TO CENTURY.
+           MOVE "00000000"   TO DAYS-AGO-60.
+           CALL "CJULIAN" USING CENTURY-YEAR, DAR-MM, DAR-DD,
+                                              JD-DDD.
+           MOVE JD-YY   TO DAR-YY.
+           IF DAR-YY > 70
+               MOVE 19 TO DAR-CC
+           ELSE
+               MOVE 20 TO DAR-CC.
+
+      *------- GET DATE TO CHECK FOR NO ACTIVITY IN THE LAST XX MONTHS.
+           IF SF-NUM-MONTHS > 0
+               MOVE 1                 TO  DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-YMD-OUT      TO  TODAYS-DATE-YMD
+               MOVE "20"              TO  TODAYS-DATE-CC
+               MOVE TODAYS-DATE-CYMD  TO  CHECK-DATE-CYMD
+               PERFORM UNTIL CHECK-DATE-MM > SF-NUM-MONTHS
+                   SUBTRACT 1 FROM CHECK-DATE-CCYY
+                   ADD 12 TO CHECK-DATE-MM
+               END-PERFORM
+               SUBTRACT SF-NUM-MONTHS FROM CHECK-DATE-MM.
+
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE "PIPT"                   TO  PLT-ARG.
+           MOVE "N" TO HANDLE-BLOWUP-FLAG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           MOVE "Y" TO HANDLE-BLOWUP-FLAG.
+           IF NO-ENTRY
+               MOVE "N"                  TO  SAVE-PRT-INV-FLAG
+           ELSE
+               MOVE MPLTINFO-PHYS-INV-SW TO  SAVE-PRT-INV-FLAG.
+           MOVE "N" TO CODE-ON-WORKSHEET.
+
+      *------ OVERRIDE THE INVENTORY WORKSHEET FILE TO BE OUTPUT
+      *------ TO THE CORRECT FILE NAME.  FOR EXAMPLE, WORKSHEET #245
+      *------ GOES IN FILE DINV0245.  'TINVWS' ALWAYS DOES THE
+      *------ CREATE OF THE WORKSHEET FILE.  A WORKSHEET FILE IS
+      *------ CREATED ONLY IF WE ARE FREEZING CODES, OR IF WE ARE
+      *------ UNFREEZING SINGLE CODES.  ALSO, OPTION 'D' IS PASSED FROM
+      *------ THE INVENTORY UPDATE PROGRAM 'TINVUP' TO UNFREEZE
+      *------ ANY REMAINING CODES ON THE WORKSHEET.
+           IF SF-FREEZE-UNFREEZE = "A" OR SF-FREEZE-UNFREEZE = "D"
+           OR SINGLE-CODES
+               MOVE SF-NUM               TO  OVR-TOFILE-NUMBER
+               PERFORM 9999-OVERRIDE.
+
+      *------ IF SINGLE CODES, THE CODE FILE WAS FILLED UP IN 'TINVWS'.
+      *------ IF FROM 'TINVUP', THE CODE FILE IS ALREADY THERE.  IF
+      *------ FREEZING, WE FILL UP THE CODE FILE IN THIS PROGRAM.
+      *------ IF UNFREEZING A RANGE, NO CODE FILE IS NEEDED.
+           IF SINGLE-CODES OR SF-FREEZE-UNFREEZE = "D"
+               OPEN INPUT INVFILE
+           ELSE
+           IF SF-FREEZE-UNFREEZE = "A"
+               OPEN OUTPUT INVFILE.
+
+           IF SF-SORT-OPTION = "0"
+               SORT SORT-FILE ON ASCENDING KEY SORT-NOTHING
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+           IF SF-SORT-OPTION = "1"
+               SORT SORT-FILE ON ASCENDING KEY SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+           IF SF-SORT-OPTION = "2"
+               SORT SORT-FILE ON ASCENDING KEY SORT-BIN, SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+           IF SF-SORT-OPTION = "3"
+               SORT SORT-FILE ON ASCENDING KEY SORT-CLASS, SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+           IF SF-SORT-OPTION = "4"
+               SORT SORT-FILE ON ASCENDING KEY SORT-DATE, SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+           IF SF-SORT-OPTION = "5"
+               SORT SORT-FILE ON ASCENDING KEY SORT-HU, SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+           IF SF-SORT-OPTION = "6"
+               SORT SORT-FILE ON ASCENDING KEY SORT-KEYWORD-ADJ,
+                                               SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X
+           ELSE
+               SORT SORT-FILE ON ASCENDING KEY SORT-CODE
+                 INPUT PROCEDURE IS 6000-INPUT-CODES THRU 6990-IC-X
+                 OUTPUT PROCEDURE IS 7000-OUTPUT-CODES THRU 7990-OC-X.
+
+           IF SF-FREEZE-UNFREEZE = "A" OR SF-FREEZE-UNFREEZE = "D"
+           OR SINGLE-CODES
+               CLOSE INVFILE.
+           PERFORM 9999-CLOSE-STUFF.
+
+      *------ IF CALLED FROM 'TINVUP', WE DELETE THE CODE FILE.
+      *------ OR IF CALLED FROM 'TINVWS' AND WE ARE UNFREEZING SINGLE
+      *------ CODES.
+      *------   OR IF CALLED FROM TINVWS AND WE FIND NO CODES TO FREEZE.
+           IF SF-FREEZE-UNFREEZE = "D"
+           OR (SINGLE-CODES AND SF-FREEZE-UNFREEZE = "B")
+           OR (SF-FREEZE-UNFREEZE = "A" AND CODE-ON-WORKSHEET = "N")
+               MOVE OVR-TOFILE             TO  DLTF-FILENAME
+               CALL "CDLTF" USING DLTF-FILENAME.
+
+           GOBACK.
+
+       2100-BLOWUP.
+           MOVE "TINVRNG"                TO  BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE BU-PGM-NAME STATUS-AREA
+             VIEW-COMAREA FILE-STATUS BU-DISPLAY-MSG
+             BU-DISPLAY-FLDS.
+
+       6000-INPUT-CODES.
+           MOVE SPACES               TO  CODE-ARG.
+
+           IF SINGLE-CODES OR SF-FREEZE-UNFREEZE = "D"
+             NEXT SENTENCE
+           ELSE
+             PERFORM 9999-BEGFIL-MSTORERM-CD-O.
+
+       6100-INPUT-CODE-LOOP.
+           IF SINGLE-CODES OR SF-FREEZE-UNFREEZE = "D"
+             READ INVFILE
+               AT END PERFORM 9999-RESET-MSTORERM-CD-O
+                      GO TO 6990-IC-X
+             END-READ
+             MOVE INV-CODE             TO  CODE-ARG
+             PERFORM 9999-GETKEY-MSTORERM-CD-O
+           ELSE
+             PERFORM 9999-GETSER-MSTORERM-CD-O
+             IF END-OF-FILE
+                 GO TO 6990-IC-X
+             ELSE
+                 MOVE CORP-CODE        TO  CODE-ARG.
+
+      *---------- IF WE'RE AT THE MAXIMUM # OF CODES SPECIFIED
+      *---------- FOR OPTION 6, STOP PROCESSING.
+           IF ALL-CODES-DUIN AND SF-FREEZE-UNFREEZE = "A"
+             IF SF-MAX-CODES > 0
+               IF SAVE-NUM-CODES = SF-MAX-CODES
+                 GO TO 6990-IC-X
+               END-IF
+             END-IF.
+
+      *------ SAVE STR-INV-DATE IN HOLD AREA, IF FREEZING DUE-TO-BE-
+      *------ INVENTORIED, PGM WILL MOVE LOW VALUES TO ITEMS WITH
+      *------ ZERO ONHAND SO THEY WILL SHOW UP FIRST ON THE RPT
+      *------ SORTED BY INV. DATE
+           MOVE STR-INV-DATE-CN        TO  HOLD-INV-DATE.
+
+           IF SINGLE-CODES OR SF-FREEZE-UNFREEZE = "D"
+               NEXT SENTENCE
+           ELSE
+           IF RANGE-OF-CODES
+               IF CORP-CODE < SF-LOW-VALUE
+                   GO TO 6100-INPUT-CODE-LOOP
+               ELSE
+               IF CORP-CODE > SF-HIGH-VALUE
+                   GO TO 6100-INPUT-CODE-LOOP
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF RANGE-OF-BIN
+               PERFORM 6700-DETERMINE-BIN THRU 6790-DB-X
+               IF BIN-FLAG = "Y"
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 6100-INPUT-CODE-LOOP
+           ELSE
+           IF RANGE-OF-CLASS
+               IF STR-CLASS < SF-LOW-VALUE
+                   GO TO 6100-INPUT-CODE-LOOP
+               ELSE
+               IF STR-CLASS > SF-HIGH-VALUE
+                   GO TO 6100-INPUT-CODE-LOOP
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+           IF ALL-CODES
+               NEXT SENTENCE
+           ELSE
+           IF ALL-CODES-DUIN
+               PERFORM 6500-DETERMINE-DUIN THRU 6590-DD-X
+               IF DUIN-FLAG = "Y"
+      *************NEXT SENTENCE
+                   ADD 1 TO SAVE-NUM-CODES
+               ELSE
+                   GO TO 6100-INPUT-CODE-LOOP
+           ELSE
+           IF RANGE-HIGHUSE
+               PERFORM 6600-DETERMINE-HIGHUSE THRU 6690-DH-X
+               IF HIGH-USE-FLAG = "Y"
+                   NEXT SENTENCE
+               ELSE
+                   GO TO 6100-INPUT-CODE-LOOP
+           ELSE
+               MOVE "INVALID FREEZE TYPE" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+           IF SF-CLASS-SELECT = SPACES OR "ALL"
+               NEXT SENTENCE
+           ELSE
+           IF SF-CLASS-SELECT = STR-CLASS
+               NEXT SENTENCE
+           ELSE
+               GO TO 6100-INPUT-CODE-LOOP.
+
+           IF SF-NUM-MONTHS > 0
+               IF STR-ACT-DATE-CN < CHECK-DATE-CYMD
+                   NEXT SENTENCE
+           ELSE
+               GO TO 6100-INPUT-CODE-LOOP.
+
+           IF SF-SORT-OPTION = "6"
+               MOVE "K"                  TO  CDESC-DESC-OPTION
+               CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+                 BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA
+               MOVE CDESC (1)            TO  SORT-KEYWORD-ADJ.
+
+           MOVE CORP-CODE                TO  SORT-CODE.
+
+      *------ IF WE ARE SELECTING CODES USING A RANGE OF BIN
+      *------ LOCATIONS, USE THE BIN LOCATION WHICH CAUSED THE
+      *------ CODE TO BE INCLUDED ON THE WORKSHEET.  OTHERWISE,
+      *------ USE THE PRIMARY BIN LOCATION.  LOGIC SIMILAR TO
+      *------ THAT USED IN PARAGRAPH 6700-DETERMINE-BIN IS
+      *------ USED TO OBTAIN THE PROPER SORT-BIN VALUE.
+      *------ -DAVE PLUM 24JUL1992
+           IF RANGE-OF-BIN
+               MOVE SPACES TO SORT-BIN
+               PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+                OR SORT-BIN > SPACES
+                   IF  STR-LOC (SUB) NOT < SF-LOW-VALUE
+                   AND STR-LOC (SUB) NOT > SF-HIGH-VALUE
+                       MOVE STR-LOC (SUB)  TO  SORT-BIN
+                   END-IF
+               END-PERFORM
+           ELSE
+               MOVE STR-LOC (1)            TO  SORT-BIN.
+
+           MOVE STR-CLASS                TO  SORT-CLASS.
+           MOVE HOLD-INV-DATE            TO  SORT-DATE.
+           MOVE STR-HIGH-USAGE           TO  SORT-HU.
+           MOVE SPACES                   TO  SORT-NOTHING.
+
+      *------ IF WE ARE UNFREEZING, THERE ARE NO EDITS AND NO REPORT
+      *------ SO WE UNFREEZE IN THE INPUT ROUTINE.
+           IF SF-FREEZE-UNFREEZE = "B" OR "D"
+               PERFORM 8100-FREEZE-UNFREEZE THRU 8110-FU-X
+           ELSE
+               RELEASE SORT-REC.
+
+           GO TO 6100-INPUT-CODE-LOOP.
+
+       6500-DETERMINE-DUIN.
+           MOVE "N"                      TO  DUIN-FLAG.
+           IF STR-PHY-INV-CYL NOT NUMERIC
+               MOVE ZERO                 TO  STR-PHY-INV-CYL-9.
+
+           IF STR-PHY-INV-CYL = 9999
+               GO TO 6590-DD-X.
+
+      *------ IF NOTHING ONHAND AND IF NO ACTIVITY SINCE IT WAS
+      *------ LAST INVENTORIED, DON'T BOTHER INVENTORYING IT.
+      *------ IF NOTHING ONHAND AND THERE HAS BEEN ACTIVITY,
+      *------ DON'T INVENTORY IF IT'S BEEN INVENTORIED WITHIN
+      *------ THE LAST 60 DAYS.
+      *------ OTHERWISE, ITEMS WITH ONHAND OF ZERO SHOW UP FIRST
+      *------ ON THE RPT SORTED BY INV DATE (TO MATCH TRPTDUIN)
+           IF STR-ONHAND = 0
+               IF STR-INV-DATE-CN = STR-ACT-DATE-CN
+                 GO TO 6590-DD-X
+               ELSE
+                 IF STR-INV-DATE-CN > DAYS-AGO-60
+                   GO TO 6590-DD-X
+                 ELSE
+                   MOVE LOW-VALUES TO HOLD-INV-DATE
+                   MOVE "Y"        TO DUIN-FLAG
+                   GO TO 6590-DD-X.
+
+      *------ IF THE CODE WAS NEVER INVENTORIED, WE GO FROM THE
+      *------ DATE THE CODE WAS INITIALIZED.
+           IF STR-INV-DATE-CN = SPACES
+               IF STR-INIT-DATE-CN = SPACES
+                   MOVE "750101"       TO  GREGORIAN-DATE
+               ELSE
+                   MOVE STR-INIT-DATE    TO  GREGORIAN-DATE
+           ELSE
+               MOVE STR-INV-DATE         TO  GREGORIAN-DATE.
+           MOVE GREGORIAN-YEAR           TO  YEAR.
+           IF YEAR > 70
+               MOVE 19 TO CENTURY
+           ELSE
+               MOVE 20 TO CENTURY.
+           MOVE CENTURY-YEAR TO LAST-YEAR.
+           CALL "CJULIAN" USING CENTURY-YEAR, GREGORIAN-MONTH,
+                                GREGORIAN-DAY, JD-DDD.
+           MOVE JULIAN-DATE-NUM          TO  LAST-INVS-JULIAN.
+
+           ACCEPT GREGORIAN-DATE FROM DATE.
+           MOVE GREGORIAN-YEAR           TO  YEAR.
+           IF YEAR > 70
+               MOVE 19 TO CENTURY
+           ELSE
+               MOVE 20 TO CENTURY.
+           MOVE CENTURY-YEAR TO TODAYS-YEAR.
+           CALL "CJULIAN" USING CENTURY-YEAR, GREGORIAN-MONTH,
+                                GREGORIAN-DAY, JD-DDD.
+           MOVE JULIAN-DATE-NUM          TO  TODAYS-JULIAN.
+
+           SUBTRACT LAST-YEAR FROM TODAYS-YEAR GIVING YEAR-DIFF.
+           IF LAST-INVS-JULIAN > TODAYS-JULIAN
+               SUBTRACT LAST-INVS-JULIAN FROM 365 GIVING DIFF
+               ADD TODAYS-JULIAN         TO  DIFF
+               COMPUTE YEAR-DAYS = (YEAR-DIFF - 1) * 356
+               ADD YEAR-DAYS             TO  DIFF
+           ELSE
+               SUBTRACT LAST-INVS-JULIAN FROM TODAYS-JULIAN
+                 GIVING DIFF
+               COMPUTE YEAR-DAYS = YEAR-DIFF * 365
+               ADD YEAR-DAYS             TO  DIFF.
+
+           IF DIFF > STR-PHY-INV-CYL-9
+               MOVE "Y"                  TO  DUIN-FLAG.
+
+       6590-DD-X.
+           EXIT.
+
+       6600-DETERMINE-HIGHUSE.
+           MOVE "N"                      TO  HIGH-USE-FLAG.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+           OR HIGH-USE-FLAG = "Y"
+               IF STR-HIGH-USAGE-AREA (SUB) < SF-LOW-VALUE
+                   NEXT SENTENCE
+               ELSE
+               IF STR-HIGH-USAGE-AREA (SUB) > SF-HIGH-VALUE
+                   NEXT SENTENCE
+               ELSE
+                   MOVE "Y"              TO  HIGH-USE-FLAG
+               END-IF
+               END-IF
+           END-PERFORM.
+       6690-DH-X.
+           EXIT.
+
+       6700-DETERMINE-BIN.
+           MOVE "N"                      TO  BIN-FLAG.
+           PERFORM VARYING SUB FROM 1 BY 1 UNTIL SUB > 6
+           OR BIN-FLAG = "Y"
+               IF  STR-LOC (SUB) NOT < SF-LOW-VALUE
+               AND STR-LOC (SUB) NOT > SF-HIGH-VALUE
+                   MOVE "Y"              TO  BIN-FLAG
+               END-IF
+           END-PERFORM.
+       6790-DB-X.
+           EXIT.
+
+       6990-IC-X.
+           EXIT.
+
+       7000-OUTPUT-CODES.
+           IF SF-FREEZE-UNFREEZE = "B" OR "D"
+               GO TO 7990-OC-X.
+
+           IF SINGLE-CODES
+               CLOSE INVFILE
+               OPEN OUTPUT INVFILE
+           END-IF.
+
+           MOVE HD-SPOOLER-NUMBER        TO  OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"                   TO  OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES          TO  OVRPRTF-COPIES.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT PRINTFILE.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME,
+             FNUM, HD-ROUTE-DATA, ESC-NAME.
+      *------- SET UP THE HEADER THAT SHOWS THE USER WHAT OPTIONS
+      *------- WERE PICKED.
+           IF SF-SORT-OPTION = "1"
+               MOVE "CORPORATE CODE"     TO  PRT-SORT-KEY
+           ELSE
+           IF SF-SORT-OPTION = "2"
+               MOVE "BIN LOCATION"       TO  PRT-SORT-KEY
+           ELSE
+           IF SF-SORT-OPTION = "3"
+               MOVE "ACCOUNTING CLASS"   TO  PRT-SORT-KEY
+           ELSE
+           IF SF-SORT-OPTION = "4"
+               MOVE "LAST INV DATE"      TO  PRT-SORT-KEY
+           ELSE
+           IF SF-SORT-OPTION = "5"
+               MOVE "H-U AREA"           TO  PRT-SORT-KEY
+           ELSE
+           IF SF-SORT-OPTION = "6"
+               MOVE "KEYWORD/ADJECTIVE"  TO  PRT-SORT-KEY.
+
+           MOVE SF-LOW-VALUE             TO  PRT-LOW-VALUE.
+           MOVE SF-HIGH-VALUE            TO  PRT-HIGH-VALUE.
+           IF SF-FREEZE-TYPE = "1"
+               MOVE "SINGLE CODES"       TO  PRT-SELECT-KEY
+           ELSE
+           IF SF-FREEZE-TYPE = "2"
+               MOVE "CORPORATE CODES"    TO  PRT-SELECT-KEY
+               IF SF-NUM-MONTHS > 0
+                 MOVE "NO ACT IN # MONTHS: "
+                                         TO  PRT-OTHER-LIT
+                 MOVE SF-NUM-MONTHS      TO  PRT-OTHER-NUM
+               END-IF
+           ELSE
+           IF SF-FREEZE-TYPE = "3"
+               MOVE "BIN LOCATIONS"      TO  PRT-SELECT-KEY
+           ELSE
+           IF SF-FREEZE-TYPE = "4"
+               MOVE "ACCOUNTING CLASSES" TO  PRT-SELECT-KEY
+           ELSE
+           IF SF-FREEZE-TYPE = "5"
+               MOVE "ALL ITEMS"          TO  PRT-SELECT-KEY
+           ELSE
+           IF SF-FREEZE-TYPE = "6"
+               MOVE "DUE TO BE INV."     TO  PRT-SELECT-KEY
+               IF SF-MAX-CODES > 0
+                 MOVE "MAXIMUM # OF CODES: "
+                                         TO  PRT-OTHER-LIT
+                 MOVE SF-MAX-CODES       TO  PRT-OTHER-NUM
+               END-IF
+           ELSE
+           IF SF-FREEZE-TYPE = "7"
+               MOVE "H-U AREAS"          TO  PRT-SELECT-KEY.
+
+           PERFORM 7800-HEADERS.
+       7010-RETURN-LOOP.
+           RETURN SORT-FILE AT END
+               GO TO 7900-RL-X.
+
+           MOVE SORT-CODE                TO  CODE-ARG.
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+           IF NOT GOOD-CALL
+               GO TO 7010-RETURN-LOOP.
+
+           MOVE SPACES                   TO  MESSAGE-BUFFER.
+           CALL "CINVEDIT" USING BASE, STATUS-AREA, CODE-ARG,
+             MESSAGE-BUFFER, BU-DISPLAY-MSG.
+           IF MESSAGE-BUFFER-1 NOT = SPACES
+               MOVE MESSAGE-BUFFER       TO  P-MESG
+           ELSE
+               MOVE STR-PREV-CODE        TO  P-LC
+               MOVE LOCAL-CODE-MSG       TO  P-MESG.
+           IF SORT-DATE = LOW-VALUES
+               MOVE "ONHAND = 0"         TO  P-MESG.
+           MOVE CODE-ARG                 TO  P-CODE.
+           MOVE 0                        TO  STR-INDEX, DESC-INDEX.
+           WRITE PRINT-RECORD FROM HEADER-0 AFTER ADVANCING 2.
+           MOVE STR-UM                   TO  P-UM.
+           MOVE STR-CLASS                TO  P-CLASS.
+           WRITE PRINT-RECORD FROM PRINT-LINE1 AFTER ADVANCING 1.
+           ADD 1                         TO  CODES-ON-PAGE-COUNT.
+           ADD 4                         TO  LINE-K.
+
+      *-------GET DESCRIPTION FROM DDESC
+           MOVE 7                        TO  CDESC-LINES-TO-GET.
+           MOVE "F"                      TO  CDESC-DESC-OPTION.
+           CALL "CDESC" USING CDESC-RET-CODE, BASE, STATUS-AREA,
+             BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+           PERFORM 8080-GET-DESCRIPTION UNTIL STR-INDEX > 6.
+
+           IF CODES-ON-PAGE-COUNT > 3
+               PERFORM 7800-HEADERS.
+
+           PERFORM 8100-FREEZE-UNFREEZE THRU 8110-FU-X.
+           IF  SF-FREEZE-UNFREEZE = "A"  AND MESSAGE-BUFFER-1 = SPACES
+               MOVE "Y"                  TO  CODE-ON-WORKSHEET
+               MOVE CODE-ARG             TO  INV-CODE
+               WRITE INV-RECORD.
+
+           GO TO 7010-RETURN-LOOP.
+
+       7800-HEADERS.
+           MOVE 1                        TO  LINE-K.
+           MOVE 0                        TO  CODES-ON-PAGE-COUNT.
+           ADD 1                         TO  PAGE-K.
+           ADD 3                         TO  LINE-K.
+           MOVE PAGE-K                   TO  PAGE-NO.
+           MOVE SF-NUM                   TO  P-WS-NUM.
+           WRITE PRINT-RECORD FROM HEADER-1 AFTER ADVANCING NEW-PAGE.
+           WRITE PRINT-RECORD FROM HEADER-1A AFTER ADVANCING 1.
+           MOVE SPACES                   TO  PRINT-RECORD.
+
+       7900-RL-X.
+           IF CODE-ON-WORKSHEET = "N"
+               DISPLAY "WORKSHEET NOT CREATED, NO CODES COULD BE FROZEN"
+               PERFORM 7800-HEADERS
+               PERFORM 3 TIMES
+                  WRITE PRINT-RECORD FROM P-NO-CODE-BANNER
+               END-PERFORM
+               WRITE PRINT-RECORD FROM P-NO-CODE-SKIP
+               WRITE PRINT-RECORD FROM P-NO-CODE-LINE1
+               WRITE PRINT-RECORD FROM P-NO-CODE-SKIP
+               WRITE PRINT-RECORD FROM P-NO-CODE-LINE2
+               WRITE PRINT-RECORD FROM P-NO-CODE-SKIP
+               WRITE PRINT-RECORD FROM P-NO-CODE-LINE3
+               WRITE PRINT-RECORD FROM P-NO-CODE-SKIP
+               PERFORM 3 TIMES
+                  WRITE PRINT-RECORD FROM P-NO-CODE-BANNER
+               END-PERFORM
+           END-IF.
+           CLOSE PRINTFILE.
+
+       7990-OC-X.
+           EXIT.
+
+       8060-PRINT-DESCRIPTION.
+      *----------PRINT A LINE OF DESCRIPTION WHICH ALSO CONTAINS A
+      *----------BIN LOCATION. WE HAVE ALLOCATED ONLY 40 BYTES FOR DESCRIPTION,
+      *----------SO KEYWORD/ADJECTIVE AND MANUFACTURERS WILL FIT ON ONE LINE,
+      *----------BUT OTHER DESCRIPTION WILL TAKE 2 LINES.
+           IF DESC-INDEX = 1
+               MOVE P-LINE-2                 TO  P-DESC-HEAD
+               WRITE PRINT-RECORD FROM HEADER-2 AFTER ADVANCING 1
+               ADD 1                         TO  LINE-K
+           ELSE
+               ADD 1                         TO  STR-INDEX
+               PERFORM 8070-MOVE-BIN
+               IF CDESC-TYPE (DESC-INDEX) = "K" OR "M"
+                   MOVE P-LINE-2             TO  P-DESC-4
+                   WRITE PRINT-RECORD FROM PRINT-LINE4 AFTER ADVANCING 1
+                   ADD 1                     TO  LINE-K
+               ELSE
+                   MOVE P-DESC-2             TO  P-DESC-4
+                   WRITE PRINT-RECORD FROM PRINT-LINE4 AFTER ADVANCING 1
+                   ADD 1                     TO  STR-INDEX
+                   PERFORM 8070-MOVE-BIN
+                   MOVE P-DESC-3             TO  P-DESC-4
+                   WRITE PRINT-RECORD FROM PRINT-LINE4 AFTER ADVANCING 1
+                   ADD 2                     TO  LINE-K.
+
+       8070-MOVE-BIN.
+           IF STR-INDEX > 6
+               MOVE SPACES               TO  P-BIN
+               MOVE ZERO                 TO  P-BIN-ONHAND
+           ELSE
+             IF STR-LOC (STR-INDEX) = SPACES
+                 MOVE SPACES               TO  P-BIN
+                 MOVE ZERO                 TO  P-BIN-ONHAND
+             ELSE
+                 MOVE STR-LOC (STR-INDEX)  TO  P-BIN-LOC
+                 IF MESSAGE-BUFFER-1 = SPACES
+                     MOVE "____" TO P-UNDERLINE
+                 ELSE
+                     MOVE "****" TO P-UNDERLINE
+                 END-IF
+                 MOVE PRINT-LINE3          TO  P-BIN
+                 IF SAVE-PRT-INV-FLAG = "Y"
+                     MOVE STR-LOC-ONHAND (STR-INDEX) TO P-BIN-ONHAND
+                 ELSE
+                     MOVE ZERO             TO  P-BIN-ONHAND.
+
+       8080-GET-DESCRIPTION.
+           ADD 1                         TO  DESC-INDEX.
+           IF DESC-INDEX > CDESC-LINES-GOT
+               MOVE SPACES               TO  P-LINE-2
+               MOVE "M"                  TO  CDESC-TYPE (DESC-INDEX)
+           ELSE
+               MOVE CDESC (DESC-INDEX)   TO  P-LINE-2.
+           PERFORM 8060-PRINT-DESCRIPTION.
+
+       8090-EXIT.
+           EXIT.
+
+       8100-FREEZE-UNFREEZE.
+           MOVE "MSTORERM;"              TO  DSET-NAME.
+           PERFORM 9999-DSET-LOCK.
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+
+           IF SF-FREEZE-UNFREEZE = "B" OR "D"
+               MOVE "U"                  TO  STR-STATE
+           ELSE
+           IF SF-FREEZE-UNFREEZE = "A" AND MESSAGE-BUFFER-1 = SPACES
+           AND (STR-STATE NOT = "F")
+               MOVE "F"                  TO  STR-STATE
+           ELSE
+               PERFORM 9999-UNLOCK
+               GO TO 8110-FU-X.
+
+           PERFORM 9999-UPDATE-MSTORERM-CD-O.
+           PERFORM 9999-UNLOCK.
+
+       8110-FU-X.
+           EXIT.
+
+       9999-OPEN-STUFF.
+           OPEN INPUT MPLTINFO-PK-I.
+           OPEN I-O   MSTORERM-CD-O.
+
+       9999-CLOSE-STUFF.
+           CLOSE      MPLTINFO-PK-I.
+           CLOSE      MSTORERM-CD-O.
+
+       9999-START-AT-CODE.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY >= CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY CONTINUE
+           END-START
+           IF FILE-STATUS NOT = "00"
+               MOVE "START ERROR MSTORERM 9999-SAC" TO BU-DISPLAY-MSG
+               PERFORM 2100-BLOWUP.
+
+       9999-OVERRIDE.
+           MOVE SPACES TO COMMAND-WORK.
+           STRING "OVRDBF FILE(" DELIMITED BY SIZE,
+              OVR-FROMFILE DELIMITED BY SPACES,
+              ") TOFILE(" DELIMITED BY SIZE,
+              OVR-TOFILE DELIMITED BY SPACES,
+              ")" DELIMITED BY SIZE
+            INTO COMMAND-WORK.
+           CALL "QCMDEXC" USING COMMAND-WORK, COMMAND-LEN.
+
+       COPY DLOCKCAL IN COPYLIB.
+       COPY UNLOCK   IN COPYLIB.
+       COPY OVRPFCAL IN COPYLIB.
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-O.
+           READ MSTORERM-CD-O INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+      ***  IF FILE-STATUS = "23"
+      ***      MOVE 17 TO COND-WORD
+      ***  ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   MOVE CODE-ARG TO BU-DISPLAY-FLD (1)
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MSTORERM-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY > CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETSER-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           READ MSTORERM-CD-O NEXT INTO BUF-MSTORERM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "1"
+               MOVE 11 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETSER ERR 9999-GETSER-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   MOVE CORP-CODE TO BU-DISPLAY-FLD (1)
+                   PERFORM 2100-BLOWUP.
+
+       9999-BEGFIL-MSTORERM-CD-O.
+           MOVE SPACES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY >= CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-UPDATE-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-CD-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   MOVE CORP-CODE TO BU-DISPLAY-FLD (1)
+                   PERFORM 2100-BLOWUP.
+

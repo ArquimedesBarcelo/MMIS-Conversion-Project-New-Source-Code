@@ -1,0 +1,634 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.         TPOAUDIT.
+       AUTHOR.             CA YODER.
+       DATE-WRITTEN.       06/26/1995.
+       DATE-COMPILED.
+      *INSTALLATION.       GOODYEAR TIRE & RUBBER CO.
+
+      *D* REMARKS.
+      *D*
+      *D*   THIS PROGRAM DISPLAYS THE RECORDS IN THE PO AUDIT FILE.
+      *D*   THE DISPLAY FILE IS "ZPOAUDIT."
+      *D*
+      *C* CHANGES
+      *C*
+      *C* JUNE 06, 1996     CA YODER
+      *C*    ADDED LOGIC FOR ADDITION OF CENTURY.
+      *C*
+      *C* 02/12/1998        CA YODER
+      *C*    CHANGED PROGRAM TO ONLY DISPLAY POS THAT MATCH THE
+      *C*    PO OR DATE ENTERED ON THE SCREEN, NOT JUST STARTING
+      *C*    WITH THAT PO OR DATE.
+      *C*
+
+       ENVIRONMENT DIVISION.
+
+       CONFIGURATION SECTION.
+
+       SOURCE-COMPUTER.          IBM-AS400.
+       OBJECT-COMPUTER.          IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN         TO WORKSTATION-ZPOAUDIT-SI
+               ORGANIZATION   IS TRANSACTION
+               ACCESS         IS DYNAMIC
+               RELATIVE KEY   IS REC-COUNT
+               FILE STATUS    IS DISPLAY-STATUS
+               CONTROL-AREA   IS WS-CONTROL.
+
+           SELECT DPOTRACK-DT-I
+               ASSIGN         TO DATABASE-MCFLCS5601
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                              WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+           SELECT DPOTRACK-PO-I
+               ASSIGN         TO DATABASE-MCFLCS5602
+               ORGANIZATION   IS INDEXED
+               ACCESS MODE    IS DYNAMIC
+               RECORD KEY     IS EXTERNALLY-DESCRIBED-KEY
+                              WITH DUPLICATES
+               FILE STATUS    IS FILE-STATUS.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DISPLAY-REC        PIC X(2000).
+
+       FD  DPOTRACK-DT-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOTRACK-DT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS5601.
+
+       FD  DPOTRACK-PO-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOTRACK-PO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLCS5602.
+
+       WORKING-STORAGE SECTION.
+
+      *-----------------------------------------------------------------
+      *                   B U F F E R S
+      *-----------------------------------------------------------------
+
+      *--- BUFFER FOR SUBFILE SCREEN LINE 1.
+       01  BUF-SCREEN-L1.
+           05  SC-PO-NUM.
+               10  SC-PO-1          PIC X(7).
+               10  FILLER           PIC X    VALUE "-".
+               10  SC-PO-2          PIC X(3).
+           05  FILLER               PIC X(2) VALUE SPACES.
+           05  SC-ITEM-NUM          PIC X(4).
+      *****    10  FILLER           PIC X    VALUE "-".
+      *****    10  SC-PO-3          PIC X(3).
+           05  FILLER               PIC X(2) VALUE SPACES.
+           05  SC-DATE              PIC X(8).
+      ******   10  SC-MM            PIC X(2).
+      ******   10  FILLER           PIC X    VALUE "/".
+      ******   10  SC-DD            PIC X(2).
+      ******   10  FILLER           PIC X    VALUE "/".
+      ******   10  SC-YY            PIC X(2).
+           05  FILLER               PIC X(2) VALUE SPACES.
+           05  SC-TIME.
+               10  SC-HR            PIC X(2).
+               10  FILLER           PIC X    VALUE ":".
+               10  SC-MIN           PIC X(2).
+           05  FILLER               PIC X(2) VALUE SPACES.
+           05  SC-USER              PIC X(8).
+           05  FILLER               PIC X(2) VALUE SPACES.
+           05  SC-OLD-PRICE         PIC Z,ZZZ,ZZ9.9999-.
+           05  SC-ERROR-1  REDEFINES SC-OLD-PRICE
+                                    PIC X(15).
+           05  FILLER               PIC X(2) VALUE SPACES.
+           05  SC-OLD-QTY           PIC Z,ZZZ,ZZ9.9999-.
+           05  SC-ERROR-2  REDEFINES SC-OLD-QTY
+                                    PIC X(15).
+      *--- BUFFER FOR SUBFILE SCREEN LINE 2.
+       01  BUF-SCREEN-L2.
+           05  FILLER               PIC X(6)  VALUE SPACES.
+      **** 05  SC-ITEM-NUM          PIC X(4).
+           05  FILLER               PIC X(40) VALUE SPACES.
+           05  SC-PRICE.
+               10  SC-NEW-PRICE     PIC Z,ZZZ,ZZ9.9999.
+               10  PRICE-ASTERISK   PIC X.
+           05  SC-ERROR-3  REDEFINES SC-PRICE
+                                    PIC X(15).
+           05  FILLER               PIC X(2)  VALUE SPACES.
+           05  SC-QUANTITY.
+               10  SC-NEW-QTY       PIC Z,ZZZ,ZZ9.9999.
+               10  QTY-ASTERISK     PIC X.
+           05  SC-ERROR-4  REDEFINES SC-QUANTITY
+                                    PIC X(15).
+
+       01  BUF-DPOTRACK.
+       COPY DPOTRACK      OF COPYLIB.
+
+       01  BUF-PO-NUM.
+           05  FILLER               PIC X.
+           05  BUF-PO               PIC X(7).
+           05  BUF-REL              PIC X(3).
+           05  BUF-RCVR             PIC X(3).
+
+      *--- BUFFER FOR FIRST DISPLAY SCREEN FIELDS.
+       01  DE-BUF.
+           05  DE-PO-NUM.
+               10  DE-PO1           PIC X(7).
+               10  DE-PO2           PIC X(3).
+               10  DE-PO3           PIC X(3).
+           05  DE-DATE.
+               10  DE-MD            PIC X(2).
+               10  DE-DM            PIC X(2).
+               10  DE-YY            PIC X(2).
+           05  DE-MSGLN             PIC X(78).
+
+      *-----------------------------------------------------------------
+      *         S W I T C H E S / C O U N T E R S
+      *-----------------------------------------------------------------
+
+       01  DPOTRACK-EOF-SW         PIC X  VALUE "N".
+
+       01  REC-COUNT               PIC 9(5) VALUE 0.
+
+      *--- EXPLANATION OF THE DISPLAY CRITERIA SWITCHES:
+      *---   "PO" -- THE USER ENTERED A PO TO START THE SEARCH WITH
+      *---   "DT" -- THE USER ENTERED A DATE TO START THE SEARCH WITH
+      *---   "AP" -- THE USER WANTS TO SEE THE COMPLETE LIST BY PO
+      *---   "AD" -- THE USER WANTS TO SEE THE COMPLETE LIST BY DATE
+       01  DISPLAY-CRITERIA-SW     PIC X(2).
+           88  START-WITH-PO          VALUE "PO".
+           88  START-WITH-DATE        VALUE "DT".
+           88  DISPLAY-ALL-PO         VALUE "AP".
+           88  DISPLAY-ALL-DATE       VALUE "AD".
+
+      *-----------------------------------------------------------------
+      *          D A T A B A S E   S T A T U S   A R E A
+      *-----------------------------------------------------------------
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1        PIC X.
+           05  FILE-STATUS-2        PIC X.
+
+       COPY DATAB    OF COPYLIB.
+
+      *-----------------------------------------------------------------
+      *               U T I L I T Y   A R E A
+      *-----------------------------------------------------------------
+
+       COPY CATREAD OF COPYLIB.
+
+       COPY TBLOWUP OF COPYLIB.
+
+       COPY VCOMAREA OF COPYLIB.
+
+       COPY TDATECHK OF COPYLIB.
+
+       01  WS-CONTROL.
+           05  FUNCTION-KEY         PIC X(2).
+               88  ENTER-KEY-USED            VALUE "00".
+               88  F1-KEY-USED               VALUE "01".
+               88  F2-KEY-USED               VALUE "02".
+               88  F3-KEY-USED               VALUE "03".
+               88  F4-KEY-USED               VALUE "04".
+               88  F5-KEY-USED               VALUE "05".
+               88  F6-KEY-USED               VALUE "06".
+               88  F7-KEY-USED               VALUE "07".
+               88  F8-KEY-USED               VALUE "08".
+               88  F9-KEY-USED               VALUE "09".
+               88  F10-KEY-USED              VALUE "10".
+               88  F11-KEY-USED              VALUE "11".
+               88  F12-KEY-USED              VALUE "12".
+               88  ROLLUP-KEY-USED           VALUE "RU".
+           05  TERMINAL-ID          PIC X(10).
+           05  FORMAT-NAME          PIC X(10).
+
+       01  DISPLAY-STATUS           PIC X(2).
+
+       01  SRF-INDICATORS.
+           05  IND                  PIC 1
+                                    OCCURS 99 TIMES
+                                    INDICATOR 1.
+               88  IND-OFF          VALUE B"0".
+               88  IND-ON           VALUE B"1".
+
+       01  OFF-SWITCH               PIC 1  VALUE B"0".
+       01  ON-SWITCH                PIC 1  VALUE B"1".
+
+       01  PO-ARG.
+           05  PO-PREFIX            PIC X    VALUE "P".
+           05  PO-ARG-NUM           PIC X(13).
+       01  DATE-TIME-ARG.
+           05  DATE-ARG.
+               10  ARG-CC           PIC 9(2).
+               10  DATE-ARG-YMD.
+                   15  ARG-YY       PIC 9(2).
+                   15  ARG-MM       PIC 9(2).
+                   15  ARG-DD       PIC 9(2).
+               10  DATE-ARG-YMD-X   REDEFINES DATE-ARG-YMD
+                                    PIC X(6).
+           05  TIME-ARG             PIC 9(4).
+
+      *-----------------------------------------------------------------
+      *          P R O C E D U R E   D I V I S I O N
+      *-----------------------------------------------------------------
+
+       PROCEDURE DIVISION.
+
+       BEGIN SECTION.
+
+       0-BEGIN.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN THRU 6-MAIN-X.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+           OPEN INPUT     DPOTRACK-DT-I
+                          DPOTRACK-PO-I
+                I-O       DISPLAY-FILE.
+
+       2-EOJ.
+           CLOSE          DPOTRACK-DT-I
+                          DPOTRACK-PO-I
+                          DISPLAY-FILE.
+
+
+       6-MAIN SECTION.
+
+       6-BEGIN.
+           INITIALIZE DISPLAY-REC    DATE-ARG
+                      DE-BUF         PO-ARG-NUM.
+           MOVE ZEROS TO DE-PO2   DE-PO3.
+           MOVE DE-BUF TO DISPLAY-REC.
+
+      *--- THIS LOGIC WAS ADDED AFTER THE SUBFILE LOGIC WAS ADDED;
+      *--- THEREFORE, I HAD TO USE A DIFFERENT NUMBERING SCHEME.
+      *--- LETTERS WERE USED INSTEAD TO DIFFERENTIATE BETWEEN THE
+      *--- TWO SCREENS.
+
+       6A-DISPLAY-SCREEN.
+           MOVE "N" TO DPOTRACK-EOF-SW.
+
+      *--- SHOW FIRST SCREEN WHERE DATA IS ENTERED.
+           WRITE DISPLAY-REC FORMAT IS "AUDITSCRN"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SCREEN WRITE" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+           READ DISPLAY-FILE
+               FORMAT IS "AUDITSCRN"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SCREEN" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+           MOVE DISPLAY-REC    TO DE-BUF.
+
+       6B-CHECK-ERRORS.
+           IF F3-KEY-USED
+               GO TO 6-MAIN-X
+           ELSE
+               IF F4-KEY-USED
+      *----------- DISPLAY ALL BY DATE.
+                   MOVE "AD"          TO DISPLAY-CRITERIA-SW
+           ELSE
+      *------- DISPLAY ALL BY PO NUM.
+               IF F5-KEY-USED
+                   MOVE "AP"          TO DISPLAY-CRITERIA-SW
+           ELSE
+      *--- CANNOT ENTER BOTH A PO NUMBER AND A DATE.
+               IF DE-PO1 NOT = SPACES AND DE-DATE NOT = SPACES
+                   MOVE ON-SWITCH TO IND (60)
+                                     IND (20)  IND (21)
+      *       ***  ENTER PO NUMBER OR DATE, NOT BOTH **
+                   MOVE 05103 TO CATREAD-MSG-NUMBER
+                   PERFORM 9999-CATREAD
+                   MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+                   MOVE DE-BUF TO DISPLAY-REC
+                   GO TO 6A-DISPLAY-SCREEN
+           ELSE
+               IF DE-PO1 NOT = SPACES
+      *----------- START WITH SPECIFIED PO NUMBER.
+                   MOVE "PO"          TO DISPLAY-CRITERIA-SW
+                   MOVE DE-PO-NUM     TO PO-ARG-NUM
+      *----------- INITIAL READ BEFORE PROCESSING.
+                   PERFORM 9999-START-DPOTRACK-PO
+                   IF FILE-STATUS NOT = "00"
+                       MOVE ON-SWITCH TO IND (60)
+                                         IND (20)
+      *           ***  NO RECORDS TO DISPLAY FOR PO ***
+                       MOVE 14132 TO CATREAD-MSG-NUMBER
+                       PERFORM 9999-CATREAD
+                       MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+                       MOVE DE-BUF TO DISPLAY-REC
+                       GO TO 6A-DISPLAY-SCREEN
+                   END-IF
+               PERFORM 9999-READ-NEXT-DPOTRACK-PO
+           ELSE
+               IF DE-DATE > SPACES
+                   INITIALIZE     DATE-CHECK-AREA
+                   MOVE 3         TO DATE-MODE
+                   MOVE DE-DATE   TO DATE-VALIDATE-IN
+                   CALL "TDATECHK" USING DATE-CHECK-AREA
+                   IF DATE-MSG NOT = SPACES
+                       MOVE ON-SWITCH TO IND (60)
+                                         IND (21)
+                       MOVE DATE-MSG   TO DE-MSGLN
+                       MOVE DE-BUF     TO DISPLAY-REC
+                       GO TO 6A-DISPLAY-SCREEN
+                   ELSE
+                       MOVE DATE-YMD-OUT  TO DATE-ARG-YMD-X
+                   END-IF
+
+      *----------- CENTURY LOGIC.
+                   IF DE-YY > "90"
+                       MOVE 19    TO ARG-CC
+                   ELSE
+                       MOVE 20    TO ARG-CC
+                   END-IF
+                   MOVE ZEROS     TO TIME-ARG
+      *----------- START WITH SPECIFIED DATE.
+                   MOVE "DT"      TO DISPLAY-CRITERIA-SW
+      *----------- INITIAL READ BEFORE PROCESSING.
+                   PERFORM 9999-START-DPOTRACK-DT
+                   IF FILE-STATUS NOT = "00"
+                       MOVE ON-SWITCH TO IND (60)
+                                         IND (21)
+      *           ***  NO RECORDS TO DISPLAY FOR DATE ***
+                       MOVE 14133 TO CATREAD-MSG-NUMBER
+                       PERFORM 9999-CATREAD
+                       MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+                       MOVE DE-BUF TO DISPLAY-REC
+                       GO TO 6A-DISPLAY-SCREEN
+                   END-IF
+                   PERFORM 9999-READ-NEXT-DPOTRACK-DT
+           ELSE
+      *------- CAN'T JUST PRESS ENTER ON THE SCREEN; MUST ENTER DATA.
+               MOVE ON-SWITCH     TO IND (60)
+      *   ***  MUST ENTER DATA OR PRESS FUNCTION KEY ***
+               MOVE 13067 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+               MOVE DE-BUF        TO DISPLAY-REC
+               GO TO 6A-DISPLAY-SCREEN.
+
+       60-LOAD-SCREEN.
+
+           INITIALIZE REC-COUNT.
+
+      *--- SHOW SFLCTL (71) AND CLEAR SFL (72), BUT DON'T SHOW IT (70).
+
+           MOVE ON-SWITCH    TO IND (71)  IND (72).
+           MOVE OFF-SWITCH   TO IND (70).
+
+           WRITE SUBFILE DISPLAY-REC FROM BUF-SCREEN-L1
+               FORMAT IS "AUDITSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON INIT SFL WRITE" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+      *--- TURN CLEAR SFL OFF.
+
+           MOVE OFF-SWITCH TO IND (72).
+
+       61-GET-LIST.
+
+           INITIALIZE BUF-SCREEN-L1
+                      BUF-SCREEN-L2.
+           PERFORM 64-LIST-RECORDS.
+
+       62-SHOW-SCREEN.
+
+      *--- SHOW FUNCTION KEYS.
+           WRITE DISPLAY-REC
+               FORMAT IS "AUDITREC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+
+           MOVE ON-SWITCH TO IND (70)  IND (71)  IND (73).
+
+      *--- WRITE THE SUBFILE TO SCREEN.
+           WRITE SUBFILE DISPLAY-REC
+               FORMAT IS "AUDITSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON SHOW SFL WRITE" TO BU-DISPLAY-MSG
+               MOVE REC-COUNT TO BU-DISPLAY-FLD (1)
+               MOVE DISPLAY-STATUS TO BU-DISPLAY-FLD (2)
+               GO TO 9999-BLOWUP.
+
+      *--- WAIT FOR USER TO PRESS A KEY.
+           READ DISPLAY-FILE
+               FORMAT IS "AUDITSFLC"
+               INDICATORS ARE SRF-INDICATORS.
+           MOVE ALL B"0" TO SRF-INDICATORS.
+           IF DISPLAY-STATUS NOT = "00"
+               MOVE "PROBLEM ON READ SFL" TO BU-DISPLAY-MSG
+               GO TO 9999-BLOWUP.
+
+
+       63-ACTION.
+
+      *--- THE ENTER KEY IS TREATED THE SAME AS PRESSING THE F3 KEY.
+           IF F3-KEY-USED OR ENTER-KEY-USED
+               MOVE "N" TO DPOTRACK-EOF-SW
+               GO TO 6-BEGIN.
+
+       64-LIST-RECORDS.
+
+           IF DISPLAY-ALL-PO
+               PERFORM 9999-READ-FIRST-DPOTRACK-PO.
+           IF DISPLAY-ALL-DATE
+               PERFORM 9999-READ-FIRST-DPOTRACK-DT.
+           IF DPOTRACK-EOF-SW = "Y"
+               INITIALIZE DE-BUF
+               MOVE ZEROS                 TO DE-PO2  DE-PO3
+      *   ***  NO DATA TO DISPLAY ***
+               MOVE 14134 TO CATREAD-MSG-NUMBER
+               PERFORM 9999-CATREAD
+               MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+               MOVE ON-SWITCH             TO IND (60)
+               MOVE DE-BUF                TO DISPLAY-REC
+               GO TO 6A-DISPLAY-SCREEN.
+           PERFORM UNTIL DPOTRACK-EOF-SW = "Y"
+      *------- MOVE FIELDS TO DISPLAY RECORD.
+               MOVE PO-NUM-TRACK          TO BUF-PO-NUM
+               MOVE BUF-PO                TO SC-PO-1
+               MOVE BUF-REL               TO SC-PO-2
+      ******   MOVE BUF-RCVR              TO SC-PO-3
+               MOVE PO-ITEM-NUM           TO SC-ITEM-NUM
+               MOVE TPO-DATE-STAMP        TO DATE-VALIDATE-IN
+               MOVE 4                     TO DATE-MODE
+               CALL "TDATECHK" USING DATE-CHECK-AREA
+               MOVE DATE-SLASH-OUT        TO SC-DATE
+      ******   MOVE TPO-DATE-YY           TO SC-YY
+      ******   MOVE TPO-DATE-MM           TO SC-MM
+      ******   MOVE TPO-DATE-DD           TO SC-DD
+               MOVE TPO-TIME-HH           TO SC-HR
+               MOVE TPO-TIME-MM           TO SC-MIN
+               MOVE USER-NAME             TO SC-USER
+
+      *------- IF THE PRICE IS GREATER THAN THE DISPLAY FIELD SIZE,
+      *------- PRINT AN ERROR MESSAGE.
+               IF OLD-ITEM-PRICE > 9999999.9999
+                   MOVE " *** OVER *** "  TO SC-ERROR-1
+               ELSE
+                   MOVE OLD-ITEM-PRICE    TO SC-OLD-PRICE
+               END-IF
+               IF OLD-ITEM-QTY > 9999999.9999
+                   MOVE " *** OVER *** "  TO SC-ERROR-2
+               ELSE
+                   MOVE OLD-ITEM-QTY      TO SC-OLD-QTY
+               END-IF
+
+      *------- MOVE THE SCREEN BUFFER AND WRITE OUT.
+               MOVE BUF-SCREEN-L1         TO DISPLAY-REC
+               ADD 1                      TO REC-COUNT
+               IF REC-COUNT = 9999
+      *--- IF SUBFILE IS FILLED UP, PRINT MESSAGE TO LIMIT BY PO OR DATE
+                   MOVE ON-SWITCH TO IND (60)
+                                     IND (20)  IND (21)
+      *       ***  TOO MANY RECORDS TO DISPLAY ***
+                   MOVE 20074 TO CATREAD-MSG-NUMBER
+                   PERFORM 9999-CATREAD
+                   MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+                   MOVE DE-BUF TO DISPLAY-REC
+                   GO TO 6A-DISPLAY-SCREEN
+               END-IF
+               WRITE SUBFILE DISPLAY-REC
+                   FORMAT IS "AUDITSFL"
+                   INDICATORS ARE SRF-INDICATORS
+               END-WRITE
+               IF DISPLAY-STATUS NOT = "00"
+                   MOVE "SUBFILE WRITE ERROR -- #1" TO BU-DISPLAY-MSG
+                   MOVE REC-COUNT        TO BU-DISPLAY-FLD (1)
+                   MOVE DISPLAY-STATUS   TO BU-DISPLAY-FLD (2)
+                   GO TO 9999-BLOWUP
+               END-IF
+
+      *------- MOVE FIELDS TO DISPLAY RECORD.
+
+      *------- IF THE PRICE IS GREATER THAN THE DISPLAY FIELD SIZE,
+      *------- PRINT AN ERROR MESSAGE.
+               IF NEW-ITEM-PRICE > 9999999.9999
+                   MOVE " *** OVER *** "  TO SC-ERROR-3
+               ELSE
+                   MOVE NEW-ITEM-PRICE    TO SC-NEW-PRICE
+               END-IF
+               IF NEW-ITEM-QTY > 9999999.9999
+                   MOVE " *** OVER *** "  TO SC-ERROR-4
+               ELSE
+                   MOVE NEW-ITEM-QTY      TO SC-NEW-QTY
+               END-IF
+
+      *------- INDICATE WHICH VALUE CHANGED WITH AN ASTERISK.
+               IF OLD-ITEM-PRICE NOT = NEW-ITEM-PRICE
+                   MOVE "*" TO PRICE-ASTERISK
+               ELSE
+                   MOVE " " TO PRICE-ASTERISK
+               END-IF
+
+               IF OLD-ITEM-QTY NOT = NEW-ITEM-QTY
+                   MOVE "*" TO QTY-ASTERISK
+               ELSE
+                   MOVE " " TO QTY-ASTERISK
+               END-IF
+
+      *------- MOVE THE SCREEN BUFFER AND WRITE OUT.
+               MOVE BUF-SCREEN-L2         TO DISPLAY-REC
+               ADD 1                      TO REC-COUNT
+               IF REC-COUNT = 9999
+      *--- IF SUBFILE IS FILLED UP, PRINT MESSAGE TO LIMIT BY PO OR DATE
+                   MOVE ON-SWITCH TO IND (60)
+                                     IND (20)  IND (21)
+      *       ***  TOO MANY RECORDS TO DISPLAY ***
+                   MOVE 20074 TO CATREAD-MSG-NUMBER
+                   PERFORM 9999-CATREAD
+                   MOVE CATREAD-MSG-TEXT TO DE-MSGLN
+                   MOVE DE-BUF TO DISPLAY-REC
+                   GO TO 6A-DISPLAY-SCREEN
+               END-IF
+               WRITE SUBFILE DISPLAY-REC
+                   FORMAT IS "AUDITSFL"
+                   INDICATORS ARE SRF-INDICATORS
+               END-WRITE
+               IF DISPLAY-STATUS NOT = "00"
+                   MOVE "SUBFILE WRITE ERROR -- #2" TO BU-DISPLAY-MSG
+                   MOVE REC-COUNT        TO BU-DISPLAY-FLD (1)
+                   MOVE DISPLAY-STATUS   TO BU-DISPLAY-FLD (2)
+                   GO TO 9999-BLOWUP
+               END-IF
+
+      *------- GET THE NEXT DPOTRACK RECORD.
+               IF START-WITH-PO OR DISPLAY-ALL-PO
+                   PERFORM 9999-READ-NEXT-DPOTRACK-PO
+               END-IF
+               IF START-WITH-DATE OR DISPLAY-ALL-DATE
+                   PERFORM 9999-READ-NEXT-DPOTRACK-DT
+               END-IF
+               INITIALIZE BUF-SCREEN-L1   BUF-SCREEN-L2
+           END-PERFORM.
+
+       6-MAIN-X.
+           EXIT.
+
+      *--- READS FOR DPOTRACK WITH PO AS THE KEY
+       9999-READ-FIRST-DPOTRACK-PO.
+           MOVE LOW-VALUES TO PORCVNO OF DPOTRACK-PO-REC.
+           START DPOTRACK-PO-I KEY > PORCVNO OF DPOTRACK-PO-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           READ DPOTRACK-PO-I NEXT INTO BUF-DPOTRACK
+               AT END MOVE "Y" TO DPOTRACK-EOF-SW.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y"       TO DPOTRACK-EOF-SW.
+
+       9999-READ-NEXT-DPOTRACK-PO.
+           READ DPOTRACK-PO-I NEXT INTO BUF-DPOTRACK
+               AT END MOVE "Y" TO DPOTRACK-EOF-SW.
+           IF START-WITH-PO
+               IF PO-NUM-TRACK > PO-ARG
+                   MOVE "Y"    TO DPOTRACK-EOF-SW.
+
+       9999-START-DPOTRACK-PO.
+           MOVE PO-ARG TO PORCVNO OF DPOTRACK-PO-REC.
+           START DPOTRACK-PO-I KEY = PORCVNO OF DPOTRACK-PO-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+      *--- READS FOR DPOTRACK WITH DATE AS THE KEY
+       9999-READ-FIRST-DPOTRACK-DT.
+           MOVE LOW-VALUES TO DATTIMSTMP OF DPOTRACK-DT-REC.
+           START DPOTRACK-DT-I KEY > DATTIMSTMP OF DPOTRACK-DT-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           READ DPOTRACK-DT-I NEXT INTO BUF-DPOTRACK
+               AT END MOVE "Y" TO DPOTRACK-EOF-SW.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y"       TO DPOTRACK-EOF-SW.
+
+       9999-READ-NEXT-DPOTRACK-DT.
+           READ DPOTRACK-DT-I NEXT INTO BUF-DPOTRACK
+               AT END MOVE "Y" TO DPOTRACK-EOF-SW.
+           IF START-WITH-DATE
+               IF TPO-DATE-STAMP-CN NOT = DATE-ARG
+                   MOVE "Y"    TO DPOTRACK-EOF-SW.
+
+       9999-START-DPOTRACK-DT.
+           MOVE DATE-TIME-ARG TO DATTIMSTMP OF DPOTRACK-DT-REC.
+           START DPOTRACK-DT-I KEY >= DATTIMSTMP OF DPOTRACK-DT-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+
+       9999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+
+       9999-BLOWUP.
+           MOVE "TPOAUDIT" TO BU-PGM-NAME.
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+               BU-DISPLAY-FLDS.

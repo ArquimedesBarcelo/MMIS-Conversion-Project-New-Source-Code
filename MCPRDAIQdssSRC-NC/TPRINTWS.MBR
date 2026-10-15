@@ -1,0 +1,1589 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TPRINTWS.
+      *C
+      *C  09/11/96  JEFF BUNGO
+      *C     EXPAND DATE FIELDS FOR YEAR 2000 COMPLIANCE.
+      *C     RECOMPILE TO PICK UP COPYLIB CHANGES.
+      *C
+      *C  01/04/2010  CA YODER  2010-00142425-001
+      *C     UPDATE LOGIC ASSIGNING WORKORDER LETTER SUFFIX.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.   AS400.
+       OBJECT-COMPUTER.   AS400.
+       SPECIAL-NAMES. C01 IS NEW-PAGE
+                      I-O-FEEDBACK IS I-O-FEEDBACK-AREA
+                      LOCAL-DATA IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT CH-PRINT-FILE
+               ASSIGN TO PRINTER-MCPRT.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZPLANNER-SI
+               ORGANIZATION IS TRANSACTION
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT JOBPLAN-FILE
+               ASSIGN TO DATABASE-MCFLMM1801
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS JF-STATUS.
+           SELECT PERSONNEL-FILE
+               ASSIGN TO DATABASE-MCFPMM0300
+               ORGANIZATION IS SEQUENTIAL
+               ACCESS IS SEQUENTIAL
+               FILE STATUS IS PF-STATUS.
+           SELECT WO-LAST-NUM-USED
+               ASSIGN TO DATABASE-MCFPMM0800
+               ORGANIZATION IS RELATIVE
+               ACCESS MODE IS RANDOM
+               RELATIVE KEY IS ARG-NO
+               FILE STATUS IS WLNU-STATUS.
+           SELECT WO-PARTS-FILE
+               ASSIGN TO DATABASE-MCFLMM1201
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS WPFD-STATUS.
+           SELECT WO-PLANNED-FILE
+               ASSIGN TO DATABASE-MCFLMM1101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WPF-STATUS.
+           SELECT ZONE-SPOOLER-FILE
+               ASSIGN TO DATABASE-MCFLZP0101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS ZSF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  CH-PRINT-FILE
+           LABEL RECORD IS OMITTED
+           RECORD CONTAINS 80 CHARACTERS.
+       01  CH-PRINT-RECORD                 PIC X(80).
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                       PIC X(2000).
+       FD  JOBPLAN-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS JFREC.
+       01  JFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1801.
+       FD  PERSONNEL-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PFREC.
+       01  PFREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0300.
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLNUREC.
+       01  WLNUREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+       FD  WO-PARTS-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WPFDREC.
+       01  WPFDREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1201.
+       FD  WO-PLANNED-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WPFREC.
+       01  WPFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+       FD  ZONE-SPOOLER-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS ZSFREC.
+       01  ZSFREC.
+           COPY DDS-ALL-FORMATS OF MCFLZP0101.
+       WORKING-STORAGE SECTION.
+       77  CPF-SW                          PIC 9 VALUE 0.
+       77  CMT-HD-SW                       PIC 9.
+       77  FST-JB-SW                       PIC 9.
+       77  JOBPLAN-EST-TIME-WORK           PIC 9(5)V9.
+       77  JOBPLAN-LABOR-EST               PIC 9(8)V99.
+       77  LINE-CTR                        PIC 99 VALUE 0.
+       77  NUM-COPIES                      PIC S99 COMP-4 VALUE 1.
+       77  REQ-ACT-COST                    PIC S9(14)V99.
+       77  SAVE-JOBPSEQ                    PIC 999 VALUE 0.
+       77  UMT-HD-SW                       PIC 9.
+      *---- 01/04/2010:  ADDED PARAMETER FOR CMMISYR.
+       77  MMIS-LETTER                     PIC X.
+       01  ARG-NO                          PIC 9(9) VALUE 1.
+       01  ASTERISK-LINE                   PIC X(85) VALUE ALL "*".
+       01  BASE-STORES                     PIC X(24).
+       01  BU-DISPLAY-MSG                  PIC X(60).
+       01  CHECK-YEAR.
+           05  FILLER                      PIC X.
+           05  CHECK-YEAR-NUM              PIC X.
+           05  FILLER                      PIC X(4).
+       COPY CATREAD IN COPYLIB.
+       COPY CCHKOBJ IN COPYLIB.
+       COPY CMANREQ IN COPYLIB.
+       COPY CPYIND   IN COPYLIB.
+       COPY TDATESUB IN COPYLIB.
+       01  ERROR-76                        PIC X(76).
+       01  ERROR-BUFFER.
+           05  FILLER                      PIC X(30)
+             VALUE "UNABLE TO FIND REQUESTED W/O  ".
+           05  WO-1-10                     PIC X(10) VALUE SPACES.
+           05  FILLER                      PIC X(40) VALUE SPACES.
+       COPY ESCNAM2 IN COPYLIB.
+       01  FILE-STATUSES.
+           05  DSPLY-STATUS                PIC XX.
+           05  JF-STATUS                   PIC XX.
+           05  PF-STATUS                   PIC XX.
+           05  WLNU-STATUS                 PIC XX.
+           05  WPFD-STATUS                 PIC XX.
+           05  WPF-STATUS                  PIC XX.
+           05  ZSF-STATUS                  PIC XX.
+       COPY IOFEEDBACK IN COPYLIB.
+       COPY JCWAREA OF COPYLIB.
+       01  JOBP-KEY.
+           05  JOBP-WO-NO                  PIC X(10).
+           05  JOBP-SEQ-NO                 PIC 999.
+           05  FILLER                      PIC X.
+       01  JOBPLAN-BUFFER.
+         COPY DJOBPLAN IN COPYLIB.
+       01  JB-HEADER0.
+           05  FILLER  PIC X(9)  VALUE "JOB PLAN:".
+           05  FILLER  PIC X(49) VALUE SPACES.
+           05  FILLER  PIC X(22) VALUE "MACH   LABOR    CLOCK ".
+       01  JB-HEADER1.
+           05  FILLER  PIC X(3)  VALUE "SEQ".
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE "DESCRIPTION".
+           05  FILLER  PIC X(42) VALUE SPACES.
+           05  FILLER  PIC X(21) VALUE "DT   CRF MEN    HRS  ".
+       01  JB-LINE-1.
+           05  JB-SEQ-X.
+               10  JB-SEQ  PIC 999   VALUE ZEROES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  JB-DESC PIC X(50) VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACES.
+           05  JB-MDT-X.
+               10  JB-MDTH PIC XXX   VALUE SPACES.
+               10  JB-MDEC PIC X     VALUE SPACE.
+               10  JB-MDTP PIC X     VALUE SPACE.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  JB-CRF  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  JB-MEN  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  JB-CLK-X.
+               10  JB-CLKH PIC XXX   VALUE SPACES.
+               10  JB-CDEC PIC X     VALUE SPACE.
+               10  JB-CLKP PIC X     VALUE SPACE.
+           05  FILLER  PIC X     VALUE SPACE.
+       01  JB-LINE-2.
+           05  FILLER             PIC X(19).
+           05  JB-PM-LEVEL-LIT    PIC X(9).
+           05  JB-PM-LEVEL        PIC XX.
+           05  FILLER             PIC X(4).
+           05  JB-PM-FLAG-LIT     PIC X(8).
+           05  JB-PM-FLAG         PIC XX.
+           05  FILLER             PIC X(4).
+           05  JB-PM-SUBS-LIT     PIC X(10).
+           05  JB-PM-SS           PIC X(4).
+           05  FILLER             PIC X(20).
+       COPY LANGSUB OF COPYLIB.
+       01  LAST-WO-BUFF.
+         COPY MLASTWO OF COPYLIB.
+       01  MT-HEADER0.
+           05  FILLER  PIC X(25) VALUE "STORES MATERIAL REQUIRED:".
+           05  FILLER  PIC X(55) VALUE SPACES.
+       01  MT-HEADER1.
+           05  FILLER  PIC X(4)  VALUE "ITM#".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(8)  VALUE "CSIS NUM".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "EQTY".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "AQTY".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE "UM".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE "ST".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "STGD".
+           05  MT-HEADER-1-VAR.
+               10  MT-PM-LEVEL   PIC X(8).
+               10  FILLER        PIC XX.
+               10  MT-PM-FLAG    PIC X(7).
+               10  FILLER        PIC XX.
+               10  MT-PM-SUBSYS  PIC X(10).
+       01  MT-LINE-1.
+           05  MT-ITM  PIC 9999  VALUE 0000.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  MT-LINE-1-REST.
+               10  MT-PART PIC X(8)  VALUE SPACES.
+               10  FILLER  PIC X     VALUE SPACE.
+               10  MT-QTY  PIC ZZZZZ.
+               10  FILLER  PIC X     VALUE SPACE.
+               10  MT-QTYU PIC ZZZZZ.
+               10  FILLER  PIC XX    VALUE SPACES.
+               10  MT-UM   PIC XX    VALUE SPACES.
+               10  FILLER  PIC XX    VALUE SPACES.
+               10  MT-STAT PIC XX    VALUE SPACES.
+               10  FILLER  PIC XX    VALUE SPACES.
+               10  MT-STG  PIC X(4)  VALUE SPACES.
+               10  FILLER  PIC XX    VALUE SPACES.
+               10  MT-DATA-1.
+                   15  FILLER        PIC XXXX.
+                   15  MT-LEV-1      PIC XX.
+                   15  FILLER        PIC X(7).
+                   15  MT-FLG-1      PIC XX.
+                   15  FILLER        PIC X(7).
+                   15  MT-SS-1       PIC X(4).
+               10  FILLER  PIC X(4)  VALUE SPACES.
+       01  MT-LINE-2.
+           05  MT-HD2  PIC X(5)  VALUE SPACES.
+           05  MT-DESC PIC X(80) VALUE SPACES.
+       COPY OVRPFDATA IN COPYLIB.
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TPRINTWS".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "MA".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A     PIC X(60) VALUE
+                   "PRINT ROUTINE FOR PLANNED WORK ORDER WORKSHEETS"   .
+               10  PROG-DESC-B     PIC X(60) VALUE SPACES.
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  PERSONNEL-DATA.
+         COPY MPERSONL IN COPYLIB.
+       01  PL-HEADER00.
+           05  FILLER  PIC X(32) VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE "DATE:".
+           05  PL-DAT  PIC X(8)  VALUE SPACES.
+           05  FILLER  PIC X(35) VALUE SPACES.
+       01  PL-HEADER0.
+           05  FILLER  PIC X(31) VALUE SPACES.
+           05  FILLER  PIC X(15) VALUE "CRAFT WORKSHEET".
+           05  FILLER  PIC X(34) VALUE SPACES.
+       01  PL-LINE-1.
+           05  FILLER  PIC X(8)  VALUE "W/O NUM:".
+           05  PL-WO-7 PIC X(7)  VALUE SPACES.
+           05  FILLER  PIC X     VALUE "-".
+           05  PL-WO-S PIC XXX   VALUE SPACES.
+           05  FILLER  PIC XXXX  VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE "W/O STATUS:".
+           05  PL-ST   PIC XX    VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE "TYPE:".
+           05  PL-TY   PIC XX    VALUE SPACES.
+           05  FILLER  PIC XXXX  VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "REQUESTER:".
+           05  PL-REQ  PIC X(16) VALUE SPACES.
+           05  FILLER  PIC XXXX  VALUE SPACES.
+       01  PL-LINE-2.
+           05  FILLER  PIC X(7)  VALUE "EQ NUM:".
+           05  PL-EQP  PIC X(6)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE "DEPT:".
+           05  PL-DEPT PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE "MAINT ZONE:".
+           05  PL-ZONE PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "LOC:".
+           05  PL-LOC  PIC X(8)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE "PRTY:".
+           05  PL-PRTY PIC X     VALUE SPACE.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE "RIME:".
+           05  PL-RIME PIC XX    VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+       01  PL-LINE-3.
+           05  FILLER  PIC X(8)  VALUE "EQ NAME:".
+           05  PL-ENAM PIC X(50) VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC X     VALUE "(".
+           05  PL-TYPE PIC X(8)  VALUE SPACES.
+           05  FILLER  PIC X     VALUE ")".
+           05  FILLER  PIC X(7)  VALUE SPACES.
+       01  PL-LINE-4.
+           05  FILLER  PIC X(7)  VALUE "EQ DWN:".
+           05  PL-EDWN PIC X     VALUE SPACE.
+           05  FILLER  PIC X(11) VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "EXP CLASS:".
+           05  PL-EXP  PIC X(8)  VALUE SPACES.
+           05  FILLER  PIC X(09) VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "TIME REQD:".
+           05  FILLER  PIC X     VALUE SPACE.
+           05  PL-REQD-DATE  PIC X(8) VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  PL-HH   PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE ":".
+           05  PL-MI   PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(7)  VALUE SPACES.
+       01  PL-LINE-5.
+           05  FILLER  PIC X(12) VALUE "DESCRIPTION:".
+           05  PL-DESC PIC X(30) VALUE SPACES.
+           05  FILLER  PIC X(38) VALUE SPACES.
+       01  PL-LINE-6.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  PL-DES2 PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-7.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  PL-DES3 PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-8.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  PL-DES4 PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-9.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  PL-DES5 PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-10.
+           05  FILLER  PIC X(12) VALUE "SPECL INST :".
+           05  PL-SI   PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-11.
+           05  FILLER  PIC X(12) VALUE SPACES.
+           05  PL-SI2  PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-12.
+           05  FILLER  PIC X(12) VALUE "SPECL EQUIP:".
+           05  PL-SEQP PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-13.
+           05  FILLER  PIC X(12) VALUE "SAFETY NOTE:".
+           05  PL-SNOT PIC X(66) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-14.
+           05  FILLER  PIC X(9)  VALUE "ENGINEER:".
+           05  PL-ENG  PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(8)  VALUE "PLANNER:".
+           05  PL-PLN  PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "SCHEDULER:".
+           05  PL-SCHD PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  FILLER  PIC X(11) VALUE "TIME SCHED:".
+           05  FILLER  PIC X     VALUE SPACE.
+           05  PL-SCHD-DATE  PIC X(8) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PL-SHH  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE ":".
+           05  PL-SMI  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+       01  PL-LINE-15.
+           05  FILLER  PIC X(10) VALUE "BUDGET NO:".
+           05  PL-BUDGET.
+               10  PL-B1-3  PIC XXX   VALUE SPACES.
+               10  PL-D1    PIC X     VALUE "-".
+               10  PL-B4-5  PIC XX    VALUE SPACES.
+               10  PL-D2    PIC X     VALUE "-".
+               10  PL-B6-7  PIC XX    VALUE SPACES.
+               10  PL-D3    PIC X     VALUE "-".
+               10  PL-B8-10 PIC XXX  VALUE SPACES.
+               10  PL-REV   PIC X     VALUE "R".
+               10  PL-BRNO  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(5)  VALUE SPACES.
+           05  FILLER  PIC X(7)  VALUE "REQ NO:".
+           05  PL-RNO  PIC X(12) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "TIME STRT:".
+           05  PL-STRT-DATE  PIC X(8) VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  PL-SHR  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE ":".
+           05  PL-SMN  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACE.
+       01  PL-LINE-16.
+           05  FILLER  PIC X(13) VALUE "FAILURE CODE:".
+           05  PL-FC1-2 PIC XX   VALUE SPACES.
+           05  FILLER  PIC X     VALUE "-".
+           05  PL-FC3-6 PIC XXXX VALUE SPACES.
+           05  FILLER  PIC X(32) VALUE SPACES.
+           05  FILLER  PIC X(10) VALUE "TIME COMP:".
+           05  PL-COMP-DATE  PIC X(8) VALUE SPACES.
+           05  FILLER  PIC XXX   VALUE SPACES.
+           05  PL-CHR  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE ":".
+           05  PL-CMI  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACE.
+       01  PM-HEADER0.
+           05  FILLER  PIC X(28)
+                VALUE "PURCHASED MATERIAL REQUIRED:".
+           05  FILLER  PIC X(52) VALUE SPACES.
+       01  PM-HEADER1.
+           05  FILLER  PIC X(4)  VALUE "ITM#".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(8)  VALUE "CSIS NUM".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "EQTY".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "AQTY".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE "UM".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE "ST".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(4)  VALUE "STGD".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  FILLER  PIC X(9)  VALUE "LAST RCVD".
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-HEADER-1-VAR.
+               10  PM-PM-LEVEL   PIC X(8).
+               10  FILLER        PIC XX.
+               10  PM-PM-FLAG    PIC X(7).
+               10  FILLER        PIC XX.
+               10  PM-PM-SUBSYS  PIC X(10).
+       01  PM-LINE-1.
+           05  PM-ITM  PIC 9999  VALUE 0000.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-PART PIC X(8)  VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACE.
+           05  PM-QTY  PIC ZZZZZ.
+           05  FILLER  PIC X     VALUE SPACE.
+           05  PM-QTYU PIC ZZZZZ.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-UM   PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-STAT PIC XX    VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-STG  PIC X(4)  VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-DRCV PIC X(8)  VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PM-DATA-1.
+               10  FILLER        PIC XXXX.
+               10  PM-LEV-1      PIC XX.
+               10  FILLER        PIC X(7).
+               10  PM-FLG-1      PIC XX.
+               10  FILLER        PIC X(7).
+               10  PM-SS-1       PIC X(4).
+           05  FILLER  PIC X(4)  VALUE SPACES.
+       01  PM-LINE-2.
+           05  PML-2-1 PIC X(9)  VALUE SPACES.
+           05  PM-REQ  PIC X(7)  VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACES.
+           05  PML-2-2 PIC X(8)  VALUE SPACES.
+           05  PM-PO   PIC X(10) VALUE SPACES.
+           05  FILLER  PIC XX    VALUE SPACES.
+           05  PML-2-3 PIC X(17) VALUE SPACES.
+           05  PM-SVEN PIC X(30) VALUE SPACES.
+           05  FILLER  PIC X     VALUE SPACES.
+       01  PM-LINE-3.
+           05  PM-HD3  PIC X(5)  VALUE SPACES.
+           05  PM-DESC PIC X(80) VALUE SPACES.
+       01  RET-CODE                        PIC X(2).
+       01  RETURN-CODE                     PIC XX.
+       01  SPOOLER-REC.
+           05  FILLER                      PIC X(22).
+           05  K-SPOOL-LINE OCCURS 5 TIMES.
+               10  K-SPOOL-NO              PIC 9(2).
+       COPY DBSTAT IN COPYLIB.
+       01  TL-EST-LINE.
+           05  FILLER      PIC X(6)  VALUE "S EST ".
+           05  TL-STORES   PIC Z(11).99.
+           05  FILLER      PIC X     VALUE SPACE.
+           05  FILLER      PIC X(6)  VALUE "P EST ".
+           05  TL-PURCH    PIC Z(11).99.
+           05  FILLER      PIC X     VALUE SPACE.
+           05  FILLER      PIC X(6)  VALUE "L EST ".
+           05  TL-LABOR    PIC Z(11).99.
+           05  FILLER      PIC X     VALUE SPACE.
+           05  FILLER      PIC X(6)  VALUE "T EST ".
+           05  TL-TOTAL    PIC Z(11).99.
+       01  TOTALS-WORKAREA.
+           05  TOTAL-STORES-EST            PIC S9(12)V99.
+           05  TOTAL-PURCH-EST             PIC S9(12)V99.
+           05  TOTAL-LABOR-EST             PIC S9(12)V99.
+           05  TOTAL-DOLLAR-EST            PIC S9(12)V99.
+       01  TRUE-VAL                        PIC 1 VALUE B"1".
+       01  WHO-PARMS.
+           05  USERNAME                    PIC X(10).
+           05  TERMNUM                     PIC X(10).
+           05  CURRLIB                     PIC X(10).
+           05  JOBLIBX                     PIC X.
+       01  WO-NUMBER.
+           05  WO-NUM-1-10.
+               10  WO-NUM-1-7.
+                   15  WO-NUM-1-6          PIC X(6).
+                   15  WO-NUM-7            PIC X.
+               10  FILLER                  PIC XXX.
+           05  WO-CMD-LINE                 PIC X(79).
+           05  WO-ERR-LINE                 PIC X(79).
+       01  WO-MATERIAL-USED-DATA.
+         COPY DWOPARTS IN COPYLIB.
+       01  WRITE-YEAR-BUFFER.
+           05  FILLER                      PIC X(6)  VALUE SPACES.
+           05  WRITE-YEAR-BUF-7            PIC X.
+           05  FILLER                      PIC X     VALUE SPACES.
+           05  FILLER                      PIC XX VALUE SPACES.
+       COPY WSCONTROL IN COPYLIB.
+       01  ZONE-SPOOLER-WA.
+           05  ZONE-KEY                    PIC X(4).
+           05  ZONE-SPOOLER-NUM-V          PIC 99.
+           05  ZONE-SPOOLER-NUM-P          PIC 99.
+           05  ZONE-SPOOLER-NUM-E          PIC 99.
+           05  ZONE-SPOOLER-NUM-M          PIC 99.
+           05  ZONE-SPOOLER-NUM-X          PIC 99.
+       LINKAGE SECTION.
+       01 DBPARAMETERS.
+         COPY DBPARMS IN COPYLIB.
+       01 WO-PLANNED-DATA.
+           COPY DWOPLAN IN COPYLIB.
+       01  ERROR-SWITCH.
+           05  ERR-SW                      PIC S9(4) COMP-4.
+       COPY VCOMLINK IN COPYLIB.
+       PROCEDURE DIVISION USING DBPARAMETERS WO-PLANNED-DATA
+                            ERROR-SWITCH VIEW-COMAREA.
+       START-PGM.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE SPACES TO ERROR-76
+               CALL "SPMSCRWS" USING DBPARAMETERS
+                                     WO-PLANNED-DATA
+                                     VIEW-COMAREA
+                                     LANGUAGE-PARMS
+                                     ERROR-76
+               GO TO 2-EOJ-END.
+
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN.
+       2-EOJ.
+           IF CPF-SW = 1 CLOSE CH-PRINT-FILE.
+      *    IF OVRPRTF-TOFILE-NUM = 0
+      *        IF ZONE-KEY = SPACES
+      *            NEXT SENTENCE
+      *        ELSE
+      *        MOVE "DLTOVR FILE(MCPRT)" TO OVRPRTF-PARM1
+      *        CALL "QCMDEXC" USING OVRPRTF-PARM1, OVRPRTF-PARM2.
+           CLOSE DISPLAY-FILE.
+           CLOSE JOBPLAN-FILE.
+           CLOSE PERSONNEL-FILE.
+           CLOSE WO-LAST-NUM-USED.
+           CLOSE WO-PARTS-FILE.
+           CLOSE WO-PLANNED-FILE.
+           CLOSE ZONE-SPOOLER-FILE.
+
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE SPACES TO ERROR-76
+               CALL "SPMSCRWS" USING DBPARAMETERS
+                                     WO-PLANNED-DATA
+                                     VIEW-COMAREA
+                                     LANGUAGE-PARMS
+                                     ERROR-76.
+       2-EOJ-END.
+           GOBACK.
+       1-HSK.
+           ACCEPT CHECK-YEAR FROM DATE.
+           OPEN I-O   DISPLAY-FILE.
+           OPEN INPUT JOBPLAN-FILE.
+           OPEN INPUT PERSONNEL-FILE.
+           OPEN INPUT WO-LAST-NUM-USED.
+           OPEN INPUT WO-PARTS-FILE.
+           OPEN INPUT WO-PLANNED-FILE.
+           OPEN INPUT ZONE-SPOOLER-FILE.
+      *    CALL "TPWORD" USING PASSWORD-INFORMATION.
+      *    IF PASSWORD-FLAG = "N" GO TO 2-EOJ.
+           CALL "CLWHO" USING USERNAME TERMNUM CURRLIB JOBLIBX.
+           MOVE 0 TO COND-WORD.
+           READ WO-LAST-NUM-USED INTO LAST-WO-BUFF
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WLNU-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17 MOVE 1 TO DATE-FLAG-SW.
+           MOVE DATE-FLAG-SW TO DATE-FLAG.
+           MOVE DATE-FLAG TO DATE-CODE.
+           MOVE ZEROES TO TOTALS-WORKAREA.
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE SPACES TO BASE-STORES.
+           MOVE SPACES TO ZONE-SPOOLER-WA PERSONNEL-DATA.
+       6-MAIN.
+           MOVE 0 TO CMT-HD-SW UMT-HD-SW COND-WORD FST-JB-SW.
+           IF WO-PLANNED-DATA NOT = SPACES
+               MOVE WO-NUM-PLANNED TO WO-NUMBER
+           ELSE
+           PERFORM 60-REQUEST-WORK-ORDER THRU 60-RWO-EXIT.
+           PERFORM 61-RETRIEVE-PLANNED THRU 61-RP-EXIT.
+      *    IF COND-WORD = 17 GO TO 6-MAIN.
+           MOVE ERROR-BUFFER TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+           MOVE ASTERISK-LINE TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+      *    IF ERROR-SWITCH = "PZ" OR "NP"
+      *        IF PLANT-IDENT = "111" OR "112" OR "113" OR "129"
+      *            OR "131" OR "133" OR "211"
+      *                NEXT SENTENCE
+      *        ELSE
+      *        IF PLANT-IDENT = "126"
+      *            IF OVRPRTF-TOFILE-NUM = 04 OR 05 OR 07 OR
+      *                    16 OR 30 OR 31 OR 03 OR 12 OR 35 OR 88
+      *                 NEXT SENTENCE
+      *            ELSE
+      *            MOVE SPACES TO CH-PRINT-RECORD
+      *            WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+      *            ADD 1 TO LINE-CTR
+      *            MOVE SPACES TO CH-PRINT-RECORD
+      *            GO TO 2-EOJ.
+           IF PLANT-IDENT = "133"
+               IF ERROR-SWITCH = "TE" OR "TP"
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   ADD 1 TO LINE-CTR
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   GO TO 2-EOJ.
+           IF LAST-JOBPLAN-SEQ = "    "
+               NEXT SENTENCE
+           ELSE
+           PERFORM 62-RETRIEVE-JOBPLAN THRU 62-RJ-EXIT
+      *    IF JB-SEQ-X = "   "
+      *        MOVE ERROR-BUFFER TO CH-PRINT-RECORD
+      *        WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+      *        ADD 1 TO LINE-CTR
+      *        MOVE ASTERISK-LINE TO CH-PRINT-RECORD
+      *        WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+      *        ADD 1 TO LINE-CTR
+      *    ELSE
+           IF TOTAL-LABOR-EST > 0
+               MOVE ASTERISK-LINE TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+           ELSE
+           MOVE ERROR-BUFFER TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           ADD 1 TO LINE-CTR
+           MOVE ASTERISK-LINE TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           ADD 1 TO LINE-CTR.
+           MOVE 0 TO MT-ITM.
+           PERFORM 63-RETRIEVE-STORES  THRU 63-RS-EXIT.
+           IF TOTAL-STORES-EST > 0
+               MOVE ASTERISK-LINE TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+           ELSE
+           MOVE ERROR-BUFFER TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           ADD 1 TO LINE-CTR
+           MOVE ASTERISK-LINE TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           ADD 1 TO LINE-CTR.
+           MOVE 0 TO PM-ITM.
+           PERFORM 64-RETRIEVE-PURCHASED THRU 64-RP-EXIT.
+           ADD 3 TO LINE-CTR.
+           MOVE TOTAL-STORES-EST TO TL-STORES.
+           MOVE TOTAL-PURCH-EST TO TL-PURCH.
+           MOVE TOTAL-LABOR-EST TO TL-LABOR.
+           MOVE TOTAL-DOLLAR-EST TO TL-TOTAL.
+           MOVE TL-EST-LINE TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES.
+           MOVE ASTERISK-LINE TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SPACES TO CH-PRINT-RECORD.
+      *    WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE.
+           ADD 1 TO LINE-CTR.
+           MOVE SPACES TO CH-PRINT-RECORD.
+       60-REQUEST-WORK-ORDER.
+      *------- 01/04/2010:  UPDATED WORKORDER LETTER SUFFIX LOGIC.
+      *    IF CHECK-YEAR-NUM = 0
+      *        MOVE "A" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 1
+      *        MOVE "B" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 2
+      *        MOVE "C" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 3
+      *        MOVE "D" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 4
+      *        MOVE "E" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 5
+      *        MOVE "F" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 6
+      *        MOVE "G" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 7
+      *        MOVE "H" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 8
+      *        MOVE "J" TO WRITE-YEAR-BUF-7
+      *    ELSE
+      *    IF CHECK-YEAR-NUM = 9
+      *        MOVE "K" TO WRITE-YEAR-BUF-7.
+
+           CALL "CMMISYR" USING MMIS-LETTER.
+           MOVE MMIS-LETTER    TO WRITE-YEAR-BUF-7.
+      *-------
+
+           MOVE SPACES TO WO-NUMBER.
+           MOVE WRITE-YEAR-BUF-7 TO WO-NUM-7.
+           MOVE "FPRINTWS" TO VIEW-CFNAME.
+           MOVE ERROR-BUFFER TO WO-ERR-LINE.
+           MOVE WO-NUMBER TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE DSPLY-REC TO WO-NUMBER.
+           IF VIEW-LASTKEY = 1 OR 3 GO TO 2-EOJ.
+      *
+      *    ALIGN WORK ORDER NUMBER
+      *
+           CALL "TALWONO" USING WO-NUMBER RETURN-CODE.
+           IF RETURN-CODE = "1"
+               MOVE "0" TO RETURN-CODE
+               MOVE WO-NUMBER TO WO-1-10
+               MOVE 47005 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 60-REQUEST-WORK-ORDER.
+           PERFORM 69-START-WO-PLANNED-FILE.
+           IF COND-WORD = 17
+               MOVE 29034 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 60-REQUEST-WORK-ORDER.
+       60-RWO-EXIT.    EXIT.
+       61-RETRIEVE-PLANNED.
+           IF WO-PLANNED-DATA NOT = SPACES
+               NEXT SENTENCE
+           ELSE
+           PERFORM 69-READ-WO-PLANNED-FILE
+           IF COND-WORD = 15
+               MOVE 29035 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (1) INDS (99)
+               GO TO 61-RP-EXIT.
+           MOVE SPACES TO ZONE-SPOOLER-WA.
+      *    ERROR-SWITCH HAS BEEN SET IN TMODWORK TO 'TE' OR "TP" IF
+      *    A USER DECIDES TO TRANSFER A WORK ORDER FROM THE VERBAL
+      *    LOOP TO THE PLANNED LOOP, OR FROM THE PLANNED LOOP TO
+      *    THE ENGINEERING LOOP.
+           IF ERROR-SWITCH = "TE"
+               MOVE "ENG " TO ZONE-KEY
+           ELSE
+           IF PLANT-IDENT = "126"
+               IF ERROR-SWITCH = "PZ"
+                   IF ZONE-P = "M    "
+                       MOVE "SHOP" TO ZONE-KEY
+                   ELSE
+                   MOVE ZONE-P TO ZONE-KEY
+               ELSE
+               MOVE ZONE-P TO ZONE-KEY
+           ELSE
+           MOVE ZONE-P TO ZONE-KEY.
+           IF ERROR-SWITCH = "TP"
+               PERFORM 69-START-ZONE-SPOOLER-FILE
+               IF COND-WORD = 17
+      *            MOVE 0 TO OVRPRTF-TOFILE-NUM
+                   MOVE "P " TO OVRPRTF-TOFILE-NUM-X
+               ELSE
+               PERFORM 69-READ-ZONE-SPOOLER-FILE
+               IF COND-WORD = 15
+      *            MOVE 0 TO OVRPRTF-TOFILE-NUM
+                   MOVE "P " TO OVRPRTF-TOFILE-NUM-X
+               ELSE
+               MOVE ZONE-SPOOLER-NUM-P TO OVRPRTF-TOFILE-NUM
+           ELSE
+      *    MOVE 0 TO OVRPRTF-TOFILE-NUM.
+           MOVE "P " TO OVRPRTF-TOFILE-NUM-X.
+           COPY OVRPFCALL IN COPYLIB.
+       61-RP-CONT.
+           OPEN OUTPUT CH-PRINT-FILE.
+           MOVE 1 TO CPF-SW.
+           IF WO-START-STATUS = "AA" OR "AR"
+               GO TO 2-EOJ.
+           MOVE 1 TO DATE-MODE.
+           MOVE DATE-FLAG TO DATE-CODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO PL-DAT.
+           MOVE PL-HEADER00 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE ERROR-BUFFER TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE PL-HEADER0 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SPACES TO ERROR-BUFFER.
+           MOVE ERROR-BUFFER TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE WO-NUM-P TO PL-WO-7.
+           MOVE WO-NUM-SUFF-P TO PL-WO-S.
+           MOVE WO-STATUS-P TO PL-ST.
+           MOVE WO-START-STATUS TO PL-TY.
+           MOVE REQUESTER-P TO PL-REQ.
+           MOVE PL-LINE-1 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE EQUIP-NUM-P TO PL-EQP.
+           MOVE DEPT-P      TO PL-DEPT.
+           MOVE ZONE-P      TO PL-ZONE.
+           MOVE LOCATION-P  TO PL-LOC.
+           MOVE PRIORITY-P  TO PL-PRTY.
+           MOVE RIME-P      TO PL-RIME.
+           MOVE PL-LINE-2 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE EQUIP-NAME-P TO PL-ENAM.
+           MOVE TYPE-NUM-P   TO PL-TYPE.
+           MOVE PL-LINE-3 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE EQUIP-DOWN-P TO PL-EDWN.
+           MOVE EXP-CLASS-P  TO PL-EXP.
+           IF DATE-REQD = "      "
+               MOVE DATE-REQD TO PL-REQD-DATE
+           ELSE
+           MOVE 4 TO DATE-MODE
+           MOVE DATE-REQD TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-SLASH-OUT TO PL-REQD-DATE.
+           MOVE TIME-REQD-P-HH TO PL-HH.
+           MOVE TIME-REQD-P-MM TO PL-MI.
+           MOVE PL-LINE-4 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE DESCRIPTION-1-P TO PL-DESC.
+           MOVE PL-LINE-5 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE DESCRIPTION-2-1-P TO PL-DES2.
+           MOVE PL-LINE-6 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE DESCRIPTION-2-2-P TO PL-DES3.
+           MOVE PL-LINE-7 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE DESCRIPTION-3-1-P TO PL-DES4.
+           MOVE PL-LINE-8 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE DESCRIPTION-3-2-P TO PL-DES5.
+           MOVE PL-LINE-9 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SPECL-INSTR-1 TO PL-SI.
+           MOVE PL-LINE-10 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SPECL-INSTR-2 TO PL-SI2.
+           MOVE PL-LINE-11 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SPECL-EQUIP TO PL-SEQP.
+           MOVE PL-LINE-12 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE SAFETY-NOTE TO PL-SNOT.
+           MOVE PL-LINE-13 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE ENGINEER-P TO PL-ENG.
+           MOVE PLANNER-P TO PL-PLN.
+           MOVE SCHEDULER-P TO PL-SCHD.
+           IF DATE-SCHD = "      "
+               MOVE DATE-SCHD TO PL-SCHD-DATE
+           ELSE
+           MOVE 4 TO DATE-MODE
+           MOVE DATE-SCHD TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-SLASH-OUT TO PL-SCHD-DATE.
+           MOVE TIME-SCHD-P-HH TO PL-SHH.
+           MOVE TIME-SCHD-P-MM TO PL-SMI.
+           MOVE PL-LINE-14 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           IF BUDGET-NO = SPACES
+               MOVE SPACES TO PL-BUDGET
+           ELSE
+           MOVE BUDGET-NO-1-3   TO PL-B1-3
+           MOVE "-"             TO PL-D1
+           MOVE BUDGET-NO-4-5   TO PL-B4-5
+           MOVE "-"             TO PL-D2
+           MOVE BUDGET-NO-6-7   TO PL-B6-7
+           MOVE "-"             TO PL-D3
+           MOVE BUDGET-NO-8-10  TO PL-B8-10
+           MOVE "R"             TO PL-REV
+           MOVE BUDGET-NO-REVNO TO PL-BRNO.
+           MOVE REQUEST-NO      TO PL-RNO.
+           IF DATE-STRT-P = "      "
+               MOVE DATE-STRT-P TO PL-STRT-DATE
+           ELSE
+           MOVE 4 TO DATE-MODE
+           MOVE DATE-STRT-P TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-SLASH-OUT TO PL-STRT-DATE.
+           IF TIME-STRT-P = "    "
+               MOVE "  " TO PL-SHR PL-SMI
+           ELSE
+           MOVE TIME-STRT-P-HH TO PL-SHR
+           MOVE TIME-STRT-P-MM TO PL-SMN.
+           MOVE PL-LINE-15 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE FAIL-CODE-REASON-P TO PL-FC1-2.
+           MOVE FAIL-CODE-SUBSYS-P TO PL-FC3-6.
+           IF DATE-COMP-P = "      "
+               MOVE DATE-COMP-P TO PL-COMP-DATE
+           ELSE
+           MOVE 4 TO DATE-MODE
+           MOVE DATE-COMP-P TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-SLASH-OUT TO PL-COMP-DATE.
+           IF TIME-COMP-P = "    "
+               MOVE "  " TO PL-CHR PL-CMI
+           ELSE
+           MOVE TIME-COMP-P-HH TO PL-CHR
+           MOVE TIME-COMP-P-MM TO PL-CMI.
+           MOVE PL-LINE-16 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           MOVE 25 TO LINE-CTR.
+       61-RP-EXIT.    EXIT.
+
+       62-RETRIEVE-JOBPLAN.
+           MOVE SPACES TO JOBP-KEY.
+           MOVE WO-NUMBER TO JOBP-WO-NO.
+           MOVE 001 TO JOBP-SEQ-NO.
+       62-FIND-JOBPLAN.
+           PERFORM 69-START-JOBPLAN-FILE.
+           IF COND-WORD = 17
+               ADD 1 TO JOBP-SEQ-NO
+               IF JOBP-SEQ-NO > LAST-JOBPLAN-SEQ-1-3
+                   GO TO 62-RJ-EXIT
+               ELSE
+               GO TO 62-FIND-JOBPLAN.
+           IF FST-JB-SW = 0
+               MOVE 1 TO FST-JB-SW
+               MOVE JB-HEADER0 TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               MOVE JB-HEADER1 TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 2 TO LINE-CTR.
+       62-GET-JOBPLAN-LOOP.
+           PERFORM 69-READ-JOBPLAN-FILE.
+           IF COND-WORD = 15
+               IF WO-START-STATUS = "AA" OR "AR"
+                   IF TOTAL-LABOR-EST = ZEROES
+                       NEXT SENTENCE
+                   ELSE
+                   MOVE SPACES       TO JB-LINE-2
+                   MOVE "PM LEVEL:"  TO JB-PM-LEVEL-LIT
+                   MOVE JOBP-LEVEL   TO JB-PM-LEVEL
+                   MOVE "PM FLAG:"   TO JB-PM-FLAG-LIT
+                   MOVE JOBP-FLAG    TO JB-PM-FLAG
+                   MOVE "PM SUBSYS:" TO JB-PM-SUBS-LIT
+                   MOVE JOBP-SS      TO JB-PM-SS
+                   MOVE JB-LINE-2    TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+                   ADD 1 TO LINE-CTR
+                   IF LINE-CTR > 59
+                       MOVE SPACES TO CH-PRINT-RECORD
+                       WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                       WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                       MOVE 5 TO LINE-CTR
+                   ELSE
+                   GO TO 62-RJ-EXIT
+               ELSE
+               GO TO 62-RJ-EXIT
+           ELSE
+           IF JOBP-DESCRIP-3 = "&&&"
+               GO TO 62-GET-JOBPLAN-LOOP
+           ELSE
+           IF JOBP-DESCRIP-3 = "$  "
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               MOVE 5 TO LINE-CTR
+               GO TO 62-GET-JOBPLAN-LOOP
+           ELSE
+           PERFORM 621-PRINT-JOBINFO
+           GO TO 62-GET-JOBPLAN-LOOP.
+       62-RJ-EXIT.    EXIT.
+       621-PRINT-JOBINFO.
+           IF JOBPLAN-SEQ-NO-1-3 = SAVE-JOBPSEQ
+               MOVE SPACES TO JB-SEQ-X
+           ELSE
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE SPACES       TO JB-LINE-2
+               MOVE "PM LEVEL:"  TO JB-PM-LEVEL-LIT
+               MOVE JOBP-LEVEL   TO JB-PM-LEVEL
+               MOVE "PM FLAG:"   TO JB-PM-FLAG-LIT
+               MOVE JOBP-FLAG    TO JB-PM-FLAG
+               MOVE "PM SUBSYS:" TO JB-PM-SUBS-LIT
+               MOVE JOBP-SS      TO JB-PM-SS
+               MOVE JB-LINE-2    TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 59
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 5 TO LINE-CTR
+               ELSE
+               MOVE JOBPLAN-SEQ-NO-1-3 TO JB-SEQ SAVE-JOBPSEQ
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+           ELSE
+           MOVE JOBPLAN-SEQ-NO-1-3 TO JB-SEQ SAVE-JOBPSEQ
+           MOVE SPACES TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           ADD 1 TO LINE-CTR.
+           MOVE JOBPLAN-DESCRIP TO JB-DESC.
+           IF JOBPLAN-DT = SPACES
+               MOVE SPACES TO JB-MDT-X
+           ELSE
+           MOVE JOBPLAN-DT-HRS TO JB-MDTH
+           MOVE "." TO JB-MDEC
+           IF JOBPLAN-DT-PARTIAL-X = " "
+               MOVE "0" TO JB-MDTP
+           ELSE
+           MOVE JOBPLAN-DT-PARTIAL TO JB-MDTP.
+           MOVE JOBPLAN-CRAFT TO JB-CRF.
+           IF JOBPLAN-MEN-X = SPACES
+               MOVE 0 TO JOBPLAN-MEN
+               MOVE "  " TO JB-MEN
+           ELSE
+           MOVE JOBPLAN-MEN TO JB-MEN.
+           IF JOBPLAN-EST = SPACES
+               MOVE SPACES TO JB-CLK-X
+           ELSE
+           MOVE JOBPLAN-EST-HRS TO JB-CLKH
+           MOVE "." TO JB-CDEC
+           MOVE JOBPLAN-EST-PARTIAL TO JB-CLKP
+           MULTIPLY JOBPLAN-MEN BY JOBPLAN-EST-TIME
+               GIVING JOBPLAN-EST-TIME-WORK ROUNDED
+           PERFORM 6211-SET-LABOR-RATE THRU 6211-SLR-EXIT
+           MULTIPLY JOBPLAN-EST-TIME-WORK BY PER-LABOR-RATE GIVING
+               JOBPLAN-LABOR-EST
+           ADD JOBPLAN-LABOR-EST TO TOTAL-LABOR-EST TOTAL-DOLLAR-EST.
+           IF PLANT-IDENT = "126"
+               IF OVRPRTF-TOFILE-NUM-X = "L " OR "P "
+                   NEXT SENTENCE
+               ELSE
+               IF OVRPRTF-TOFILE-NUM = 00 OR 16
+                   NEXT SENTENCE
+               ELSE
+               MOVE SPACES TO JB-CLK-X
+           ELSE
+           IF PLANT-IDENT = "133"
+               IF OVRPRTF-TOFILE-NUM = 30
+                   NEXT SENTENCE
+               ELSE
+               MOVE SPACES TO JB-CLK-X.
+           MOVE JB-LINE-1 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 59
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 5 TO LINE-CTR.
+       6211-SET-LABOR-RATE.
+           IF JOBPLAN-CRAFT = "  "
+               PERFORM 69-READ-PERSONNEL-FILE
+               IF COND-WORD = 15
+                   CLOSE PERSONNEL-FILE
+                   OPEN INPUT PERSONNEL-FILE
+                   GO TO 6211-SLR-EXIT
+               ELSE
+               GO TO 6211-SLR-EXIT.
+           IF JOBPLAN-CRAFT = PER-CRAFT GO TO 6211-SLR-EXIT.
+           PERFORM 69-READ-PERSONNEL-FILE.
+           IF COND-WORD = 15
+               CLOSE PERSONNEL-FILE
+               OPEN INPUT PERSONNEL-FILE
+               GO TO 6211-SLR-EXIT.
+           IF JOBPLAN-CRAFT NOT = PER-CRAFT GO TO 6211-SET-LABOR-RATE.
+       6211-SLR-EXIT.    EXIT.
+       63-RETRIEVE-STORES.
+           PERFORM 69-START-WO-PARTS-FILE.
+           IF COND-WORD = 17 GO TO 63-RS-EXIT.
+       63-RS-LOOP.
+           PERFORM 69-READ-WO-PARTS-FILE.
+           IF COND-WORD = 14 GO TO 63-RS-EXIT.
+           IF PRT-DELETE-FLAG = "D"
+               ADD 001 TO MT-ITM
+               GO TO 63-RS-LOOP.
+           IF PRT-STATUS = "M "
+               ADD 001 TO MT-ITM
+               GO TO 63-RS-LOOP.
+           IF PRT-STATUS = "X " AND PRT-NUM-7 = "       "
+               ADD 001 TO MT-ITM
+               GO TO 63-RS-LOOP.
+           IF CMT-HD-SW > 0
+               NEXT SENTENCE
+           ELSE
+           MOVE 1 TO CMT-HD-SW
+           ADD 8 TO LINE-CTR
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE MT-HEADER0 TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               PERFORM 63-RSL-PM-DATA
+               MOVE MT-HEADER1 TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               MOVE 5 TO LINE-CTR
+           ELSE
+           MOVE MT-HEADER0 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           PERFORM 63-RSL-PM-DATA
+           MOVE MT-HEADER1 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           SUBTRACT 6 FROM LINE-CTR.
+           MOVE SPACES TO MT-LINE-1-REST.
+           ADD 001 TO MT-ITM.
+           IF PRT-ACT-QTY = SPACES MOVE 0 TO PRT-ACT-QTY-9.
+           IF PRT-ACT-QTY-9 > 0
+               IF PLANT-IDENT = "129"
+                   IF WO-CURRENT-TYPE = "E"
+                       NEXT SENTENCE
+                   ELSE
+                   GO TO 63-RS-LOOP
+               ELSE
+               MOVE PRT-ACT-QTY-9 TO MT-QTYU.
+           IF PLANT-IDENT = "129"
+               IF WO-CURRENT-TYPE = "E"
+                   MOVE PRT-ACT-QTY TO MT-QTYU
+               ELSE
+               MOVE 0 TO MT-QTYU.
+           IF PRT-EST-QTY = SPACES
+               MOVE 0 TO MT-QTY
+           ELSE
+           MOVE PRT-EST-QTY-9 TO MT-QTY.
+           IF PRT-EST-COST = SPACES
+               MOVE ZEROES TO P-EST-COST.
+      *    IF PRT-EST-QTY-FLAG = "*"
+      *        NEXT SENTENCE
+      *    ELSE
+           ADD P-EST-COST TO TOTAL-STORES-EST TOTAL-DOLLAR-EST.
+           MOVE PRT-UNIT-MEAS TO MT-UM.
+           MOVE PRT-NUM TO MT-PART.
+           MOVE PRT-STATUS TO MT-STAT.
+           MOVE PRT-STAGE TO MT-STG.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE PRT-LEVEL TO MT-LEV-1
+               MOVE PRT-FLAG  TO MT-FLG-1
+               MOVE PRT-SS    TO MT-SS-1.
+           MOVE MT-LINE-1 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           MOVE "DESC:" TO MT-HD2.
+           MOVE PRT-DESC TO MT-DESC.
+           MOVE MT-LINE-2 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-2 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 63-RS-LOOP
+               ELSE
+               GO TO 63-RS-LOOP.
+           MOVE SPACES TO MT-HD2.
+           MOVE PRT-DESC-2 TO MT-DESC.
+           MOVE MT-LINE-2 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-3 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 63-RS-LOOP
+               ELSE
+               GO TO 63-RS-LOOP.
+           MOVE PRT-DESC-3 TO MT-DESC.
+           MOVE MT-LINE-2 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-4 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 63-RS-LOOP
+               ELSE
+               GO TO 63-RS-LOOP.
+           MOVE PRT-DESC-4 TO MT-DESC.
+           MOVE MT-LINE-2 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-5 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 63-RS-LOOP
+               ELSE
+               GO TO 63-RS-LOOP.
+           MOVE PRT-DESC-5 TO MT-DESC.
+           MOVE MT-LINE-2 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           GO TO 63-RS-LOOP.
+       63-RS-EXIT.    EXIT.
+       63-RSL-PM-DATA.
+           MOVE SPACES TO MT-HEADER-1-VAR.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE "PM LEVEL"  TO MT-PM-LEVEL
+               MOVE "PM FLAG"   TO MT-PM-FLAG
+               MOVE "PM SUBSYS" TO MT-PM-SUBSYS.
+       64-RETRIEVE-PURCHASED.
+           PERFORM 69-START-WO-PARTS-FILE.
+           IF COND-WORD = 17 GO TO 64-RP-EXIT.
+       64-RP-LOOP.
+           PERFORM 69-READ-WO-PARTS-FILE.
+           IF COND-WORD = 14 GO TO 64-RP-EXIT.
+           IF PRT-DELETE-FLAG = "D"
+               ADD 001 TO PM-ITM
+               GO TO 64-RP-LOOP.
+           IF UMT-HD-SW > 0
+               NEXT SENTENCE
+           ELSE
+           MOVE 1 TO UMT-HD-SW
+           ADD 8 TO LINE-CTR
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE PM-HEADER0 TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               PERFORM 64-RPL-PM-DATA
+               MOVE PM-HEADER1 TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               MOVE 5 TO LINE-CTR
+           ELSE
+           MOVE PM-HEADER0 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           PERFORM 64-RPL-PM-DATA
+           MOVE PM-HEADER1 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           SUBTRACT 6 FROM LINE-CTR.
+           IF PRT-STATUS = "M "
+               NEXT SENTENCE
+           ELSE
+           IF PRT-STATUS = "X " AND PRT-NUM-7 = "       "
+               NEXT SENTENCE
+           ELSE
+           ADD 001 TO PM-ITM
+           GO TO 64-RP-LOOP.
+           ADD 001 TO PM-ITM.
+           MOVE PRT-NUM TO PM-PART.
+           MOVE PRT-EST-QTY-9 TO PM-QTY.
+      *    IF PRT-EST-QTY-FLAG = "*"
+      *        NEXT SENTENCE
+      *    ELSE
+           ADD P-EST-COST TO TOTAL-PURCH-EST TOTAL-DOLLAR-EST.
+           IF PRT-ACT-QTY = SPACES
+               MOVE 0 TO PM-QTYU
+           ELSE
+           MOVE PRT-ACT-QTY-9 TO PM-QTYU.
+           MOVE PRT-UNIT-MEAS TO PM-UM.
+           IF PRT-REQ-NO = SPACES OR "CANCEL"
+               MOVE SPACES TO PM-LINE-2 PM-LINE-3
+           ELSE
+           MOVE "IN" TO CMR-CALL-MODE
+           MOVE SPACES TO BU-DISPLAY-MSG
+           MOVE SPACES TO CMR-DATA CMR-DESC CMR-REMARKS
+               CMR-RETURNED-DATA CMR-MISC-PARMS PM-LINE-2
+               PM-LINE-3
+           MOVE PRT-REQ-NO TO CMR-REQ-NUMBER
+           MOVE WO-NUMBER TO CMR-WO-NUMBER
+           CALL "CMANINQ" USING BASE-STORES
+                                CMR-CALL-MODE
+                                CMR-DATA
+                                CMR-DESC
+                                CMR-REMARKS
+                                CMR-RETURNED-DATA
+                                CMR-MISC-PARMS
+                                LANGUAGE-PARMS
+                                ESC-NAME
+                                STATUS-AREA
+                                BU-DISPLAY-MSG
+           IF CMR-RETURN-STATUS = "OK"
+               PERFORM 641-MOVE-CSIS-INFO THRU 641-MCI-EXIT.
+           MOVE PRT-STATUS TO PM-STAT.
+           MOVE PRT-STAGE TO PM-STG.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE SPACES TO PM-DATA-1
+               MOVE PRT-LEVEL TO PM-LEV-1
+               MOVE PRT-FLAG  TO PM-FLG-1
+               MOVE PRT-SS    TO PM-SS-1.
+           MOVE PM-LINE-1 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PM-LINE-2 = SPACES
+               NEXT SENTENCE
+           ELSE
+           MOVE PM-LINE-2 TO CH-PRINT-RECORD
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+           ADD 1 TO LINE-CTR
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           MOVE "DESC:" TO PM-HD3.
+           MOVE PRT-DESC TO PM-DESC.
+           MOVE PM-LINE-3 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-2 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 64-RP-LOOP
+               ELSE
+               GO TO 64-RP-LOOP.
+           MOVE SPACES TO PM-HD3.
+           MOVE PRT-DESC-2 TO PM-DESC.
+           MOVE PM-LINE-3 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-3 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 64-RP-LOOP
+               ELSE
+               GO TO 64-RP-LOOP.
+           MOVE PRT-DESC-3 TO PM-DESC.
+           MOVE PM-LINE-3 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-4 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 64-RP-LOOP
+               ELSE
+               GO TO 64-RP-LOOP.
+           MOVE PRT-DESC-4 TO PM-DESC.
+           MOVE PM-LINE-3 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           IF PRT-DESC-5 = SPACES
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES
+               ADD 1 TO LINE-CTR
+               IF LINE-CTR > 61
+                   MOVE SPACES TO CH-PRINT-RECORD
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+                   WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+                   MOVE 3 TO LINE-CTR
+                   GO TO 64-RP-LOOP
+               ELSE
+               GO TO 64-RP-LOOP.
+           MOVE PRT-DESC-5 TO PM-DESC.
+           MOVE PM-LINE-3 TO CH-PRINT-RECORD.
+           WRITE CH-PRINT-RECORD AFTER ADVANCING 1 LINES.
+           ADD 1 TO LINE-CTR.
+           IF LINE-CTR > 61
+               MOVE SPACES TO CH-PRINT-RECORD
+               WRITE CH-PRINT-RECORD AFTER ADVANCING NEW-PAGE
+               WRITE CH-PRINT-RECORD AFTER ADVANCING 2 LINES
+               MOVE 3 TO LINE-CTR.
+           GO TO 64-RP-LOOP.
+       64-RP-EXIT.    EXIT.
+
+       64-RPL-PM-DATA.
+           MOVE SPACES TO PM-HEADER-1-VAR.
+           IF WO-START-STATUS = "AA" OR "AR"
+               MOVE "PM LEVEL"  TO PM-PM-LEVEL
+               MOVE "PM FLAG"   TO PM-PM-FLAG
+               MOVE "PM SUBSYS" TO PM-PM-SUBSYS.
+       641-MOVE-CSIS-INFO.
+           MOVE CMR-DESC-LINE (1)   TO PRT-DESC.
+           MOVE CMR-DESC-LINE (2)   TO PRT-DESC-2.
+           MOVE CMR-DESC-LINE (3)   TO PRT-DESC-3.
+           MOVE CMR-DESC-LINE (4)   TO PRT-DESC-4.
+           MOVE CMR-DESC-LINE (5)   TO PRT-DESC-5.
+           MOVE CMR-PO-NO-AND-REL   TO PRT-PO-NO.
+           MOVE PRT-REQ-NO          TO PM-REQ.
+           MOVE "CSIS REQ:"         TO PML-2-1.
+           MOVE SPACES              TO PML-2-2 PM-PO.
+           IF PRT-SUGG-VENDOR = SPACES
+               MOVE SPACES          TO PML-2-3 PM-SVEN
+           ELSE
+           MOVE "SUGGESTED VENDOR:" TO PML-2-3
+           MOVE PRT-SUGG-VENDOR     TO PM-SVEN.
+           IF PLANT-IDENT = "126 "
+               NEXT SENTENCE
+           ELSE
+           MOVE CMR-STAGING-AREA    TO PRT-STAGE.
+           IF CMR-PO-NO-AND-REL = SPACES
+               MOVE SPACES TO PM-PO PML-2-2 PM-DRCV
+           ELSE
+           MOVE CMR-PO-NO-AND-REL   TO PM-PO
+           MOVE "CSIS PO:"          TO PML-2-2
+           IF CMR-PO-DATE-RCVD = SPACES
+               MOVE SPACES TO PM-DRCV
+           ELSE
+           MOVE 4                   TO DATE-MODE
+           MOVE CMR-PO-DATE-RCVD    TO DATE-VALIDATE-IN
+           CALL "TDATECHK" USING DATE-CHECK-AREA
+           MOVE DATE-SLASH-OUT      TO PM-DRCV.
+
+       641-MCI-EXIT.    EXIT.
+
+       69-READ-PERSONNEL-FILE.
+           MOVE 0 TO COND-WORD.
+           READ PERSONNEL-FILE NEXT INTO PERSONNEL-DATA
+               AT END    MOVE 15 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+
+       69-READ-JOBPLAN-FILE.
+           MOVE 0 TO COND-WORD.
+           READ JOBPLAN-FILE NEXT INTO JOBPLAN-BUFFER
+               AT END    MOVE 15 TO COND-WORD.
+           IF JOBPLAN-WO-NO NOT = WO-NUM-1-10 MOVE 15 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+
+       69-START-JOBPLAN-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE JOBP-KEY TO JOBPWOSEQ OF JFREC.
+           START JOBPLAN-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF JF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-WO-PARTS-FILE.
+           MOVE 0 TO COND-WORD.
+           READ WO-PARTS-FILE PRIOR INTO WO-MATERIAL-USED-DATA
+               AT END    MOVE 14 TO COND-WORD.
+           IF WO-NUM-1-10 NOT = PRT-WO-NU MOVE 14 TO COND-WORD.
+           IF WPFD-STATUS NOT = "00" MOVE 14 TO COND-WORD.
+
+       69-START-WO-PARTS-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUM-1-10 TO WONUM OF WPFDREC.
+           START WO-PARTS-FILE KEY IS > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPFD-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           READ WO-PLANNED-FILE NEXT INTO WO-PLANNED-DATA
+               AT END    MOVE 15 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+
+       69-START-WO-PLANNED-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUM-1-10 TO WONUM OF WPFREC.
+           START WO-PLANNED-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       69-READ-ZONE-SPOOLER-FILE.
+           MOVE 0 TO COND-WORD.
+           READ ZONE-SPOOLER-FILE NEXT INTO ZONE-SPOOLER-WA
+               AT END    MOVE 15 TO COND-WORD.
+           IF ZSF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+
+       69-START-ZONE-SPOOLER-FILE.
+           MOVE 0 TO COND-WORD.
+           MOVE ZONE-KEY TO ZONEKEY OF ZSFREC.
+           START ZONE-SPOOLER-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF ZSF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           ACCEPT IOFEEDBACK FROM I-O-FEEDBACK-AREA.
+           MOVE ALL B"0" TO INDICS.
+           IF DSPLY-STATUS NOT = "00"
+               MOVE 3 TO VIEW-LASTKEY
+           ELSE
+           MOVE FUNCTION-NUM TO VIEW-LASTKEY.
+
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+           MOVE ALL B"0" TO INDICS.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.    EXIT.

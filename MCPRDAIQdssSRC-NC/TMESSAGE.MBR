@@ -1,0 +1,897 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.             TMESSAGE.
+       AUTHOR.                 W. ROXBURY.
+       INSTALLATION.           GOODYEAR TIRE & RUBBER CO.
+      *C
+      *C   03/11/1998   CA YODER   REQ #97-1125
+      *C     CHANGED PASSWORD FROM 6 TO 8 FOR CALL TO "TPERPASS."
+      *C
+      *C  01/04/2010  CA YODER  2010-00142425-001
+      *C     UPDATE LOGIC ASSIGNING WORKORDER LETTER SUFFIX.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.        AS-400.
+       OBJECT-COMPUTER.        AS-400.
+       SPECIAL-NAMES.          REQUESTOR      IS WORK-STATION
+                               C01            IS NEW-PAGE
+                               SYSTEM-CONSOLE IS CONSOLE
+                               LOCAL-DATA     IS LOCAL-DATA-AREA.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PER-PERSONNEL
+                  ASSIGN       TO DATABASE-MCFLMM0301
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-NUMBER
+                  ASSIGN       TO DATABASE-MCFLMM0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT WO-BASIC
+                  ASSIGN       TO DATABASE-MCFLMM1001
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT ZONE-PRINTER
+                  ASSIGN       TO DATABASE-MCFLZP0101
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT NEWS-TABLE
+                  ASSIGN       TO DATABASE-MCFLMM2801
+                  ORGANIZATION IS INDEXED
+                  ACCESS MODE  IS DYNAMIC
+                  RECORD KEY   IS EXTERNALLY-DESCRIBED-KEY
+                               WITH DUPLICATES
+                  FILE STATUS  IS FILE-STAT.
+
+           SELECT DISPLAY-FILE
+                  ASSIGN       TO WORKSTATION-ZMESSAGE-SI
+                  ORGANIZATION IS TRANSACTION
+                  ACCESS MODE  IS SEQUENTIAL
+                  FILE STATUS  IS SCREEN-STATUS
+                               MAJOR-MINOR
+                  CONTROL-AREA IS SCREEN-CONTROL.
+
+           SELECT CH-PRINT-FILE
+                  ASSIGN       TO PRINTER-MCPRT.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  PER-PERSONNEL
+           LABEL RECORDS       ARE STANDARD.
+       01  PERS-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+
+       FD  WO-NUMBER
+           LABEL RECORDS       ARE STANDARD.
+       01  WO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0101.
+
+       FD  WO-BASIC
+           LABEL RECORDS       ARE STANDARD.
+       01  VWO-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1001.
+
+       FD  ZONE-PRINTER
+           LABEL RECORDS       ARE STANDARD.
+       01  ZP-REC.
+           COPY DDS-ALL-FORMATS OF MCFLZP0101.
+
+       FD  NEWS-TABLE
+           LABEL RECORDS       ARE STANDARD.
+       01  NT-REC.
+           COPY DDS-ALL-FORMATS OF MCFLMM2801.
+
+       FD  DISPLAY-FILE
+           LABEL RECORDS       ARE OMITTED.
+       01  DISPLAY-REC         PIC X(2000).
+
+       FD  CH-PRINT-FILE
+           LABEL RECORD        IS OMITTED
+           RECORD CONTAINS     80 CHARACTERS
+           DATA RECORD         IS PRINT-REC.
+       01  PRINT-REC           PIC X(80).
+
+       WORKING-STORAGE SECTION.
+       77  CLEAR-SW            PIC X           VALUE "F".
+       77  UPDATE-SW           PIC X           VALUE "A".
+       77  DLIST-SW            PIC X           VALUE " ".
+       77  UPDATE-ERROR        PIC X(76).
+       77  SUB1                PIC S9(4)       VALUE 0.
+       77  WO-CC-SW            PIC X(02).
+       77  WO-BUFFER           PIC X(10).
+       77  C-WORD              PIC S9(4)       VALUE 0.
+       77  RETURN-COD          PIC X.
+       77  ZONE-KEY            PIC X(04).
+       77  PPS-SW              PIC S9(4)       VALUE 0  COMP-4.
+       77  PPS-REPEATER        PIC S9(4)       VALUE 0  COMP-4.
+       77  CCWO-LIT            PIC X(10).
+       77  CCWO-BUF            PIC X(10).
+       77  TRUE-VAL            PIC 1           VALUE B"1".
+      *---- 01/04/2010:  ADDED PARAMETER FOR CMMISYR.
+       77  MMIS-LETTER                PIC X.
+
+       01  FILE-STAT.
+           05  FILE-STAT-1     PIC X  VALUE "0".
+           05  FILE-STAT-2     PIC X  VALUE "0".
+
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM PIC X(08) VALUE "TMESSAGE".
+           05  PROGRAM-TYPE    PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE PIC X(12) VALUE " J0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESCA1 PIC X(30) VALUE
+                  "WRITE MESSAGES TO OTHER CRAFTS".
+               10  PROG-DESCA2 PIC X(30) VALUE
+                  "MEN OR TO SPECIFIC WORKORDERS.".
+               10  PROG-DESCB1 PIC X(30) VALUE
+                  "RUNS FROM CRAFTSMAN EXECUTIVE ".
+               10  PROG-DESCB2 PIC X(30) VALUE
+                  "(f2 of Secondary Menu) AND    ".
+               10  PROG-FUNC1  PIC X(30) VALUE
+                  "SUPERVISOR FUNCTIONS (f1 key) ".
+               10  PROG-FUNC2  PIC X(30) VALUE
+                  "AND STAND-ALONE MESSAGE FUNCS.".
+           05  PASSWORD-FLAG   PIC X.
+
+       01  ZONE-PRT-BUFFER.
+           05  ZONE-BUF            PIC X(04) VALUE SPACES.
+           05  PRINTER-BUFFERS.
+               10  PRINTER-BUF-V.
+                   15  P-BUF-V-1   PIC X     VALUE SPACES.
+                   15  P-BUF-V-2   PIC X     VALUE SPACES.
+               10  PRINT-BUF-V-9   REDEFINES PRINTER-BUF-V PIC 99.
+               10  PRINTER-BUF-P.
+                   15  P-BUF-P-1   PIC X     VALUE SPACES.
+                   15  P-BUF-P-2   PIC X     VALUE SPACES.
+               10  PRINT-BUF-P-9   REDEFINES PRINTER-BUF-P PIC 99.
+               10  PRINTER-BUF-E.
+                   15  P-BUF-E-1   PIC X     VALUE SPACES.
+                   15  P-BUF-E-2   PIC X     VALUE SPACES.
+               10  PRINT-BUF-E-9   REDEFINES PRINTER-BUF-E PIC 99.
+               10  PRINTER-BUF-M.
+                   15  P-BUF-M-1   PIC X     VALUE SPACES.
+                   15  P-BUF-M-2   PIC X     VALUE SPACES.
+               10  PRINT-BUF-M-9   REDEFINES PRINTER-BUF-M PIC 99.
+               10  PRINTER-BUF-X.
+                   15  P-BUF-X-1   PIC X     VALUE SPACES.
+                   15  P-BUF-X-2   PIC X     VALUE SPACES.
+               10  PRINT-BUF-X-9   REDEFINES PRINTER-BUF-X PIC 99.
+
+       01  BLANK-LINE.
+           05  FILLER          PIC XX    VALUE "**".
+           05  FILLER          PIC X(76) VALUE SPACES.
+           05  FILLER          PIC XX    VALUE "**".
+
+       01  CUR-DATE-WA-CN.
+           05  CUR-DATE-CC         PIC XX.
+           05  CUR-DATE-WA.
+               10  CUR-DATE-YY.
+                   15  CD-YY-1     PIC X.
+                   15  CD-YY-2     PIC X.
+               10  CUR-DATE-MM     PIC XX.
+               10  CUR-DATE-DD     PIC XX.
+
+       01  C-DATE.
+           05  C-MM            PIC XX.
+           05  SLASH-1         PIC X.
+           05  C-DD            PIC XX.
+           05  SLASH-2         PIC X.
+           05  C-YY            PIC XX.
+
+       01  TIME-BUFF.
+           05  TIME-HM.
+               10  TIME-HRS    PIC 99.
+               10  TIME-MIN    PIC 99.
+           05  TIME-SEC        PIC 99.
+           05  FILLER          PIC 99.
+
+       01  C-TIME.
+           05  C-HH            PIC XX.
+           05  COLON-1         PIC X.
+           05  C-MN            PIC XX.
+           05  COLON-2         PIC X.
+           05  C-SC            PIC XX.
+
+       01  YEAR-DESIGNATOR.
+           05  YEAR-TABLE.
+               10  YD-0        PIC X  VALUE "A".
+               10  YD-1        PIC X  VALUE "B".
+               10  YD-2        PIC X  VALUE "C".
+               10  YD-3        PIC X  VALUE "D".
+               10  YD-4        PIC X  VALUE "E".
+               10  YD-5        PIC X  VALUE "F".
+               10  YD-6        PIC X  VALUE "G".
+               10  YD-7        PIC X  VALUE "H".
+               10  YD-8        PIC X  VALUE "J".
+               10  YD-9        PIC X  VALUE "K".
+           05  YEAR-COUNTER    REDEFINES YEAR-TABLE.
+               10  YEARC       OCCURS 10 TIMES PIC X.
+
+       01  SCREEN-DATA.
+           05  DATE-BUF.
+               10  D-BUF-MD    PIC X(02).
+               10  D-BUF-S1    PIC X.
+               10  D-BUF-DM    PIC X(02).
+               10  D-BUF-S2    PIC X.
+               10  D-BUF-YY    PIC X(02).
+           05  TIME-BUF        PIC X(04).
+           05  TO-CC-DL.
+               10  TO-CC-BUF   PIC X(04).
+               10  TO-DL-FILL  PIC X(02).
+           05  TO-CC-SPLIT     REDEFINES TO-CC-DL.
+               10  TCS1        PIC X.
+               10  TCS2        PIC X.
+               10  TCS3        PIC X.
+               10  TCS4        PIC X.
+               10  TCS5        PIC X.
+               10  TCS6        PIC X.
+           05  TO-WO-BUF.
+               10  WO-BUF-NUM  PIC X(06).
+               10  WO-BUF-YR   PIC X.
+               10  WO-BUF-SUF  PIC X(03).
+           05  FROM-CC-BUF     PIC X(04).
+           05  FROM-SIGNON-BUF.
+               10  USER-BUF    PIC X(08).
+               10  GROUP-BUF   PIC X(08).
+               10  ACCT-BUF    PIC X(08).
+               10  TNUM-BUF    PIC X(04).
+           05  MESSAGE-BUF.
+               10  MESSAGE-1-BUF   PIC X(70).
+               10  MESSAGE-2-BUF   PIC X(70).
+               10  MESSAGE-3-BUF   PIC X(70).
+               10  MESSAGE-4-BUF   PIC X(70).
+               10  MESSAGE-5-BUF   PIC X(70).
+           05  PRINT-BUF       PIC X.
+           05  CMDMSG          PIC X(79).
+           05  ERRMSG          PIC X(79).
+
+       01  WHO-VARIABLES.
+           05  MOD             PIC S9(4) COMP-4.
+           05  CAP             PIC S9(8) COMP-4.
+           05  LATTR           PIC S9(8) COMP-4.
+           05  USERNAME.
+               10  USERNAME-7  PIC X(7).
+               10  USERNAME-8  PIC X(1).
+           05  GRPNAME         PIC X(8).
+           05  ACCTNAME        PIC X(8).
+           05  HOMEGRP         PIC X(8).
+           05  TERMNUM         PIC 9(04) COMP-4.
+           05  TNUM            PIC 9(04).
+
+       01  DB-ERROR.
+           05  DB-FUNC         PIC X(10) VALUE SPACES.
+           05  DB-FILE         PIC X(18) VALUE SPACES.
+           05  FILLER          PIC X(20) VALUE "ERROR - FILE-STAT = ".
+           05  CON-WORD        PIC XX.
+
+       01  PWORD-BUFFER.
+      *---------- EXPANDED PASSWORD FROM 6 TO 8 CHARACTERS.
+      **** 05  PWORD-BUF       PIC X(06).
+           05  PWORD-BUF       PIC X(08).
+           05  PWD-X           PIC XX.
+           05  DATE-BUFF       REDEFINES PWD-X  PIC 9(4) COMP-4.
+       01  PWORD-SWITCH        PIC X.
+
+           COPY SCREENIO       IN COPYLIB.
+
+           COPY CATREAD        IN COPYLIB.
+
+           COPY JCWAREA        IN COPYLIB.
+
+           COPY OVRPFDATA      IN COPYLIB.
+
+           COPY CCHKOBJ        IN COPYLIB.
+
+           COPY ERRORLIN       IN COPYLIB.
+
+       01  WO-BASIC-DATA.
+           COPY DWOBASIC       IN COPYLIB.
+
+       01  WO-PERS-DATA.
+           COPY MPERSONL       IN COPYLIB.
+
+       01  DIST-TAB.
+           COPY DNEWSTBL       IN COPYLIB.
+
+       01  MESSAGE-DATA-BUFF.
+           COPY DWOMSG         IN COPYLIB.
+
+       LINKAGE SECTION.
+       01  DBPARAMETERS.
+           COPY DBPARMS        IN COPYLIB.
+
+       01  CNUM-BUFFER.
+           05  CNUM-BUF        PIC XXXX.
+           05  CNAM-BUF        PIC X(16).
+
+       PROCEDURE DIVISION      USING DBPARAMETERS
+                               CNUM-BUFFER.
+
+       CHECK-PASSWORD.
+           CALL "TPWORD"       USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG NOT = "N"
+               GO TO OPEN-FILES-FIND-JCW.
+           GOBACK.
+
+       OPEN-FILES-FIND-JCW.
+           OPEN I-O            DISPLAY-FILE.
+           OPEN INPUT          PER-PERSONNEL.
+           OPEN INPUT          WO-NUMBER.
+           OPEN INPUT          WO-BASIC.
+           OPEN INPUT          ZONE-PRINTER.
+           OPEN INPUT          NEWS-TABLE.
+
+           ACCEPT MC-LOCAL-DATA-AREA FROM LOCAL-DATA-AREA.
+           MOVE 0              TO PPS-REPEATER.
+           IF JCW-MLOCK-262 = " "
+               MOVE 0          TO PPS-SW
+           ELSE
+               MOVE 1          TO PPS-SW.
+
+       BEGIN.
+           IF CNUM-BUF = SPACES
+               MOVE "S"        TO CLEAR-SW.
+
+           CALL "WHO"          USING MOD CAP LATTR
+                               USERNAME GRPNAME ACCTNAME
+                               HOMEGRP TERMNUM.
+           MOVE SPACES         TO SCREEN-DATA MESSAGE-BUFFER.
+
+       6-MAIN.
+           MOVE "IMESSAGE"     TO SCREEN-NAME.
+           IF CNUM-BUF = SPACES
+               MOVE "IMESSTWO" TO SCREEN-NAME.
+
+           MOVE SPACES         TO TO-CC-DL TO-WO-BUF PRINT-BUF
+                                  DLIST-SW MESSAGE-BUFFER.
+      **********************************************************************
+      **    MESSAGE 031/019:
+      ** ENTER DATA AND PRESS 'ENTER' KEY
+      **********************************************************************
+           MOVE  31            TO CATREAD-MSG-SET.
+           MOVE  19            TO CATREAD-MSG-NUM.
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+           MOVE USERNAME       TO USER-BUF.
+           MOVE GRPNAME        TO GROUP-BUF.
+           MOVE ACCTNAME       TO ACCT-BUF.
+           MOVE TERMNUM        TO TNUM.
+           MOVE TNUM           TO TNUM-BUF.
+
+           ACCEPT TIME-BUFF    FROM TIME.
+           MOVE TIME-HM        TO TIME-BUF TIME-INIT.
+           MOVE ":"            TO COLON-1 COLON-2.
+           MOVE TIME-HRS       TO C-HH.
+           MOVE TIME-MIN       TO C-MN.
+           MOVE TIME-SEC       TO C-SC.
+
+           MOVE CNUM-BUF       TO FROM-CC-BUF.
+           ACCEPT CUR-DATE-WA  FROM DATE.
+           MOVE "20"           TO CUR-DATE-CC.
+           IF CUR-DATE-YY > "70"
+               MOVE "19"       TO CUR-DATE-CC.
+           MOVE "/"            TO D-BUF-S1 D-BUF-S2 SLASH-1 SLASH-2.
+           MOVE CUR-DATE-YY    TO D-BUF-YY C-YY.
+           MOVE CUR-DATE-MM    TO D-BUF-MD C-MM.
+           MOVE CUR-DATE-DD    TO D-BUF-DM C-DD.
+           IF DATE-FLAG = 3
+               MOVE CUR-DATE-MM TO D-BUF-DM C-DD
+               MOVE CUR-DATE-DD TO D-BUF-MD C-MM.
+           MOVE CUR-DATE-CC    TO DATE-INIT-CC.
+           MOVE CUR-DATE-YY    TO DATE-INIT-YY.
+           MOVE CUR-DATE-MM    TO DATE-INIT-MM.
+           MOVE CUR-DATE-DD    TO DATE-INIT-DD.
+           MOVE CD-YY-2        TO SUB1.
+           ADD 1               TO SUB1.
+      *------- 01/04/2010:  UPDATED WORKORDER LETTER SUFFIX LOGIC.
+      **** MOVE YEARC (SUB1)   TO WO-BUF-YR.
+           CALL "CMMISYR" USING MMIS-LETTER.
+           MOVE MMIS-LETTER    TO WO-BUF-YR.
+      *-------
+           MOVE MESSAGE-BUFFER TO CMDMSG.
+
+       61-SHOWFORM.
+           MOVE SCREEN-DATA    TO DISPLAY-REC.
+           MOVE "00"           TO SCREEN-STATUS.
+
+           WRITE DISPLAY-REC   FORMAT IS SCREEN-NAME
+                               INDIC ARE SCREEN-INDICATORS.
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN WRITE ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           READ  DISPLAY-FILE  FORMAT IS SCREEN-NAME
+                               INDIC ARE SCREEN-INDICATORS
+           IF SCREEN-STATUS NOT = "00"
+               DISPLAY "SCREEN READ ERROR.  SCREEN-STATUS IS "
+                               SCREEN-STATUS
+               GO TO END-OF-JOB.
+
+           MOVE DISPLAY-REC    TO SCREEN-DATA.
+           MOVE ALL B"0"       TO SCREEN-INDICATORS.
+
+           IF KEY-HIT = 1 OR 3
+               GO TO END-OF-JOB.
+
+           IF KEY-HIT = 7
+               MOVE SPACES     TO SCREEN-DATA
+               GO TO 6-MAIN.
+
+           MOVE SPACES         TO MESSAGE-BUFFER.
+
+           IF FROM-CC-BUF = "NEWS" OR "9999" OR SPACES
+      **********************************************************************
+      **    MESSAGE 035/047:
+      ** INVALID CLOCK CARD NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  47        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE FROM-CC-BUF    TO PERCCNUM OF PER-PERSONNEL.
+           READ PER-PERSONNEL  INTO WO-PERS-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+      **********************************************************************
+      **    MESSAGE 035/047:
+      ** INVALID CLOCK CARD NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  47        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "PER-PERSONNEL" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 3          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE PER-EMP-NAME   TO CNAM-BUF.
+           MOVE PER-PWORD      TO PWORD-BUFFER.
+
+           IF CNUM-BUF = SPACES
+               MOVE FROM-CC-BUF TO CNUM-BUF.
+
+           IF TO-CC-DL = SPACES AND WO-BUF-NUM = SPACES
+      **********************************************************************
+      **    MESSAGE 031/003:
+      ** EITHER CLOCK CARD OR W/O NUMBER - NOT BOTH
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE   3        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF TO-CC-DL NOT = SPACES AND WO-BUF-NUM NOT = SPACES
+      **********************************************************************
+      **    MESSAGE 031/003:
+      ** EITHER CLOCK CARD OR W/O NUMBER - NOT BOTH
+      **********************************************************************
+               MOVE  31        TO CATREAD-MSG-SET
+               MOVE   3        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF TO-CC-DL = SPACES
+               GO TO WO-BUF-NUM-READ.
+
+           IF TCS1 = SPACE
+               PERFORM TCS-LEFT-JUSTIFY UNTIL TCS1 NOT = SPACE.
+
+           IF TO-CC-BUF = "NEWS" OR "9999"
+      **********************************************************************
+      **    MESSAGE 035/047:
+      ** INVALID CLOCK CARD NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  47        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE "CC"           TO WO-CC-SW.
+           MOVE TO-CC-BUF      TO PERCCNUM OF PER-PERSONNEL.
+           READ PER-PERSONNEL  INTO WO-PERS-DATA
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+               MOVE TO-CC-DL   TO NEWSKEY OF NEWS-TABLE
+               START NEWS-TABLE KEY = NEWSKEY OF NEWS-TABLE
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-START
+               IF FILE-STAT NOT = "00"
+      **********************************************************************
+      **    MESSAGE 035/047:
+      ** INVALID CLOCK CARD NUMBER
+      **********************************************************************
+                   MOVE  35    TO CATREAD-MSG-SET
+                   MOVE  47    TO CATREAD-MSG-NUM
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   MOVE 5      TO FIELD-NUMBER
+                   PERFORM 65-ERROR
+                   GO TO 61-SHOWFORM
+               ELSE
+                   MOVE  "X"   TO DLIST-SW
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "PER-PERSONNEL" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 5          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF PPS-SW = 1
+               IF PPS-REPEATER = 0
+                   CALL "TPERPASS" USING CNUM-BUF
+                                         CNAM-BUF
+                                         PWORD-BUFFER
+                                         PWORD-SWITCH
+                   IF PWORD-SWITCH = "N"
+                       GO TO 6-MAIN
+                   ELSE
+                       MOVE 1  TO PPS-REPEATER
+                       MOVE "IMESSAGE" TO SCREEN-NAME.
+
+       WO-BUF-NUM-READ.
+           IF WO-BUF-NUM = SPACES
+               GO TO MESSAGE-BUF-READ.
+
+           MOVE TO-WO-BUF      TO WO-BUFFER.
+           MOVE "WO"           TO WO-CC-SW.
+           MOVE "  "           TO RETURN-COD.
+           CALL "TALWONO"      USING WO-BUFFER RETURN-COD.
+           IF RETURN-COD = "1 "
+      **********************************************************************
+      **    MESSAGE 035/040:
+      ** INVALID WORKORDER NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  40        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE WO-BUFFER  TO MSG-FLD
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE WO-BUFFER      TO TO-WO-BUF.
+           MOVE TO-WO-BUF      TO WONUM OF WO-NUMBER.
+           READ WO-NUMBER      INTO WO-BUFFER
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT-1 = "2"
+      **********************************************************************
+      **    MESSAGE 035/040:
+      ** INVALID WORKORDER NUMBER
+      **********************************************************************
+               MOVE  35        TO CATREAD-MSG-SET
+               MOVE  40        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM
+           ELSE
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-NUMBER" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 6          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       MESSAGE-BUF-READ.
+           IF MESSAGE-BUF = SPACES
+      **********************************************************************
+      **    MESSAGE 039/018:
+      ** MESSAGE IS REQUIRED
+      **********************************************************************
+               MOVE  39        TO CATREAD-MSG-SET
+               MOVE  18        TO CATREAD-MSG-NUM
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE 7          TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       PRINT-FUNCTION.
+      *    MOVE 0              TO OVRPRTF-TOFILE-NUM.
+           MOVE "P "           TO OVRPRTF-TOFILE-NUM-X.
+           IF DLIST-SW NOT = SPACE
+               MOVE " "        TO PRINT-BUF.
+
+           IF PRINT-BUF NOT = SPACE
+               MOVE "P"        TO PRINT-BUF.
+
+           IF WO-CC-SW = "CC" AND PRINT-BUF = "P"
+               MOVE 0          TO PRINT-BUF-V-9
+               MOVE PER-MAINT-ZONE TO ZONEKEY OF ZONE-PRINTER
+               READ ZONE-PRINTER INTO ZONE-PRT-BUFFER
+                   INVALID KEY MOVE FILE-STAT TO FILE-STAT
+               END-READ
+               IF FILE-STAT NOT = "00"
+      *            MOVE 0      TO OVRPRTF-TOFILE-NUM
+                   MOVE "P "   TO OVRPRTF-TOFILE-NUM-X
+               ELSE
+                   MOVE PRINT-BUF-V-9 TO OVRPRTF-TOFILE-NUM
+           ELSE
+               GO TO CONTINUE-PROC.
+
+           IF OVRPRTF-TOFILE-NUM NOT NUMERIC
+      *        MOVE 0          TO OVRPRTF-TOFILE-NUM.
+               MOVE "P "       TO OVRPRTF-TOFILE-NUM-X.
+
+           COPY OVRPFCALL      IN COPYLIB.
+
+           IF PRINT-BUF = "P"
+               OPEN OUTPUT     CH-PRINT-FILE
+               PERFORM PRINT-LOOP
+               CLOSE CH-PRINT-FILE
+               GO TO 6-MAIN.
+
+       CONTINUE-PROC.
+           IF DLIST-SW = "X"
+               PERFORM GET-DISTRIBUTION
+                               THRU GD-EXIT
+               GO TO 6-MAIN.
+
+           MOVE FROM-CC-BUF    TO FROM-CC.
+           MOVE FROM-SIGNON-BUF TO FROM-SIGNON.
+           MOVE TO-CC-BUF      TO TO-CC.
+           MOVE TO-WO-BUF      TO TO-WO.
+           MOVE SPACES         TO DEL-DATE.
+           IF TO-CC = SPACES
+               MOVE "9999"     TO TO-CC
+           ELSE
+               MOVE "999999M   " TO TO-WO.
+           MOVE MESSAGE-BUF    TO MESSAGES-1-5.
+           CALL "TUPDATEM"     USING MESSAGE-DATA-BUFF
+                               UPDATE-SW
+                               UPDATE-ERROR.
+           IF UPDATE-ERROR NOT = SPACES
+               MOVE UPDATE-ERROR TO MESSAGE-BUFFER
+               MOVE 12         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF PRINT-BUF = "P"
+               PERFORM 62-PRINT-WO.
+
+           GO TO 6-MAIN.
+
+       62-PRINT-WO.
+           MOVE TO-WO-BUF      TO WONUM OF WO-BASIC.
+           START WO-BASIC      KEY = WONUM OF WO-BASIC
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "START   " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 12         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           READ WO-BASIC       NEXT INTO WO-BASIC-DATA
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 12         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           IF TO-WO-BUF NOT = WO-NUM
+               MOVE FILE-STAT  TO CON-WORD
+               MOVE "READ    " TO DB-FUNC
+               MOVE "WO-BASIC" TO DB-FILE
+               MOVE DB-ERROR   TO MESSAGE-BUFFER
+               MOVE 12         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+           MOVE "6"            TO RETURN-BYTE.
+           CALL "TPRINTWO"     USING WO-BASIC-DATA
+                               DBPARAMETERS
+                               MESSAGES-1-5.
+
+       PRINT-LOOP.
+           STRING "        DATE:  " C-DATE "               "
+                  "                    TIME:  " C-TIME
+                  DELIMITED    BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC     AFTER ADVANCING 4.
+
+           MOVE ALL "*"        TO PRINT-REC.
+           WRITE PRINT-REC     AFTER ADVANCING 2.
+
+           STRING "*****                    MMIS ELECTRONIC"
+                  " MESSAGE SYSTEM                   ******"
+                  DELIMITED    BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE ALL "*"        TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE BLANK-LINE     TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING
+               "**  MESSAGE SENT ON:    " DATE-BUF " AT:  " TIME-BUF
+               "                                    **"
+               DELIMITED       BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE BLANK-LINE     TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           IF WO-CC-SW = "CC"
+               MOVE "CLOCK CARD" TO CCWO-LIT
+               MOVE TO-CC-BUF    TO CCWO-BUF
+           ELSE
+               MOVE "WORKORDER " TO CCWO-LIT
+               MOVE TO-WO-BUF    TO CCWO-BUF.
+
+           STRING "**  MESSAGE SENT TO:    " CCWO-LIT " " CCWO-BUF
+               "                                 **"
+                  DELIMITED    BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE BLANK-LINE     TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**  MESSAGE SENT FROM:  " FROM-CC-BUF
+                  " " FROM-SIGNON-BUF
+               "                     **"
+                  DELIMITED    BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE BLANK-LINE     TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**  MESSAGE:                            "
+                  "                                      **"
+                  DELIMITED    BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE BLANK-LINE     TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**   " MESSAGE-1-BUF
+               "   **"
+               DELIMITED       BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**   " MESSAGE-2-BUF
+               "   **"
+               DELIMITED       BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**   " MESSAGE-3-BUF
+               "   **"
+               DELIMITED       BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**   " MESSAGE-4-BUF
+               "   **"
+               DELIMITED       BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           STRING "**   " MESSAGE-5-BUF
+               "   **"
+               DELIMITED       BY SIZE INTO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE BLANK-LINE     TO PRINT-REC.
+           WRITE PRINT-REC.
+
+           MOVE ALL "*"        TO PRINT-REC.
+           WRITE PRINT-REC.
+
+       GET-DISTRIBUTION.
+           MOVE TO-CC-DL       TO NEWSKEY OF NEWS-TABLE.
+           START NEWS-TABLE    KEY = NEWSKEY OF NEWS-TABLE
+               INVALID KEY     MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO GD-EXIT.
+
+       DBGET-DLIST.
+           READ NEWS-TABLE     NEXT RECORD INTO DIST-TAB
+               AT END          MOVE FILE-STAT TO FILE-STAT.
+           IF FILE-STAT NOT = "00"
+               GO TO GD-EXIT.
+
+           IF TO-CC-DL NOT = DIST-KEY
+               GO TO GD-EXIT.
+
+           IF DIST-CC-NUM NOT = "9999"
+               PERFORM WRITE-RECORD.
+
+           GO TO DBGET-DLIST.
+
+       GD-EXIT.                EXIT.
+
+       WRITE-RECORD.
+           MOVE FROM-CC-BUF    TO FROM-CC.
+           MOVE FROM-SIGNON-BUF TO FROM-SIGNON.
+           MOVE DIST-CC-NUM    TO TO-CC.
+           MOVE SPACES         TO DEL-DATE.
+           MOVE "999999M   "   TO TO-WO.
+           MOVE MESSAGE-BUF    TO MESSAGES-1-5.
+           CALL "TUPDATEM"     USING MESSAGE-DATA-BUFF
+                               UPDATE-SW
+                               UPDATE-ERROR.
+           IF UPDATE-ERROR NOT = SPACES
+               MOVE UPDATE-ERROR TO MESSAGE-BUFFER
+               MOVE 12         TO FIELD-NUMBER
+               PERFORM 65-ERROR
+               GO TO 61-SHOWFORM.
+
+       TCS-LEFT-JUSTIFY.
+           MOVE TCS2           TO TCS1.
+           MOVE TCS3           TO TCS2.
+           MOVE TCS4           TO TCS3.
+           MOVE TCS5           TO TCS4.
+           MOVE TCS6           TO TCS5.
+           MOVE SPACE          TO TCS6.
+
+       65-ERROR.
+           MOVE MESSAGE-BUFFER TO ERRMSG.
+           MOVE TRUE-VAL       TO IND (FIELD-NUMBER) IND (99).
+
+       END-OF-JOB.
+      *    IF OVRPRTF-TOFILE-NUM > 0
+      *        MOVE "DLTOVR FILE(MCPRT)" TO OVRPRTF-PARM1
+      *        CALL "QCMDEXC"  USING OVRPRTF-PARM1, OVRPRTF-PARM2.
+           IF OVRPRTF-TOFILE-NUM-X = "P "
+               NEXT SENTENCE
+           ELSE
+           IF OVRPRTF-TOFILE-NUM = 0
+               NEXT SENTENCE
+           ELSE
+           MOVE "DLTOVR FILE(MCPRT)" TO OVRPRTF-PARM1
+           CALL "QCMDEXC"  USING OVRPRTF-PARM1, OVRPRTF-PARM2.
+           CLOSE               DISPLAY-FILE.
+           CLOSE               PER-PERSONNEL.
+           CLOSE               WO-NUMBER.
+           CLOSE               WO-BASIC.
+           CLOSE               ZONE-PRINTER.
+           CLOSE               NEWS-TABLE.
+
+           IF CLEAR-SW = "S"
+               MOVE SPACES     TO CNUM-BUF.
+           GOBACK.
+
+       999-CATREAD.
+           MOVE SPACES         TO MESSAGE-BUFFER.
+           CALL "CCATREAD"     USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+
+       999-CATREAD-EXIT.       EXIT.
+

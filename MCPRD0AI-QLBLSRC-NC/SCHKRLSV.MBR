@@ -1,0 +1,345 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    SCHKRLSV.
+       AUTHOR.        CA YODER.
+       DATE-WRITTEN.  SEPTEMBER 1999.
+       INSTALLATION.  THE GOODYEAR TIRE & RUBBER CO.
+
+      *****************************************************************
+      *                                                               *
+      *   S C H K R L S V                                             *
+      *                                                               *
+      *****************************************************************
+      *                                                               *
+      *   THIS SUBROUTINE ADDS UP THE VALUE OF ITEMS ON A SHIPPING    *
+      *   RELEASE, THEN COMPARES THAT VALUE TO THE MINIMUM ORDER      *
+      *   VALUE FOR THE VENDOR.                                       *
+      *                                                               *
+      *   IF THE RELEASE DOES NOT MEET THE MINIMUM ORDER VALUE & IT   *
+      *   IS PAST THE # OF DAYS SPECIFIED IN PLANT STARTUP, THE       *
+      *   PARM-MIN-ORD-SW IS SET TO "N".                              *
+      *                                                               *
+      *   IF THE MINIMUM ORDER IS NOT MET, BUT IT IS NOT YET PAST THE *
+      *   # OF DAYS, THE SWITCH IS SET TO "S" (SKIP).                 *
+      *                                                               *
+      *****************************************************************
+
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.  IBM-AS400.
+       OBJECT-COMPUTER.  IBM-AS400.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DVENDOR-I
+                  ASSIGN TO DATABASE-MCFLCS0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPORECD-I
+                  ASSIGN TO DATABASE-MCFLCS0901
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DPOITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1002
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DSHIPREL-I
+                  ASSIGN TO DATABASE-MCFLCS2902
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-I-REC.
+           COPY DDS-MCRPCS0500 OF MCFLCS0501.
+
+       FD  DVENDOR-I
+           LABEL RECORDS ARE STANDARD.
+       01  DVENDOR-REC-I.
+           COPY DDS-MCRPCS0700 OF MCFLCS0701.
+
+       FD  DPORECD-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPORECD-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS0901.
+
+       FD  DPOITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DPOITEM-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS1002.
+
+       FD  DSHIPREL-I
+           LABEL RECORDS ARE STANDARD.
+       01  DSHIPREL-REC-I.
+           COPY DDS-ALL-FORMATS  OF MCFLCS2902.
+
+       WORKING-STORAGE SECTION.
+
+       77  ERR-SW                       PIC X     VALUE "N".
+       77  CONTINUE-SW                  PIC X     VALUE "N".
+       77  HOLD-REL-VAL                 PIC 9(11)V9(4).
+       77  NUM-DAYS                     PIC 9(3).
+       77  HOLD-REL-DATE                PIC X(8)  VALUE SPACES.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X  VALUE "0".
+           05  FILE-STATUS-2            PIC X  VALUE "0".
+
+      **************************************************************
+      **      S W I T C H E S  &  H O L D   A R E A S             **
+      **************************************************************
+
+       01  DSHIPREL-EOF-SW           PIC X    VALUE "N".
+
+      **************************************************************
+      **          D A T A B A S E   B U F F E R S                 **
+      **************************************************************
+
+       COPY MPLT0    IN COPYLIB.
+       COPY MPLTPODL IN COPYLIB.
+
+       COPY DVENDOR IN COPYLIB.
+
+       COPY DPORECD IN COPYLIB.
+
+       COPY DPOITEM IN COPYLIB.
+
+       COPY DSHIPREL IN COPYLIB.
+
+      *--------- PARAMETERS FOR "JULGREG" ROUTINE.
+       01  GREGDATE.
+           05  GREGDATE-CC      PIC X(2).
+           05  GREGDATE-YMD.
+               10  GREGDATE-YY  PIC X(2).
+               10  FILLER       PIC X(4).
+       01  JULDATE.
+           05  JULYEAR          PIC 9(4).
+           05  JULDAY           PIC 9(3).
+       01  DAYDIGIT             PIC X(1).
+       01  LEAPYEAR             PIC X(1).
+
+       01  TODAYS-JULIAN        PIC 9(4) COMP-4 VALUE ZEROS.
+
+      **************************************************************
+      **          U T I L I T Y   A R E A                         **
+      **************************************************************
+
+       COPY SCURCONV IN COPYLIB.
+
+       COPY TBLOWUP  IN COPYLIB.
+
+       COPY DBSTAT   IN COPYLIB.
+
+       01  BASE                       PIC X(10).
+
+       01  ARG-VALUES.
+           05  PO-ARG.
+               10  FILLER             PIC X     VALUE "P".
+               10  PO-NUM             PIC X(7).
+               10  FILLER             PIC X(6)  VALUE "999000".
+           05  VEN-ARG                PIC X(10) VALUE SPACES.
+           05  MPLTINFO-ARG           PIC X(4).
+
+
+       LINKAGE SECTION.
+
+       01  PARAMETER-VALUES.
+           05  PARM-PO-NUM            PIC X(7).
+           05  PARM-MIN-ORD-SW        PIC X.
+           05  PARM-VENDOR-CODE       PIC X(10).
+           05  PARM-BUYER-CODE        PIC X(4).
+           05  PARM-MIN-ORD           PIC 9(5).
+           05  PARM-REL-VAL           PIC 9(5)V9(4).
+
+      *********************************************************
+      **         P R O C E D U R E   D I V I S I O N         **
+      *********************************************************
+
+       PROCEDURE DIVISION USING  PARAMETER-VALUES.
+
+       0-BEGIN.
+           PERFORM 1-HSK.
+           IF CONTINUE-SW = "Y"
+               PERFORM 6-MAIN.
+           PERFORM 2-EOJ.
+           GOBACK.
+
+       1-HSK.
+           OPEN INPUT MPLTINFO-I  DVENDOR-I   DPOITEM-I
+                      DPORECD-I   DSHIPREL-I.
+
+           PERFORM 999-READ-MPLTINFO.
+
+           MOVE 0                TO  HOLD-REL-VAL.
+           MOVE "N"              TO  ERR-SW
+                                     DSHIPREL-EOF-SW.
+           MOVE "Y"              TO  PARM-MIN-ORD-SW.
+           MOVE SPACES           TO  HOLD-REL-DATE.
+           MOVE PARM-PO-NUM TO PO-NUM.
+           PERFORM 10-CALCULATE-DATE.
+
+       10-CALCULATE-DATE.
+           ACCEPT GREGDATE-YMD FROM DATE.
+           IF GREGDATE-YY > "70"
+               MOVE "19"         TO  GREGDATE-CC
+           ELSE
+               MOVE "20"         TO  GREGDATE-CC.
+           MOVE SPACES           TO  JULDATE.
+           CALL "JULGREG" USING GREGDATE JULDATE DAYDIGIT LEAPYEAR.
+           MOVE JULDAY           TO  TODAYS-JULIAN.
+           IF TODAYS-JULIAN < NUM-DAYS
+               PERFORM UNTIL TODAYS-JULIAN > NUM-DAYS
+                   ADD 365       TO  TODAYS-JULIAN
+                   SUBTRACT 1  FROM  JULYEAR
+               END-PERFORM.
+           SUBTRACT NUM-DAYS   FROM  TODAYS-JULIAN.
+           MOVE TODAYS-JULIAN    TO  JULDAY.
+           MOVE SPACES           TO  GREGDATE.
+           CALL "JULGREG" USING GREGDATE JULDATE DAYDIGIT LEAPYEAR.
+
+       2-EOJ.
+           CLOSE      MPLTINFO-I  DVENDOR-I   DPOITEM-I
+                      DPORECD-I   DSHIPREL-I.
+
+       6-MAIN.
+           PERFORM 999-READ-DPORECD.
+           IF ERR-SW = "N"
+               MOVE PO-VEN-CODE     TO  VEN-ARG
+               PERFORM 999-READ-DVENDOR.
+
+           IF ERR-SW = "N"
+               PERFORM 999-START-DSHIPREL
+               PERFORM 60-FIND-DSHIPREL
+                   UNTIL DSHIPREL-EOF-SW = "Y"
+                      OR ERR-SW = "Y".
+
+           IF ERR-SW = "N"
+               IF PO-CURRENCY-CODE > SPACES
+                   PERFORM 61-CONVERT-CURRENCY
+               END-IF
+               IF VEN-MIN-ORDER NOT NUMERIC
+                   MOVE 0       TO  VEN-MIN-ORDER
+               END-IF
+               IF VEN-MIN-ORDER > HOLD-REL-VAL
+                   IF HOLD-REL-DATE <= GREGDATE
+                       MOVE "N" TO  PARM-MIN-ORD-SW
+                       MOVE VEN-VEN-CODE    TO  PARM-VENDOR-CODE
+                       MOVE PO-BUYER-CODE   TO  PARM-BUYER-CODE
+                       MOVE VEN-MIN-ORDER   TO  PARM-MIN-ORD
+                       MOVE HOLD-REL-VAL    TO  PARM-REL-VAL
+                   ELSE
+                       MOVE "S" TO  PARM-MIN-ORD-SW.
+
+       60-FIND-DSHIPREL.
+           PERFORM 999-READ-NEXT-DSHIPREL.
+
+           IF DSHIPREL-EOF-SW = "N"
+               IF DREL-NUMBER = PARM-PO-NUM
+                   IF DREL-SEQ-NO = 0
+                       IF HOLD-REL-DATE = SPACES OR
+                          DREL-DATE-CN < HOLD-REL-DATE
+                           MOVE DREL-DATE-CN TO HOLD-REL-DATE
+                       END-IF
+                       PERFORM 999-READ-DPOITEM
+                       IF ERR-SW = "N"
+                           COMPUTE HOLD-REL-VAL = HOLD-REL-VAL +
+                                 (DREL-QUANTITY * ITM-UNIT-PRICE).
+
+       61-CONVERT-CURRENCY.
+           MOVE PO-CURRENCY-CODE     TO  SCURCONV-CUR-CODE.
+           MOVE HOLD-REL-VAL         TO  SCURCONV-PRICE-DEC.
+           MOVE ZEROS                TO  SCURCONV-PRICE-WHL.
+           CALL "SCURCONV" USING BASE,
+                                 SCURCONV-PARMS,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG-1 = SPACES
+               MOVE SCURCONV-PRICE-DEC  TO  HOLD-REL-VAL.
+
+      ************************************************************
+      **                 F I L E   R E A D S                    **
+      ************************************************************
+
+       999-READ-MPLTINFO.
+           MOVE "PODL"                     TO  MPLTINFO-ARG.
+           MOVE MPLTINFO-ARG TO PLTINFOKEY OF MPLTINFO-I-REC.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "00"
+               MOVE MPLTINFO-CHECK-RLS-VAL TO  CONTINUE-SW
+               IF MPLTINFO-RLS-VAL-DAYS NUMERIC
+                   MOVE MPLTINFO-RLS-VAL-DAYS
+                                           TO  NUM-DAYS
+               ELSE
+                   MOVE 0                  TO  NUM-DAYS
+           ELSE
+               MOVE "N"                    TO  CONTINUE-SW
+               MOVE 0                      TO  NUM-DAYS.
+
+           MOVE HIGH-VALUES TO PLTINFOKEY OF MPLTINFO-I-REC.
+           START MPLTINFO-I KEY > PLTINFOKEY OF MPLTINFO-I-REC
+               INVALID KEY MOVE "00"   TO  FILE-STATUS.
+
+       999-START-DSHIPREL.
+           MOVE LOW-VALUES TO RELNUM OF DSHIPREL-REC-I
+                              RELITEMNO OF DSHIPREL-REC-I.
+           START DSHIPREL-I KEY > EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY MOVE "Y" TO DSHIPREL-EOF-SW.
+
+       999-READ-NEXT-DSHIPREL.
+           READ DSHIPREL-I NEXT INTO BUF-DSHIPREL
+               AT END MOVE "Y" TO DSHIPREL-EOF-SW.
+
+       999-READ-DPORECD.
+           MOVE PO-ARG TO PORCVNO OF DPORECD-REC-I.
+           START DPORECD-I KEY = PORCVNO OF DPORECD-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ERR-SW
+           ELSE
+               READ DPORECD-I NEXT INTO BUF-DPORECD
+                   AT END MOVE FILE-STATUS TO FILE-STATUS.
+
+       999-READ-DVENDOR.
+           MOVE VEN-ARG TO VENCDE OF DVENDOR-REC-I.
+           MOVE 10      TO VENITMNO OF DVENDOR-REC-I.
+           READ DVENDOR-I INTO BUF-DVENDOR
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ERR-SW.
+
+       999-READ-DPOITEM.
+           MOVE PO-ARG TO PORCVNO OF DPOITEM-REC-I.
+           MOVE DREL-ITEM-NO TO ITEMNO OF DPOITEM-REC-I.
+           READ DPOITEM-I INTO BUF-DPOITEM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "Y" TO ERR-SW.
+

@@ -1,0 +1,2019 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    CMANREQ.
+       AUTHOR.        C.I.HILLES/JIM COFFMAN (MAINTAINER).
+      *INSTALLATION.  GOODYEAR TIRE & RUBBER CO.
+      *DATE-WRITTEN.  NOVEMBER, 1983.
+      *REMARKS.
+      *D          THIS SUBPROG IS CALLED FROM MMIS PROGRAMS TO
+      *D          CREATE REQUISITIONS FOR MMIS WORK ORDERS.
+      *D          IT CREATES THE REQ IF IT DOESNT EXIST, OR MODIFIES
+      *D          THE REQ IF IT ALREADY EXISTS
+      *
+      *           THE REQ-STATUS FIELD TELLS WHAT TYPE OF A REQ WE ARE
+      *           DEALING WITH:
+      *           "SS" - STOREROOM
+      *           "SN" - CODED NON-STOREROOM
+      *           "NM" - NON-CODED.
+      *
+      *C
+      *C   05/05/94  JE COFFMAN  WRITTEN REQUEST 94-001/SLS REQ 6487
+      *C     ADDED THE ABILITY TO ALLOW 'SS' STATUS REQUISITIONS
+      *C     THAT HAVE THE AUTHORIZATION FLAG SET VIA MP1 TO BE
+      *C     HANDLED.
+      *C
+      *C   MAY 1995 JE COFFMAN  WRITTEN REQUEST 93-032/SLS REQ 6563
+      *C     ADDED THE LOGIC TO CAPTURE ALL REQUISITIONS THAT ARE
+      *C     ADDED OR UPDATED FOR AKRON PLANTS SO THAT WE CAN
+      *C     TRANSFER THE DATA AUTOMATICALLY TO CORPORATE AND
+      *C     ELIMINATE DUPLICATION OF INPUT.
+      *C
+      *C   NOV 1995 JE COFFMAN
+      *C     WHEN KELLY PLANTS WENT TO PRAPS REQUISITIONING ON 11/27/95
+      *C     SOME CODE WAS ADDED TO NOT WRITE AN MREQFILE RECORD (MA1)
+      *C     AND TO FORCE MMIS-GENERATED REQUISITIONS TO LOOK LIKE THEY
+      *C     WENT STRAIGHT TO PURCHASING.
+      *C
+      *C   NOV 1996  CA YODER   REQ #96-027
+      *C     ADDED CURRENCY CODE AND SECOND UNIT COST FIELDS TO DREQITM.
+      *C
+      *C   OCT 1997  JE COFFMAN
+      *C     CHANGED THE LOGIC FOR COPYING A REQUISITION WITH A LONG
+      *C     DESCRIPTION.
+      *C
+      *C   13FEB1998 WL MCINTYRE  REQ #98-002
+      *C     ADD LOGIC TO RETAIN TAX-CODE FROM DREQITM BEFORE
+      *C     DELETE IN ORDER TO INCLUDE ON REINSERT TO DREQITM.
+      *C
+      *C   OCT 1999  JE COFFMAN
+      *C     ADDED ABILITY TO WRITE A REQUISITION RECORD TO MCORPREQ
+      *C     FOR R/3. THIS SHOULD ONLY OCCUR WHEN THE ONLY APPROVER
+      *C     IN THE PATH IS ALSO THE ORIGINATOR OF THE REQUISITION.
+      *C
+      *C   JUN 2000  JE COFFMAN
+      *C     REPAIRED A PROBLEM WHEREBY THE BUDGET NUMBER WOULD GET
+      *C     WIPED OUT WHEN A MODIFY FUNCTION WAS OCCURRING.
+      *C
+      *C   OCT 2001  CA YODER
+      *C     COMMENTED OUT KELLY-SPECIFIC LOGIC CAUSING REQS TO
+      *C     GO STRAIGHT TO PURCHASING.
+      *C
+      *C   APR 2002  CA YODER      (R3 REQUEST)
+      *C     MODIFIED SO THAT REQS WITH REQ-AUTH-CODE-FLAG SET
+      *C     TO "X" WOULD GO TO AN APPROVAL PATH.
+      *C
+      *C   MAR 2003  CA YODER
+      *C     UM-COMMENTED OUT KELLY-SPECIFIC LOGIC CAUSING REQS TO
+      *C     GO STRAIGHT TO PURCHASING FOR FAYETTEVILLE.  THEY ARE
+      *C     NOT ON R/3 YET, SO THE REQS STILL NEED TO GO TO
+      *C     PURCHASING.
+      *C
+      *C   MAY 2003  BE GEISER     (R3 REQUEST)
+      *C     ADD REQ SERVICE FLAG TO IDENTIFY SERVICE REQS. DEFAULT
+      *C     NEW REQ USERS TO NOT ACTIVE AT LEVEL 00, NOT ABLE TO
+      *C     INQUIRE ON ALL REQS AND NOT ABLE TO DISPLAY DOLLARS.
+      *C
+      *C   DEC 2003  BE GEISER
+      *C     COMMENTED OUT FAYETTEVILLE LOGIC FORCING REQS TO
+      *C     GO STRAIGHT TO PURCHASING NOW THAT THEY ARE ON SAP/R3.
+      *C
+      *C   JUL 2004  BE GEISER     (R3 REQUEST)
+      *C     MODIFIED SO THAT ALL REQS FOR SAP PLANTS ARE STATUS "NM".
+      *C
+      *C   MAR 2005  CA YODER      REQ #2005-60273
+      *C     CHANGED MSTORERM LOGIC TO NOT OVERWRITE REQUISITION UNIT
+      *C     OF MEASURE IF ONE WAS ALREADY PASSED FROM A CALLING
+      *C     PROGRAM.  ALSO, CHANGE UNIT PRICE TO BE EXPRESSED IN
+      *C     REQUISITION UNIT OF MEASURE.
+      *----------------------------------------------------------------
+      *  OCT 08, 2008    MJ BALSAMO   REQUEST# 2008-24220367-0001
+      *  UPDATE THE MMIS/CSIS REQUISITION SCREEN TO INCLUDE A REFERENCE
+      *  REQUISITION FIELD.
+      *----------------------------------------------------------------
+      *  MMM DD, CCYY    XXX01     XXXNAMEXXXX   REQUEST# 200?-99999
+      *  XXXXXXXXXXXXXXXXXXXXX MOD DESC XXXXXXXXXXXXXXXXXXXXXX
+      *----------------------------------------------------------------
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    IBM-AS400.
+       OBJECT-COMPUTER.    IBM-AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MCORPREQ-RQ-O
+               ASSIGN TO DATABASE-MCFLCS5701
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                   WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MSTORERM-CD-O
+               ASSIGN TO DATABASE-MCFLCS0201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MEMPL-EM-I
+               ASSIGN TO DATABASE-MCFLCS4201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MEMPL-EM-O
+               ASSIGN TO DATABASE-MCFLCS4201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQ-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2001
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-I
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-PK-O
+               ASSIGN TO DATABASE-MCFLCS0501
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQITM-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2201
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT MREQFILE-CD-O
+               ASSIGN TO DATABASE-MCFLCS2801
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQDESC-RQ-I
+               ASSIGN TO DATABASE-MCFLCS2301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQDESC-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQQUE-RQ-O
+               ASSIGN TO DATABASE-MCFLCS4401
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT PER-PERSON-PC-I
+               ASSIGN TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS FILE-STATUS.
+
+           SELECT DREQD-RQ-O
+               ASSIGN TO DATABASE-MCFLCS2101
+               ORGANIZATION IS INDEXED
+                 ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                 WITH DUPLICATES
+               FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+      *------ FD SECTION FOR IBM ONLY ------*
+       FD  MCORPREQ-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MCORPREQ-RQ-REC-O.
+           COPY DDS-MCRPCS5700 OF MCFLCS5701.
+
+       FD  MSTORERM-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-CD-REC-O.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  MEMPL-EM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MEMPL-EM-REC-I.
+           COPY DDS-MCRPCS4200  OF MCFLCS4201.
+
+       FD  MEMPL-EM-O
+           LABEL RECORDS ARE STANDARD.
+       01  MEMPL-EM-REC-O.
+           COPY DDS-MCRPCS4200  OF MCFLCS4201.
+
+       FD  MREQ-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQ-RQ-REC-O.
+           COPY DDS-MCRPCS2000  OF MCFLCS2001.
+
+       FD  MPLTINFO-PK-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  MPLTINFO-PK-O
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-PK-REC-O.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DREQITM-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQITM-RQ-REC-O.
+           COPY DDS-MCRPCS2200  OF MCFLCS2201.
+
+       FD  MREQFILE-CD-O
+           LABEL RECORDS ARE STANDARD.
+       01  MREQFILE-CD-REC-O.
+           COPY DDS-MCRPCS2800  OF MCFLCS2801.
+
+       FD  DREQDESC-RQ-I
+           LABEL RECORDS ARE STANDARD.
+       01  DREQDESC-RQ-REC-I.
+           COPY DDS-MCRPCS2300  OF MCFLCS2301.
+
+       FD  DREQDESC-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQDESC-RQ-REC-O.
+           COPY DDS-MCRPCS2300  OF MCFLCS2301.
+
+       FD  DREQQUE-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQQUE-RQ-REC-O.
+           COPY DDS-MCRPCS4400  OF MCFLCS4401.
+
+       FD  PER-PERSON-PC-I
+           LABEL RECORDS ARE STANDARD.
+       01  PER-PERSON-PC-REC-I.
+           COPY DDS-MCRPMM0300  OF MCFLMM0301.
+
+       FD  DREQD-RQ-O
+           LABEL RECORDS ARE STANDARD.
+       01  DREQD-RQ-REC-O.
+           COPY DDS-MCRPCS2100  OF MCFLCS2101.
+      *------ FD SECTION FOR IBM ONLY ------*
+       WORKING-STORAGE SECTION.
+       77  SAVE-COPIED-LINES             PIC 9(2).
+       77  SAVE-COPY-REQ-NUMBER          PIC X(12).
+       77  SAVE-GAS-EXPENSE-CLASS        PIC X(8).
+       77  SAVE-HOLD-STATUS-CODE         PIC X(2).
+       77  SAVE-PACD-SW                  PIC X.
+       77  SAVE-SYNR3-SW                 PIC X.
+       77  SAVE-TAX-CODE                 PIC X(2)  VALUE SPACES.
+       77  SUB1                          PIC S9(4) COMP-4 VALUE 0.
+       77  SUB2                          PIC S9(4) COMP-4 VALUE 1.
+       77  CONVERT-LINE-NO               PIC 9(2)  VALUE 0.
+       77  RE-QUE-FLAG                   PIC X(1).
+       77  HANDLE-BLOWUP-FLAG            PIC X(1)  VALUE "Y".
+
+       01  INDX                          PIC S9(3) VALUE +1.
+
+       01  ALPHABET-TABLE.
+           05  FIL PIC X(26) VALUE "ABCDEFGHIJKLMNOPQRSTUVWXYZ".
+       01  ALPHA-TABLE REDEFINES ALPHABET-TABLE.
+           05  ALPHA-TAB OCCURS 26 TIMES PIC X.
+
+       01  CUR-DATE.
+           05  YY                   PIC XX.
+           05  MM                   PIC XX.
+           05  DD                   PIC XX.
+
+      **************************************************************
+      **                                                          **
+      **            S U B P R O G R A M   A R E A S               **
+      **                                                          **
+      **************************************************************
+
+       COPY TSPLPRT    IN COPYLIB.
+       COPY TBLOWUP    IN COPYLIB.
+       COPY TDATECHK   IN COPYLIB.
+       COPY TLSHIFT    IN COPYLIB.
+       COPY SREQPRNT   IN COPYLIB.
+       COPY TUMCF      IN COPYLIB.
+       COPY CEARQPH    IN COPYLIB.
+       COPY CEAQUE     IN COPYLIB.
+       COPY CEAQNEXT   IN COPYLIB.
+       COPY CEAREQUE   IN COPYLIB.
+       COPY CATREAD    IN COPYLIB.
+       01  ALWO-RET-CODE                 PIC X(2) VALUE "00".
+
+      *------- PARMS FOR CALL TO "TPASSAPP.SOURCEW" - TO DETERMINE WHETHER
+      *------- A WORKORDER IS APPROVED.
+       01  APPROVAL-WORKAREA.
+           05  APPROVAL-WO               PIC X(10).
+           05  APPROVAL-STATUS           PIC X(1).
+
+
+      **************************************************************
+      **                                                          **
+      **            D A T A B A S E   W O R K                     **
+      **                                                          **
+      **************************************************************
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1             PIC X  VALUE "0".
+           05  FILE-STATUS-2             PIC X  VALUE "0".
+
+       01  BUILD-REQ.
+           05  FILLER                    PIC X(1)  VALUE "M".
+           05  BUILD-REQ-LAST            PIC X(6).
+
+       COPY DBSTAT     IN COPYLIB.
+
+       01  DSET-NAMES.
+           05  CDSET-NAME                PIC X(16) VALUE SPACES.
+           05  DSET-MSTORERM             PIC X(16) VALUE "MSTORERM;".
+           05  DSET-MREQ                 PIC X(16) VALUE "MREQ;".
+           05  DSET-DREQD                PIC X(16) VALUE "DREQD;".
+           05  DSET-DREQITM              PIC X(16) VALUE "DREQITM;".
+           05  DSET-DREQDESC             PIC X(16) VALUE "DREQDESC;".
+           05  DSET-DREQQUE              PIC X(16) VALUE "DREQQUE;".
+           05  DSET-MPLTINFO             PIC X(16) VALUE "MPLTINFO;".
+           05  DSET-MREQFILE             PIC X(16) VALUE "MREQFILE;".
+           05  DSET-MEMPL                PIC X(16) VALUE "MEMPL;".
+           05  DSET-PER-PERSONNEL   PIC X(16) VALUE "PER-PERSONNEL;".
+           05  DSET-MCORPREQ             PIC X(16) VALUE "MCORPREQ;".
+
+       01  MODE-AREA.
+           05  CMODE1                    PIC S9(4) COMP-4 VALUE 1.
+           05  CMODE2                    PIC S9(4) COMP-4 VALUE 2.
+           05  CMODE3                    PIC S9(4) COMP-4 VALUE 3.
+           05  CMODE4                    PIC S9(4) COMP-4 VALUE 4.
+           05  CMODE5                    PIC S9(4) COMP-4 VALUE 5.
+           05  CMODE6                    PIC S9(4) COMP-4 VALUE 6.
+           05  CMODE7                    PIC S9(4) COMP-4 VALUE 7.
+
+       01  MREQFILE-CHECK-KEY.
+           05  MREQFILE-CC               PIC X(7).
+           05  MREQFILE-LETTER           PIC X.
+
+       01 ARG-VALUES.
+           05  CODE-ARG                  PIC X(8)  VALUE SPACES.
+           05  PLT-ARG                   PIC X(4)  VALUE SPACES.
+           05  REQ-ARG                   PIC X(12) VALUE SPACES.
+           05  BUYER-ARG                 PIC X(4)  VALUE SPACES.
+           05  VEN-ARG                   PIC X(10) VALUE SPACES.
+           05  MVALIDPLT-ARG             PIC X(10) VALUE SPACES.
+           05  PO-ARG                    PIC X(14) VALUE SPACES.
+           05  DATE-ARG                  PIC X(6)  VALUE SPACES.
+           05  EMPL-ARG                  PIC X(4)  VALUE SPACES.
+           05  PER-CC-ARG                PIC X(4)  VALUE SPACES.
+
+      **************************************************************
+      **                                                          **
+      **           D A T A B A S E   B U F F E R S                **
+      **                                                          **
+      **************************************************************
+
+       COPY MCORPREQ   IN COPYLIB.
+       COPY MSTORERM   IN COPYLIB.
+       COPY MREQ       IN COPYLIB.
+       COPY MREQFILE   IN COPYLIB.
+       COPY DREQD      IN COPYLIB.
+       COPY DREQITM    IN COPYLIB.
+       COPY DREQQUE    IN COPYLIB.
+       COPY MPLTINFO   IN COPYLIB.
+      *COPY MPLT0      IN COPYLIB.
+      *COPY MPLTP01    IN COPYLIB.
+       COPY MPLTRQGB   IN COPYLIB.
+      *COPY MPLTPREQ   IN COPYLIB.
+      *COPY MPLTPOPT   IN COPYLIB.
+      *COPY MPLTPACD   IN COPYLIB.
+       COPY DREQDESC   IN COPYLIB.
+       COPY MEMPL      IN COPYLIB.
+
+       01  BUF-PER-PERSONNEL.            COPY MPERSONL IN COPYLIB.
+
+       01  WO-BUDGET                     PIC X(16).
+
+       01  WO-ECLASS                     PIC X(8).
+
+       01  BS-CODE                       PIC X(2).
+
+       01  BS-MESS                       PIC X(80).
+
+       01  BUFFLEN                       PIC S9(4) COMP-4.
+
+       01  DBPARAMETERS.                 COPY DBPARMS  IN COPYLIB.
+
+       01  RETURN-ERROR-B.
+           05 TEXT-B                     PIC X(70).
+           05 NUMB-B                     PIC X(8).
+
+       01  RETURN-CODE-B                 PIC 9(4).
+
+      *************************************
+      **                                 **
+      **  L I N K A G E   S E C T I O N  **
+      **                                 **
+      *************************************
+
+       LINKAGE SECTION.
+       01  CBASE                         PIC X(10).
+       01  BASE-MMISA                    PIC X(24).
+       01  BASE-BUDGET                   PIC X(24).
+       01  BASE-DUMMY                    PIC X(24).
+       01  MESSAGE-BUFFER.
+           05  MSG-TEXT.
+               10  MESSAGE-BUFFER-1      PIC X(1).
+               10  FILLER                PIC X(61).
+           05  MSG-FLD                   PIC X(14).
+       COPY CMANREQ    IN COPYLIB.
+       COPY REQGLOBS   IN COPYLIB.
+       COPY LANGSUB    IN COPYLIB.
+       COPY ESCNAME   IN COPYLIB.
+       COPY VCOMLINK   IN COPYLIB.
+       PROCEDURE DIVISION USING          CBASE,
+                                         BASE-MMISA,
+                                         BASE-BUDGET,
+                                         BASE-DUMMY,
+                                         MESSAGE-BUFFER,
+                                         CMR-CALL-MODE,
+                                         CMR-DATA,
+                                         CMR-DESC,
+                                         CMR-REMARKS,
+                                         CMR-RETURNED-DATA,
+                                         CMR-MISC-PARMS,
+                                         REQ-GLOBALS,
+                                         LANGUAGE-PARMS,
+                                         ESC-NAME,
+                                         VIEW-COMAREA.
+
+       0000-START.
+
+           PERFORM 1000-HOUSEKEEPING THRU 1010-H-X.
+           MOVE ZERO                     TO  SUB1.
+           PERFORM 6000-MAIN THRU 6990-MAIN-X.
+           PERFORM 9999-CLOSE-STUFF.
+           GOBACK.
+
+       1000-HOUSEKEEPING.
+           MOVE SPACES                   TO  SAVE-TAX-CODE.
+           MOVE 1                        TO  SUB1.
+           MOVE 0                        TO  SUB2.
+           PERFORM 9999-OPEN-STUFF.
+           MOVE "OK"                     TO  CMR-RETURN-STATUS.
+           MOVE CMR-UNAPP-FLAG           TO  RETURN-BYTE.
+           MOVE SPACES                   TO  EAQ-REASON-1,
+                                             EAQ-REASON-2,
+                                             SAVE-COPY-REQ-NUMBER.
+
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECK2" USING DATE-CHECK-AREA, LANGUAGE-PARMS.
+           IF CMR-QTY-R NOT NUMERIC
+               MOVE ZEROES               TO  CMR-QTY.
+
+      *------ MAKE SURE THE WORK ORDER IS ALIGNED.
+           CALL "TALWONO" USING CMR-WO-NUMBER, ALWO-RET-CODE.
+
+      *------ A PASSED CODE OF SPACES MEANS NON-CODED, SO WE SUBSTITUE
+      *------ OUR DUMMY NON-CODED "CODE"
+           IF CMR-CORP-CODE = SPACES
+               MOVE "NON-STR"            TO  CMR-CORP-CODE.
+           MOVE "Y"                      TO  SAVE-PACD-SW.
+           MOVE "PACD"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF GOOD-CALL
+               MOVE MPLTINFO-PACD-SW     TO  SAVE-PACD-SW.
+
+      *------ RETRIEVE SYNR3-SW TO SEE IF WE NEED TO PASS REQS THAT
+      *------ THE ONLY APPROVER IS ALSO THE ORIGINATOR.
+           MOVE " "                      TO  SAVE-SYNR3-SW.
+           MOVE "PREQ"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF GOOD-CALL
+               MOVE MPLTINFO-REQ-SYNR3-SW TO SAVE-SYNR3-SW.
+
+       1010-H-X.
+           EXIT.
+
+       2100-BLOWUP.
+           MOVE "CMANREQ"                TO  BU-PGM-NAME.
+           MOVE CMR-WO-NUMBER            TO  BU-DISPLAY-FLD (1).
+           MOVE CMR-CORP-CODE            TO  BU-DISPLAY-FLD (2).
+           MOVE CMR-REQ-NUMBER           TO  BU-DISPLAY-FLD (3).
+           MOVE CDSET-NAME               TO  BU-DISPLAY-FLD (5).
+           CALL "TBLOWUP" USING CBASE, BU-PGM-NAME, STATUS-AREA,
+             VIEW-COMAREA, FILE-STATUS, BU-DISPLAY-MSG,
+           BU-DISPLAY-FLDS.
+
+       3000-READ-MSTORERM.
+           PERFORM 9999-GETKEY-MSTORERM-CD-O.
+           IF GOOD-CALL
+      *------------ DON'T OVERWRITE UM IF ALREADY PASSED TO PROGRAM.
+               IF CMR-UM = SPACES
+                   MOVE STR-UM           TO  CMR-UM
+               END-IF
+               PERFORM 7150-MOVE-COST.
+       3010-RM-X.
+           EXIT.
+
+      ****************************************************************
+      * 3 TYPES OF REQUISITIONS EXIST:                               *
+      *   NON-CODED         STAT = "NM"  FROM MAINT OR ENG           *
+      *   CODED NON-STORES  STAT = "SN"  FROM MAINT OR ENG           *
+      *   CODED STOREROOM   STAT = "SS"  FROM MAINT, ENG, OR MATCONT *
+      * THE MAINTENANCE/ENGINEERING REQS FOR NON-STOREROOM ITEMS     *
+      * ("NM" AND "SN") MUST BE PRINTED WHEN CREATED FOR SIGNATURE   *
+      * APPROVALS.  THE CODED STOREROOM ITEMS ARE SENT TO MATERIALS  *
+      * CONTROL FOR NORMAL STORES REQ PROCESSING - NO PRINTOUT.      *
+      * THIS IS DONE BY A SPECIAL FLAG IN THE "MREQFILE" DATASET TO  *
+      * THE STOREROOM REQ SYSTEM, SIMILAR TO A CODE MOVING BELOW     *
+      * THE REORDER POINT.                                           *
+      *                                                              *
+      ****************************************************************
+
+       6000-MAIN.
+
+      *------ MAKE SURE EMPL EXISTS AS VALID TO CREATE A REQ IN CSIS.
+      *------ IF NOT, FOR NOW ADD HIM.
+           MOVE CMR-REQ-ORIG             TO  EMPL-ARG.
+           IF CMR-CALL-MODE = "CR"
+               PERFORM 9999-GETKEY-MEMPL-EM-I
+               IF NO-ENTRY
+                   MOVE SPACES           TO  BUF-MEMPL
+                   MOVE CMR-REQ-ORIG     TO  MEMPL-EMPL
+                   MOVE 0                TO  MEMPL-LEVEL
+                   MOVE "N"              TO  MEMPL-ACTIVE-FLAG
+                   MOVE "N"              TO  MEMPL-INVOICE-FLAG
+                   MOVE "Y"              TO  MEMPL-CRT-RQ-FLAG
+                   MOVE "N"              TO  MEMPL-APP-RQ-FLAG
+                   MOVE "N"              TO  MEMPL-FORWARD-CAP
+                   MOVE "N"              TO  MEMPL-BYPASS-CAP
+                   MOVE "N"              TO  MEMPL-MODIFY-CAP
+                   MOVE "N"              TO  MEMPL-EXPLODE-CAP
+                   MOVE "N"              TO  MEMPL-INQUIRE-CAP
+                   MOVE "N"              TO  MEMPL-DISPLAY-DOLS
+                   PERFORM 9999-PUT-MEMPL-EM-O.
+
+      ****************************************************
+      **  CALLING PGM PASSES REQ NUM IF UPDATING. IF CREATING, IT
+      **  ALREADY EXISTS. IF MODIFYING, IT BETTER ALREADY EXIST!
+      **  IF ITS SPACES, IT DOESN'T EXIST, SO DON'T CHECK.
+      ****************************************************
+
+           IF CMR-CALL-MODE = "CR"
+               IF CMR-REQ-NUMBER-1 = "E"
+                   GO TO 6010-SKIP-MREQ-GET
+               ELSE
+               MOVE CMR-REQ-NUMBER       TO  SAVE-COPY-REQ-NUMBER
+               MOVE SPACES               TO  CMR-REQ-NUMBER
+               GO TO 6010-SKIP-MREQ-GET.
+
+           MOVE CMR-REQ-NUMBER           TO  REQ-ARG.
+           PERFORM 9999-GETKEY-MREQ-RQ-O.
+           IF NO-ENTRY
+      *        "REQUISITION NUMBER DOES NOT EXIST"
+               MOVE "NE"                 TO  CMR-RETURN-STATUS
+               MOVE 18005                TO  CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               GO TO 6990-MAIN-X.
+           PERFORM 9999-RESET-MREQ-RQ-O.
+
+      *------ CANT UPDATE OR DELETE A REQ THAT IS ON A PO, IN
+      *------ PURCHASING, OR A STOREROOM REQ
+           IF CMR-CALL-MODE = "UP" OR "DT"
+               IF REQ-RELEASE-STAT = "XX"
+      *            "REQUISITION HAS ALREADY BEEN ASSIGNED A PO"
+                   MOVE "C2"             TO  CMR-RETURN-STATUS
+                   MOVE 18014            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   GO TO 6990-MAIN-X
+               ELSE
+               IF REQ-RELEASE-STAT = "X"
+      *            "REQ HAS ALREADY BEEN RELEASED"
+                   MOVE "C3"             TO  CMR-RETURN-STATUS
+                   MOVE 18007            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   GO TO 6990-MAIN-X
+               ELSE
+               IF REQ-STATUS = "SS"
+                   IF REQ-AUTH-CODE-FLAG = "X"
+                       NEXT SENTENCE
+                   ELSE
+      *    ADDED THE FOLLOWING CHECK 8/20/97 DUE TO USERS
+      *    COMPLAINING THAT THEY COULD NOT MODIFY REQUISITIONS
+      *    THAT HAD NOT YET BEEN PROCESSED THROUGH MA1.
+                   PERFORM 9999-READ-MREQFILE-CD-O THRU 9999-RM-X
+                   IF COND-WORD = 0
+                       PERFORM 9999-RESET-MREQFILE-CD-O
+                   ELSE
+      *            "REQUISITION IS STOREROOM CONTROLLED"
+                   MOVE "C1"             TO  CMR-RETURN-STATUS
+                   MOVE 18019            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                   GO TO 6990-MAIN-X.
+
+      *------ IF THE CALL MODE IS "DELETE", WE JUST PERFORM THE
+      *------ DELETE PARAGRAPH AND GET OUT.
+           IF CMR-CALL-MODE = "DT"
+               PERFORM 9700-DELETE-ENTIRE-REQ THRU 9730-DER-X
+
+                 GO TO 6990-MAIN-X.
+
+       6010-SKIP-MREQ-GET.
+       6020-GET-PLANT-CODE.
+      *------ IF WE DONT ALREADY HAVE PLANT CODE AND PRIME, GET IT
+      *------ AND RETURN TO MAIN PROGRAM (SO WELL HAVE IT NEXT TIME),
+      *------ AND MOVE TO NECCESSARY AREAS.
+           IF CMR-COMPANY = SPACES OR CMR-PRIME = SPACES
+               MOVE "P 01"               TO  PLT-ARG
+               PERFORM 9999-GETKEY-MPLTINFO-PK-I
+               IF CMR-CALL-MODE = "CR" OR "UP"
+                   MOVE SPACES           TO  REQ-ACCT-INFO
+                   MOVE MPLTINFO-COMPANY TO  REQ-CO, REQ-COMPANY-SAVE,
+                                              CMR-COMPANY
+               ELSE
+                   MOVE MPLTINFO-COMPANY TO  CMR-COMPANY
+           ELSE
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               MOVE SPACES               TO  REQ-ACCT-INFO
+               MOVE CMR-COMPANY          TO  REQ-CO, REQ-COMPANY-SAVE.
+
+      *------ IF PASSED PRIME IS SPACES, DEFAULT IT TO MPLTINFO
+      *------ PRIME
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               IF CMR-PRIME = SPACES
+                   MOVE MPLTINFO-PRIME   TO  CMR-PRIME.
+
+      *------ IF WE DONT ALREADY HAVE REQ GLOBAL PARMS, GET THEM NOW IF
+      *------ NOT EXIST SUPPLY DEFAULTS.
+           IF PRINT-WO-REQPK = "Y" OR "N"
+               NEXT SENTENCE
+           ELSE
+               MOVE "RQGB"               TO  PLT-ARG
+               PERFORM 9999-GETKEY-MPLTINFO-PK-I
+               IF NO-ENTRY
+                   MOVE "Y"              TO  PRINT-WO-REQPK
+                   MOVE "N"              TO  WOAP-TO-CUT-REQ
+                   MOVE "N"              TO  WOAP-TO-APP-REQ
+                   MOVE "N"              TO  DISP-WO-AMTS
+               ELSE
+                   MOVE MPLTINFO-RQGB    TO  REQ-GLOBALS.
+
+       6100-DETERMINE-REQ-TYPE.
+      *------ DETERMINE WHETHER CODED STORES, CODED NON-STORES, OR
+      *------ NON CODED.  IF CODED, GET DATA FOR THAT CODE FROM DB.
+      *------ THE MKT PRICE AND UM FROM DB OVERRIDE ANY PASSED VALUES.
+           IF CMR-CALL-MODE = "UP" OR "CR"
+               IF CMR-CORP-CODE = "NON-STR"
+                   MOVE "NM"             TO  REQ-STATUS
+               ELSE
+                   MOVE CMR-CORP-CODE    TO  CODE-ARG
+                   PERFORM 3000-READ-MSTORERM THRU 3010-RM-X
+                   IF COND-WORD = 17
+                       MOVE "BC"         TO  CMR-RETURN-STATUS
+                       MOVE 19009        TO  CATREAD-MSG-NUMBER
+                       PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+                       MOVE CMR-CORP-CODE TO  MSG-FLD
+                       GO TO 6990-MAIN-X
+                   ELSE
+                       IF SAVE-SYNR3-SW = "Y"
+                           MOVE "NM"     TO  REQ-STATUS
+                       ELSE
+                       IF (STR-ONHAND = 0)   AND
+                          (STR-MAX = 0)      AND
+                          (STR-REORDER = 0)  AND
+                          (STR-EXPEDITE = 0)
+                           MOVE "SN"     TO  REQ-STATUS
+                       ELSE
+                           MOVE "SS"     TO  REQ-STATUS.
+
+      *------ ON CODED STOREROOM, WE SET A SPECIAL REQ FLAG IN THE
+      *------ "MREQFILE" DATASET FOR PROCESSING BY STOREROOM REQ
+      *------ SYSTEM (MA1 ON MATCONT MENU, JOB "BXRQCRTE")
+      *------ NOTE: WE DO THIS ON A MODIFY IN CASE THEY CHANGE A NON-
+      *------ STR REQ TO A STR REQ.
+           IF (CMR-CALL-MODE = "CR") OR (CMR-MREQFILE-FLAG = "1")
+               IF REQ-STATUS = "SS"
+                   MOVE 1                    TO  INDX
+                   PERFORM 7200-CHECK-REQFILE THRU 7230-CR-X
+                       UNTIL COND-WORD NOT = 0.
+
+      *------ IF THE REQ DOESNT EXIST, GET THE NEXT REQ NUMBER FROM
+      *------ "MPLTINFO" AND UPDATE "MPLTINFO".
+           IF CMR-CALL-MODE = "CR"
+               IF CMR-REQ-NUMBER-1 = "E"
+                   MOVE CMR-REQ-NUMBER TO REQ-ARG
+               ELSE
+               PERFORM 7100-BUILD-REQ-NO THRU 7120-BRN-X.
+
+           IF CMR-CALL-MODE = "UP"
+               MOVE REQ-HOLD-STATUS-CODE TO  SAVE-HOLD-STATUS-CODE
+               MOVE REQ-BUDGET-AMT       TO  REQS-PREV-VALUE.
+
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               PERFORM 9000-MOVE-MREQ-FIELDS.
+
+      *------ RETURNED REQS ARE NOT QUEUED TO THE 1ST APPROVER.  NOW
+      *------ THAT THE ORIG HAS DONE HIS MODIFICATION, QUEUE UP.
+           IF SAVE-HOLD-STATUS-CODE = "RT" AND CMR-CALL-MODE = "UP"
+               MOVE SPACES               TO  REQ-RET-EMPL
+               PERFORM 9999-CHAINHD-DREQQUE-RQ-O
+               PERFORM 9999-GETNEXT-DREQQUE-RQ-O
+               IF GOOD-CALL
+                 IF DRQQ-APPROVE-DATE-CN = SPACES
+                     MOVE DATE-YMD-OUT     TO  DRQQ-APPROVE-DATE
+                     IF DRQQ-APPROVE-DATE-YY > "70"
+                         MOVE "19" TO DRQQ-APPROVE-DATE-CC
+                     ELSE
+                         MOVE "20" TO DRQQ-APPROVE-DATE-CC
+                     END-IF
+                     MOVE SPACES           TO  DRQQ-COMMENT-1
+                     MOVE SPACES           TO  DRQQ-COMMENT-2
+                     PERFORM 9999-UPDATE-DREQQUE-RQ-O
+                     SUBTRACT 1            FROM REQ-APPROVALS-LEFT-9
+                     MOVE 0                TO  QNEXT-REC-NO
+                     CALL "CEAQNEXT" USING CBASE, STATUS-AREA,
+                       REQ-GLOBALS, BUF-MREQ, BUF-DREQQUE,
+                       QNEXT-PARMS, BU-DISPLAY-MSG
+                     IF BU-DISPLAY-MSG-1 NOT = SPACES
+                         PERFORM 2100-BLOWUP
+                     END-IF
+                 ELSE
+                     PERFORM 9999-RESET-DREQQUE-RQ-O.
+
+      *------ OK, NOW WE EITHER PUT NEW REQ IN DB, OR UPDATE
+      *------ EXISTING REQ. IF CREATING, THE PERFORM WILL GET THE
+      *------ NEXT REQ NUMBER AND MOVE THE FIELDS.
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               PERFORM 9400-PUT-UPDATE-MREQ.
+
+      *------ IF MODIFYING THE REQ, WE HAVE TO DELETE "DREQITM" SEG
+      *------ AND "DREQDESC" SEGS AND RE-ADD - KEY VALUES MAY CHANGE
+           IF CMR-CALL-MODE = "UP"
+               PERFORM 9300-DELETE-DREQITM-DREQDESC THRU 9320-DDD-X.
+
+      *------ REQ IS QUEUED EVEN IF ONLINE REQ APPROVAL SYS NOT USED:
+      *------ IN THAT CASE, REQ MUST STILL QUEUE UP TO CONTROL POINT.
+      *------ REQ IS QUEUED WHEN CREATED, OR RE-QUEUED ON A MODIFY
+      *------ IF CERTAIN GLOBALLY-DEFINED THINGS CHANGE: IN THIS CASE A
+      *------ WARNING MESSAGE IS RETURNED TO THE PROGRAM.
+           IF CMR-CALL-MODE = "CR"
+      *        *** FOR CODED STR ITEMS, ONLY THE ORIGINATOR LEVEL '00'
+      *        *** IS QUEUED (FOR INQUIRY BY ORIGINATOR).
+               IF REQ-STATUS = "SS"
+                   IF REQ-AUTH-CODE-FLAG = "X"
+                       PERFORM 9450-DETERMINE-PATH THRU 9460-DP-X
+                   END-IF
+                   PERFORM 9470-QUEUE THRU 9480-Q-X
+               ELSE
+                   PERFORM 9450-DETERMINE-PATH THRU 9460-DP-X
+                   PERFORM 9470-QUEUE THRU 9480-Q-X
+           ELSE
+           IF CMR-CALL-MODE = "UP"
+                MOVE "Y"                 TO  CHECK-RE-Q-NECCESSARY
+                MOVE SPACES              TO  RETURNING-EMPL,
+                                             RETURN-REASON-1,
+                                             RETURN-REASON-2
+                MOVE CMR-QTY             TO  REQS-CURRENT-QTY
+                MOVE REQ-ARG             TO  DREQD-REQ-NUMBER
+                MOVE CMR-WO-NUMBER       TO  DREQD-WO-NUMBER
+                MOVE CMR-WO-ITEM-NUMBER  TO  DREQD-WO-ITM-NO
+                MOVE "UP"                TO  RE-Q-MODE
+                PERFORM 69902-CHECK-GAS-UPDATE
+                CALL "CEAREQUE" USING CBASE, BASE-MMISA,
+                  STATUS-AREA, LANGUAGE-PARMS, REQ-GLOBALS,
+                  BUF-MREQ, BUF-DREQD,
+                  BU-DISPLAY-MSG, CEAREQUE-PARMS
+                IF BU-DISPLAY-MSG-1 NOT = SPACES
+                    PERFORM 2100-BLOWUP
+                ELSE
+                IF RE-Q-WAS-DONE = "Y"
+      *            "WARNING: MODIFICATION CHANGED REQ PATH"
+                   MOVE 23018            TO  CATREAD-MSG-NUMBER
+                   PERFORM 999-CATREAD THRU 999-CATREAD-EXIT.
+
+      *------ IF THE REQ CREATOR WAS THE ONLY APPROVER, IT GOES TO
+      *------ PURCHASING IMMEDIATELY
+           IF REQ-APPROVALS-LEFT = "  "
+               MOVE 0 TO REQ-APPROVALS-LEFT-9.
+           IF CMR-CALL-MODE = "CR" AND REQ-APPROVALS-LEFT-9 < 1
+           AND (REQ-STATUS NOT = "SS")
+               MOVE DATE-YMD-OUT         TO  REQ-REL-MC-DATE
+               IF REQ-REL-MC-DATE-YY > "70"
+                   MOVE "19" TO REQ-REL-MC-DATE-CC
+               ELSE
+                   MOVE "20" TO REQ-REL-MC-DATE-CC
+               END-IF
+               MOVE "X  "                TO  REQ-RELEASE-STAT
+               PERFORM 9999-UPDATE-MREQ-RQ-O.
+
+      *------ SAME AS ABOVE GOES FOR DREQD DATASET
+           IF CMR-CALL-MODE = "UP"
+               PERFORM 9500-DELETE-DREQD THRU 9520-DD-X.
+
+      *------ IF ADDING, WE ADD THE DREQD SEGMENT.  IF A MODIFY,
+      *------ THE DREQD WAS DELETED IN CASE SEARCH ITEMS CHANGE
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               PERFORM 9200-MOVE-PUT-DREQD.
+
+      *------ PUT THE REQ ITEM SEQMENT OUT
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               PERFORM 9100-MOVE-DREQITM-FIELDS
+               PERFORM 9999-PUT-DREQITM-RQ-O.
+
+      *----------- NOW THAT REQ IS SAFELY CREATED, ACTUALLY FLAG THE
+      *----------- STORES REQ SYSTEM IF ITS A CODED STOREROOM ITEM.
+      *----------- THE "W" TELLS STORES REQ SYS THAT THIS IS MAINT REQ
+           IF (CMR-CALL-MODE = "CR") OR (CMR-MREQFILE-FLAG = "1")
+               IF REQ-STATUS = "SS"
+      *------ COMMENTED OUT KELLY LOGIC.
+      *------ UN-COMMENTED OUT KELLY LOGIC FOR FAYETTEVILLE ONLY.
+      *------ COMMENTED OUT FAYETTEVILLE LOGIC.
+      ************ IF REQ-COMPANY-SAVE = "211" OR "281" OR "285"
+      ************ IF REQ-COMPANY-SAVE = "211"
+      ************     NEXT SENTENCE
+      ************ ELSE
+                   MOVE REQ-ARG              TO  MREQFILE-REQ-NUM-MMIS
+                   MOVE "W"                  TO  MREQFILE-REQ-STATUS
+                   PERFORM 9999-PUT-MREQFILE-CD-O.
+
+      *------- NOW PUT ANY FREE-FORMAT DESCRIPTION AND REMARKS. FREE-
+      *------- FORMAT DESC ALLOWED ONLY FOR NON-CODED.  ALL GET REMARKS
+           IF CMR-CALL-MODE = "CR" OR "UP"
+               PERFORM 7010-PUT-REMARKS
+               IF REQ-STATUS = "NM"
+                   MOVE 0                TO  SUB1
+                   MOVE 1                TO  SUB2
+                   MOVE REQ-ARG          TO  REQDESC-REQ-NUMBER
+                   IF SAVE-COPY-REQ-NUMBER NOT = "            "
+                       MOVE 0            TO  SAVE-COPIED-LINES
+                       PERFORM 9999-CHAINHD-DREQDESC-RQ-I
+                       PERFORM 7001-PUT-DESCRIPT-LONG THRU 7001-PDL-X
+                           UNTIL COND-WORD = 15
+                       MOVE SPACES TO SAVE-COPY-REQ-NUMBER
+                       IF SAVE-COPIED-LINES > 5
+                           NEXT SENTENCE
+                       ELSE
+                       MOVE SAVE-COPIED-LINES TO SUB1
+                                                 SUB2
+                       ADD 1                  TO SUB2
+                       SUBTRACT SAVE-COPIED-LINES FROM 5
+                           GIVING SAVE-COPIED-LINES
+                       PERFORM 7000-PUT-DESCRIPT SAVE-COPIED-LINES TIMES
+                   ELSE
+                   PERFORM 7000-PUT-DESCRIPT 5 TIMES.
+
+      *------ IF THE REQ WAS CODED, UPDATE THE LAST REQ NUMBER FOR THAT
+      *------ CORPORATE CODE (CODED NON-STR OR CODED STOREROOM).
+           IF CMR-CORP-CODE NOT = "NON-STR"
+               PERFORM 9800-UPDATE-LAST-REQNO.
+
+      *------ FOR ONLINE APPROVALS, EACH PATH DETERMINES IF THE REQ
+      *------ WILL PRINT ON CREATION. THIS IS SO THAT SOME PATHS CAN
+      *------ HAVE ONLINE APPROVALS, OTHERS CAN BE MANUALLY ROUTED.
+      *------ REGARDLESS, ONLY NON-CODED OR CODED NON-STR REQS PRINT.
+      *------ ALSO PRINT IF THE REQ WAS CREATED AND THE CREATOR WAS
+      *------ THE ONLY APPROVER (REQ GOES TO PURCHASING IMMEDIATELY)
+      *------
+      *------ ADDED 11/29/95 FOR THE KELLY PLANTS DUE TO THEIR
+      *------ SWITCH TO PRAPS REQUISITIONING.
+      *------
+      *------ 10/3/01  COMMENTED OUT KELLY LOGIC.
+      *------ 3/18/03  UN-COMMENTED OUT KELLY LOGIC FOR FAYETTEVILLE.
+      *------ 12/29/03 COMMENTED OUT FAYETTEVILLE LOGIC.
+      *------
+      **** IF REQ-COMPANY-SAVE = "211" OR "281" OR "285"
+      **** IF REQ-COMPANY-SAVE = "211"
+      *      IF CMR-CALL-MODE = "CR"
+      *        IF REQ-STATUS = "SS"
+      *            MOVE REQ-ARG          TO  REQ-NUMBER
+      *            PERFORM 69900-SET-PURCH-REQ-PRTR
+      *            MOVE CMR-SPOOL-PRT    TO  REQ-SPOOL-PRT
+      *            MOVE SPACES           TO  REQ-REPRINT-INDIC
+      *            MOVE CMR-REMARK-1     TO  REQ-FREE-VERB-LINE (1)
+      *            MOVE CMR-REMARK-2     TO  REQ-FREE-VERB-LINE (2)
+      *            MOVE " "              TO  REQ-SREQPRNT-NOT-RELEASED
+      *            MOVE PRINT-REQ-AMTS   TO  REQ-PRT-WO-AMTS
+      *            CALL "SREQPRNT" USING CBASE, BASE-MMISA,
+      *              SREQPRNT-PARMS, ESC-NAME, LANGUAGE-PARMS,
+      *              STATUS-AREA, BU-DISPLAY-MSG, BU-DISPLAY-FLDS,
+      *              VIEW-COMAREA
+      *            IF BU-DISPLAY-MSG-1 NOT = SPACES
+      *                PERFORM 2100-BLOWUP
+      *            ELSE
+      *            GO TO 6990-MAIN-X.
+           IF RQPH-PRINT-OPTION = "Y"
+           OR (REQ-APPROVALS-LEFT-9 < 1 AND REQ-STATUS NOT = "SS")
+             IF CMR-CALL-MODE = "CR"
+               IF REQ-STATUS = "SN" OR "NM"
+                   MOVE REQ-ARG          TO  REQ-NUMBER
+                   MOVE CMR-SPOOL-PRT    TO  REQ-SPOOL-PRT
+                   MOVE SPACES           TO  REQ-REPRINT-INDIC
+                   MOVE CMR-REMARK-1     TO  REQ-FREE-VERB-LINE (1)
+                   MOVE CMR-REMARK-2     TO  REQ-FREE-VERB-LINE (2)
+                   MOVE "Y"              TO  REQ-SREQPRNT-NOT-RELEASED
+                   MOVE DISP-WO-AMTS     TO  REQ-PRT-WO-AMTS
+                   CALL "SREQPRNT" USING CBASE, BASE-MMISA,
+                     SREQPRNT-PARMS, ESC-NAME, LANGUAGE-PARMS,
+                     STATUS-AREA, BU-DISPLAY-MSG, BU-DISPLAY-FLDS,
+                     VIEW-COMAREA
+                   IF BU-DISPLAY-MSG-1 NOT = SPACES
+                       PERFORM 2100-BLOWUP
+                   END-IF
+                   IF REQ-APPROVALS-LEFT-9 < 1
+                       IF SAVE-SYNR3-SW = "Y"
+                           MOVE SPACES   TO  BUF-MCORPREQ
+                           MOVE REQ-ARG  TO  MCORPREQ-REQ-NUMBER
+                           MOVE "R3"     TO  MCORPREQ-REQ-STATUS
+                           WRITE MCORPREQ-RQ-REC-O FROM BUF-MCORPREQ.
+
+       6990-MAIN-X.
+           EXIT.
+
+       69900-SET-PURCH-REQ-PRTR.
+           MOVE "POPT" TO PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+           IF GOOD-CALL
+               MOVE MPLTINFO-REQ-PRT-NO TO CMR-SPOOL-PRT.
+
+       69902-CHECK-GAS-UPDATE.
+           IF SAVE-PACD-SW = "N"
+               IF CMR-WO-NUMBER > SPACES
+                   NEXT SENTENCE
+               ELSE
+               IF CMR-SUB-9 > 100
+                   MOVE CMR-SUB-9        TO CMR-EXPENSE-CLASS-9
+                   MOVE CMR-EXP-CLS-6DIG TO REQ-ADDTL-DATA.
+
+      *******************************************************************
+      ***      P E R F O R M E D   R O U T I N E S                     **
+      *******************************************************************
+       7000-PUT-DESCRIPT.
+           ADD 1                         TO  SUB1.
+           IF CMR-DESC-LINE (SUB1) NOT = SPACES
+               MOVE CMR-DESC-LINE (SUB1) TO  REQDESC-DATA
+               MOVE SUB2                 TO  CONVERT-LINE-NO
+               MOVE CONVERT-LINE-NO      TO  REQDESC-LINE-NO
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               PERFORM 9999-PUT-DREQDESC-RQ-O
+               ADD 1                     TO  SUB2.
+
+       7001-PUT-DESCRIPT-LONG.
+           PERFORM 9999-GETNEXT-DREQDESC-RQ-I.
+           IF COND-WORD = 15 GO TO 7001-PDL-X.
+           IF REQDESC-LINE-NO = "95" OR "96"
+               GO TO 7001-PUT-DESCRIPT-LONG.
+           ADD 1                         TO  SAVE-COPIED-LINES.
+           IF CMR-DESC-LINE (1) NOT = SPACES
+               IF REQDESC-LINE-NO = "01"
+                   IF CMR-DESC-LINE (1) = REQDESC-DATA
+                       MOVE SPACES       TO  CMR-DESC-LINE (1)
+                   ELSE
+                   MOVE CMR-DESC-LINE (1) TO REQDESC-DATA
+                   MOVE "0001"           TO  REQDESC-ITEM-NO
+                   MOVE "01"             TO  REQDESC-LINE-NO
+                   MOVE SPACES           TO  CMR-DESC-LINE (1)
+               ELSE
+               MOVE CMR-DESC-LINE (1)    TO  REQDESC-DATA
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "01"                 TO  REQDESC-LINE-NO
+               MOVE SPACES               TO  CMR-DESC-LINE (1)
+           ELSE
+           IF CMR-DESC-LINE (2) NOT = SPACES
+               IF REQDESC-LINE-NO = "02"
+                   IF CMR-DESC-LINE (2) = REQDESC-DATA
+                       MOVE SPACES       TO  CMR-DESC-LINE (2)
+                   ELSE
+                   MOVE CMR-DESC-LINE (2) TO REQDESC-DATA
+                   MOVE "0001"           TO  REQDESC-ITEM-NO
+                   MOVE "02"             TO  REQDESC-LINE-NO
+                   MOVE SPACES           TO  CMR-DESC-LINE (2)
+               ELSE
+               MOVE CMR-DESC-LINE (2)    TO  REQDESC-DATA
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "02"                 TO  REQDESC-LINE-NO
+               MOVE SPACES               TO  CMR-DESC-LINE (2)
+           ELSE
+           IF CMR-DESC-LINE (3) NOT = SPACES
+               IF REQDESC-LINE-NO = "03"
+                   IF CMR-DESC-LINE (3) = REQDESC-DATA
+                       MOVE SPACES       TO  CMR-DESC-LINE (3)
+                   ELSE
+                   MOVE CMR-DESC-LINE (3) TO REQDESC-DATA
+                   MOVE "0001"           TO  REQDESC-ITEM-NO
+                   MOVE "03"             TO  REQDESC-LINE-NO
+                   MOVE SPACES           TO  CMR-DESC-LINE (3)
+               ELSE
+               MOVE CMR-DESC-LINE (3)    TO  REQDESC-DATA
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "03"                 TO  REQDESC-LINE-NO
+               MOVE SPACES               TO  CMR-DESC-LINE (3)
+           ELSE
+           IF CMR-DESC-LINE (4) NOT = SPACES
+               IF REQDESC-LINE-NO = "04"
+                   IF CMR-DESC-LINE (4) = REQDESC-DATA
+                       MOVE SPACES       TO  CMR-DESC-LINE (4)
+                   ELSE
+                   MOVE CMR-DESC-LINE (4) TO REQDESC-DATA
+                   MOVE "0001"           TO  REQDESC-ITEM-NO
+                   MOVE "04"             TO  REQDESC-LINE-NO
+                   MOVE SPACES           TO  CMR-DESC-LINE (4)
+               ELSE
+               MOVE CMR-DESC-LINE (4)    TO  REQDESC-DATA
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "04"                 TO  REQDESC-LINE-NO
+               MOVE SPACES               TO  CMR-DESC-LINE (4)
+           ELSE
+           IF CMR-DESC-LINE (5) NOT = SPACES
+               IF REQDESC-LINE-NO = "05"
+                   IF CMR-DESC-LINE (5) = REQDESC-DATA
+                       MOVE SPACES       TO  CMR-DESC-LINE (5)
+                   ELSE
+                   MOVE CMR-DESC-LINE (5) TO REQDESC-DATA
+                   MOVE "0001"           TO  REQDESC-ITEM-NO
+                   MOVE "05"             TO  REQDESC-LINE-NO
+                   MOVE SPACES           TO  CMR-DESC-LINE (5)
+               ELSE
+               MOVE CMR-DESC-LINE (5)    TO  REQDESC-DATA
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "05"                 TO  REQDESC-LINE-NO
+               MOVE SPACES               TO  CMR-DESC-LINE (5).
+           MOVE REQ-ARG TO REQDESC-REQ-NUMBER.
+           PERFORM 9999-PUT-DREQDESC-RQ-O.
+       7001-PDL-X.    EXIT.
+
+       7010-PUT-REMARKS.
+           IF CMR-REMARK-1 > SPACES
+               MOVE REQ-ARG              TO  REQDESC-REQ-NUMBER
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "95"                 TO  REQDESC-LINE-NO
+               MOVE CMR-REMARK-1         TO  REQDESC-DATA
+               PERFORM 9999-PUT-DREQDESC-RQ-O.
+
+           IF CMR-REMARK-2 > SPACES
+               MOVE REQ-ARG              TO  REQDESC-REQ-NUMBER
+               MOVE "0001"               TO  REQDESC-ITEM-NO
+               MOVE "96"                 TO  REQDESC-LINE-NO
+               MOVE CMR-REMARK-2         TO  REQDESC-DATA
+               PERFORM 9999-PUT-DREQDESC-RQ-O.
+
+       7100-BUILD-REQ-NO.
+           MOVE "NREQ"                   TO  PLT-ARG.
+           PERFORM 9999-GETKEY-MPLTINFO-PK-I.
+
+           ADD 1                         TO  MPLTINFO-REQ-NO.
+           MOVE MPLTINFO-REQ-NO          TO  LS-SHIFT-FLD.
+           CALL "TLSHIFT" USING LS-RET-CODE, LS-SHIFT-FLD.
+           MOVE LS-SHIFT-FLD             TO  BUILD-REQ-LAST.
+           MOVE BUILD-REQ                TO  REQ-ARG.
+           MOVE BUILD-REQ                TO  CMR-REQ-NUMBER.
+
+           PERFORM 9999-UPDATE-MPLTINFO-PK-O.
+
+       7120-BRN-X.
+           EXIT.
+
+       7150-MOVE-COST.
+      *------ IF THE MARKET COST WAS ZERO (ITEM WAS NEVER PURCHASED THRU
+      *------ THE CSIS SYSTEM), USE THE AVERAGE COST AS A BETTER ESTIMATE
+      *------ THAN ZERO.
+           IF STR-MKT-COST > 0
+               MOVE STR-MKT-COST         TO  CMR-EST-UNIT-PRICE
+           ELSE
+           IF STR-AVG-COST > 0
+               MOVE STR-AVG-COST         TO  CMR-EST-UNIT-PRICE.
+      *------- MOVE COST EXPRESSED IN REQUISITION UM.
+           IF CMR-UM NOT = STR-UM
+               IF CMR-UM = STR-UM1
+                   MULTIPLY CMR-EST-UNIT-PRICE BY STR-UM1-CF
+                              GIVING CMR-EST-UNIT-PRICE ROUNDED
+               ELSE
+               IF CMR-UM = STR-UM2
+                   MULTIPLY CMR-EST-UNIT-PRICE BY STR-UM2-CF
+                              GIVING CMR-EST-UNIT-PRICE ROUNDED.
+
+       7200-CHECK-REQFILE.
+      *------ DSET "MREQFILE" IS USED TO FLAG STORES REQ. SYSTEM OF
+      *------ A CODE THAT NEEDS TO BE REQUISITIONED.
+      *------ NORMAL CODED STOREROOM REQ FLAGS USE THE CORP CODE AS
+      *------ THE KEY.  SINCE MAINT/ENG USERS CAN REQUEST THE SAME
+      *------ CODE MULTIPLE TIMES, WE HAVE TO MAKE A UNIQUE KEY BY
+      *------ SUFFIXING A LETTER OF THE ALPHABET TO THE CODE.
+           MOVE CODE-ARG                 TO  MREQFILE-CORP-CODE.
+           MOVE ALPHA-TAB (INDX)         TO  MREQFILE-CORP-CODE-8.
+           MOVE MREQFILE-CORP-CODE       TO  CODE-ARG.
+           PERFORM 9999-GETKEY-MREQFILE-CD-O.
+           MOVE MREQFILE-CORP-CODE-7     TO  CODE-ARG.
+           IF GOOD-CALL
+              ADD +1                     TO  INDX
+              IF INDX > +26
+                 MOVE "MAX NUMBER OF REQS FOR CODE EXCEEDED"
+                                         TO  BU-DISPLAY-MSG
+                 PERFORM 2100-BLOWUP
+              ELSE
+                 GO TO 7230-CR-X.
+       7230-CR-X.
+           EXIT.
+
+       9000-MOVE-MREQ-FIELDS.
+      *------ ON CREATING, WE INIT SOME FIELDS TO SPACES.  BUT
+      *------ SINCE SAME PROC USED FOR UPDATE, DONT WANT TO INIT
+      *------ AGAIN IN CASE THERE IS DATA.  REQ DATE (CREATE DATE)
+      *------ IS ALSO ONLY INITIALIZED UPON CREATION. ALSO, REQ
+      *------ ORIG DOESNT CHANGE IF SOMEONE ELSE MODIFIES.
+           IF CMR-CALL-MODE = "CR"
+               MOVE REQ-ARG              TO  MREQ-NUMBER
+               MOVE SPACES               TO  REQ-RELEASE-STAT
+               MOVE SPACES               TO  REQ-REL-MC-DATE-CN
+               MOVE SPACES               TO  REQ-RCV-DEPT
+               MOVE DATE-YMD-OUT         TO  REQ-DATE
+               IF REQ-DATE-YY > "70"
+                   MOVE "19" TO REQ-DATE-CC
+               ELSE
+                   MOVE "20" TO REQ-DATE-CC
+               END-IF
+               MOVE SPACES               TO  REQ-SHIP-DATE-CN
+               MOVE SPACES               TO  REQ-TERMS
+               MOVE ZEROES               TO  REQ-BUDGET-AMT
+               MOVE SPACES               TO  REQ-MISC-AREA
+               MOVE CMR-REQ-ORIG         TO  REQ-ORIGINATOR
+               MOVE CMR-DOCK-NOTIFY      TO  REQ-DOCK-NOTIFY
+               MOVE SPACES               TO  REQ-FOB
+               MOVE SPACES               TO  REQ-FLAGS
+               MOVE SPACES               TO  REQ-PATH
+               MOVE SPACES               TO  REQ-APPROVALS-LEFT
+               MOVE SPACES               TO  REQ-RET-EMPL
+               MOVE SPACES               TO  REQ-FROM-SYSTEM
+               MOVE SPACES               TO  REQ-AUTH-CODE-FLAG
+               MOVE SPACES               TO  REQ-DATE-WANT-FLAG
+               MOVE SPACES               TO  REQ-DATE-RETURN-CN
+               MOVE SPACES               TO  REQ-SERVICE-FLAG
+               MOVE SPACES               TO  REQ-PAD
+      *        ** GET THE REQ DEPT FROM THE MMIS PERSONNEL FILES.
+      *        ** (ON MODIFY WE JUST USE THE DEPT STORED IN MREQ).
+               IF EMPL-ARG = SPACES
+                   MOVE SPACES           TO  REQ-REQ-DEPT
+               ELSE
+                   MOVE EMPL-ARG         TO  PER-CC-ARG
+                   PERFORM 9999-GETKEY-PER-PERSON-PC-I
+                   IF GOOD-CALL
+                       MOVE PER-DEPT     TO  REQ-REQ-DEPT
+                   ELSE
+                       MOVE SPACES       TO  REQ-REQ-DEPT.
+
+      *------ IF CMR-MMIS-REQ-NO IS EQUAL TO BLANKS MOVE MREQ-NUMBER TO IT
+               IF  CMR-MMIS-REQ-NO  = SPACES
+               MOVE MREQ-NUMBER          TO  REQ-MMIS-REQ-NO
+               ELSE
+               MOVE CMR-MMIS-REQ-NO   TO  REQ-MMIS-REQ-NO.
+
+      *------ IF A REQ IS MODIFIED, ITS HOLD STATUS IS RESET
+           MOVE SPACES                   TO  REQ-HOLD-STATUS-CODE.
+           MOVE SPACES                   TO  REQ-HOLD-STATUS.
+
+           MOVE CMR-STAGING-AREA         TO  REQ-STAGING-AREA.
+           MOVE CMR-FOR-DEPT             TO  REQ-FOR-DEPT, REQ-SUBD.
+           MOVE CMR-PRIME                TO  REQ-PRIME.
+           MOVE CMR-ADDTL-INFO           TO  REQ-ADDL-INFO.
+           MOVE CMR-DATE-REQUIRED-CN     TO  REQ-DATE-WANTED-CN.
+           MOVE CMR-SUB                  TO  REQ-SUB.
+           MOVE CMR-SERVICE-FLAG         TO  REQ-SERVICE-FLAG.
+           MOVE SPACES                   TO  REQ-BUDGET-NO.
+           IF CMR-BUDGET1 NOT = "   "
+               MOVE CMR-BUDGET1              TO  REQ-BUDGET-NO-1-3
+               MOVE CMR-BUDGET2              TO  REQ-BUDGET-NO-4-5
+               MOVE CMR-BUDGET3              TO  REQ-BUDGET-NO-6-7
+               MOVE CMR-BUDGET4              TO  REQ-BUDGET-NO-8-10
+               MOVE CMR-BUDGET5              TO  REQ-BUDGET-NO-11-12
+               MOVE REQ-BUDGET-NO            TO  CMR-BUDNUM-NODASH.
+           MOVE CMR-BUDNUM-NODASH            TO  REQ-BUDGET-NO.
+           MULTIPLY CMR-QTY BY CMR-EST-UNIT-PRICE
+             GIVING REQ-BUDGET-AMT ROUNDED.
+           MOVE CMR-EXP-CLS-6DIG         TO  REQ-ADDTL-DATA.
+           IF CMR-EXP-CLS-2DIG  = "NW"
+              MOVE SPACES                TO  CMR-EXP-CLS-2DIG .
+           MOVE "X"                      TO  REQ-MMIS-INDIC.
+      *------ WE KEEP TRACK OF WETHER A REQ WAS EVER CHANGED
+           IF CMR-CALL-MODE = "UP"
+               MOVE "X"                  TO  REQ-MODIFY-FLAG
+           ELSE
+               MOVE SPACES               TO  REQ-MODIFY-FLAG.
+           MOVE CMR-DOCK-NOTIFY          TO  REQ-DOCK-NOTIFY.
+
+      *------ COMMENTED OUT KELLY LOGIC.
+      *------ UN-COMMENTED OUT KELLY LOGIC FOR FAYETTEVILLE ONLY.
+      *------ COMMENTED OUT FAYETTEVILLE LOGIC.
+      ***  IF REQ-COMPANY-SAVE = "211" OR "281" OR "285"
+      ***  IF REQ-COMPANY-SAVE = "211"
+      *        MOVE "X "                 TO  REQ-RELEASE-STAT
+      *        ACCEPT CUR-DATE FROM DATE
+      *        MOVE CUR-DATE             TO  REQ-REL-MC-DATE
+      *        IF YY > "70"
+      *            MOVE "19" TO REQ-REL-MC-DATE-CC
+      *        ELSE
+      *            MOVE "20" TO REQ-REL-MC-DATE-CC.
+
+           MOVE CMR-AUTH-FLAG            TO  REQ-AUTH-CODE-FLAG.
+
+       9100-MOVE-DREQITM-FIELDS.
+           MOVE REQ-ARG                  TO  REQITM-REQ-NUMBER.
+      *------ NON-STR REQS ARE LINKED TO A DUMMY CORP CODE MASTER
+      *    IF REQ-STATUS = "NM"
+      *        MOVE "NON-STR"            TO  REQITM-CORP-CODE
+      *    ELSE
+           MOVE CMR-CORP-CODE            TO  REQITM-CORP-CODE.
+           MOVE "0001"                   TO  REQITM-NUMBER.
+           MOVE CMR-UM                   TO  REQITM-UM REQITM-PRICE-UM.
+           MOVE CMR-QTY                  TO  REQITM-QTY-TO-ORD.
+           MOVE CMR-EST-UNIT-PRICE       TO  REQITM-UNIT-PRICE.
+           MOVE SPACES                   TO  REQITM-SHIP-DATE-CN.
+           MOVE CMR-BUDNUM-NODASH        TO  REQITM-BUDGET-NO,
+                                             REQ-BUDGET-NO.
+           MOVE REQ-BUDGET-AMT           TO  REQITM-BUDGET-AMT.
+           MOVE CMR-EXP-CLS-6DIG         TO  REQITM-ADDTL-DATA.
+           MOVE CMR-SUGGESTED-VENDOR     TO  REQITM-NOTE.
+           MOVE CMR-FOR-DEPT             TO  REQITM-SUB-DETL.
+           MOVE CMR-CURRENCY             TO  REQITM-CURRENCY.
+           IF CMR-EST-UNIT-PRICE-CURR NOT NUMERIC
+               MOVE 0                    TO  CMR-EST-UNIT-PRICE-CURR.
+           MOVE CMR-EST-UNIT-PRICE-CURR  TO  REQITM-UNIT-PRICE-CURR.
+           MOVE SPACES                   TO  REQITM-TERMS.
+           MOVE SPACES                   TO  REQITM-FOB.
+           MOVE SAVE-TAX-CODE            TO  REQITM-TAX-CODE.
+           MOVE SPACES                   TO  REQITM-PAD.
+
+       9200-MOVE-PUT-DREQD.
+           MOVE REQ-ARG                  TO  DREQD-REQ-NUMBER.
+           MOVE CMR-WO-NUMBER            TO  DREQD-WO-NUMBER.
+           MOVE CMR-WO-ITEM-NUMBER       TO  DREQD-WO-ITM-NO.
+           MOVE SPACES                   TO  DREQD-PO-RCV-NO.
+           MOVE SPACES                   TO  DREQD-VEN-CODE.
+           MOVE SPACES                   TO  DREQD-BUYER-CODE.
+           MOVE SPACES                   TO  DREQD-PO-ITM-NO.
+           MOVE SPACES                   TO  REQD-PAD.
+           PERFORM 9999-PUT-DREQD-RQ-O.
+
+       9300-DELETE-DREQITM-DREQDESC.
+           PERFORM 9999-CHAINHD-DREQITM-RQ-O.
+       9302-DELETE-DREQITM-LOOP.
+           PERFORM 9999-GETNEXT-DREQITM-RQ-O.
+           IF END-OF-CHAIN
+               GO TO 9303-DELETE-DESC.
+
+           MOVE REQITM-QTY-TO-ORD        TO  REQS-PREV-QTY.
+
+           MOVE REQITM-TAX-CODE          TO SAVE-TAX-CODE.
+           PERFORM 9999-DELETE-DREQITM-RQ-O.
+
+           GO TO 9302-DELETE-DREQITM-LOOP.
+
+       9303-DELETE-DESC.
+           MOVE "N"                      TO  DID-DESC-CHANGE.
+      *------ NOW DELETE ONLY THE FIRST 5 LINES OF DESCRIPTION.
+      *------ AND, WHILE WE'RE AT IT, ALSO DELETE THE REMARKS (LINE
+      *------ NUMBERS 95 AND 96)
+           PERFORM 9999-CHAINHD-DREQDESC-RQ-O.
+
+           MOVE 0                        TO  SUB1.
+       9305-DELETE-DREQDESC-LOOP.
+           PERFORM 9999-GETNEXT-DREQDESC-RQ-O.
+           IF END-OF-CHAIN
+               GO TO 9310-CHECK-ADDED-DESC.
+
+           IF REQDESC-LINE-NO = "95" OR "96"
+               NEXT SENTENCE
+           ELSE
+           IF REQDESC-LINE-NO > "05"
+               GO TO 9305-DELETE-DREQDESC-LOOP.
+
+           ADD 1                         TO  SUB1.
+           IF SUB1 < 6
+             IF REQDESC-DATA NOT = CMR-DESC-LINE (SUB1)
+               MOVE "Y"                  TO  DID-DESC-CHANGE.
+
+           PERFORM 9999-DELETE-DREQDESC-RQ-O.
+
+           GO TO 9305-DELETE-DREQDESC-LOOP.
+
+       9310-CHECK-ADDED-DESC.
+           IF SUB1 < 5
+               ADD 1                     TO  SUB1
+               IF CMR-DESC-LINE (SUB1) > SPACES
+                   MOVE "Y"              TO  DID-DESC-CHANGE.
+
+       9320-DDD-X.
+           EXIT.
+
+       9400-PUT-UPDATE-MREQ.
+           IF REQ-STATUS = "SS"
+               IF REQ-AUTH-CODE-FLAG = "X"
+                   NEXT SENTENCE
+               ELSE
+               MOVE 0                    TO  REQ-APPROVALS-LEFT-9
+               MOVE "000"                TO  REQ-PATH.
+
+           IF CMR-CALL-MODE = "UP"
+               PERFORM 9999-UPDATE-MREQ-RQ-O
+      *        IF REQ-CO-1-2 = "11"
+      *            MOVE SPACES           TO  BUF-MCORPREQ
+      *            MOVE MREQ-NUMBER      TO  MCORPREQ-REQ-NUMBER
+      *            MOVE "C "             TO  MCORPREQ-REQ-STATUS
+      *            PERFORM 9999-UPDATE-MCORPREQ-RQ-O
+      *        ELSE
+      *        NEXT SENTENCE
+           ELSE
+           IF CMR-CALL-MODE = "CR"
+               PERFORM 9999-PUT-MREQ-RQ-O.
+      *        IF REQ-CO-1-2 = "11"
+      *            MOVE SPACES           TO  BUF-MCORPREQ
+      *            MOVE MREQ-NUMBER      TO  MCORPREQ-REQ-NUMBER
+      *            MOVE "A "             TO  MCORPREQ-REQ-STATUS
+      *            PERFORM 9999-PUT-MCORPREQ-RQ-O.
+
+       9450-DETERMINE-PATH.
+      *------ FIRST FIGURE OUT THE CORRECT PATH THAT THIS REQ BELONGS
+      *------ TO (BASED ON DEPT, BUDGET NO, EXP CLASS, ETC)
+      *------ WE GET REQUESTING DEPT FROM ID NUM FROM MMIS PERSONNEL
+      *------ DATASET.
+           MOVE "R"                      TO  RQPH-PATH-TYPE.
+           MOVE CMR-SUB                  TO  RQPH-CLASS.
+           MOVE CMR-FOR-DEPT             TO  RQPH-DEPARTMENT.
+
+           IF REQ-REQ-DEPT = SPACES
+               MOVE RQPH-DEPARTMENT      TO  RQPH-REQ-DEPT
+           ELSE
+               MOVE REQ-REQ-DEPT         TO  RQPH-REQ-DEPT.
+
+           IF SAVE-PACD-SW = "N"
+               IF CMR-WO-NUMBER > SPACES
+                   NEXT SENTENCE
+               ELSE
+               IF CMR-SUB-9 > 100
+                   MOVE CMR-EXPENSE-CLASS TO SAVE-GAS-EXPENSE-CLASS
+                   MOVE CMR-SUB-9        TO  CMR-EXPENSE-CLASS-9.
+           MOVE CMR-EXP-CLS-6DIG         TO  RQPH-EXPENSE-CLASS.
+           MOVE CMR-BUDNUM-NODASH        TO  RQPH-BUDGET-NUMBER.
+           MULTIPLY CMR-QTY BY CMR-EST-UNIT-PRICE
+             GIVING RQPH-VALUE ROUNDED.
+           IF CMR-WO-NUMBER > SPACES
+               MOVE CMR-WO-NUMBER        TO  APPROVAL-WO
+               CALL "TPASSAPP" USING BASE-MMISA, APPROVAL-WORKAREA
+               MOVE APPROVAL-STATUS      TO  RQPH-WO-APPROVED
+           ELSE
+               MOVE "N"                  TO  RQPH-WO-APPROVED.
+
+           CALL "CEARQPH" USING CBASE, STATUS-AREA, RQPH-AREA,
+             BU-DISPLAY-MSG.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+           IF SAVE-PACD-SW = "N"
+               IF CMR-WO-NUMBER > SPACES
+                   NEXT SENTENCE
+               ELSE
+               MOVE SAVE-GAS-EXPENSE-CLASS TO CMR-EXPENSE-CLASS.
+
+       9460-DP-X.
+           EXIT.
+
+       9470-QUEUE.
+      *------ QUEUE UP THE REQ FOR THOSE THAT NEED TO APPROVE IT.
+      *------ NOTE: CEAQUE IGNORES PATH FOR "SS" STATUS REQS, JUST
+      *------ PUTS OUT ENTRY FOR ORIGINATOR.
+           MOVE MREQ-NUMBER              TO  EAQ-REQ-NUMBER.
+           MOVE RQPH-RET-PATH            TO  EAQ-PATH-ARG.
+           MOVE RQPH-RET-PATH2           TO  EAQ-PATH-ARG2.
+           MOVE REQ-ORIGINATOR           TO  EAQ-ORIG-EMPL.
+           MOVE "R"                      TO  EAQ-QUEUE-TYPE.
+           MOVE APPROVAL-STATUS          TO  EAQ-WO-APP.
+           MOVE REQ-AUTH-CODE-FLAG       TO  EAQ-AUTH-FLAG.
+      *------ IF ON WO, MAY ALSO QUEUE TO LEVEL 98 FOR WORKORDER
+      *------ APPROVAL, DEPENDING ON GLOBALS
+           IF CMR-WO-NUMBER > SPACES
+               MOVE "Y"                  TO  EAQ-WO-FLAG
+           ELSE
+               MOVE "N"                  TO  EAQ-WO-FLAG.
+           CALL "CEAQUE" USING CBASE, STATUS-AREA, EAQ-AREA,
+             REQ-GLOBALS, BUF-MREQ, BU-DISPLAY-MSG.
+           IF BU-DISPLAY-MSG-1 NOT = SPACES
+               PERFORM 2100-BLOWUP.
+
+       9480-Q-X.
+           EXIT.
+
+       9500-DELETE-DREQD.
+           PERFORM 9999-CHAINHD-DREQD-RQ-O.
+
+           PERFORM 9999-GETNEXT-DREQD-RQ-O.
+           IF END-OF-CHAIN
+               MOVE SPACES               TO  BUF-DREQD
+               GO TO 9520-DD-X.
+
+           PERFORM 9999-DELETE-DREQD-RQ-O.
+       9520-DD-X.
+           EXIT.
+
+       9700-DELETE-ENTIRE-REQ.
+           PERFORM 9999-CHAINHD-DREQDESC-RQ-O.
+           PERFORM 9999-GETNEXT-DREQDESC-RQ-O.
+           PERFORM UNTIL NOT GOOD-CALL
+               PERFORM 9999-DELETE-DREQDESC-RQ-O
+               PERFORM 9999-GETNEXT-DREQDESC-RQ-O
+           END-PERFORM.
+
+           PERFORM 9999-CHAINHD-DREQITM-RQ-O.
+           PERFORM 9999-GETNEXT-DREQITM-RQ-O.
+           PERFORM UNTIL NOT GOOD-CALL
+               PERFORM 9999-DELETE-DREQITM-RQ-O
+               PERFORM 9999-GETNEXT-DREQITM-RQ-O
+           END-PERFORM.
+
+           PERFORM 9999-CHAINHD-DREQD-RQ-O.
+           PERFORM 9999-GETNEXT-DREQD-RQ-O.
+           PERFORM UNTIL NOT GOOD-CALL
+               PERFORM 9999-DELETE-DREQD-RQ-O
+               PERFORM 9999-GETNEXT-DREQD-RQ-O
+           END-PERFORM.
+
+       9730-DELETE-DREQQUE.
+           PERFORM 9999-CHAINHD-DREQQUE-RQ-O.
+           PERFORM 9999-GETNEXT-DREQQUE-RQ-O.
+           PERFORM UNTIL NOT GOOD-CALL
+               PERFORM 9999-DELETE-DREQQUE-RQ-O
+               PERFORM 9999-GETNEXT-DREQQUE-RQ-O
+           END-PERFORM.
+       9737-DD-X.
+
+           PERFORM 9999-GETKEY-MREQ-RQ-O.
+           PERFORM 9999-DELETE-MREQ-RQ-O.
+
+       9730-DER-X.
+           EXIT.
+
+       9800-UPDATE-LAST-REQNO.
+           PERFORM 3000-READ-MSTORERM.
+           MOVE REQ-ARG                  TO  STR-LAST-REQ-NO.
+           PERFORM 9999-UPDATE-MSTORERM-CD-O.
+
+      *------ THIS VERSION OF CATREAD ASSUMES THE SET/MSG NUMBER
+      *------ WILL BE IN CATREAD-MSG-NUMBER.
+       999-CATREAD.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO MESSAGE-BUFFER.
+           IF MESSAGE-BUFFER-1  = SPACES
+               MOVE "* ERROR ON THIS FIELD *" TO MESSAGE-BUFFER.
+       999-CATREAD-EXIT.
+           EXIT.
+
+       9999-CHAINHD-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY = REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DREQDESC-RQ-I.
+           MOVE 0 TO COND-WORD.
+           MOVE SAVE-COPY-REQ-NUMBER TO REQNO OF DREQDESC-RQ-REC-I.
+           START DREQDESC-RQ-I KEY = REQNO OF DREQDESC-RQ-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQDESC-RQ-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DREQDESC-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQDESC-RQ-REC-O.
+           START DREQDESC-RQ-O KEY = REQNO OF DREQDESC-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQDESC-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DREQITM-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQITM-RQ-REC-O.
+           START DREQITM-RQ-O KEY = REQNO OF DREQITM-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQITM-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CHAINHD-DREQD-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF DREQD-RQ-REC-O.
+           START DREQD-RQ-O KEY = REQNO OF DREQD-RQ-REC-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF (FILE-STATUS NOT = "00") AND (FILE-STATUS-1 NOT = "2")
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "CHAINHD ERR 9999-CHAINHD-DREQD-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-CLOSE-STUFF.
+           CLOSE DREQQUE-RQ-O.
+           CLOSE DREQDESC-RQ-I.
+           CLOSE DREQDESC-RQ-O.
+           CLOSE DREQITM-RQ-O.
+           CLOSE DREQD-RQ-O.
+           CLOSE MCORPREQ-RQ-O.
+           CLOSE MEMPL-EM-I.
+           CLOSE MEMPL-EM-O.
+           CLOSE MPLTINFO-PK-I.
+           CLOSE MPLTINFO-PK-O.
+           CLOSE MREQFILE-CD-O.
+           CLOSE MREQ-RQ-O.
+           CLOSE MSTORERM-CD-O.
+           CLOSE PER-PERSON-PC-I.
+
+       9999-DELETE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DREQQUE-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-DELETE-DREQDESC-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DREQDESC-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-DREQDESC-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-DELETE-DREQITM-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DREQITM-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-DREQITM-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-DELETE-DREQD-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE DREQD-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-DREQD-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-DELETE-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           DELETE MREQ-RQ-O
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "DELETE ERR 9999-DELETE-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MEMPL-EM-I.
+           MOVE 0 TO COND-WORD.
+           MOVE EMPL-ARG TO EMPLOYID OF MEMPL-EM-REC-I.
+           READ MEMPL-EM-I INTO BUF-MEMPL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MEMPL-EM-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MPLTINFO-PK-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-PK-REC-I.
+           READ MPLTINFO-PK-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MPLTINFO-PK-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETKEY-MREQFILE-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MREQFILE-CD-REC-O.
+           READ MREQFILE-CD-O INTO BUF-MREQFILE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MREQFILE-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MREQFILE-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF MREQFILE-CD-REC-O.
+           START MREQFILE-CD-O KEY > CORPCDE OF MREQFILE-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-READ-MREQFILE-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CMR-CORP-CODE TO MREQFILE-CC.
+           MOVE "A" TO MREQFILE-LETTER.
+           MOVE MREQFILE-CHECK-KEY TO CORPCDE OF MREQFILE-CD-REC-O.
+           START MREQFILE-CD-O KEY = CORPCDE OF MREQFILE-CD-REC-O
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF FILE-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17 GO TO 9999-RM-X.
+       9999-RM-LOOP.
+           READ MREQFILE-CD-O NEXT INTO BUF-MREQFILE
+               AT END    MOVE 15 TO COND-WORD.
+           IF FILE-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           IF MREQFILE-CORP-CODE-7 NOT = CMR-CORP-CODE
+               MOVE 15 TO COND-WORD.
+           IF COND-WORD = 15 GO TO 9999-RM-X.
+           IF MREQFILE-REQ-NUM-MMIS = CMR-REQ-NUMBER
+               NEXT SENTENCE
+           ELSE
+           GO TO 9999-RM-LOOP.
+       9999-RM-X.    EXIT.
+
+       9999-GETKEY-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           MOVE REQ-ARG TO REQNO OF MREQ-RQ-REC-O.
+           READ MREQ-RQ-O INTO BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MREQ-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF MREQ-RQ-REC-O.
+           START MREQ-RQ-O KEY > REQNO OF MREQ-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETKEY-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO CORPCDE OF MSTORERM-CD-REC-O.
+           READ MSTORERM-CD-O INTO BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-RESET-MSTORERM-CD-O.
+           MOVE HIGH-VALUES TO CORPCDE OF MSTORERM-CD-REC-O.
+           START MSTORERM-CD-O KEY > CORPCDE OF MSTORERM-CD-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETKEY-PER-PERSON-PC-I.
+           MOVE 0 TO COND-WORD.
+           MOVE PER-CC-ARG TO PERCCNUM OF PER-PERSON-PC-REC-I.
+           READ PER-PERSON-PC-I INTO BUF-PER-PERSONNEL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS = "23"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETKEY ERR 9999-GETKEY-PER-PERSON-PC-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-GETNEXT-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQQUE-RQ-O NEXT INTO BUF-DREQQUE
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQQUE-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQQUE-RQ-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQQUE-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQQUE-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQQUE-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQQUE-RQ-REC-O.
+           START DREQQUE-RQ-O KEY > REQNO OF DREQQUE-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DREQDESC-RQ-I.
+           MOVE 0 TO COND-WORD.
+           READ DREQDESC-RQ-I NEXT INTO BUF-DREQDESC
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "GETNEXT ERR 9999-GETNEXT-DREQDESC-RQ-I"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP
+               END-IF
+           ELSE
+           IF REQNO OF DREQDESC-RQ-REC-I NOT = SAVE-COPY-REQ-NUMBER
+               MOVE 15 TO COND-WORD.
+
+       9999-GETNEXT-DREQDESC-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQDESC-RQ-O NEXT INTO BUF-DREQDESC
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQDESC-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQDESC-RQ-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQDESC-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQDESC-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQDESC-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQDESC-RQ-REC-O.
+           START DREQDESC-RQ-O KEY > REQNO OF DREQDESC-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DREQITM-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQITM-RQ-O NEXT INTO BUF-DREQITM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQITM-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQITM-RQ-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQITM-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQITM-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQITM-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQITM-RQ-REC-O.
+           START DREQITM-RQ-O KEY > REQNO OF DREQITM-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-GETNEXT-DREQD-RQ-O.
+           MOVE 0 TO COND-WORD.
+           READ DREQD-RQ-O NEXT INTO BUF-DREQD
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14"
+                   PERFORM 9999-RESET-DREQD-RQ-O
+                   MOVE 15 TO COND-WORD
+               ELSE
+               IF FILE-STATUS = "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD
+                   IF HANDLE-BLOWUP-FLAG = "Y"
+                       MOVE "GETNEXT ERR 9999-GETNEXT-DREQD-RQ-O"
+                           TO BU-MSG-AREA
+                       PERFORM 2100-BLOWUP
+                   END-IF
+           ELSE
+           IF REQNO OF DREQD-RQ-REC-O NOT = REQ-ARG
+               PERFORM 9999-RESET-DREQD-RQ-O
+               MOVE 15 TO COND-WORD.
+
+       9999-RESET-DREQD-RQ-O.
+           MOVE HIGH-VALUES TO REQNO OF DREQD-RQ-REC-O.
+           START DREQD-RQ-O KEY > REQNO OF DREQD-RQ-REC-O
+               INVALID KEY MOVE "00" TO FILE-STATUS.
+
+       9999-OPEN-STUFF.
+           OPEN I-O DREQQUE-RQ-O.
+           OPEN INPUT DREQDESC-RQ-I.
+           OPEN I-O DREQDESC-RQ-O.
+           OPEN I-O DREQITM-RQ-O.
+           OPEN I-O DREQD-RQ-O.
+           OPEN I-O MCORPREQ-RQ-O.
+           OPEN INPUT MEMPL-EM-I.
+           OPEN I-O MEMPL-EM-O.
+           OPEN INPUT MPLTINFO-PK-I.
+           OPEN I-O MPLTINFO-PK-O.
+           OPEN I-O MREQFILE-CD-O.
+           OPEN I-O MREQ-RQ-O.
+           OPEN I-O MSTORERM-CD-O.
+           OPEN INPUT PER-PERSON-PC-I.
+
+       9999-PUT-DREQDESC-RQ-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DREQDESC-RQ-REC-O FROM BUF-DREQDESC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DREQDESC-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DREQITM-RQ-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DREQITM-RQ-REC-O FROM BUF-DREQITM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DREQITM-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-DREQD-RQ-O.
+           MOVE 0 TO COND-WORD.
+           WRITE DREQD-RQ-REC-O FROM BUF-DREQD
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-DREQD-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-MCORPREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           WRITE MCORPREQ-RQ-REC-O FROM BUF-MCORPREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERROR 9999-PUT-MCORPREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-MEMPL-EM-O.
+           MOVE 0 TO COND-WORD.
+           WRITE MEMPL-EM-REC-O FROM BUF-MEMPL
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-MEMPL-EM-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-MREQFILE-CD-O.
+           MOVE 0 TO COND-WORD.
+           WRITE MREQFILE-CD-REC-O FROM BUF-MREQFILE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-MREQFILE-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-PUT-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           WRITE MREQ-RQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "PUT ERR 9999-PUT-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MCORPREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MCORPREQ-RQ-REC-O FROM BUF-MCORPREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERROR 9999-UPDATE-MCORPREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MPLTINFO-PK-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MPLTINFO-PK-REC-O FROM BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MPLTINFO-PK-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MREQ-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MREQ-RQ-REC-O FROM BUF-MREQ
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MREQ-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-MSTORERM-CD-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE MSTORERM-CD-REC-O FROM BUF-MSTORERM
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-MSTORERM-CD-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+
+       9999-UPDATE-DREQQUE-RQ-O.
+           MOVE 0 TO COND-WORD.
+           REWRITE DREQQUE-RQ-REC-O FROM BUF-DREQQUE
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD
+               IF HANDLE-BLOWUP-FLAG = "Y"
+                   MOVE "UPDATE ERR 9999-UPDATE-DREQQUE-RQ-O"
+                       TO BU-MSG-AREA
+                   PERFORM 2100-BLOWUP.
+

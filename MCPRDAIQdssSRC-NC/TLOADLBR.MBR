@@ -1,0 +1,598 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TLOADLBR.
+      *REMARKS.    THIS PROGRAM IS DESIGNED TO PROVIDE THE ABILITY
+      *            TO RECORD THE LABOR USED ON EACH DAY'S WORK
+      *            ORDERS. THE CRAFTSMAN'S CLOCK CARD NUMBER, A
+      *            WORK ORDER NUMBER, AND THE HOURS WORKED ON THAT
+      *            WORK ORDER NUMBER MUST BE RECORDED. THE
+      *            CRAFTSMAN'S NAME AND CRAFT WILL BE RETRIEVED AND
+      *            DISPLAYED FOR THE USER'S VERIFICATION. THE
+      *            USER WILL THEN BE ASKED TO SUPPLY THE DATE
+      *            AND THE SHIFT THAT THE EMPLOYEE WORKED. THIS
+      *            DATA WILL BE SAVED IN THE DATABASE AND THE USER
+      *            WILL BE ASKED IF THE CRAFTSMAN HAS WORKED ON
+      *            ANY OTHER WORK ORDERS FOR THAT DATE AND SHIFT.
+      *            WHEN A NEW CRAFTSMAN'S WORK IS TO BE ENTERED
+      *            THE USER ENTERS 'END' IN THE WORK ORDER NUMBER
+      *            FIELD AND THE PROGRAM WILL RESET THE SCREEN.
+      *              THE FOLLOWING SUBPROGRAMS ARE CALLED BY THIS
+      *            PROGRAM:
+      *                    TALWONO  - ALIGNS THE WORK ORDER NUMBER
+      *                               ENTERED ON THE INPUT SCREEN.
+      *                    TNEWWONU -  RETRIEVES THE NEXT AVAILABLE
+      *                               PERMANENT WORK ORDER NUMBER
+      *                               WHEN A TEMPORARY WORK ORDER NUMBER
+      *                               IS ENTERED AND NO PERMANENT
+      *                               WORK ORDER NUMBER HAS BEEN
+      *                               ASSIGNED.
+      *                               NUMBER TO WO-BASIC AND WO-NUMBER
+      *                               FILES WHEN A TEMPORARY WORK
+      *                               ORDER NUMBER HAS BEEN ENTERED
+      *                               WHICH HAS NO PERMANENT WORK ORDER
+      *                               NUMBER ASSIGNED YET
+      *C
+      *C  01/04/2010  CA YODER  2010-00142425-001
+      *C     UPDATE LOGIC ASSIGNING WORKORDER LETTER SUFFIX.
+      *C
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    AS400.
+       OBJECT-COMPUTER.    AS400.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT DISPLAY-FILE
+               ASSIGN TO WORKSTATION-ZOFFLINE-SI
+               ORGANIZATION IS TRANSACTION
+               FILE STATUS IS DSPLY-STATUS
+               CONTROL-AREA IS WS-CONTROL.
+           SELECT PERSONNEL-FILE
+               ASSIGN TO DATABASE-MCFLMM0301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS PF-STATUS.
+           SELECT SHIFT-STRUCTURE-FILE
+               ASSIGN TO DATABASE-MCFLMM2501
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS SSF-STATUS.
+           SELECT WO-LABOR-FILE
+               ASSIGN TO DATABASE-MCFLMM1301
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS WLF-STATUS.
+           SELECT WO-LAST-NUM-USED
+               ASSIGN TO DATABASE-MCFPMM0800
+               ORGANIZATION IS RELATIVE
+               ACCESS MODE IS RANDOM
+               RELATIVE KEY IS ARG-NUM
+               FILE STATUS IS WLNU-STATUS.
+           SELECT WO-NUMBER-FILE
+               ASSIGN TO DATABASE-MCFLMM0101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+               FILE STATUS IS WNF-STATUS.
+           SELECT WO-PLANNED-FILE
+               ASSIGN TO DATABASE-MCFLMM1101
+               ORGANIZATION IS INDEXED
+               ACCESS MODE IS DYNAMIC
+               RECORD KEY IS EXTERNALLY-DESCRIBED-KEY WITH DUPLICATES
+               FILE STATUS IS WPF-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  DISPLAY-FILE
+           LABEL RECORDS ARE OMITTED.
+       01  DSPLY-REC                   PIC X(2000).
+       FD  PERSONNEL-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS PFREC.
+       01  PFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0301.
+       FD  SHIFT-STRUCTURE-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS SSFREC.
+       01  SSFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM2501.
+       FD  WO-LABOR-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLFREC.
+       01  WLFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1301.
+       FD  WO-LAST-NUM-USED
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WLNUREC.
+       01  WLNUREC.
+           COPY DDS-ALL-FORMATS OF MCFPMM0800.
+       FD  WO-NUMBER-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WNFREC.
+       01  WNFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM0101.
+       FD  WO-PLANNED-FILE
+           LABEL RECORDS ARE STANDARD
+           DATA RECORD IS WPFREC.
+       01  WPFREC.
+           COPY DDS-ALL-FORMATS OF MCFLMM1101.
+       WORKING-STORAGE SECTION.
+       77  FIELDNUM                         PIC S9(4) COMP-4.
+       77  MINS-OFF-SAVE                    PIC 9(4) VALUE 0.
+       77  MINS-ON-SAVE                     PIC 9(4) VALUE 0.
+       77  SAVE-SUB1                        PIC S9(4) COMP-4.
+       77  SUB1                             PIC S9(4) COMP-4.
+       77  TIME-ERROR-SW                    PIC X VALUE "0".
+       77  YEAR-SAVE                        PIC X.
+      *---- 01/04/2010:  ADDED PARAMETER FOR CMMISYR.
+       77  MMIS-LETTER                PIC X.
+       01  ARG-NUM                          PIC 9(9).
+       COPY CATREAD OF COPYLIB.
+       COPY CPYIND  OF COPYLIB.
+       COPY TDATESUB OF COPYLIB.
+       01  DATE-WA.
+           05  FILLER                       PIC X(7).
+           05  DATE-YEAR                    PIC X.
+       01  DAY-DIGIT                        PIC X.
+       01  DBPARAMETERS.         COPY DBPARMS OF COPYLIB.
+       01  ERROR-BUFFER.
+           05  FILLER                       PIC X(5).
+           05  ERROR-WO                     PIC X(10).
+           05  FILLER                       PIC X(63).
+       01  ERROR-SWITCH                     PIC 9(4).
+       01  GREG-DATE.
+           05  GREG-CC                      PIC XX.
+           05  GREG-YMD.
+               10  GREG-YY                  PIC XX.
+               10  GREG-MM                  PIC XX.
+               10  GREG-DD                  PIC XX.
+       01  FILE-STATUSES.
+           05  BMF-STATUS                   PIC XX.
+           05  DSPLY-STATUS                 PIC XX.
+           05  PF-STATUS                    PIC XX.
+           05  SSF-STATUS                   PIC XX.
+           05  WLF-STATUS                   PIC XX.
+           05  WLNU-STATUS                  PIC XX.
+           05  WNF-STATUS                   PIC XX.
+           05  WPF-STATUS                   PIC XX.
+       01  JULIAN-DATE.
+           05  JULIAN-DATE-CC               PIC 99.
+           05  JULIAN-DATE-YY               PIC 99.
+           05  JULIAN-DATE-DDD              PIC 9(3).
+       01  JULIAN-DATE-9 REDEFINES JULIAN-DATE  PIC 9(7).
+       01  LABOR-COST-WA.
+           02  LABOR-COST-I                 PIC 9(10)V99.
+           02  LABOR-COST-D-AND-C REDEFINES LABOR-COST-I.
+               03  LABOR-COST-D             PIC 9(10).
+               03  LABOR-COST-C             PIC 99.
+       01  LABOR-DATA.
+           02  HD-DATE                      PIC X(6).
+           02  HD-TIME-HR                   PIC XX.
+           02  HD-TIME-MI                   PIC XX.
+           02  LABOR-DATE.
+               03  LABOR-DATE-MD            PIC 99.
+               03  LABOR-DATE-DM            PIC 99.
+               03  LABOR-DATE-YY            PIC 99.
+           02  LABOR-SHIFT                  PIC X.
+           02  LDS.
+               03  LABOR-CC-NUM             PIC XXXX.
+               03  LABOR-CC-NAME            PIC X(16).
+               03  LABOR-CC-CRAFT           PIC XX.
+               03  LABOR-WO-HRS OCCURS 10 TIMES.
+                   04  LABOR-WO.
+                       05  LABOR-WO-1-7.
+                           06  LABOR-WO-1-6.
+                               07  LW-1-3   PIC XXX.
+                               07  FILLER   PIC XXX.
+                           06  LABOR-WO-7   PIC X.
+                       05  LABOR-WO-8-10    PIC XXX.
+                   04  TIME-ON-HRS-MINS.
+                       05  TIME-ON-HRS-9    PIC 99.
+                       05  TIME-ON-MINS-9   PIC 99.
+                   04  TIME-OFF-HRS-MINS.
+                       05  TIME-OFF-HRS-9   PIC 99.
+                       05  TIME-OFF-MINS-9  PIC 99.
+           02  LABOR-CMD-LINE               PIC X(79).
+           02  LABOR-MSG-LINE               PIC X(79).
+       01  LABOR-HOURS-WORK.
+           02  LHW.
+               03  LABOR-HOURS              PIC XX.
+               03  LABOR-HOURS-9 REDEFINES LABOR-HOURS    PIC 99.
+               03  LABOR-PARTIAL-HOURS      PIC 9.
+           02  LHW-9 REDEFINES LHW          PIC 99V9.
+       01  LABOR-MINUTES-WORK.
+           02  LABOR-MINUTES                PIC XX.
+           02  LABOR-MINUTES-9 REDEFINES LABOR-MINUTES    PIC 99.
+           02  EXPANDED-LABOR-MINUTES       PIC 999.
+       01  LABOR-WO-SAVE                    PIC X(10).
+       01  LAST-WO-BUFF.         COPY MLASTWO OF COPYLIB.
+       01  LEAP-YEAR-FLAG                   PIC X.
+       01  LINK-DATA.
+           05 ZONE-BUF-LINK                 PIC X(4).
+           05 TIME-IN.
+              10 HRS-IN                     PIC 99.
+              10 MIN-IN                     PIC 99.
+           05 CODE-BUF                      PIC X.
+           05 SHIFTS.
+              10 S-1                        PIC 9999.
+              10 E-1                        PIC 9999.
+              10 S-2                        PIC 9999.
+              10 E-2                        PIC 9999.
+              10 S-3                        PIC 9999.
+              10 E-3                        PIC 9999.
+              10 S-4                        PIC 9999.
+              10 E-4                        PIC 9999.
+           05 CURR-SHIFT                    PIC 9.
+       01  PASSWORD-INFORMATION.
+           05  NAME-OF-PROGRAM     PIC X(08) VALUE "TLOADLBR".
+           05  PROGRAM-TYPE        PIC X(02) VALUE "UP".
+           05  PROGRAM-RELEASE     PIC X(12) VALUE " E0100010001".
+           05  PROGRAM-DESCRIPTION.
+               10  PROG-DESC-A     PIC X(60) VALUE
+                   "MANUAL LOAD LABOR PROGRAM   "                      .
+               10  PROG-DESC-B     PIC X(60) VALUE SPACES.
+               10  PROG-FUNCTION   PIC X(60) VALUE SPACES.
+           05  PASSWORD-FLAG       PIC X.
+       01  PERSONNEL-DATA.       COPY MPERSONL OF COPYLIB.
+       01  RET-CODE                         PIC X.
+       COPY DBSTAT OF COPYLIB.
+       01  SHIFT-STRUCTURE.      COPY MSHFTSTR OF COPYLIB.
+       01  START-DATA                       PIC X(4).
+       01  STOP-DATA                        PIC X(4).
+       01  TIME-BUFFER.
+           02  TIME-HRS                     PIC XX.
+           02  TIME-MINS                    PIC XX.
+           02  FILLER                       PIC XX.
+       01  TRUE-VAL                         PIC 1 VALUE B"1".
+       COPY VCOMAREA OF COPYLIB.
+       01  WO-PLANNED-DATA.      COPY DWOPLAN OF COPYLIB.
+       01  WO-LABOR-DATA.        COPY DWOLABOR OF COPYLIB.
+       01  WO-NUMBER-BUF                    PIC X(10).
+       01  WO-NUMBER-WORK.
+           02  WO-WORK-1-7.
+               03  FILLER                   PIC X(6).
+               03  WO-WORK-7                PIC X.
+           02  WO-WORK-8-10                 PIC XXX.
+       COPY WSCONTROL IN COPYLIB.
+       PROCEDURE DIVISION.
+       START-PGM.
+           PERFORM 1-HSK.
+           PERFORM 6-MAIN UNTIL VIEW-LASTKEY = 3.
+       2-EOJ.
+           CLOSE DISPLAY-FILE.
+           CLOSE PERSONNEL-FILE.
+           CLOSE SHIFT-STRUCTURE-FILE.
+           CLOSE WO-LABOR-FILE.
+           CLOSE WO-LAST-NUM-USED.
+           CLOSE WO-NUMBER-FILE.
+           CLOSE WO-PLANNED-FILE.
+           GOBACK.
+       1-HSK.
+           OPEN I-O    DISPLAY-FILE.
+           OPEN INPUT  PERSONNEL-FILE.
+           OPEN INPUT  SHIFT-STRUCTURE-FILE.
+           OPEN I-O    WO-LABOR-FILE.
+           OPEN INPUT  WO-LAST-NUM-USED.
+           OPEN INPUT  WO-NUMBER-FILE.
+           OPEN INPUT  WO-PLANNED-FILE.
+           MOVE SPACES TO LABOR-DATA.
+           MOVE 0 TO SAVE-SUB1.
+           MOVE LOW-VALUES TO STATUS-AREA.
+           MOVE 0 TO COND-WORD.
+           MOVE 1 TO ARG-NUM.
+           READ WO-LAST-NUM-USED INTO LAST-WO-BUFF
+               INVALID KEY     MOVE 17 TO COND-WORD.
+           IF WLNU-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17 MOVE 1 TO DATE-FLAG-SW.
+           MOVE DATE-FLAG-SW TO DATE-FLAG.
+           CALL "TPWORD" USING PASSWORD-INFORMATION.
+           IF PASSWORD-FLAG = "N" GO TO 2-EOJ.
+           MOVE 1 TO DATE-MODE.
+           MOVE DATE-FLAG TO DATE-CODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT TO DATE-WA.
+      *------- 01/04/2010:  UPDATED WORKORDER LETTER SUFFIX LOGIC.
+      *    IF DATE-YEAR = "0" MOVE "A" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "1" MOVE "B" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "2" MOVE "C" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "3" MOVE "D" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "4" MOVE "E" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "5" MOVE "F" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "6" MOVE "G" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "7" MOVE "H" TO YEAR-SAVE
+      *    ELSE
+      *    IF DATE-YEAR = "8" MOVE "J" TO YEAR-SAVE
+      *    ELSE
+      *    MOVE "K" TO YEAR-SAVE.
+
+           CALL "CMMISYR" USING MMIS-LETTER.
+           MOVE MMIS-LETTER    TO YEAR-SAVE.
+      *-------
+
+           MOVE "FLOADLBR" TO VIEW-CFNAME.
+           MOVE 1 TO DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+       6-MAIN.
+           MOVE SPACES TO LABOR-DATA ERROR-BUFFER.
+           MOVE DATE-OUT TO HD-DATE.
+           ACCEPT TIME-BUFFER FROM TIME.
+           MOVE TIME-HRS TO HD-TIME-HR.
+           MOVE TIME-MINS TO HD-TIME-MI.
+           MOVE YEAR-SAVE TO LABOR-WO-7 (1) LABOR-WO-7 (2)
+               LABOR-WO-7 (3) LABOR-WO-7 (4) LABOR-WO-7 (5)
+               LABOR-WO-7 (6) LABOR-WO-7 (7) LABOR-WO-7 (8)
+               LABOR-WO-7 (9) LABOR-WO-7 (10).
+           PERFORM 61-READ-AND-PROCESS-LABOR THRU 61-RAPL-EXIT.
+       61-READ-AND-PROCESS-LABOR.
+           MOVE ERROR-BUFFER TO LABOR-MSG-LINE.
+           MOVE LABOR-DATA TO DSPLY-REC.
+           PERFORM 99-SCREEN-WRITE.
+           PERFORM 98-SCREEN-READ.
+           MOVE DSPLY-REC TO LABOR-DATA.
+           MOVE SPACES TO ERROR-BUFFER.
+           IF VIEW-LASTKEY = 3 GO TO 2-EOJ.
+           MOVE SPACES TO WO-LABOR-DATA.
+      ****************************************************************
+      *    PROGRAM EDITING AND VALIDATION OF THE FIELDS INPUT BY     *
+      *    THE USER WILL BE PERFORMED                                *
+      ****************************************************************
+           IF DATE-FLAG = 3
+               IF LABOR-DATE-MD > "00" AND < "32"
+                   MOVE LABOR-DATE-MD TO LBR-DATE-DD
+               ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR
+           ELSE
+           IF LABOR-DATE-MD > "00" AND < "13"
+               MOVE LABOR-DATE-MD TO LBR-DATE-MM    ELSE
+               MOVE 35031 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (6) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR.
+           IF DATE-FLAG = 3
+               IF LABOR-DATE-DM > "00" AND < "13"
+                   MOVE LABOR-DATE-DM TO LBR-DATE-MM
+               ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR
+           ELSE
+           IF LABOR-DATE-DM > "00" AND < "32"
+               MOVE LABOR-DATE-DM TO LBR-DATE-DD    ELSE
+               MOVE 35030 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (7) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR.
+           IF LABOR-DATE-YY IS NUMERIC
+               MOVE LABOR-DATE-YY TO LBR-DATE-YY    ELSE
+               MOVE 35032 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (8) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR.
+           IF LABOR-SHIFT IS NUMERIC
+               MOVE LABOR-SHIFT TO LBR-SHIFT-1    ELSE
+               MOVE 35034 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (9) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR.
+           MOVE 0 TO COND-WORD.
+           MOVE LABOR-CC-NUM TO PERCCNUM OF PFREC.
+           START PERSONNEL-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17
+               MOVE 35047 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               MOVE TRUE-VAL TO INDS (10) INDS (99)
+               GO TO 61-READ-AND-PROCESS-LABOR.
+           READ PERSONNEL-FILE NEXT INTO PERSONNEL-DATA
+               AT END    MOVE 15 TO COND-WORD.
+           IF PF-STATUS NOT = "00" MOVE 15 TO COND-WORD.
+           MOVE PER-CC-NUM TO LBR-EMPL-NUM.
+           MOVE PER-EMP-NAME TO LBR-EMPL-NAME LABOR-CC-NAME.
+           MOVE PER-CRAFT TO LBR-CRAFT LABOR-CC-CRAFT.
+           MOVE PER-SHIFT-CREW TO LABOR-CREW.
+           MOVE SAVE-SUB1 TO SUB1.
+       61-LOOP-ALIGN-AND-VALIDATE-WO.
+           ADD 1 TO SUB1.
+           IF SUB1 > 10
+               MOVE 0 TO SUB1
+               MOVE 0 TO SAVE-SUB1
+               GO TO 61-RAPL-EXIT.
+           IF LABOR-WO-1-6 (SUB1) = SPACES OR "END"
+               MOVE 0 TO SUB1
+               MOVE 0 TO SAVE-SUB1
+               GO TO 61-RAPL-EXIT.
+           MOVE LABOR-WO (SUB1) TO WO-NUMBER-WORK.
+           CALL "TALWONO" USING WO-NUMBER-WORK RET-CODE.
+           IF WO-WORK-8-10 NOT NUMERIC MOVE SPACES TO WO-WORK-8-10.
+           MOVE WO-NUMBER-WORK TO LABOR-WO (SUB1).
+           MOVE WO-NUMBER-WORK TO LABOR-WO-SAVE.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER-WORK TO WONUM OF WNFREC.
+           START WO-NUMBER-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WNF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 0
+               MOVE WO-WORK-1-7 TO LBR-WO-NUM-PRIM
+               MOVE WO-WORK-8-10 TO LBR-WO-NUM-SUFFIX
+               PERFORM 611-CHECK-WO THRU 611-CW-EXIT
+               MOVE SPACES TO SHIFT-STRUCTURE
+               MOVE ZONE-P TO SHIFTZONE OF SSFREC
+               READ SHIFT-STRUCTURE-FILE INTO SHIFT-STRUCTURE
+               IF LABOR-SHIFT = "1"
+                   MOVE FRST-SHIFT TO START-DATA
+                   MOVE SCND-SHIFT TO STOP-DATA
+                   GO TO 61-LAAVW-CONT-2
+               ELSE
+               IF LABOR-SHIFT = "2"
+                   MOVE SCND-SHIFT TO START-DATA
+                   IF THRD-SHIFT-X = SPACES
+                       MOVE FRST-SHIFT TO STOP-DATA
+                       GO TO 61-LAAVW-CONT-2
+                   ELSE
+                   MOVE THRD-SHIFT TO STOP-DATA
+                   GO TO 61-LAAVW-CONT-2
+               ELSE
+               IF LABOR-SHIFT = "3"
+                   IF THRD-SHIFT-X = SPACES
+                       MOVE SCND-SHIFT TO START-DATA
+                       MOVE FRST-SHIFT TO STOP-DATA
+                       GO TO 61-LAAVW-CONT-2
+                   ELSE
+                   MOVE THRD-SHIFT TO START-DATA
+                   IF FRTH-SHIFT-X = SPACES
+                       MOVE FRST-SHIFT TO STOP-DATA
+                       GO TO 61-LAAVW-CONT-2
+                   ELSE
+                   MOVE FRTH-SHIFT TO STOP-DATA
+                   GO TO 61-LAAVW-CONT-2
+               ELSE
+               IF LABOR-SHIFT = "4"
+                   IF FRTH-SHIFT-X = SPACES
+                       MOVE THRD-SHIFT TO START-DATA
+                       MOVE FRST-SHIFT TO STOP-DATA
+                       GO TO 61-LAAVW-CONT-2
+                   ELSE
+                   MOVE FRTH-SHIFT TO START-DATA
+                   MOVE FRST-SHIFT TO STOP-DATA
+                   GO TO 61-LAAVW-CONT-2
+               ELSE
+               GO TO 61-LAAVW-CONT-2
+           ELSE
+           MOVE 49032 TO CATREAD-MSG-NUMBER
+           PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+           MOVE WO-NUMBER-WORK TO ERROR-WO
+           MULTIPLY SUB1 BY 4 GIVING FIELDNUM
+           ADD 9 TO FIELDNUM
+           MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+           SUBTRACT 1 FROM SUB1 GIVING SAVE-SUB1.
+           GO TO 61-READ-AND-PROCESS-LABOR.
+       61-LAAVW-CONT-2.
+           MOVE "0" TO TIME-ERROR-SW.
+           IF TIME-ON-HRS-MINS (SUB1) NOT NUMERIC
+               MOVE "1" TO TIME-ERROR-SW
+           ELSE
+           IF TIME-ON-HRS-9 (SUB1) < 0 OR > 23
+               MOVE "1" TO TIME-ERROR-SW
+           ELSE
+           IF TIME-ON-MINS-9 (SUB1) < 0 OR > 59
+               MOVE "1" TO TIME-ERROR-SW
+           ELSE
+           IF TIME-OFF-HRS-MINS (SUB1) NOT NUMERIC
+               MOVE "2" TO TIME-ERROR-SW
+           ELSE
+           IF TIME-OFF-HRS-9 (SUB1) < 0 OR > 23
+               MOVE "2" TO TIME-ERROR-SW
+           ELSE
+           IF TIME-OFF-MINS-9 (SUB1) < 0 OR > 59
+               MOVE "2" TO TIME-ERROR-SW.
+           IF TIME-ERROR-SW NOT = "0"
+               MOVE 35029 TO CATREAD-MSG-NUMBER
+               PERFORM 999-CATREAD THRU 999-CATREAD-EXIT
+               IF TIME-ERROR-SW = "1"
+                   MULTIPLY SUB1 BY 4 GIVING FIELDNUM
+                   ADD 11 TO FIELDNUM
+                   MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99)
+               ELSE
+               IF TIME-ERROR-SW = "2"
+                   MULTIPLY SUB1 BY 4 GIVING FIELDNUM
+                   ADD 12 TO FIELDNUM
+                   MOVE TRUE-VAL TO INDS (FIELDNUM) INDS (99).
+           IF TIME-ERROR-SW NOT = "0"
+               SUBTRACT 1 FROM SUB1 GIVING SAVE-SUB1
+               GO TO 61-READ-AND-PROCESS-LABOR.
+           PERFORM 99-SCREEN-WRITE.
+           MULTIPLY TIME-ON-HRS-9 (SUB1) BY 60 GIVING MINS-ON-SAVE.
+           ADD TIME-ON-MINS-9 (SUB1) TO MINS-ON-SAVE.
+           MULTIPLY TIME-OFF-HRS-9 (SUB1) BY 60 GIVING
+                             MINS-OFF-SAVE.
+           ADD TIME-OFF-MINS-9 (SUB1) TO MINS-OFF-SAVE.
+           IF MINS-ON-SAVE > MINS-OFF-SAVE
+               ADD 1440 TO MINS-OFF-SAVE.
+           SUBTRACT MINS-ON-SAVE FROM MINS-OFF-SAVE.
+           DIVIDE MINS-OFF-SAVE BY 60 GIVING LHW-9 ROUNDED.
+           MOVE LABOR-HOURS-9 TO LBR-HRS1-99.
+           MOVE LABOR-PARTIAL-HOURS TO LBR-HRS2-9.
+           MULTIPLY LHW-9 BY PER-LABOR-RATE GIVING LABOR-COST-I
+                   ROUNDED.
+           MOVE LABOR-COST-D TO LBR-CST-DOLLR-9.
+           MOVE LABOR-COST-C TO LBR-CST-CENTS-9.
+           MOVE 3 TO DATE-MODE.
+           MOVE LABOR-DATE TO DATE-VALIDATE-IN.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-DB TO LBR-START-DATE LBR-COMPL-DATE.
+           IF LBR-START-DATE-YY > "70"
+               MOVE "19" TO LBR-START-DATE-CC
+                            LBR-COMPL-DATE-CC
+                            LBR-DATE-CC
+           ELSE
+           MOVE "20"     TO LBR-START-DATE-CC
+                            LBR-COMPL-DATE-CC
+                            LBR-DATE-CC.
+           MOVE LBR-START-DATE-CN TO GREG-DATE.
+           MOVE SPACES TO JULIAN-DATE.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+           IF JULIAN-DATE-9 > 1
+               SUBTRACT 1 FROM JULIAN-DATE-9
+           ELSE
+           MOVE 365 TO JULIAN-DATE-DDD
+           SUBTRACT 1 FROM JULIAN-DATE-YY.
+           MOVE SPACES TO GREG-DATE.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                            DAY-DIGIT, LEAP-YEAR-FLAG.
+           IF START-DATA > STOP-DATA
+               IF (TIME-ON-HRS-MINS (SUB1) > START-DATA OR
+                   TIME-ON-HRS-MINS (SUB1) = START-DATA)
+                      AND TIME-ON-HRS-MINS (SUB1) < "2400"
+                          MOVE GREG-DATE TO LBR-START-DATE-CN.
+           IF START-DATA > STOP-DATA
+               IF (TIME-OFF-HRS-MINS (SUB1) > START-DATA OR
+                   TIME-OFF-HRS-MINS (SUB1) = START-DATA)
+                       AND TIME-OFF-HRS-MINS (SUB1) < "2400"
+                           MOVE GREG-DATE TO LBR-COMPL-DATE-CN.
+           MOVE TIME-ON-HRS-MINS (SUB1) TO LBR-START-TIME.
+           MOVE TIME-OFF-HRS-MINS (SUB1) TO LBR-COMPL-TIME.
+           MOVE 0 TO COND-WORD.
+           WRITE WLFREC FROM WO-LABOR-DATA    INVALID KEY
+               GO TO 2-EOJ.
+           PERFORM 611-CHECK-WO THRU 611-CW-EXIT.
+           GO TO 61-LOOP-ALIGN-AND-VALIDATE-WO.
+       61-RAPL-EXIT.   EXIT.
+       611-CHECK-WO.
+           MOVE 0 TO COND-WORD.
+           MOVE WO-NUMBER-WORK TO WONUM OF WPFREC.
+           START WO-PLANNED-FILE KEY IS = EXTERNALLY-DESCRIBED-KEY
+               INVALID KEY    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+           IF COND-WORD = 17 GO TO 611-CW-EXIT.
+           READ WO-PLANNED-FILE NEXT INTO WO-PLANNED-DATA
+               AT END    MOVE 17 TO COND-WORD.
+           IF WPF-STATUS NOT = "00" MOVE 17 TO COND-WORD.
+       611-CW-EXIT.    EXIT.
+
+       98-SCREEN-READ.
+           READ DISPLAY-FILE INDIC IS INDICS
+               MOVE FUNCTION-NUM TO VIEW-LASTKEY
+               MOVE ALL B"0" TO INDICS.
+       99-SCREEN-WRITE.
+           WRITE DSPLY-REC FORMAT IS VIEW-CFNAME
+               INDIC IS INDICS.
+
+       999-CATREAD.
+           MOVE SPACES TO ERROR-BUFFER.
+           CALL "CCATREAD" USING CATREAD-PARMS.
+           MOVE CATREAD-MSG-TEXT TO ERROR-BUFFER.
+       999-CATREAD-EXIT.    EXIT.
+

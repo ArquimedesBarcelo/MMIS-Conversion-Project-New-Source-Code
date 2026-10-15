@@ -1,0 +1,1378 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    TRAWUSAG.
+       AUTHOR.        K MOVSESIAN.
+       INSTALLATION.  GOODYEAR TIRE AND RUBBER CO.
+       DATE-WRITTEN.  MAY  01, 1989.
+
+      *REMARKS.
+      *
+      **************************************************************
+      **                                                          **
+      **   T R A W U S A G - RAW MATERIAL MONTH TO DATE USAGE     **
+      **                     REPORT                               **
+      **                                                          **
+      **   THIS REPORT SHOWS RAW MATERIAL INFORMATION SUCH AS
+      **   CURRENT ONHAND, RECEIPTS MONTH TO DATE AND YESTERDAY,  **
+      **   ONORDER, USAGE MONTH TO DATE AND TODAY, AVERAGE USAG, AND    ***
+      **   ONHAND BASED ON DAYS LEFT.  THE NUMBER OF DAYS WORKED  **
+      **   (PRODUCTION DAYS IS ENTER ON THE SELECTION SCREEN.      **
+      **                                                          **
+      **   AVERAGE USAGE IS COMPUTED BY TAKING MONTH TO DATE USAGE**
+      **   AND DIVIDING IT BY NUMBER OF DAYS WORKED.              **
+      **   DAYS LEFT IS COMPUTED BY TAKING THE CURRENT ONHAND AND **
+      **   DIVIDING IT BY AVERAGE USAGE.                          **
+      **   CLASS TOTALS FOR TOTAL POUNDS AND GALLONS IS ALSO SHOWN**
+      **                                                          **
+      **                                                          **
+      **     XRSCREEN REPORT NO. - 56                             **
+      **     REPORT HEADER       - HDR56.PUB                      **
+      **     FORM NAME IN FRSCREEN - FRAWUSAG                     **
+      **     R19 ON THE MATERIALS CONTROL MENU (UDCMC.PUB)        **
+      **                                                          **
+      **************************************************************
+      *C  24NOV1992         DAVE PLUM      REQUEST #6317
+      *C  ADDED DISPLAY STATEMENTS IN AN ATTEMPT TO DETERMINE WHY
+      *C  THIS PROGRAM IS BLOWING UP WITH A FILE STATUS OF 49 ON
+      *C  THE CODE-FILE.  (FILE STATUS=49, A DELETE OR REWRITE IS
+      *C  BEING ATTEMPTED ON A FILE WHICH IS NOT OPEN I-O.
+      *C
+      *C  ADDED LOGIC TO RESET THE "REWRITE-SW" TO SPACES PRIOR TO
+      *C  REOPENING THE CODE-FILE "INPUT".  THE PGM WAS ATTEMPTING
+      *C  TO DO A REWRITE ON CODE-FILE WITH THE FILE OPEN FOR INPUT
+      *C  ONLY, AND YOU CAN ONLY REWRITE WITH A FILE OPEN I-O.
+      *C
+      *C  JUNE 23, 1994   CR KALMAN
+      *C   ADDED CALL TO COBOL ERROR HANDLER -MCXCBLERR.
+      *C
+      *C  SEPT 17, 1996   CA YODER
+      *C   MODIFIED PROGRAM FOR CENTURY DATABASE CHANGES.  ALSO CHANGED
+      *C   JULIAN DATE CONVERSION TO USE "JULGREG" ROUTINE.
+      *C
+      *C  11/25/97    JEFF BUNGO   REQ #97-017
+      *C     ADD USAGE FIELDS FOR DIRECT DELIVERY.  DD USAGE
+      *C     TO BE STORED IN ADDITIONAL FIELD AND TOTAL USAGE.
+      *C     STORE ISSUE USAGE CALCULATED BY TOTAL USAGE - DD USAGE.
+      *C
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SOURCE-COMPUTER.    IBM-AS400.
+       OBJECT-COMPUTER.    IBM-AS400.
+       SPECIAL-NAMES.      C01 IS NEW-PAGE.
+
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+
+           SELECT PRINT-FILE      ASSIGN TO PRINTER-MCPRT.
+
+           SELECT SORT-FILE       ASSIGN TO DISK-SORT.
+
+           SELECT SORT-FILE2      ASSIGN TO DISK-SORT.
+
+           SELECT CODE-FILE       ASSIGN TO DISK-CODEFILE.
+
+           SELECT USED-TODAY-FILE ASSIGN TO DISK-USEDFILE.
+
+           SELECT MSTORERM-I
+                  ASSIGN TO DATABASE-MCFLCS0201
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT MPLTINFO-I
+                  ASSIGN TO DATABASE-MCFLCS0501
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DRCVITEM-I
+                  ASSIGN TO DATABASE-MCFLCS1202
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DDAILYTC-I
+                  ASSIGN TO DATABASE-MCFLCS1601
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT DTRANS-I
+                  ASSIGN TO DATABASE-MCFLCA0701
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                    WITH DUPLICATES
+                  FILE STATUS IS FILE-STATUS.
+
+           SELECT USAGEFIL-I
+                  ASSIGN TO DATABASE-MCFLCSUSAG
+                  ORGANIZATION IS INDEXED
+                    ACCESS MODE IS DYNAMIC
+                  RECORD KEY IS EXTERNALLY-DESCRIBED-KEY
+                  FILE STATUS IS FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  PRINT-FILE
+           LABEL RECORDS ARE OMITTED
+           RECORD CONTAINS 132 CHARACTERS
+           DATA RECORD IS PRINT-RCD.
+       01  PRINT-RCD.
+           05  PRINT-LINE        PIC X(132).
+
+       SD  SORT-FILE
+           RECORD CONTAINS 97 CHARACTERS.
+       01  SORT-RCD.
+           05  SORT-CODE            PIC X(7).
+           05  SORT-CLASS           PIC X(3).
+           05  SORT-UM              PIC X(2).
+           05  SORT-ONHAND          PIC S9(8).
+           05  SORT-RECEIPT-MTD     PIC S9(8).
+           05  SORT-RECEIPT-YESTER  PIC S9(8).
+           05  SORT-MTD-USAGE       PIC S9(9).
+           05  SORT-USED-TODAY      PIC S9(8).
+           05  SORT-ONORDER         PIC S9(8).
+           05  SORT-SHIP-MTD        PIC S9(8).
+           05  SORT-SHIP-TODAY      PIC S9(8).
+           05  SORT-NAME            PIC X(20).
+
+       SD  SORT-FILE2
+           RECORD CONTAINS 16 CHARACTERS.
+       01  SORT-RCD2.
+           05  SORT-CODE-2          PIC X(7).
+           05  SORT-USED-TODAY      PIC S9(8).
+           05  SROT-SHIP-TC-INDIC   PIC X(1).
+
+       FD  USED-TODAY-FILE
+           RECORD CONTAINS 16 CHARACTERS.
+       01  USED-TODAY-RCD.
+           05  TC-CODE              PIC X(7).
+           05  TC-USED-TODAY        PIC S9(8).
+           05  TC-SHIP-TO-INDIC     PIC X(1).
+
+       FD  CODE-FILE
+           RECORD CONTAINS 97 CHARACTERS.
+       01  CODE-RCD.
+           05  C-CODE               PIC X(7).
+           05  C-CLASS              PIC X(3).
+           05  C-UM                 PIC X(2).
+           05  C-ONHAND             PIC S9(8).
+           05  C-RECEIPT-MTD        PIC S9(8).
+           05  C-RECEIPT-YESTER     PIC S9(8).
+           05  C-MTD-USAGE          PIC S9(9).
+           05  C-USED-TODAY         PIC S9(8).
+           05  C-ONORDER            PIC S9(8).
+           05  C-SHIP-MTD           PIC S9(8).
+           05  C-SHIP-TODAY         PIC S9(8).
+           05  C-NAME               PIC X(20).
+
+       FD  MSTORERM-I
+           LABEL RECORDS ARE STANDARD.
+       01  MSTORERM-REC-I.
+           COPY DDS-MCRPCS0200  OF MCFLCS0201.
+
+       FD  MPLTINFO-I
+           LABEL RECORDS ARE STANDARD.
+       01  MPLTINFO-REC-I.
+           COPY DDS-MCRPCS0500  OF MCFLCS0501.
+
+       FD  DRCVITEM-I
+           LABEL RECORDS ARE STANDARD.
+       01  DRCVITEM-REC-I.
+           COPY DDS-MCRPCS1200  OF MCFLCS1202.
+
+       FD  DDAILYTC-I
+           LABEL RECORDS ARE STANDARD.
+       01  DDAILYTC-REC-I.
+           COPY DDS-MCRPCS1600  OF MCFLCS1601.
+
+       FD  DTRANS-I
+           LABEL RECORDS ARE STANDARD.
+       01  DTRANS-REC-I.
+           COPY DDS-MCRPCA0700  OF MCFLCA0701.
+
+       FD  USAGEFIL-I
+           LABEL RECORDS ARE STANDARD.
+       01  USAGEFIL-REC-I.
+           COPY DDS-MCRPCSUSAG  OF MCFLCSUSAG.
+
+       WORKING-STORAGE SECTION.
+       77  PAGE-CTR                  PIC S9(4) COMP-4 VALUE ZEROS.
+       77  LINE-CTR                  PIC S9(4) COMP-4 VALUE ZEROS.
+       77  USED-EOF-SW               PIC X(1)       VALUE SPACES.
+       77  CODE-EOF-SW               PIC X(1)       VALUE SPACES.
+       77  CSAS-DB-SW                PIC X(1)       VALUE SPACES.
+       77  REWRITE-SW                PIC X(1)       VALUE SPACES.
+
+       01  KEY-MODIFIER.
+           05  DESCR-KEYWORD            PIC X(20) VALUE SPACES.
+           05  DESCR-MODIFIER           PIC X(60) VALUE SPACES.
+
+       COPY CDESC IN COPYLIB.
+
+       01  RET-CODE                     PIC X(2) VALUE SPACES.
+
+       01  FILE-STATUS.
+           05  FILE-STATUS-1            PIC X    VALUE SPACES.
+           05  FILE-STATUS-2            PIC X    VALUE SPACES.
+
+9406CK 01  SCOPE   PIC X.
+
+      **************************************************************
+      **                                                          **
+      **               K S A M   W O R K                          **
+      **                                                          **
+      **************************************************************
+
+       01  KEY-VALUE                     PIC X(8)  VALUE SPACES.
+       01  KEY-LOC                       PIC S9(4) COMP-4 VALUE 3.
+       01  RECSIZE                       PIC S9(4) COMP-4 VALUE 66.
+       01  RESULT                        PIC 9(4)  VALUE ZEROS.
+
+       01  USAGE-REC.
+           05  FILLER                   PIC XX.
+           05  K-CORP-CODE              PIC X(8).
+           05  K-MONTHS                 OCCURS 14 TIMES.
+               10  K-MTH-USAGE          PIC S9(9) COMP-4.
+           05  K-MONTHS-DD              OCCURS 14 TIMES.
+               10  K-MTH-USAGE-DD       PIC S9(9) COMP-4.
+
+       01  DATES-AND-TIMES.
+           05  CUR-DATE-CN.
+               10  CC               PIC XX.
+               10  CUR-DATE.
+                   15  YY           PIC XX.
+                   15  MM           PIC XX.
+                   15  DD           PIC XX.
+           05  CUR-DATE-YEAR  REDEFINES  CUR-DATE-CN.
+               10  CUR-YEAR         PIC 9(4).
+               10  FILLER           PIC 9(4).
+           05  SAVE-TODAYS-DATE     PIC X(6).
+           05  YESTERDAY-CN.
+               10  YESTER-CC        PIC 9(2).
+               10  YESTERDAY.
+                   15  YESTER-YY    PIC 9(2).
+                   15  YESTER-MM    PIC 9(2).
+                   15  YESTER-DD    PIC 9(2).
+           05  YESTERDAY-CN-X    REDEFINES  YESTERDAY-CN
+                                    PIC X(8).
+           05  CUR-YYMM.
+               10  CUR-YY           PIC 9(2).
+               10  CUR-MM           PIC 9(2).
+
+      *--------- PARAMETERS FOR "JULGREG".
+
+       01  JULIAN-DATE.
+           05  JUL-YEAR                  PIC X(4).
+           05  JUL-DDD                   PIC X(3).
+       01  JULIAN-DATE-9  REDEFINES JULIAN-DATE.
+           05  JUL-YEAR-9                PIC 9(4).
+           05  JUL-DDD-9                 PIC 9(3).
+
+       01  GREG-DATE.
+           05  GREG-CC                   PIC XX.
+           05  GREG-DATE-YMD.
+               10  GREG-YY               PIC XX.
+               10  GREG-MM               PIC XX.
+               10  GREG-DD               PIC XX.
+
+       01  DAY-DIGIT                     PIC X.
+       01  LEAP-YEAR-FLAG                PIC X.
+
+      *************************************************************
+      **                                                         **
+      **             S U B S C R I P T   A R E A                 **
+      **                                                         **
+      *************************************************************
+
+       01  SUBSCRIPTS.
+           05  SUB                   PIC S9(4)    VALUE ZERO  COMP-4.
+
+
+      **************************************************************
+      **                                                          **
+      **            E S C A P E   S E Q U E N C E S               **
+      **                                                          **
+      **************************************************************
+
+       COPY ESCNAM2 IN COPYLIB.
+
+       01  COMPRESS-PRINT             PIC X(8).
+
+       01  NORMAL-PRINT               PIC X(8).
+
+       COPY OVRPFDATA IN COPYLIB.
+       COPY CCRTFILE  IN COPYLIB.
+
+      *************************************************************
+      **                                                         **
+      **             R E P O R T   H E A D I N G S               **
+      **                                                         **
+      *************************************************************
+
+       01  HEADER1.
+           05  FILLER        PIC X(8)     VALUE "TRAWUSAG".
+           05  FILLER        PIC X(15)    VALUE SPACE.
+           05  FILLER        PIC X(32)
+                VALUE "RAW MATERIAL MONTH TO DATE USAGE".
+           05  FILLER        PIC X(8)     VALUE " REPORT ".
+           05  FILLER        PIC X(3)    VALUE SPACE.
+           05  FILLER  PIC X(15) VALUE "  DAYS WORKED= ".
+           05  DAYS-WORKED-OUT  PIC Z9 VALUE ZEROS.
+           05  FILLER        PIC X(3)     VALUE SPACES.
+           05  PRT-DATE      PIC X(8)     VALUE SPACE.
+           05  FILLER        PIC X(2)     VALUE SPACE.
+           05  FILLER        PIC X(6)     VALUE "TIME  ".
+           05  PRT-TIME      PIC X(8)     VALUE SPACE.
+           05  FILLER        PIC X(5)     VALUE SPACE.
+           05  FILLER        PIC X(5)     VALUE "PAGE ".
+           05  PAGE-OUT      PIC ZZZ9     VALUE ZERO.
+
+       01  HEADER3.
+           05  FILLER  PIC X(37) VALUE SPACES.
+           05  FILLER  PIC X(7)  VALUE ALL "-".
+           05  FILLER  PIC X(8)  VALUE "RECEIVED".
+           05  FILLER  PIC X(7)  VALUE ALL "-".
+           05  FILLER  PIC X(11) VALUE SPACES.
+           05  FILLER  PIC X(13) VALUE "   SHIPPED   ".
+           05  FILLER  PIC X(8)  VALUE ALL "-".
+           05  FILLER  PIC X(5)  VALUE "USAGE".
+           05  FILLER  PIC X(7)  VALUE ALL "-".
+           05  FILLER  PIC X(18) VALUE "  CURRENT  AVERAGE".
+
+       01  HEADER4.
+           05  FILLER  PIC X(06) VALUE "  ITEM".
+           05  FILLER  PIC X(14) VALUE SPACES.
+           05  FILLER  PIC X(17) VALUE "CLASS CODE    UM ".
+           05  FILLER  PIC X(24) VALUE "MTH TO DATE  YESTERDAY  ".
+           05  FILLER  PIC X(22) VALUE "ONORDER  MTH TO DATE  ".
+           05  FILLER  PIC X(15) VALUE "MTH TO DATE    ".
+           05  FILLER  PIC X(23) VALUE "TODAY   ONHAND    USAGE".
+           05  FILLER  PIC X(11) VALUE "  DAYS LEFT".
+
+       01  DETAIL-LINE-1.
+           05  NAME-OUT                 PIC X(20) VALUE SPACES.
+           05  FILLER                   PIC X(1)  VALUE SPACES.
+           05  CLASS-OUT                PIC X(3)  VALUE ZEROS.
+           05  FILLER                   PIC X(2)  VALUE SPACES.
+           05  CODE-OUT                 PIC X(7)  VALUE SPACES.
+           05  FILLER                   PIC X(1)  VALUE SPACES.
+           05  UM-OUT                   PIC X(2)  VALUE SPACES.
+           05  FILLER                   PIC X(3)  VALUE SPACES.
+           05  RCVD-MTD-OUT             PIC Z(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(2)  VALUE SPACES.
+           05  RCVD-YESTER-OUT          PIC Z(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(1)  VALUE SPACES.
+           05  ONORDER-OUT              PIC Z(8)  VALUE ZEROS.
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  SHIP-MTD-OUT             PIC -(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  USAGE-MTD-OUT            PIC -(9)  VALUE ZEROS.
+           05  USAGE-TODAY-OUT          PIC -(9)  VALUE ZEROS.
+           05  ONHAND-OUT               PIC Z(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(1)  VALUE SPACES.
+           05  AVG-USAGE-OUT            PIC Z(8)  VALUE ZEROS.
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  DAYS-LEFT-OUT            PIC Z(4).Z(2)  VALUE ZEROS.
+
+       01  DETAIL-LINE-2.
+           05  FILLER                   PIC X(5)  VALUE SPACES.
+           05  TOTAL-LIT-OUT            PIC X(16) VALUE SPACES.
+           05  TOTAL-CLASS-OUT          PIC X(3)  VALUE SPACES.
+           05  FILLER                   PIC X(15) VALUE SPACES.
+           05  TOTAL-RCVD-MTD-OUT       PIC Z(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(24) VALUE SPACES.
+           05  TOTAL-SHIP-MTD-OUT       PIC -(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(4)  VALUE SPACES.
+           05  TOTAL-USAGE-MTD-OUT      PIC -(9)  VALUE ZEROS.
+           05  FILLER                   PIC X(09)  VALUE SPACES.
+           05  TOTAL-ONHAND-OUT         PIC Z(9)  VALUE ZEROS.
+
+       01  DASH-LINE.
+           05  FILLER  PIC X(132) VALUE ALL "-".
+
+
+      *************************************************************
+      **                                                         **
+      **  D A T A B A S E   C O M M U N I C A T I O N   A R E A  **
+      **                                                         **
+      *************************************************************
+
+       COPY DATAB IN COPYLIB.
+
+       COPY DBCSACCT IN COPYLIB.
+
+       01  DATASET-NAMES.
+           05  DSET-NAME             PIC X(16)    VALUE SPACE.
+           05  DSET-MSTORERM         PIC X(16)    VALUE "MSTORERM;".
+           05  DSET-DRCVITEM         PIC X(16)    VALUE "DRCVITEM;".
+           05  DSET-DDAILYTC         PIC X(16)    VALUE "DDAILYTC;".
+           05  DSET-MPLTINFO         PIC X(16)    VALUE "MPLTINFO;".
+           05  DSET-DTRANS           PIC X(16)    VALUE "DTRANS;".
+
+       01  ITEMS-LISTING.
+           05  ALL-ITEMS             PIC X(2)     VALUE "@;".
+           05  CODE-SEARCH           PIC X(10)    VALUE "CORP-CODE;".
+           05  MATL-KEY              PIC X(10)    VALUE "MATL-CODE;".
+
+       01  ARGUMENT-VALUES.
+           05  PLT-ARG               PIC X(4)     VALUE SPACE.
+           05  CODE-ARG              PIC X(8)     VALUE SPACES.
+
+      *************************************************************
+      **                                                         **
+      **             D A T A B A S E   B U F F E R S             **
+      **                                                         **
+      *************************************************************
+
+       COPY MSTORERM IN COPYLIB.
+
+       COPY DRCVITEM IN COPYLIB.
+
+       COPY DDAILYTC IN COPYLIB.
+
+       COPY TC330 IN COPYLIB.
+
+       COPY TC430 IN COPYLIB.
+
+       COPY TC332 IN COPYLIB.
+
+       COPY TC333 IN COPYLIB.
+
+       COPY TC433 IN COPYLIB.
+
+       COPY MPLT0 IN COPYLIB.
+
+       COPY MPLTP01 IN COPYLIB.
+
+       COPY DTRANS IN COPYLIB.
+
+      *************************************************************
+      **                                                         **
+      **                    W O R K   A R E A                    **
+      **                                                         **
+      *************************************************************
+
+       01  QTY-WORK-AREA.
+           05  STR-RCV-QTY              PIC S9(8) COMP-4 VALUE ZEROS.
+           05  SAVE-SHIP-TO             PIC S9(8) COMP-4 VALUE ZEROS.
+           05  SAVE-SHIP-TO-DEPT        PIC X(4)         VALUE SPACES.
+           05  AVG-USAGE                PIC S9(9) COMP-4 VALUE ZEROS.
+           05  DAYS-LEFT              PIC S9(4)V9(2) COMP-4 VALUE 0.
+           05  CLASS-RCVD-MTD-LB        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-USAGE-MTD-LB       PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-ONHAND-MTD-LB      PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-SHIP-MTD-LB        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-RCVD-MTD-GL        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-USAGE-MTD-GL       PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-ONHAND-MTD-GL      PIC S9(9) COMP-4 VALUE ZEROS.
+           05  CLASS-SHIP-MTD-GL        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-RCVD-MTD-LB        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-USAGE-MTD-LB       PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-ONHAND-MTD-LB      PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-SHIP-MTD-LB        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-RCVD-MTD-GL        PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-USAGE-MTD-GL       PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-ONHAND-MTD-GL      PIC S9(9) COMP-4 VALUE ZEROS.
+           05  TOTAL-SHIP-MTD-GL        PIC S9(8) COMP-4 VALUE ZEROS.
+           05  SAVE-CLASS               PIC X(3)         VALUE SPACES.
+           05  AT-LEAST-ONE-CODE-WRITTEN PIC X(1)        VALUE SPACES.
+
+       01  COMPANY-SAVE.
+           05  FILLER                   PIC X(2)  VALUE SPACES.
+           88  AKRON-PLANT                        VALUE "11".
+           05  FILLER                   PIC X(1)  VALUE SPACES.
+
+       01  USER-OPTIONS.
+           05  NO-OF-DAYS-WORKED        PIC 9(2) VALUE ZEROS.
+           05 SHIP-TO-DEPT-ENTRIES OCCURS 4 TIMES.
+               10  SHIP-TO-DEPT         PIC X(4).
+
+      ***************************************************
+      **   PARAMETERS FOR CALLING 'SONORDER' WHICH
+      **   CALCULATES ONORDER FOR A CODE
+      ***************************************************
+
+       COPY SONORDER IN COPYLIB.
+
+       COPY THDPRT IN COPYLIB.
+
+       COPY TDATECHK IN COPYLIB.
+
+       COPY TBLOWUP IN COPYLIB.
+
+      *************************************************************
+      **                                                         **
+      **          E R R O R   M E S S A G E   A R E A S          **
+      **                                                         **
+      *************************************************************
+
+
+       PROCEDURE DIVISION.
+       0-BEGIN SECTION 01.
+9406CK     MOVE "C" TO SCOPE.
+9406CK     CALL "MCXCBLERR" USING SCOPE.
+
+XXX        DISPLAY "***BEGIN PROGRAM TRAWUSAG".
+           PERFORM  1-HSK  THRU  1-HSK-X.
+
+           PERFORM  6-MAIN  THRU  6-MAIN-X.
+
+           PERFORM  2-CLOSE-FILES  THRU  2-CLOSE-FILES-X.
+
+           GOBACK.
+
+
+       1-HSK.
+XXX        DISPLAY "***BEGIN PARA 1-HSK".
+           CALL "TESCSEQ" USING ESC-NAME.
+           MOVE CHAR-1636PI TO COMPRESS-PRINT.
+           MOVE CHAR-10PI   TO NORMAL-PRINT.
+
+           OPEN INPUT MSTORERM-I, MPLTINFO-I, DDAILYTC-I, DRCVITEM-I.
+           OPEN INPUT DTRANS-I.
+           IF FILE-STATUS NOT = ZERO
+               MOVE "N"                 TO CSAS-DB-SW
+           ELSE
+               MOVE "Y"                 TO CSAS-DB-SW.
+
+      **************************************************************
+      **   THE KSAM FILE "USAGEFIL" TO GET MONTH TO DATE USAGE    **
+      **************************************************************
+
+           OPEN INPUT USAGEFIL-I.
+
+           MOVE "P 01"  TO  PLT-ARG.
+           MOVE 0 TO COND-WORD.
+           MOVE PLT-ARG TO PLTINFOKEY OF MPLTINFO-REC-I.
+           READ MPLTINFO-I INTO BUF-MPLTINFO
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS-1 = "2"
+               MOVE 17 TO COND-WORD
+           ELSE
+           IF FILE-STATUS NOT = "00"
+               MOVE 99 TO COND-WORD.
+           IF COND-WORD = ZERO
+               MOVE MPLTINFO-COMPANY  TO  COMPANY-SAVE
+           ELSE
+               MOVE "DBGET MPLTINFO*1-HSK"  TO  BU-DISPLAY-MSG
+               GO TO  2-BLOWUP.
+
+           MOVE 1                        TO  DATE-MODE.
+           CALL "TDATECHK" USING DATE-CHECK-AREA.
+           MOVE DATE-SLASH-OUT           TO  PRT-DATE.
+           MOVE DATE-FORMATTED-TIME-OUT  TO  PRT-TIME.
+           MOVE DATE-YMD-OUT             TO  CUR-DATE,
+                                             SAVE-TODAYS-DATE,
+                                             GREG-DATE-YMD.
+           IF GREG-YY > "70"
+               MOVE "19"                 TO  GREG-CC
+                                             CC
+           ELSE
+               MOVE "20"                 TO  GREG-CC
+                                             CC.
+
+           MOVE YY  TO CUR-YY.
+           MOVE MM  TO CUR-MM.
+
+      **************************************************
+      *                                                *
+      *   COMPUTE TODAYS JULIAN DATE TO BE USED LATER  *
+      *   TO COMPUTE YESTERDAY'S DATE                  *
+      *                                                *
+      **************************************************
+
+      *------- ACCOUNT FOR CENTURY & USE NEW "JULGREG" ROUTINE.
+           MOVE SPACES                      TO  JULIAN-DATE.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                                DAY-DIGIT, LEAP-YEAR-FLAG.
+           IF JUL-DDD-9 = 1
+               ADD 365          TO  JUL-DDD-9
+               SUBTRACT 1       FROM  CUR-YEAR  GIVING  JUL-YEAR-9.
+           SUBTRACT 1           FROM  JUL-DDD-9.
+           MOVE SPACES          TO  GREG-DATE.
+           CALL "JULGREG" USING GREG-DATE, JULIAN-DATE,
+                                DAY-DIGIT, LEAP-YEAR-FLAG.
+           MOVE GREG-DATE               TO  YESTERDAY-CN-X.
+           DISPLAY "YESTERDAY=", YESTERDAY-CN.
+           IF YESTER-MM = CUR-MM
+               NEXT SENTENCE
+           ELSE
+               SUBTRACT 1               FROM CUR-MM.
+
+       1-HSK-X.
+           EXIT.
+
+
+
+       2-CLOSE-FILES.
+           CLOSE MSTORERM-I, MPLTINFO-I, DDAILYTC-I, DRCVITEM-I.
+           CLOSE DTRANS-I.
+           CLOSE USAGEFIL-I.
+
+       2-CLOSE-FILES-X.
+           EXIT.
+
+
+      ******************************************************
+      **                                                  **
+      **   BLOWUP ROUTINE                                 **
+      **                                                  **
+      ******************************************************
+
+       2-BLOWUP.
+           MOVE "TRAWUSAG"              TO  BU-PGM-NAME.
+           MOVE CODE-ARG                TO  BU-DISPLAY-FLD (1).
+           CALL "TBLOWUP" USING BASE, BU-PGM-NAME, STATUS-AREA,
+               DUMMY-VIEW-AREA, FILE-STATUS, BU-DISPLAY-MSG,
+                   BU-DISPLAY-FLDS.
+
+
+
+       6-MAIN.
+XXX        DISPLAY "***BEGIN PARA 6-MAIN".
+           PERFORM 60-ACCEPT-OPTIONS  THRU  60-ACCEPT-OPTIONS-X.
+
+      *----- CALL CCRTFILE TO CREATE A TEMPORARY FILE
+      *----- LIBRARY 'QTEMP' IS USED FOR TEMPORARY FILES
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "CODEFILE"    TO CCRTFILE-FILE.
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "0097"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "05000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "05000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE  99           TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'CODEFILE' FAILED"
+                  TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+           MOVE SPACES        TO CCRTFILE-PARMS.
+           MOVE "USEDFILE"    TO CCRTFILE-FILE.
+           MOVE "QTEMP"       TO CCRTFILE-LIBRARY.
+           MOVE "0016"        TO CCRTFILE-RECORD-LENGTH.
+           MOVE "05000"       TO CCRTFILE-NO-RECORDS.
+           MOVE "05000"       TO CCRTFILE-INCREMENT-AMT.
+           MOVE  99           TO CCRTFILE-NO-INCREMENTS.
+           CALL "CCRTFILE" USING CCRTFILE-LIBRARY,
+                                 CCRTFILE-FILE,
+                                 CCRTFILE-RECORD-LENGTH,
+                                 CCRTFILE-NO-RECORDS,
+                                 CCRTFILE-INCREMENT-AMT,
+                                 CCRTFILE-NO-INCREMENTS,
+                                 CCRTFILE-STATUS.
+           IF CCRTFILE-STATUS NOT = "00"
+               MOVE "CCRTFILE CREATE OF 'USEDFILE' FAILED"
+                  TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+XXX        DISPLAY "OPEN OUTPUT CODE-FILE".
+           OPEN OUTPUT CODE-FILE.
+           PERFORM 61-GET-CODES  THRU  61-GC-X.
+XXX        DISPLAY "CLOSE       CODE-FILE".
+           CLOSE CODE-FILE.
+
+           SORT SORT-FILE ON ASCENDING KEY SORT-CODE
+               USING CODE-FILE
+               GIVING CODE-FILE.
+
+           OPEN OUTPUT USED-TODAY-FILE.
+           PERFORM 62-GET-DDAILYTC-DATA  THRU 62-GDD-X.
+           CLOSE USED-TODAY-FILE.
+
+           SORT SORT-FILE2 ON ASCENDING KEY SORT-CODE-2
+               USING USED-TODAY-FILE
+               GIVING USED-TODAY-FILE.
+
+XXX        DISPLAY "OPEN I-O    CODE-FILE".
+           OPEN I-O CODE-FILE.
+           OPEN INPUT USED-TODAY-FILE.
+           PERFORM 63-COMBINE-DATA  THRU 63-CD-X.
+XXX        DISPLAY "CLOSE       CODE-FILE".
+           CLOSE USED-TODAY-FILE, CODE-FILE.
+
+           SORT SORT-FILE ON ASCENDING KEY SORT-CLASS, SORT-NAME
+               USING CODE-FILE
+               GIVING CODE-FILE.
+
+      *------ RESET THE REWRITE-SW TO SPACES PRIOR TO REOPENING
+      *------ CODE-FILE "INPUT".  IF REWRITE-SW SHOULD END UP SET
+      *------ TO "Y" AT THE END OF THE 63-COMBINE-DATA PROCESSING,
+      *------ A REWRITE ON CODE-FILE WILL BE ATTEMPTED AND THE PGM
+      *------ WILL BLOW UP (FILE STATUS 49).  IT HAPPENED.
+      *------    24NOV1992 DAVE PLUM
+           MOVE SPACES TO REWRITE-SW.
+
+XXX        DISPLAY "OPEN INPUT  CODE-FILE".
+           OPEN INPUT CODE-FILE.
+           PERFORM 64-PRINT-REPORT   THRU  64-PR-X.
+XXX        DISPLAY "CLOSE       CODE-FILE".
+           CLOSE CODE-FILE.
+
+       6-MAIN-X.
+           EXIT.
+
+
+
+       60-ACCEPT-OPTIONS.
+XXX        DISPLAY "***BEGIN PARA 60-ACCEPT-OPTIONS".
+           DISPLAY "ENTER ROUTE PRINT DATA".
+           ACCEPT HD-ROUTE-DATA.
+           DISPLAY "HD ROUTE DATA = ", HD-ROUTE-DATA.
+
+      ****************************************************
+      **   ACCEPT USER OPTION NUMBER OF DAYS WORKED
+      ****************************************************
+
+           DISPLAY "ENTER USER OPTIONS".
+           ACCEPT USER-OPTIONS.
+           MOVE NO-OF-DAYS-WORKED TO DAYS-WORKED-OUT.
+
+       60-ACCEPT-OPTIONS-X.
+           EXIT.
+
+
+
+      ***********************************************************
+      **                                                       **
+      **    READ MSTORERM CHECKING FOR CODES WITH AVAILABLE    **
+      **    LESS THAN REORDER POINT.                           **
+      **                                                       **
+      ***********************************************************
+
+       61-GET-CODES.
+           MOVE 0 TO COND-WORD.
+           READ MSTORERM-I NEXT INTO BUF-MSTORERM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 11 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 11
+                   GO TO 61-GC-X
+               ELSE
+                   MOVE "GET MSTORERM *61-GC" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF STR-CLASS > "099" AND STR-CLASS < "200" OR
+              STR-CLASS > "399" AND STR-CLASS < "500"
+               NEXT SENTENCE
+           ELSE
+               GO TO 61-GET-CODES.
+
+           IF STR-CLASS = "188" OR "190"
+               GO TO 61-GET-CODES.
+
+           MOVE SPACES                  TO CODE-RCD.
+           MOVE ZEROS                   TO C-USED-TODAY.
+           MOVE CORP-CODE               TO C-CODE,
+                                           CODE-ARG.
+           MOVE STR-CLASS               TO C-CLASS.
+           MOVE STR-ONHAND              TO C-ONHAND.
+           MOVE STR-UM                  TO C-UM.
+
+      *************************************************
+      **   GET GENERIC NAME FROM KEYWORD MODIFIER
+      **   BY CALLING 'CDESC'
+      *************************************************
+
+           MOVE 1                       TO CDESC-LINES-TO-GET.
+           MOVE "N"                     TO CDESC-LOCAL-DESC-OPTION.
+           CALL "CDESC" USING RET-CODE, BASE, STATUS-AREA,
+               BU-DISPLAY-MSG, CODE-ARG, CDESC-DATA.
+           MOVE CDESC (1)               TO KEY-MODIFIER.
+           IF DESCR-KEYWORD = "CODE               "
+               MOVE DESCR-MODIFIER      TO C-NAME
+           ELSE
+               MOVE DESCR-KEYWORD       TO C-NAME.
+
+      ***********************************************************
+      **   GET RECEIVER QUANTITY MONTH TO DATE AND YESTERDAY
+      ***********************************************************
+
+           MOVE ZEROS                   TO C-RECEIPT-MTD,
+                                           C-RECEIPT-YESTER.
+
+           PERFORM 611-GET-RCVR-QUANTITY THRU 611-GRQ-X.
+
+      ***********************************************************
+      **   GET MONTH TO DATE USAGE FROM USAGEFIL
+      ***********************************************************
+
+           MOVE CORP-CODE               TO CORPCDE OF USAGEFIL-REC-I.
+           READ USAGEFIL-I INTO USAGE-REC
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               MOVE "CKREADBYKEY ERR MS3F" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP
+           ELSE
+               MOVE K-MTH-USAGE (13) TO C-MTD-USAGE.
+      ************************************************
+      **   GET TOTAL ONORDER
+      **   BY CALLING 'SONORDER'
+      ************************************************
+           MOVE "N"                     TO  SONORDER-CALC-DIR-ORD-SW.
+           CALL "SONORDER" USING BASE,
+                                 CODE-ARG,
+                                 SONORDER-PARMS,
+                                 COMPANY-SAVE,
+                                 STATUS-AREA,
+                                 BU-DISPLAY-MSG,
+                                 BU-DISPLAY-FLDS.
+           IF BU-DISPLAY-MSG NOT = SPACES
+               GO TO 2-BLOWUP.
+
+           MOVE SONORDER-TOTAL-ONORDER TO C-ONORDER.
+
+      ****************************************************
+      **   CALCULATE SHIP TO MONTH TO DATE TOTAL USING
+      **   THE CSAS DATA BASE IF IT EXISTS.  CSAS DB HAS
+      **   ALL CSIS MONTH TO DATE TRANSACTIONS
+      ****************************************************
+
+           MOVE ZEROS                   TO C-SHIP-MTD,
+                                           C-SHIP-TODAY.
+           IF CSAS-DB-SW = "Y"
+               PERFORM 613-CHECK-FOR-SHIP  THRU 613-CFS-X.
+
+           WRITE CODE-RCD.
+           GO TO 61-GET-CODES.
+
+       61-GC-X.
+           EXIT.
+
+       611-GET-RCVR-QUANTITY.
+           MOVE CODE-ARG TO CORPCDE OF DRCVITEM-REC-I.
+           START DRCVITEM-I KEY = CORPCDE OF DRCVITEM-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   GO TO 611-GRQ-X
+               ELSE
+               MOVE "FIND DRCVITEM *611-GRQ" TO BU-DISPLAY-MSG
+               GO TO 2-BLOWUP.
+
+       611-GET-DRCVITEM.
+           MOVE 0 TO COND-WORD.
+           READ DRCVITEM-I NEXT INTO BUF-DRCVITEM
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF CORPCDE OF DRCVITEM-REC-I NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 611-GRQ-X
+               ELSE
+                   MOVE "GET DRCVITEM * 611-GD"  TO  BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF RCV-YY-RCVD = CUR-YY  AND
+              RCV-MM-RCVD = CUR-MM
+               NEXT SENTENCE
+           ELSE
+               GO TO 611-GET-DRCVITEM.
+
+           MOVE ZEROS                   TO STR-RCV-QTY.
+
+           IF RCV-ITEM-UM = STR-UM
+               MULTIPLY RCV-QTY-DLVR BY 1
+                                        GIVING STR-RCV-QTY ROUNDED
+           ELSE
+           IF RCV-ITEM-UM = STR-UM1
+               MULTIPLY RCV-QTY-DLVR BY STR-UM1-CF
+                                        GIVING STR-RCV-QTY ROUNDED
+           ELSE
+           IF RCV-ITEM-UM = STR-UM2
+               MULTIPLY RCV-QTY-DLVR BY STR-UM2-CF
+                                        GIVING STR-RCV-QTY ROUNDED
+           ELSE
+               MOVE "QTY UM PROBLEM * 611-GD" TO BU-DISPLAY-MSG
+               MOVE RCV-PO-RCV-NO       TO BU-DISPLAY-FLD (2)
+               GO TO 2-BLOWUP.
+
+           ADD STR-RCV-QTY              TO C-RECEIPT-MTD.
+      *----------- ACCOUNT FOR CENTURY.
+           IF RCV-DATE-RCVD-CN = YESTERDAY-CN
+               ADD STR-RCV-QTY          TO C-RECEIPT-YESTER.
+           GO TO 611-GET-DRCVITEM.
+
+       611-GRQ-X.
+           EXIT.
+
+
+       613-CHECK-FOR-SHIP.
+           MOVE 0 TO COND-WORD.
+           MOVE CODE-ARG TO MATLCODE OF DTRANS-REC-I.
+           START DTRANS-I KEY = MATLCODE OF DTRANS-REC-I
+               INVALID KEY MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS-1 = "2"
+                   MOVE 17 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+
+           IF COND-WORD  NOT = 0
+               IF COND-WORD = 17
+                   GO TO 613-CFS-X
+               ELSE
+                   MOVE "FIND DTRANS *613-CFS" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+       613-GET-DTRANS.
+           MOVE 0 TO COND-WORD.
+           READ DTRANS-I NEXT INTO BUF-DTRANS
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 15 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+           IF MATLCODE OF DTRANS-REC-I NOT = CODE-ARG
+               MOVE 15 TO COND-WORD.
+
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 15
+                   GO TO 613-CFS-X
+               ELSE
+                   MOVE "GET DTRANS * 613-GD"  TO  BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+           IF TRANS-YY = CUR-YY  AND
+              TRANS-MM = CUR-MM
+               NEXT SENTENCE
+           ELSE
+               GO TO 613-GET-DTRANS.
+
+           IF TRANS-CODE = "ISS" OR "RET" OR "SADJ"
+               NEXT SENTENCE
+           ELSE
+               GO TO 613-GET-DTRANS.
+
+           IF TRANS-DEPT = SHIP-TO-DEPT (1) OR
+                           SHIP-TO-DEPT (2) OR
+                           SHIP-TO-DEPT (3) OR
+                           SHIP-TO-DEPT (4)
+               NEXT SENTENCE
+           ELSE
+               GO TO 613-GET-DTRANS.
+
+           MOVE ZEROS                   TO SAVE-SHIP-TO.
+           IF TRANS-CODE = "ISS"
+               MOVE TRANS-QTY TO SAVE-SHIP-TO
+           ELSE
+           IF TRANS-CODE = "RET" OR "SADJ"
+               MULTIPLY TRANS-QTY BY -1 GIVING SAVE-SHIP-TO.
+
+           ADD SAVE-SHIP-TO             TO C-SHIP-MTD.
+           GO TO 613-GET-DTRANS.
+
+       613-CFS-X.
+           EXIT.
+
+
+       62-GET-DDAILYTC-DATA.
+           MOVE 0 TO COND-WORD.
+           READ DDAILYTC-I NEXT INTO BUF-DDAILYTC
+               AT END MOVE FILE-STATUS TO FILE-STATUS.
+           IF FILE-STATUS NOT = "00"
+               IF FILE-STATUS = "10" OR "14" OR "46"
+                   MOVE 11 TO COND-WORD
+               ELSE
+                   MOVE 99 TO COND-WORD.
+
+           IF COND-WORD NOT = 0
+               IF COND-WORD = 11
+                   GO TO 62-GDD-X
+               ELSE
+                   MOVE "GET DDAILYTC * 62-GDD" TO BU-DISPLAY-MSG
+                   GO TO 2-BLOWUP.
+
+      ****************************************************************
+      **   GET ALL ISSUE, RETURN AND ADJUSTMENT FROM DDAILYTC
+      **   TO GET WHAT IS USED TODAY.  ALSO FILTER OUT ANY
+      **   NON-RAW MATERIAL CLASSES.
+      ****************************************************************
+
+           IF DDAILYTC-TC = "330" OR "430" OR "332" OR
+                            "333" OR "433"
+               NEXT SENTENCE
+           ELSE
+               GO TO 62-GET-DDAILYTC-DATA.
+
+           IF TC330-CLASS > "099" AND TC330-CLASS < "200" OR
+              TC330-CLASS > "399" AND TC330-CLASS < "500"
+               NEXT SENTENCE
+           ELSE
+               GO TO 62-GET-DDAILYTC-DATA.
+
+           IF TC330-CLASS = "188" OR "190"
+               GO TO 62-GET-DDAILYTC-DATA.
+
+           MOVE SPACES                  TO USED-TODAY-RCD.
+           MOVE ZEROS                   TO TC-USED-TODAY.
+           MOVE TC330-CORPCODE          TO TC-CODE.
+           IF DDAILYTC-TC = "330"
+               MULTIPLY TC330-QTY BY -1 GIVING TC-USED-TODAY
+               MOVE TC330-DEPT TO SAVE-SHIP-TO-DEPT
+               PERFORM 621-CHECK-SHIP-TO-DEPT
+           ELSE
+           IF DDAILYTC-TC = "430"
+               MULTIPLY TC430-QTY BY -1 GIVING TC-USED-TODAY
+               MOVE TC430-DEPT TO SAVE-SHIP-TO-DEPT
+               PERFORM 621-CHECK-SHIP-TO-DEPT
+           ELSE
+           IF DDAILYTC-TC = "332"
+               MULTIPLY TC332-ADJ-QTY BY -1 GIVING TC-USED-TODAY
+               MOVE TC332-DEPT-CHG TO SAVE-SHIP-TO-DEPT
+               PERFORM 621-CHECK-SHIP-TO-DEPT
+           ELSE
+           IF DDAILYTC-TC = "333"
+               MOVE TC333-QTY     TO TC-USED-TODAY
+               MOVE TC333-DEPT    TO SAVE-SHIP-TO-DEPT
+               PERFORM 621-CHECK-SHIP-TO-DEPT
+           ELSE
+           IF DDAILYTC-TC = "433"
+               MOVE TC433-QTY     TO TC-USED-TODAY
+               MOVE TC433-DEPT    TO SAVE-SHIP-TO-DEPT
+               PERFORM 621-CHECK-SHIP-TO-DEPT.
+
+           WRITE USED-TODAY-RCD.
+           GO TO 62-GET-DDAILYTC-DATA.
+
+       62-GDD-X.
+           EXIT.
+
+       621-CHECK-SHIP-TO-DEPT.
+           MOVE SPACES                  TO TC-SHIP-TO-INDIC.
+           IF SAVE-SHIP-TO-DEPT = SHIP-TO-DEPT (1) OR
+                                  SHIP-TO-DEPT (2) OR
+                                  SHIP-TO-DEPT (3) OR
+                                  SHIP-TO-DEPT (4)
+               MOVE "Y"                 TO TC-SHIP-TO-INDIC.
+
+
+       63-COMBINE-DATA.
+XXX        DISPLAY "***BEGIN PARA 63-COMBINE-DATA".
+           MOVE SPACES                  TO USED-EOF-SW,
+                                           CODE-EOF-SW,
+                                           REWRITE-SW.
+           PERFORM 631-READ-USED-FILE
+           IF USED-EOF-SW = "Y"
+               GO TO 63-CD-X.
+
+       63-READ-CODE-FILE.
+           PERFORM 631-READ-CODE-FILE
+           IF CODE-EOF-SW = "Y"
+               GO TO 63-CD-X.
+
+       63-COMPARE-CODES.
+           IF C-CODE < TC-CODE
+               GO TO 63-READ-CODE-FILE
+           ELSE
+           IF C-CODE = TC-CODE
+               IF TC-SHIP-TO-INDIC = "Y"
+                   ADD TC-USED-TODAY TO C-SHIP-TODAY
+      *-------- SET FLAG INDICATING THAT CODE-RCD NEEDS TO BE
+      *-------- UPDATED (REWRITE) SINCE DATA WAS ADDED TO THE RECORD.
+      *-------- SINCE YOU CAN ONLY REWRITE THE RECORD ONE TIME
+      *-------- YOU NEED TO ACCUMULATE ALL CHANGES IN CODE-RCD AND
+      *-------- EXECUTE THE REWRITE ONCE.
+
+                   MOVE "Y"  TO REWRITE-SW
+               ELSE
+                   ADD TC-USED-TODAY TO C-USED-TODAY
+      *-------- SET FLAG INDICATING THAT CODE-RCD NEEDS TO BE
+      *-------- UPDATED (REWRITE) SINCE DATA WAS ADDED TO THE RECORD.
+      *-------- SINCE YOU CAN ONLY REWRITE THE RECORD ONE TIME
+      *-------- YOU NEED TO ACCUMULATE ALL CHANGES IN CODE-RCD AND
+      *-------- EXECUTE THE REWRITE ONCE.
+
+                   MOVE "Y"  TO REWRITE-SW
+           ELSE
+           IF C-CODE > TC-CODE
+               NEXT SENTENCE.
+
+           PERFORM 631-READ-USED-FILE.
+           IF USED-EOF-SW = "Y"
+               NEXT SENTENCE
+           ELSE
+               GO TO 63-COMPARE-CODES.
+
+           IF REWRITE-SW = "Y"
+               REWRITE CODE-RCD
+               MOVE SPACES  TO REWRITE-SW.
+
+       63-CD-X.
+           EXIT.
+
+       631-READ-USED-FILE.
+           READ USED-TODAY-FILE
+               AT END MOVE "Y" TO USED-EOF-SW.
+
+       631-READ-CODE-FILE.
+      *------- CHECK TO SEE IF THE PRIOR RECORD WAS CHANGES AND IF
+      *------- SO REWRITE THAT RECORD BEFORE READING THE NEXT
+      *------- RECORD IN CODE-FILE
+           IF REWRITE-SW = "Y"
+               REWRITE CODE-RCD
+               MOVE SPACES  TO REWRITE-SW.
+
+           READ CODE-FILE
+               AT END MOVE "Y" TO CODE-EOF-SW.
+
+
+      **********************************************************
+      **                                                      **
+      **    PRINT REPORT                                      **
+      **                                                      **
+      **********************************************************
+
+
+       64-PRINT-REPORT.
+XXX        DISPLAY "***BEGIN PARA 64-PRINT-REPORT".
+
+      *********************************************************
+      **  AFTER OPENING THE PRINT FILE, GET ITS FILE NUMBER, **
+      **  AND PRINT THE HEADER PAGE.                         **
+      *********************************************************
+
+           MOVE HD-SPOOLER-NUMBER TO OVRPRTF-TOFILE-NUM.
+           MOVE "*YES"            TO OVRPRTF-SHARED.
+           MOVE HD-NO-OF-COPIES   TO OVRPRTF-COPIES.
+           MOVE "MCPRT"           TO OVRPRTF-FILE.
+           PERFORM 996-OVERRIDE-PRINT-FILE.
+           OPEN OUTPUT PRINT-FILE.
+
+           MOVE "DHDR56.PUB"       TO  HD-FILE-NAME.
+           CALL "THDPRT2" USING HD-RET-CODE, HD-FILE-NAME, FNUM
+                HD-ROUTE-DATA, ESC-NAME.
+           IF HD-RET-CODE NOT = 0
+               MOVE "THDPRT2 ERR 62-PSR" TO BU-DISPLAY-MSG
+               MOVE HD-RET-CODE       TO BU-DISPLAY-FLD (1)
+               GO TO 2-BLOWUP.
+
+      ***********************************************************
+      **   IF PRINTING ON A CHARACTER PRINTER (HD-PAPER-FLAG   **
+      **   NOT = "X"), WE USE COMPRESSED PRINT TO FIT 132      **
+      **   CHARACTERS ON 8.5 IN WIDE PAPER.  ALSO, IF CP, WE   **
+      **   CHANGE THE TEXT LENGTH TO 61 LINES.                 **
+      ***********************************************************
+
+           IF PAPER-IS-132-COLS
+               NEXT SENTENCE
+           ELSE
+               WRITE PRINT-RCD FROM COMPRESS-PRINT AFTER ADVANCING 0.
+
+           PERFORM 641-PRINT-HEADER  THRU  641-PH-X.
+
+           MOVE SPACES TO CODE-EOF-SW.
+           PERFORM 631-READ-CODE-FILE.
+           IF CODE-EOF-SW = "Y"
+               GO TO 64-PR-X.
+
+       64-PROCESS-FILE.
+           PERFORM 641-BEGIN-CLASS.
+           PERFORM 642-PROCESS-CLASS THRU 642-PC-X
+               UNTIL SAVE-CLASS NOT = C-CLASS OR
+                     CODE-EOF-SW = "Y"
+           IF AT-LEAST-ONE-CODE-WRITTEN = "Y"
+               PERFORM 643-END-CLASS.
+           IF CODE-EOF-SW = "Y"
+               NEXT SENTENCE
+           ELSE
+               GO TO 64-PROCESS-FILE.
+
+      ***************************************************
+      **   PRINT GRAND TOTALS
+      ***************************************************
+
+           MOVE "GRAND TOTAL LBS"       TO TOTAL-LIT-OUT.
+           MOVE SPACES                  TO TOTAL-CLASS-OUT.
+           MOVE TOTAL-RCVD-MTD-LB       TO TOTAL-RCVD-MTD-OUT.
+           MOVE TOTAL-USAGE-MTD-LB      TO TOTAL-USAGE-MTD-OUT.
+           MOVE TOTAL-ONHAND-MTD-LB     TO TOTAL-ONHAND-OUT.
+           MOVE TOTAL-SHIP-MTD-LB       TO TOTAL-SHIP-MTD-OUT.
+           MOVE DETAIL-LINE-2           TO PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 2 LINES.
+
+           MOVE "GRAND TOTAL GAL"       TO TOTAL-LIT-OUT.
+           MOVE TOTAL-RCVD-MTD-GL       TO TOTAL-RCVD-MTD-OUT.
+           MOVE TOTAL-USAGE-MTD-GL      TO TOTAL-USAGE-MTD-OUT.
+           MOVE TOTAL-ONHAND-MTD-GL     TO TOTAL-ONHAND-OUT.
+           MOVE TOTAL-SHIP-MTD-GL       TO TOTAL-SHIP-MTD-OUT.
+           MOVE DETAIL-LINE-2           TO PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+           MOVE SPACES                  TO PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+
+           IF PAPER-IS-132-COLS
+               NEXT SENTENCE
+           ELSE
+               WRITE PRINT-RCD FROM NORMAL-PRINT AFTER ADVANCING 0.
+
+           MOVE SPACES TO PRINT-RCD.
+           WRITE PRINT-RCD AFTER ADVANCING NEW-PAGE.
+
+           CLOSE PRINT-FILE.
+
+       64-PR-X.
+           EXIT.
+
+
+       641-BEGIN-CLASS.
+           MOVE C-CLASS                 TO SAVE-CLASS.
+           MOVE ZEROS                   TO CLASS-RCVD-MTD-LB,
+                                           CLASS-USAGE-MTD-LB,
+                                           CLASS-ONHAND-MTD-LB,
+                                           CLASS-SHIP-MTD-LB,
+                                           CLASS-RCVD-MTD-GL,
+                                           CLASS-USAGE-MTD-GL,
+                                           CLASS-ONHAND-MTD-GL,
+                                           CLASS-SHIP-MTD-GL.
+           MOVE SPACES  TO AT-LEAST-ONE-CODE-WRITTEN.
+
+       642-PROCESS-CLASS.
+           IF C-RECEIPT-MTD = ZEROS AND
+              C-RECEIPT-YESTER = ZEROS AND
+              C-ONORDER = ZEROS AND
+              C-SHIP-MTD = ZEROS AND
+              C-SHIP-TODAY = ZEROS AND
+              C-USED-TODAY = ZEROS AND
+              C-MTD-USAGE = ZEROS AND
+              C-ONHAND = ZEROS
+               GO TO 642-READ-NEXT-RECORD.
+
+           MOVE C-NAME                  TO NAME-OUT.
+           MOVE C-CLASS                 TO CLASS-OUT.
+           MOVE C-CODE                  TO CODE-OUT.
+           MOVE C-UM                    TO UM-OUT.
+           MOVE C-RECEIPT-MTD           TO RCVD-MTD-OUT.
+           MOVE C-RECEIPT-YESTER        TO RCVD-YESTER-OUT.
+           MOVE C-ONORDER               TO ONORDER-OUT.
+           SUBTRACT C-SHIP-MTD          FROM C-MTD-USAGE.
+           ADD C-SHIP-TODAY             TO C-SHIP-MTD.
+           MOVE C-SHIP-MTD              TO SHIP-MTD-OUT.
+           ADD C-USED-TODAY             TO C-MTD-USAGE.
+           MOVE C-MTD-USAGE             TO USAGE-MTD-OUT.
+           MOVE C-USED-TODAY            TO USAGE-TODAY-OUT.
+           MOVE C-ONHAND                TO ONHAND-OUT.
+
+           IF C-MTD-USAGE < 1
+               MOVE ZEROS               TO AVG-USAGE
+           ELSE
+               DIVIDE C-MTD-USAGE BY NO-OF-DAYS-WORKED
+                                        GIVING AVG-USAGE.
+           MOVE AVG-USAGE               TO AVG-USAGE-OUT.
+           IF AVG-USAGE = ZEROS
+               MOVE ZEROS               TO DAYS-LEFT
+           ELSE
+               DIVIDE C-ONHAND BY AVG-USAGE GIVING DAYS-LEFT ROUNDED.
+           MOVE DAYS-LEFT               TO DAYS-LEFT-OUT.
+
+           IF C-UM = "LB"
+               ADD C-RECEIPT-MTD        TO CLASS-RCVD-MTD-LB
+               ADD C-MTD-USAGE          TO CLASS-USAGE-MTD-LB
+               ADD C-ONHAND             TO CLASS-ONHAND-MTD-LB
+               ADD C-SHIP-MTD           TO CLASS-SHIP-MTD-LB
+           ELSE
+           IF C-UM = "GL"
+               ADD C-RECEIPT-MTD        TO CLASS-RCVD-MTD-GL
+               ADD C-MTD-USAGE          TO CLASS-USAGE-MTD-GL
+               ADD C-ONHAND             TO CLASS-ONHAND-MTD-GL
+               ADD C-SHIP-MTD           TO CLASS-SHIP-MTD-GL.
+
+           PERFORM 641-PRINT-DETAIL-LINE  THRU  641-PDL-X.
+           MOVE "Y" TO AT-LEAST-ONE-CODE-WRITTEN.
+
+       642-READ-NEXT-RECORD.
+           PERFORM 631-READ-CODE-FILE.
+
+       642-PC-X.
+           EXIT.
+
+       643-END-CLASS.
+           ADD CLASS-RCVD-MTD-LB      TO TOTAL-RCVD-MTD-LB.
+           ADD CLASS-USAGE-MTD-LB     TO TOTAL-USAGE-MTD-LB.
+           ADD CLASS-ONHAND-MTD-LB    TO TOTAL-ONHAND-MTD-LB.
+           ADD CLASS-SHIP-MTD-LB      TO TOTAL-SHIP-MTD-LB.
+           ADD CLASS-RCVD-MTD-GL      TO TOTAL-RCVD-MTD-GL.
+           ADD CLASS-USAGE-MTD-GL     TO TOTAL-USAGE-MTD-GL.
+           ADD CLASS-ONHAND-MTD-GL    TO TOTAL-ONHAND-MTD-GL.
+           ADD CLASS-SHIP-MTD-GL      TO TOTAL-SHIP-MTD-GL.
+
+           MOVE "TOTAL LBS"             TO TOTAL-LIT-OUT.
+           MOVE SAVE-CLASS              TO TOTAL-CLASS-OUT.
+           MOVE CLASS-RCVD-MTD-LB       TO TOTAL-RCVD-MTD-OUT.
+           MOVE CLASS-USAGE-MTD-LB      TO TOTAL-USAGE-MTD-OUT.
+           MOVE CLASS-ONHAND-MTD-LB     TO TOTAL-ONHAND-OUT.
+           MOVE CLASS-SHIP-MTD-LB       TO TOTAL-SHIP-MTD-OUT.
+           MOVE DETAIL-LINE-2           TO PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 2 LINES.
+           ADD 2  TO LINE-CTR.
+
+           MOVE "TOTAL GAL"             TO TOTAL-LIT-OUT.
+           MOVE CLASS-RCVD-MTD-GL       TO TOTAL-RCVD-MTD-OUT.
+           MOVE CLASS-USAGE-MTD-GL      TO TOTAL-USAGE-MTD-OUT.
+           MOVE CLASS-ONHAND-MTD-GL     TO TOTAL-ONHAND-OUT.
+           MOVE CLASS-SHIP-MTD-GL       TO TOTAL-SHIP-MTD-OUT.
+           MOVE DETAIL-LINE-2           TO PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+           MOVE SPACES                  TO PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+           ADD 2  TO LINE-CTR.
+
+      **************************************************
+      **   PRINT HEADER LINES
+      **************************************************
+       641-PRINT-HEADER.
+           ADD 1                        TO  PAGE-CTR.
+           MOVE PAGE-CTR                TO  PAGE-OUT.
+           MOVE ZEROS                   TO  LINE-CTR.
+           MOVE HEADER1                 TO  PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING NEW-PAGE.
+           MOVE HEADER3                 TO  PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 2 LINES.
+           MOVE HEADER4                 TO  PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+           MOVE DASH-LINE               TO  PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+
+       641-PH-X.
+           EXIT.
+
+      **************************************************
+      **   PRINT DETAIL LINE
+      **************************************************
+       641-PRINT-DETAIL-LINE.
+           ADD 1                        TO  LINE-CTR.
+           IF LINE-CTR > 50
+               PERFORM 641-PRINT-HEADER  THRU  641-PH-X.
+           MOVE DETAIL-LINE-1           TO  PRINT-LINE.
+           WRITE PRINT-RCD AFTER ADVANCING 1 LINES.
+
+       641-PDL-X.
+           EXIT.
+
+       COPY OVRPFCALL IN COPYLIB.
+
